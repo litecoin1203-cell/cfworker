@@ -23,6 +23,7 @@ export const SETTING_DEFAULTS = {
   support_url: '',
   min_topup_toman: '50000',
   announcement: '',
+  trial_data_gb: '0',
 };
 
 export async function getSettings(env) {

@@ -21,7 +21,7 @@ const env = {
 };
 const ctx = { waitUntil: () => {} };
 const WEB = new URL('../../app-web/', import.meta.url).pathname;
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.webp': 'image/webp', '.ttf': 'font/ttf', '.json': 'application/json', '.txt': 'text/plain' };
+const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.webp': 'image/webp', '.ttf': 'font/ttf', '.woff2': 'font/woff2', '.json': 'application/json', '.txt': 'text/plain' };
 
 // seed card settings + auto-approve webhook helper
 async function seed() {

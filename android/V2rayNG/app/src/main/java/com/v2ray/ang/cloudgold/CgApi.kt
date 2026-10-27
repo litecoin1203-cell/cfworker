@@ -66,6 +66,9 @@ object CgApi {
             .url(base + "/api/v1" + path)
             .header("X-Device-Id", CgSession.deviceId(ctx))
             .header("X-Device-Model", CgSession.deviceModel())
+            .header("X-HWID", CgSession.deviceId(ctx))
+            .header("X-Device-OS", "Android")
+            .header("X-Ver-OS", Build.VERSION.RELEASE ?: "")
             .header("X-App-Version", "${BuildConfig.VERSION_NAME} (Android ${Build.VERSION.RELEASE})")
             .header("Accept", "application/json")
         CgSession.accessToken?.let { b.header("Authorization", "Bearer $it") }

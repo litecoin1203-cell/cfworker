@@ -5,13 +5,13 @@ import { first, run, insert } from './db.js';
 import * as auth from './auth.js';
 import * as account from './account.js';
 import * as orders from './orders.js';
-import { handleWebhook } from './telegram.js';
+import { handleWebhook, sendBackup, statsText, notifyAdmin } from './telegram.js';
 import { requireUser } from './auth.js';
 
 const CORS = {
   'access-control-allow-origin': '*',
   'access-control-allow-methods': 'GET,POST,DELETE,OPTIONS',
-  'access-control-allow-headers': 'authorization,content-type,x-device-id,x-device-model',
+  'access-control-allow-headers': 'authorization,content-type,x-device-id,x-device-model,x-hwid,x-device-os,x-ver-os,x-app-version',
   'access-control-max-age': '86400',
 };
 
@@ -39,6 +39,15 @@ function payDonePage(cancelled) {
 }
 
 export default {
+  // daily: backup file + short report to the admin's Telegram (cron in wrangler.jsonc)
+  async scheduled(event, env, ctx) {
+    ctx.waitUntil((async () => {
+      if (!env.TELEGRAM_CHAT_ID) return;
+      try { await notifyAdmin(env, '🌙 گزارش روزانه\n' + (await statsText(env))); } catch (e) {}
+      try { await sendBackup(env); } catch (e) {}
+    })());
+  },
+
   async fetch(request, env, ctx) {
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const url = new URL(request.url);
@@ -61,11 +70,11 @@ export default {
         for (const [k, v] of Object.entries(CORS)) res.headers.set(k, v);
         return res;
       }
-      return json({ detail: { code: 'not_found', message: 'Not found' } }, 404);
+      return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
     } catch (e) {
       if (e instanceof ApiError) return json(e.body, e.status, CORS);
       console.log('error', e && e.stack || e);
-      return json({ detail: { code: 'server_error', message: 'Something went wrong on our side.' } }, 500, CORS);
+      return json({ detail: { code: 'server_error', message: 'مشکلی در سرور پیش آمد. چند لحظه دیگر دوباره امتحان کن.' } }, 500, CORS);
     }
   },
 };
@@ -93,11 +102,11 @@ async function route(request, env, p) {
 
   // everything below needs a logged-in user
   const authed = [
-    '/me', '/trial', '/vpn', '/vpn/servers', '/devices', '/orders', '/wallet', '/referral',
+    '/me', '/trial', '/vpn', '/vpn/sub', '/vpn/servers', '/devices', '/orders', '/wallet', '/referral', '/coupons/check',
     '/auth/change-password', '/auth/logout-all',
   ];
   const needsAuth = authed.includes(p) || p.startsWith('/devices/') || p.startsWith('/orders/');
-  if (!needsAuth) return json({ detail: { code: 'not_found', message: 'Not found' } }, 404);
+  if (!needsAuth) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
   const user = await requireUser(env, request);
 
   if (p === '/auth/change-password' && m === 'POST') return auth.changePassword(env, user, await body(request));
@@ -106,6 +115,8 @@ async function route(request, env, p) {
   if (p === '/trial' && m === 'POST') return account.startTrial(env, user, await body(request), request);
   if (p === '/vpn' && m === 'GET') return account.vpn(env, user, request);
   if (p === '/vpn/servers' && m === 'GET') return account.vpnServers(env, user);
+  if (p === '/vpn/sub' && m === 'GET') return account.vpnSub(env, user, request);
+  if (p === '/coupons/check' && m === 'POST') return orders.checkCoupon(env, user, await body(request));
   if (p === '/devices' && m === 'GET') return account.devices(env, user);
   if (p === '/wallet' && m === 'GET') return orders.wallet(env, user);
   if (p === '/referral' && m === 'GET') return orders.referral(env, user);
@@ -118,5 +129,5 @@ async function route(request, env, p) {
   if ((mm = p.match(/^\/orders\/(\d+)\/receipt$/)) && m === 'POST') return orders.uploadReceipt(env, user, parseInt(mm[1], 10), request);
   if ((mm = p.match(/^\/orders\/(\d+)\/cancel$/)) && m === 'POST') return orders.cancelOrder(env, user, parseInt(mm[1], 10));
 
-  return json({ detail: { code: 'not_found', message: 'Not found' } }, 404);
+  return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
 }

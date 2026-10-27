@@ -4,7 +4,14 @@
 
   // ---------------- helpers ----------------
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const toman = (n) => Number(n || 0).toLocaleString('en-US');
+  const toman = (n) => Number(n || 0).toLocaleString('fa-IR');
+  const faNum = (n) => Number(n || 0).toLocaleString('fa-IR');
+  // Persian/Arabic digits typed on a Persian keyboard -> ASCII
+  const num = (s) => +String(s || '').replace(/[۰-۹]/g, (d) => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/\D/g, '') || 0;
+  function faDate(iso, opts) {
+    if (!iso) return '';
+    try { return new Date(iso).toLocaleDateString('fa-IR-u-ca-persian', opts || { year: 'numeric', month: 'long', day: 'numeric' }); } catch (e) { return new Date(iso).toLocaleDateString(); }
+  }
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -18,7 +25,7 @@
     const m = (remark || '').match(FLAG_RE);
     let cc = '';
     if (m) cc = Array.from(m[0]).map((ch) => String.fromCharCode(ch.codePointAt(0) - 0x1f1e6 + 65)).join('');
-    const name = (remark || '').replace(FLAG_RE, '').replace(/^[\s\-|·]+|[\s\-|·]+$/g, '') || 'Server';
+    const name = (remark || '').replace(FLAG_RE, '').replace(/^[\s\-|·]+|[\s\-|·]+$/g, '') || 'سرور';
     return { cc, name };
   }
   function flag(cc, size) {
@@ -26,9 +33,10 @@
   }
   function bytes(n) {
     n = Number(n || 0);
-    if (n >= 1024 ** 3) return (n / 1024 ** 3).toFixed(1) + ' GB';
-    if (n >= 1024 ** 2) return (n / 1024 ** 2).toFixed(0) + ' MB';
-    return Math.round(n / 1024) + ' KB';
+    const f = (v, d) => Number(v.toFixed(d)).toLocaleString('fa-IR');
+    if (n >= 1024 ** 3) return f(n / 1024 ** 3, n >= 100 * 1024 ** 3 ? 0 : 1) + ' گیگ';
+    if (n >= 1024 ** 2) return f(n / 1024 ** 2, 0) + ' مگ';
+    return f(n / 1024, 0) + ' کیلوبایت';
   }
 
   // ---------------- bridge ----------------
@@ -41,7 +49,7 @@
     if (!p) return;
     let v = null;
     try { v = payload ? JSON.parse(payload) : null; } catch (e) { v = payload; }
-    ok ? p.res(v) : p.rej(v || { message: 'Something went wrong' });
+    ok ? p.res(v) : p.rej(v || { message: 'مشکلی پیش آمد.' });
   };
   window.__cgEvent = function (name, payload) {
     let v = null;
@@ -61,23 +69,24 @@
 
   class ApiError extends Error {
     constructor(status, detail) {
-      super((detail && detail.message) || 'Something went wrong');
+      super((detail && detail.message) || 'مشکلی پیش آمد.');
       this.status = status;
       this.code = (detail && detail.code) || 'error';
       this.detail = detail;
     }
   }
+  const NET_MSG = 'اتصال به سرور برقرار نشد. اینترنت را بررسی کن و دوباره امتحان کن.';
   async function api(method, path, body) {
     let r;
     try {
       r = await call('api', { method, path, body: body == null ? null : body });
     } catch (e) {
-      throw new ApiError(0, { code: 'network', message: 'No connection to the server. Check your internet and try again.' });
+      throw new ApiError(0, { code: 'network', message: NET_MSG });
     }
-    if (r.status === 0) throw new ApiError(0, { code: 'network', message: 'No connection to the server. Check your internet and try again.' });
+    if (r.status === 0) throw new ApiError(0, { code: 'network', message: NET_MSG });
     if (r.status >= 400) {
       const d = r.data && r.data.detail;
-      const detail = typeof d === 'object' && d ? d : { code: 'error', message: typeof d === 'string' ? d : 'Something went wrong' };
+      const detail = typeof d === 'object' && d ? d : { code: 'error', message: typeof d === 'string' ? d : (r.status >= 500 ? 'سرور موقتاً در دسترس نیست. چند لحظه دیگر دوباره امتحان کن.' : 'مشکلی پیش آمد.') };
       if (r.status === 401 && ['token_invalid', 'token_expired', 'not_authenticated'].includes(detail.code)) {
         await call('logout', {});
         go('auth', { mode: 'login' });
@@ -95,7 +104,7 @@
     ping: null, traffic: { up: 0, down: 0 },
   };
 
-  async function loadMe() { S.me = await api('GET', '/me'); return S.me; }
+  async function loadMe() { S.me = await api('GET', '/me'); S.meAt = Date.now(); return S.me; }
   async function loadConfig() { if (!S.config) S.config = await api('GET', '/app-config'); return S.config; }
 
   function decorate(list) {
@@ -128,7 +137,7 @@
     // while switching servers the core stops before it starts again; keep showing "Connecting..."
     if (S.vpn.running || S.vpn.busy !== 'connecting') S.vpn.busy = null;
   });
-  on('vpnError', (v) => { S.vpn.busy = null; toast((v && v.message) || 'Could not connect', true); });
+  on('vpnError', (v) => { S.vpn.busy = null; toast((v && v.message) || 'اتصال برقرار نشد.', true); });
   on('ping', (v) => { S.ping = v && v.ms ? v.ms : null; });
 
   // ---------------- ui helpers ----------------
@@ -142,7 +151,8 @@
     el.textContent = msg;
     ($('.stage') || document.body).appendChild(el);
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.remove(), 3600);
+    toastTimer = setTimeout(() => el.remove(), Math.min(8000, 3000 + String(msg).length * 45));
+    el.onclick = () => el.remove();
   }
   function busyButton(btn, busy, dark) {
     if (!btn) return;
@@ -159,7 +169,7 @@
     const scr = $('.stage');
     const wrap = document.createElement('div');
     wrap.innerHTML = `<div class="sheet-scrim"></div><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div>`;
-    const close = () => wrap.remove();
+    const close = () => { wrap.remove(); };
     wrap.querySelector('.sheet-scrim').onclick = close;
     scr.appendChild(wrap);
     if (onMount) onMount(wrap.querySelector('.sheet'), close);
@@ -223,8 +233,8 @@
   // ---------------- icons ----------------
   const I = {
     close: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M1.5 1.5l13 13M14.5 1.5l-13 13"/></svg>',
-    back: '<svg aria-hidden="true" width="20" height="16" viewBox="0 0 20 16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 8H1.5M8 1.5L1.5 8 8 14.5"/></svg>',
-    chevL: '<svg aria-hidden="true" width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L1.8 9 9 16.5"/></svg>',
+    back: '<svg aria-hidden="true" width="20" height="16" viewBox="0 0 20 16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8h17.5M12 1.5L18.5 8 12 14.5"/></svg>',
+    chevL: '<svg aria-hidden="true" width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 1.5L9.2 9 2 16.5"/></svg>',
     check: '<svg aria-hidden="true" width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.4l3 3 6-6.6"/></svg>',
     gem: '<svg aria-hidden="true" width="18" height="16" viewBox="0 0 18 16"><defs><linearGradient id="cgGem" x1="0" y1="0" x2="18" y2="16" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#8FE3FF"/><stop offset=".5" stop-color="#5E8BFF"/><stop offset="1" stop-color="#B26BFF"/></linearGradient></defs><path d="M4.2.8h9.6l3.4 4.6L9 15.2.8 5.4z" fill="url(#cgGem)"/><path d="M.8 5.4h16.4M4.2.8l2.2 4.6L9 15.2l2.6-9.8L13.8.8M6.4 5.4L9 .8l2.6 4.6" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width=".7" stroke-linejoin="round"/></svg>',
     globe: '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.3"><circle cx="8" cy="8" r="6.6"/><path d="M1.4 8h13.2M8 1.4c2 2 2.8 4.2 2.8 6.6S10 12.6 8 14.6C6 12.6 5.2 10.4 5.2 8S6 3.4 8 1.4z"/></svg>',
@@ -234,7 +244,7 @@
     copy: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
   };
 
-  window.CG = { esc, toman, $, $$, sleep, flag, ccToFlag, parseRemark, bytes, call, api, ApiError, on, S, loadMe, loadConfig,
+  window.CG = { esc, toman, faNum, num, faDate, $, $$, sleep, flag, ccToFlag, parseRemark, bytes, call, api, ApiError, on, S, loadMe, loadConfig,
     syncVpn, refreshServers, selectedServer, hasActivePlan, toast, busyButton, sheet, screens, go, reset, back, layout, I,
     get current() { return current; } };
 })();

@@ -119,6 +119,6 @@ export function randomCode(len = 7) {
 export const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/;
 export function cleanEmail(v) {
   v = String(v || '').trim().toLowerCase();
-  if (v.length > 254 || !EMAIL_RE.test(v)) throw err(422, 'invalid_input', 'Enter a valid email address', 'email');
+  if (v.length > 254 || !EMAIL_RE.test(v)) throw err(422, 'invalid_input', 'یک ایمیل درست وارد کن.', 'email');
   return v;
 }

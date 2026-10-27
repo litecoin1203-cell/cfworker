@@ -168,6 +168,7 @@ class CloudGoldActivity : AppCompatActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
+        CgTune.applyDefaults(this)
         intent?.data?.let { pendingDeepLink = it.toString() }
         web.loadUrl("https://appassets.androidplatform.net/assets/cloudgold/index.html")
     }
@@ -219,7 +220,7 @@ class CloudGoldActivity : AppCompatActivity() {
                 try {
                     handle(id, method, args)
                 } catch (e: CgError) {
-                    fail(id, e.code, e.message ?: "Something went wrong")
+                    fail(id, e.code, e.message ?: "مشکلی پیش آمد.")
                 } catch (e: Exception) {
                     fail(id, "error", e.message ?: e.javaClass.simpleName)
                 }
@@ -258,7 +259,7 @@ class CloudGoldActivity : AppCompatActivity() {
             "vpnConnect", "vpnSelect" -> {
                 val guid = a.optString("guid")
                 if (guid.isNotEmpty()) CgVpn.select(guid)
-                if (MmkvManager.getSelectServer().isNullOrEmpty()) throw CgError("no_server", "Choose a location first")
+                if (MmkvManager.getSelectServer().isNullOrEmpty()) throw CgError("no_server", "اول یک لوکیشن انتخاب کن.")
                 if (vpnRunning) {
                     MessageUtil.sendMsg2Service(ctx, AppConfig.MSG_STATE_RESTART, "")
                     resolve(id, true, JSONObject())
@@ -296,6 +297,12 @@ class CloudGoldActivity : AppCompatActivity() {
             "vpnTestAll" -> {
                 MessageUtil.sendMsg2TestService(ctx, TestServiceMessage(key = AppConfig.MSG_MEASURE_CONFIG_START, subscriptionId = CgVpn.SUB_ID))
                 resolve(id, true, JSONObject())
+            }
+            "getTune" -> resolve(id, true, JSONObject().put("iranDirect", CgTune.iranDirect()))
+            "setTune" -> {
+                withContext(Dispatchers.IO) { CgTune.setIranDirect(ctx, a.optBoolean("iranDirect", true)) }
+                if (vpnRunning) MessageUtil.sendMsg2Service(ctx, AppConfig.MSG_STATE_RESTART, "")
+                resolve(id, true, JSONObject().put("iranDirect", CgTune.iranDirect()))
             }
             "traffic" -> {
                 // the core runs in our own uid, so the app's byte counters are the tunnel's throughput
@@ -353,11 +360,11 @@ class CloudGoldActivity : AppCompatActivity() {
                     val n = input.read(chunk)
                     if (n < 0) break
                     total += n
-                    if (total > maxBytes) return false to JSONObject().put("code", "too_large").put("message", "The image must be under 10 MB")
+                    if (total > maxBytes) return false to JSONObject().put("code", "too_large").put("message", "حجم عکس باید کمتر از ۱۰ مگابایت باشد.")
                     buf.write(chunk, 0, n)
                 }
                 buf.toByteArray()
-            } ?: return false to JSONObject().put("code", "bad_file").put("message", "Could not read that image")
+            } ?: return false to JSONObject().put("code", "bad_file").put("message", "این عکس خوانده نشد.")
             var name = "receipt.jpg"
             contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
                 if (c.moveToFirst()) c.getString(0)?.let { name = it }
@@ -366,7 +373,7 @@ class CloudGoldActivity : AppCompatActivity() {
             val r = CgApi.upload(this, args.optString("path"), name, mime, bytes, mapOf("ref" to args.optString("ref")))
             true to r.toJson()
         } catch (e: Exception) {
-            false to JSONObject().put("code", "upload_failed").put("message", "Upload failed. Check your internet and try again.")
+            false to JSONObject().put("code", "upload_failed").put("message", "ارسال ناموفق بود. اینترنت را بررسی کن و دوباره امتحان کن.")
         }
     }
 
@@ -379,7 +386,7 @@ class CloudGoldActivity : AppCompatActivity() {
                 AppConfig.MSG_STATE_RUNNING, AppConfig.MSG_STATE_START_SUCCESS -> setRunning(true)
                 AppConfig.MSG_STATE_NOT_RUNNING, AppConfig.MSG_STATE_STOP_SUCCESS -> setRunning(false)
                 AppConfig.MSG_STATE_START_FAILURE -> {
-                    val msg = intent.getStringExtra("content").takeUnless { it.isNullOrBlank() } ?: "Could not connect to this location"
+                    val msg = intent.getStringExtra("content").takeUnless { it.isNullOrBlank() } ?: "اتصال به این لوکیشن ممکن نشد. لوکیشن دیگری را امتحان کن."
                     emit("vpnError", JSONObject().put("message", msg))
                     setRunning(false)
                 }

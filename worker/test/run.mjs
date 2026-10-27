@@ -1,6 +1,7 @@
 // Drives the real Worker through many scenarios. Run: node --experimental-sqlite test/run.mjs
 import { makeDB, installFakes } from './shim.mjs';
 import { hmacSha512Hex } from '../src/util.js';
+import { panelBases, decodeSub } from '../src/pasarguard.js';
 
 const PANEL = 'http://panel.test';
 const fakes = installFakes({ panelBase: PANEL });
@@ -61,7 +62,7 @@ section('plans seeded');
 {
   const r = await call('GET', '/api/v1/plans');
   ok(r.data.length === 3, 'three default plans');
-  ok(r.data.some((p) => p.badge === 'Recommended' && p.trial_days === 7), 'annual has trial + badge');
+  ok(r.data.some((p) => p.badge === 'پیشنهاد ویژه' && p.trial_days === 7), 'annual has trial + badge');
 }
 
 section('register / login / me');
@@ -98,7 +99,7 @@ section('card purchase -> telegram -> approve -> servers');
   await botSet('card_holder', 'Ali');
   const tok = await signup('buyer@example.com', { device: 'buyer-phone' });
   const plans = (await call('GET', '/api/v1/plans')).data;
-  const monthly = plans.find((p) => p.name === 'Monthly');
+  const monthly = plans.find((p) => p.name === 'یک ماهه');
   const order = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card' } });
   ok(order.status === 201 && order.data.card.number === '6037991234567890', 'card order returns card details');
   // upload receipt (tiny PNG)
@@ -149,7 +150,7 @@ section('wallet top-up (approve) + buy with wallet + referral');
   const w = await call('GET', '/api/v1/wallet', { token: tok });
   ok(w.data.balance === 500000, 'wallet credited 500k');
   // buy annual with wallet
-  const annual = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'Annual');
+  const annual = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ساله');
   const buy = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: annual.id, method: 'wallet' } });
   ok(buy.status === 201 && buy.data.status === 'paid', 'wallet purchase paid instantly');
   const w2 = await call('GET', '/api/v1/wallet', { token: tok });
@@ -167,7 +168,7 @@ section('wallet purchase refunds when panel is down');
   const form = new FormData(); form.set('file', new Blob([png], { type: 'image/jpeg' }), 'r.jpg');
   await call('POST', `/api/v1/orders/${top.data.id}/receipt`, { token: tok, form });
   await tgWebhook({ callback_query: { id: 'c4', data: `ap:${top.data.id}`, message: { chat: { id: 12345 }, message_id: 4 } } });
-  const annual = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'Annual');
+  const annual = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ساله');
   const savedUrl = env.PASARGUARD_URL;
   env.PASARGUARD_URL = 'http://panel.down';   // make provisioning fail
   const buy = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: annual.id, method: 'wallet' } });
@@ -181,7 +182,7 @@ section('crypto invoice + IPN');
 {
   await botSet('usdt_rate_toman', '70000');
   const tok = await signup('crypto@example.com');
-  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'Monthly');
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
   const order = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'crypto' } });
   ok(order.status === 201 && order.data.crypto_pay_url, 'crypto invoice created');
   const invoiceId = fakes.np.invoices.slice(-1)[0].id;
@@ -218,7 +219,7 @@ section('free trial once per account and phone');
 section('device limit + freeing a slot frees panel HWID');
 {
   const tok = await signup('dev@example.com', { device: 'phone-a' });
-  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'Monthly'); // device_limit = 2
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه'); // device_limit = 2
   // grant via bot so we do not need wallet
   await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant dev@example.com ${monthly.id}` } });
   ok((await call('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'phone-a' } })).status === 200, 'device a ok');
@@ -237,6 +238,134 @@ section('telegram admin commands');
   ok(relogin.status === 200, 'admin /reset changed the password');
   const outsider = await tgWebhook({ message: { chat: { id: 999 }, text: '/stats' } });
   ok(outsider.status === 200, 'non-admin command ignored without error');
+}
+
+
+section('panel address normalisation + sub decoding');
+{
+  const b = panelBases('https://p.rain.rest/hub/#/login');
+  ok(b[0] === 'https://p.rain.rest' && b[1] === 'https://p.rain.rest/hub', 'hub/#/login -> origin first ' + JSON.stringify(b));
+  ok(panelBases('p.example.com:8000/dashboard/')[0] === 'https://p.example.com:8000', 'bare host + dashboard path');
+  ok(panelBases('https://x.com/')[1] === undefined, 'plain origin has one base');
+  const lines = decodeSub(btoa('vless://a@b:1#x\nvmess://abc\n'));
+  ok(lines.length === 2, 'base64 subscription decoded');
+}
+
+section('reseller without full group access: falls back to simple list');
+{
+  fakes.pg.groupsSudoOnly = true;
+  globalThis.__cgPg = {};
+  const tok = await signup('reseller@example.com', { device: 'rs-phone' });
+  const annual = (await call('GET', '/api/v1/plans')).data.find((p) => p.trial_days > 0);
+  const t = await call('POST', '/api/v1/trial', { token: tok, json: { plan_id: annual.id }, headers: { 'x-device-id': 'rs-phone' } });
+  ok(t.status === 200 && t.data.subscription.active, 'trial created via groups/simple ' + JSON.stringify(t.data));
+  const pgUser = Object.values(fakes.pg.users).find((u) => (u.note || '').includes('reseller@example.com'));
+  ok(pgUser && pgUser.group_ids.join(',') === '1,2', 'user got the reseller groups');
+  ok(t.data.subscription.remaining_bytes === null && t.data.subscription.unlimited_data === true, 'unlimited data reported');
+  fakes.pg.groupsSudoOnly = false;
+}
+
+section('trial failure tells the admin the exact panel error');
+{
+  fakes.pg.failCreate = 'Admin data limit reached';
+  const before = fakes.tg.messages.length;
+  const tok = await signup('failtrial@example.com', { device: 'ft-phone' });
+  const annual = (await call('GET', '/api/v1/plans')).data.find((p) => p.trial_days > 0);
+  const t = await call('POST', '/api/v1/trial', { token: tok, json: { plan_id: annual.id }, headers: { 'x-device-id': 'ft-phone' } });
+  ok(t.status === 503 && t.data.detail.code === 'provision_failed', 'trial fails cleanly');
+  const msg = fakes.tg.messages.slice(before).map((m) => m.text).join('\n');
+  ok(msg.includes('Admin data limit reached'), 'admin sees panel reason');
+  const me = await call('GET', '/api/v1/me', { token: tok });
+  ok(me.data.trial_available === true, 'trial still available after failure');
+  fakes.pg.failCreate = null;
+}
+
+section('card approval failure -> retry button -> activates');
+{
+  const tok = await signup('retry@example.com', { device: 'rt-phone' });
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
+  ok(!!monthly, 'plan names shown in Persian');
+  const order = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card' } });
+  const form = new FormData(); form.set('file', new Blob([new Uint8Array([0xff, 0xd8, 0xff, 1, 2, 3])], { type: 'image/jpeg' }), 'r.jpg');
+  await call('POST', `/api/v1/orders/${order.data.id}/receipt`, { token: tok, form });
+  fakes.pg.failCreate = 'group 9 not found';
+  const before = fakes.tg.messages.length;
+  await tgWebhook({ callback_query: { id: 'r1', data: `ap:${order.data.id}`, message: { chat: { id: 12345 }, message_id: 9 } } });
+  const sent = fakes.tg.messages.slice(before);
+  ok(sent.some((m) => m.text.includes('group 9 not found') && m.reply_markup && JSON.stringify(m.reply_markup).includes(`rp:${order.data.id}`)), 'error + retry button sent');
+  ok((await call('GET', `/api/v1/orders/${order.data.id}`, { token: tok })).data.status === 'review', 'order still in review');
+  fakes.pg.failCreate = null;
+  await tgWebhook({ callback_query: { id: 'r2', data: `rp:${order.data.id}`, message: { chat: { id: 12345 }, message_id: 10 } } });
+  ok((await call('GET', `/api/v1/orders/${order.data.id}`, { token: tok })).data.status === 'paid', 'retry activated the order');
+  const me = await call('GET', '/api/v1/me', { token: tok });
+  ok(me.data.subscription.active && me.data.subscription.days_left >= 29, 'subscription live after retry');
+}
+
+section('subscription proxy through the Worker forwards HWID');
+{
+  const tok = (await call('POST', '/api/v1/auth/login', { json: { email: 'retry@example.com', password: 'password123' } })).data.access_token;
+  const r = await call('GET', '/api/v1/vpn/sub', { token: tok, headers: { 'x-device-id': 'rt-phone', 'x-hwid': 'rt-phone' } });
+  const text = await r.res.text();
+  ok(r.status === 200 && decodeSub(text).length === 3, 'proxied subscription has 3 configs');
+  ok(fakes.pg.lastSubHeaders.hwid === 'rt-phone' && fakes.pg.lastSubHeaders.ua.startsWith('v2rayNG'), 'hwid + core UA forwarded');
+}
+
+section('discount codes');
+{
+  await tgWebhook({ message: { chat: { id: 12345 }, text: '/coupon GOLD50 50 1' } });
+  const tok = await signup('coupon@example.com');
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
+  const chk = await call('POST', '/api/v1/coupons/check', { token: tok, json: { code: 'gold50', plan_id: monthly.id } });
+  ok(chk.status === 200 && chk.data.final_toman === Math.round(monthly.price_toman / 2 / 1000) * 1000, 'coupon check halves price ' + JSON.stringify(chk.data));
+  const bad = await call('POST', '/api/v1/coupons/check', { token: tok, json: { code: 'NOPE', plan_id: monthly.id } });
+  ok(bad.status === 400 && bad.data.detail.code === 'coupon_invalid', 'unknown code rejected');
+  const order = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card', coupon_code: 'GOLD50' } });
+  ok(order.data.amount_toman === chk.data.final_toman && order.data.list_price_toman === monthly.price_toman, 'order uses discounted price');
+  const form = new FormData(); form.set('file', new Blob([new Uint8Array([0xff, 0xd8, 0xff, 9])], { type: 'image/jpeg' }), 'r.jpg');
+  await call('POST', `/api/v1/orders/${order.data.id}/receipt`, { token: tok, form });
+  await tgWebhook({ callback_query: { id: 'k1', data: `ap:${order.data.id}`, message: { chat: { id: 12345 }, message_id: 11 } } });
+  const again = await call('POST', '/api/v1/coupons/check', { token: tok, json: { code: 'GOLD50', plan_id: monthly.id } });
+  ok(again.status === 400, 'coupon used up after one use: ' + again.data.detail.code);
+  const free = await (async () => { await tgWebhook({ message: { chat: { id: 12345 }, text: '/coupon FREE100 100' } }); return call('POST', '/api/v1/orders', { token: await signup('free@example.com'), json: { plan_id: monthly.id, method: 'card', coupon_code: 'FREE100' } }); })();
+  ok(free.data.status === 'paid' && free.data.amount_toman === 0, '100% code activates instantly');
+}
+
+section('pay the difference by card, plan activates from wallet automatically');
+{
+  const tok = await signup('diff@example.com', { device: 'df' });
+  // give 100k to the wallet with a top-up
+  const top = await call('POST', '/api/v1/orders', { token: tok, json: { topup_toman: 100000, method: 'card' } });
+  const f1 = new FormData(); f1.set('file', new Blob([new Uint8Array([0xff, 0xd8, 0xff, 4])], { type: 'image/jpeg' }), 'r.jpg');
+  await call('POST', `/api/v1/orders/${top.data.id}/receipt`, { token: tok, form: f1 });
+  await tgWebhook({ callback_query: { id: 'd1', data: `ap:${top.data.id}`, message: { chat: { id: 12345 }, message_id: 12 } } });
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
+  const o = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card', use_wallet: true } });
+  ok(o.data.kind === 'topup' && o.data.amount_toman === monthly.price_toman - 100000 && o.data.activate_plan_id === monthly.id, 'only the difference is asked ' + JSON.stringify(o.data));
+  const f2 = new FormData(); f2.set('file', new Blob([new Uint8Array([0xff, 0xd8, 0xff, 5])], { type: 'image/jpeg' }), 'r.jpg');
+  await call('POST', `/api/v1/orders/${o.data.id}/receipt`, { token: tok, form: f2 });
+  await tgWebhook({ callback_query: { id: 'd2', data: `ap:${o.data.id}`, message: { chat: { id: 12345 }, message_id: 13 } } });
+  const done = await call('GET', `/api/v1/orders/${o.data.id}`, { token: tok });
+  ok(done.data.status === 'paid' && done.data.plan_activated === true, 'plan auto-activated');
+  const w = await call('GET', '/api/v1/wallet', { token: tok });
+  ok(w.data.balance === 0, 'wallet used up exactly');
+  const me = await call('GET', '/api/v1/me', { token: tok });
+  ok(me.data.subscription && me.data.subscription.active, 'subscription active');
+}
+
+section('bot: /panel diagnostic, /find, /plan, /backup');
+{
+  const before = fakes.tg.messages.length;
+  await tgWebhook({ message: { chat: { id: 12345 }, text: '/panel' } });
+  const report = fakes.tg.messages.slice(before).map((m) => m.text).join('\n');
+  ok(report.includes('ورود با یوزر') && report.includes('ساخت اکانت آزمایشی موفق') && report.includes('3 کانفیگ'), 'panel report all green:\n' + report);
+  ok(!Object.keys(fakes.pg.users).some((n) => n.startsWith('cgtest_')), 'test user cleaned up');
+  const b2 = fakes.tg.messages.length;
+  await tgWebhook({ message: { chat: { id: 12345 }, text: '/find diff@example.com' } });
+  ok(fakes.tg.messages.slice(b2).some((m) => m.text.includes('روز') && m.text.includes('حجم')), '/find shows live usage');
+  await tgWebhook({ message: { chat: { id: 12345 }, text: '/plan 1 name اقتصادی یک ماهه' } });
+  ok((await call('GET', '/api/v1/plans')).data.some((p) => p.name === 'اقتصادی یک ماهه'), '/plan renames');
+  const r = await worker.scheduled({}, env, ctx); await drain();
+  ok(true, 'scheduled ran');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

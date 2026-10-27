@@ -19,16 +19,16 @@ export async function requireUser(env, request) {
   const auth = request.headers.get('authorization') || '';
   const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
   const payload = await verifyJwt(token, env.SECRET_KEY);
-  if (!payload || payload.typ !== 'access') throw err(401, 'not_authenticated', 'Login required');
+  if (!payload || payload.typ !== 'access') throw err(401, 'not_authenticated', 'اول وارد حساب شو.');
   const user = await first(env, 'SELECT * FROM users WHERE id = ?', parseInt(payload.sub, 10));
-  if (!user || user.token_version !== payload.ver) throw err(401, 'token_invalid', 'Session ended');
-  if (!user.is_active) throw err(403, 'account_disabled', 'This account is disabled');
+  if (!user || user.token_version !== payload.ver) throw err(401, 'token_invalid', 'نشست تمام شده؛ دوباره وارد شو.');
+  if (!user.is_active) throw err(403, 'account_disabled', 'این حساب غیرفعال شده است.');
   return user;
 }
 
 function checkPassword(pw) {
-  if (typeof pw !== 'string' || pw.length < 8) throw err(422, 'invalid_input', 'Use at least 8 characters for your password', 'password');
-  if (pw.length > 128) throw err(422, 'invalid_input', 'Password is too long', 'password');
+  if (typeof pw !== 'string' || pw.length < 8) throw err(422, 'invalid_input', 'رمز باید حداقل ۸ کاراکتر باشد.', 'password');
+  if (pw.length > 128) throw err(422, 'invalid_input', 'رمز خیلی طولانی است.', 'password');
 }
 
 const dev = (body, headers) => ({
@@ -40,7 +40,7 @@ export async function register(env, body, headers) {
   const email = cleanEmail(body.email);
   checkPassword(body.password);
   const existing = await first(env, 'SELECT id FROM users WHERE email = ?', email);
-  if (existing) throw err(409, 'email_taken', 'An account with this email already exists. Sign in instead.');
+  if (existing) throw err(409, 'email_taken', 'با این ایمیل قبلاً حساب ساخته شده. وارد شو.');
   let referredBy = null;
   if (body.referral_code) {
     const r = await first(env, 'SELECT id FROM users WHERE referral_code = ?', String(body.referral_code).trim().toUpperCase());
@@ -62,9 +62,9 @@ export async function login(env, body, headers) {
   const email = cleanEmail(body.email);
   const user = await first(env, 'SELECT * FROM users WHERE email = ?', email);
   if (!user || !(await verifyPassword(body.password || '', user.password_hash, env.SECRET_KEY))) {
-    throw err(401, 'bad_credentials', 'Wrong email or password');
+    throw err(401, 'bad_credentials', 'ایمیل یا رمز اشتباه است.');
   }
-  if (!user.is_active) throw err(403, 'account_disabled', 'This account is disabled');
+  if (!user.is_active) throw err(403, 'account_disabled', 'این حساب غیرفعال شده است.');
   await run(env, 'UPDATE users SET last_login_at = ? WHERE id = ?', nowSec(), user.id);
   const d = dev(body, headers);
   await touchDevice(env, user.id, d.id, d.model);
@@ -73,15 +73,15 @@ export async function login(env, body, headers) {
 
 export async function refresh(env, body) {
   const payload = await verifyJwt(body.refresh_token, env.SECRET_KEY);
-  if (!payload || payload.typ !== 'refresh') throw err(401, 'token_invalid', 'Please sign in again');
+  if (!payload || payload.typ !== 'refresh') throw err(401, 'token_invalid', 'لطفاً دوباره وارد شو.');
   const user = await first(env, 'SELECT * FROM users WHERE id = ?', parseInt(payload.sub, 10));
-  if (!user || user.token_version !== payload.ver || !user.is_active) throw err(401, 'token_invalid', 'Please sign in again');
+  if (!user || user.token_version !== payload.ver || !user.is_active) throw err(401, 'token_invalid', 'لطفاً دوباره وارد شو.');
   return json(await makeTokens(env, user));
 }
 
 export async function changePassword(env, user, body) {
   if (!(await verifyPassword(body.current_password || '', user.password_hash, env.SECRET_KEY))) {
-    throw err(400, 'wrong_password', 'Your current password is wrong', 'current_password');
+    throw err(400, 'wrong_password', 'رمز فعلی اشتباه است.', 'current_password');
   }
   checkPassword(body.new_password);
   await run(env, 'UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?', await hashPassword(body.new_password, env.SECRET_KEY), user.id);

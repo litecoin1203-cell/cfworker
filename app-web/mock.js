@@ -80,6 +80,8 @@
     async openUrl(a) { console.log('[mock] open', a.url); return {}; },
     async copy(a) { try { await navigator.clipboard.writeText(a.text); } catch (e) {} return {}; },
     async share(a) { console.log('[mock] share', a.text); return {}; },
+    async getTune() { return { iranDirect: LS.get('iran') !== false }; },
+    async setTune(a) { LS.set('iran', !!a.iranDirect); return { iranDirect: !!a.iranDirect }; },
     async advanced() { console.log('[mock] open v2rayNG settings'); return {}; },
   };
   window.CGMockHost = {

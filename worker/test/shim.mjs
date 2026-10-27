@@ -1,7 +1,8 @@
 // A D1-shaped wrapper over Node's built-in SQLite, plus fakes for PasarGuard, Telegram and NOWPayments,
 // so the Worker's real code runs unchanged under Node for testing.
 import { DatabaseSync } from 'node:sqlite';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 function toNum(v) { return typeof v === 'bigint' ? Number(v) : v; }
 function fixRow(row) {
@@ -28,7 +29,9 @@ class Stmt {
 
 export function makeDB(schemaPath) {
   const db = new DatabaseSync(':memory:');
-  db.exec(readFileSync(schemaPath, 'utf8'));
+  // apply every migration in order, like `wrangler d1 migrations apply`
+  const dir = dirname(schemaPath);
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) db.exec(readFileSync(join(dir, f), 'utf8'));
   return {
     prepare: (sql) => new Stmt(db, sql),
     async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; },
@@ -38,7 +41,7 @@ export function makeDB(schemaPath) {
 
 // ---------------- fake PasarGuard + NOWPayments + Telegram over fetch ----------------
 export function installFakes({ panelBase }) {
-  const pg = { users: {}, tokens: new Set(), deletedHwids: [], seq: 0 };
+  const pg = { users: {}, tokens: new Set(), deletedHwids: [], seq: 0, lastSubHeaders: null, groupsSudoOnly: false, failCreate: null };
   const tg = { messages: [], photos: [], lastButtons: null };
   const np = { invoices: [] };
 
@@ -65,10 +68,13 @@ export function installFakes({ panelBase }) {
     if (url.startsWith(panelBase)) {
       const path = url.slice(panelBase.length);
       if (path === '/api/admin/token') { const t = 'tok' + ++pg.seq; pg.tokens.add(t); return resJson({ access_token: t, token_type: 'bearer' }); }
-      if (path === '/api/groups') return resJson({ groups: [{ id: 1, name: 'default' }] });
+      if (path === '/api/groups') return pg.groupsSudoOnly ? resText('{"detail":"You\'re not allowed"}', 403) : resJson({ groups: [{ id: 1, name: 'default' }] });
+      if (path.startsWith('/api/groups/simple')) return resJson({ groups: [{ id: 1, name: 'default' }, { id: 2, name: 'reseller' }], total: 2 });
       let mm;
       if (path === '/api/user' && method === 'POST') {
         const b = JSON.parse(body);
+        if (pg.failCreate) return resText(JSON.stringify({ detail: pg.failCreate }), 400);
+        if (!b.group_ids || !b.group_ids.length) return resText('{"detail":"group_ids required"}', 422);
         const u = { ...b, id: ++pg.seq, token: 'sub' + pg.seq, used_traffic: 0 };
         pg.users[b.username] = u;
         return resJson(outUser(u), 201);
@@ -78,6 +84,7 @@ export function installFakes({ panelBase }) {
         const u = pg.users[name];
         if (method === 'GET') return u ? resJson(outUser(u)) : resText('not found', 404);
         if (method === 'PUT') { Object.assign(u, JSON.parse(body)); return resJson(outUser(u)); }
+        if (method === 'DELETE') { delete pg.users[name]; return resText('', 204); }
       }
       if ((mm = path.match(/^\/api\/user\/([^/]+)\/reset$/)) && method === 'POST') {
         const u = pg.users[decodeURIComponent(mm[1])]; u.used_traffic = 0; return resJson(outUser(u));
@@ -86,6 +93,11 @@ export function installFakes({ panelBase }) {
         pg.deletedHwids.push([parseInt(mm[1], 10), decodeURIComponent(mm[2])]); return resText('', 204);
       }
       if (path.match(/^\/sub\/[^/]+\/links$/)) return resText(subLinks());
+      if (path.match(/^\/sub\/[^/]+\/?$/)) {
+        const hh = new Headers(init.headers || {});
+        pg.lastSubHeaders = { ua: hh.get('user-agent'), hwid: hh.get('x-hwid') };
+        return new Response(btoa(subLinks()), { status: 200, headers: { 'subscription-userinfo': 'upload=0; download=0; total=0; expire=0' } });
+      }
       return resText('panel: unhandled ' + method + ' ' + path, 500);
     }
 
