@@ -41,7 +41,6 @@ V2rayNG/app/google-services.json
 *.swp
 *.orig
 *.class
-*.jar
 *.war
 *.ear
 
