@@ -1,0 +1,50 @@
+// Thin helpers over the D1 binding (env.DB) plus the settings store.
+import { nowSec } from './util.js';
+
+export const first = (env, sql, ...args) => env.DB.prepare(sql).bind(...args).first();
+export const all = async (env, sql, ...args) => (await env.DB.prepare(sql).bind(...args).all()).results || [];
+export const run = (env, sql, ...args) => env.DB.prepare(sql).bind(...args).run();
+
+export async function insert(env, table, obj) {
+  const keys = Object.keys(obj);
+  const sql = `INSERT INTO ${table} (${keys.join(',')}) VALUES (${keys.map(() => '?').join(',')})`;
+  const r = await env.DB.prepare(sql).bind(...keys.map((k) => obj[k])).run();
+  return r.meta.last_row_id;
+}
+
+// ---------------- settings ----------------
+export const SETTING_DEFAULTS = {
+  card_number: '',
+  card_holder: '',
+  card_bank: '',
+  usdt_rate_toman: '0',
+  referral_percent: '10',
+  pg_group_ids: '',
+  support_url: '',
+  min_topup_toman: '50000',
+  announcement: '',
+};
+
+export async function getSettings(env) {
+  const rows = await all(env, 'SELECT key, value FROM settings');
+  const map = { ...SETTING_DEFAULTS };
+  for (const r of rows) map[r.key] = r.value;
+  return map;
+}
+export async function getSetting(env, key) {
+  const row = await first(env, 'SELECT value FROM settings WHERE key = ?', key);
+  return row ? row.value : (SETTING_DEFAULTS[key] ?? '');
+}
+export async function getSettingInt(env, key) {
+  return parseInt(await getSetting(env, key), 10) || 0;
+}
+export async function setSetting(env, key, value) {
+  await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, String(value ?? ''));
+}
+
+export async function touchDevice(env, userId, deviceId, model) {
+  if (!deviceId) return;
+  const dev = await first(env, 'SELECT id FROM devices WHERE user_id = ? AND device_id = ?', userId, deviceId);
+  if (dev) await run(env, 'UPDATE devices SET last_seen = ? WHERE id = ?', nowSec(), dev.id);
+  else await insert(env, 'devices', { user_id: userId, device_id: deviceId, model: model || '', last_seen: nowSec() });
+}

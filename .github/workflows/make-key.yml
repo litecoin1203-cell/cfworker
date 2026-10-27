@@ -1,0 +1,36 @@
+# Run ONCE to create the signing key for the app (no Java needed on your computer).
+# Download the result, keep both files somewhere safe, and copy the .txt content into the secret APP_KEYSTORE_BASE64.
+name: Create signing key (run once)
+
+on:
+  workflow_dispatch:
+    inputs:
+      password:
+        description: "Choose a password for the key (at least 6 characters). Write it down!"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  key:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create key
+        run: |
+          PASS='${{ inputs.password }}'
+          echo "::add-mask::$PASS"
+          if [ ${#PASS} -lt 6 ]; then echo "::error::Password must be at least 6 characters"; exit 1; fi
+          mkdir out
+          keytool -genkeypair -keystore out/cloudgold.jks -storetype PKCS12 -storepass "$PASS" -keypass "$PASS" \
+            -alias cloudgold -keyalg RSA -keysize 2048 -validity 10000 -dname "CN=Cloud Gold VPN"
+          base64 -w0 out/cloudgold.jks > out/APP_KEYSTORE_BASE64.txt
+          echo "Done. Download the 'signing-key' file below."
+
+      - name: Upload key
+        uses: actions/upload-artifact@v4
+        with:
+          name: signing-key
+          path: out/
+          retention-days: 1

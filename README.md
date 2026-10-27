@@ -1,0 +1,128 @@
+# Cloud Gold VPN — نسخه‌ی کامل روی Cloudflare (رایگان، بدون سرور)
+
+کل فروشگاه روی **Cloudflare** اجرا می‌شود و **هیچ VPS‌ای لازم ندارد**. فقط هزینه‌ی یک دامنه در سال.
+
+- **سرور (Cloudflare Worker)** = API فروشگاه؛ **دیتابیس (Cloudflare D1)** = حساب‌ها، سفارش‌ها، کیف پول.
+- **ربات تلگرام روی همان Worker** = مدیریت کامل فروش از داخل تلگرام (تأیید/رد رسید، آمار، تغییر تنظیمات).
+- **اپ اندروید** روی هسته‌ی کامل v2rayNG 2.2.6 که با API نمایندگی تو یوزر می‌سازد.
+- ثبت‌نام، خرید پلن، کارت‌به‌کارت، کیف پول، تست رایگان، دعوت دوستان — همه داخل اپ.
+
+```
+cfworker/
+├── worker/     سرور Cloudflare (کد + دیتابیس + ربات تلگرام) — ۵۳ تست خودکار دارد
+├── app-web/    ظاهر اپ
+├── android/    سورس v2rayNG 2.2.6 + پل Cloud Gold
+└── .github/workflows/
+      ├── deploy-worker.yml   بالا بردن سرور روی Cloudflare
+      ├── make-key.yml        ساخت کلید امضا (یک بار)
+      └── android.yml         ساخت APK
+```
+
+> نسخه‌ی ساده‌تر (فقط اپ، بدون سرور و بدون فروشگاه) هم قبلاً برایت ساخته شد. این نسخه فروشگاه کامل دارد ولی راه‌اندازی‌اش چند قدم بیشتر است.
+
+---
+
+## چه چیزهایی لازم داری
+1. یک حساب **Cloudflare** (رایگان) — `dash.cloudflare.com`
+2. یک **دامنه** روی Cloudflare (پیشنهاد جدی؛ در ایران بازتر از آدرس رایگان `workers.dev` است)
+3. یک حساب **GitHub** (رایگان)
+4. یک **ربات تلگرام** (رایگان، از BotFather)
+5. دسترسی **API نمایندگی** پنل PasarGuard (همین که الان داری)
+
+---
+
+## قدم ۱: ربات تلگرام
+1. در تلگرام به **@BotFather** پیام بده: `/newbot` → یک اسم و یوزرنیم بده.
+2. **توکن** رباتی که می‌دهد را یادداشت کن (`TELEGRAM_BOT_TOKEN`).
+3. یک **رمز وبهوک** دلخواه برای خودت بساز، مثل یک کلمه‌ی تصادفی (`TELEGRAM_WEBHOOK_SECRET`). این را جایی یادداشت کن.
+4. چت آیدی‌ات را بعداً (قدم ۵) می‌گیری.
+
+## قدم ۲: دامنه روی Cloudflare
+1. در Cloudflare روی **Add a site** بزن و دامنه‌ات را اضافه کن.
+2. Cloudflare دو تا **Nameserver** می‌دهد؛ آن‌ها را در پنل جایی که دامنه را خریدی ثبت کن.
+3. چند دقیقه تا چند ساعت طول می‌کشد تا فعال شود.
+4. آدرس سرورت این خواهد بود: `https://api.yourdomain.com` (به‌جای yourdomain دامنه‌ی خودت).
+
+## قدم ۳: توکن API کلودفلر
+1. در Cloudflare برو به **My Profile → API Tokens → Create Token**.
+2. قالب **Edit Cloudflare Workers** را انتخاب کن و بساز. این `CLOUDFLARE_API_TOKEN` است.
+3. در صفحه‌ی اصلی داشبورد، سمت راست، **Account ID** را کپی کن (`CLOUDFLARE_ACCOUNT_ID`).
+
+## قدم ۴: پروژه روی GitHub
+1. **GitHub Desktop** را از `desktop.github.com` نصب کن و وارد شو.
+2. فایل zip را Extract کن (پوشه‌ی `cfworker`).
+3. در GitHub Desktop: **File → Add local repository** → پوشه‌ی `cfworker` → **create a repository** → Commit → **Publish repository** (تیک **Keep this code private** روشن).
+
+## قدم ۵: ثبت تنظیمات در GitHub
+در ریپو برو به **Settings → Secrets and variables → Actions** و در تب **Secrets** این‌ها را بساز (هر کدام با New repository secret):
+
+| Secret | مقدار |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | توکن قدم ۳ |
+| `CLOUDFLARE_ACCOUNT_ID` | Account ID قدم ۳ |
+| `SECRET_KEY` | یک رشته‌ی تصادفی بلند. (مثلاً در گوگل «random password 48» بزن) |
+| `PUBLIC_BASE_URL` | `https://api.yourdomain.com` |
+| `PASARGUARD_URL` | آدرس پنل، مثل `https://panel.example.com:8000` |
+| `PASARGUARD_USERNAME` | یوزر نمایندگی |
+| `PASARGUARD_PASSWORD` | رمز نمایندگی |
+| `PASARGUARD_USERNAME_PREFIX` | مثلاً `cg` |
+| `TELEGRAM_BOT_TOKEN` | توکن ربات قدم ۱ |
+| `TELEGRAM_WEBHOOK_SECRET` | رمز وبهوک قدم ۱ |
+
+اختیاری (اگر API key داری به‌جای یوزر/رمز نمایندگی): `PASARGUARD_API_KEY`.
+اختیاری (کریپتو): `NOWPAYMENTS_API_KEY`، `NOWPAYMENTS_IPN_SECRET`.
+
+> `TELEGRAM_CHAT_ID` را هنوز نگذار؛ در قدم ۷ می‌گیریم.
+
+## قدم ۶: بالا بردن سرور
+1. در ریپو برو به تب **Actions** (اگر غیرفعال بود، فعالش کن).
+2. از چپ **Deploy Cloud Gold server** را انتخاب کن و **Run workflow** را بزن.
+3. حدود ۲ تا ۳ دقیقه صبر کن تا تیک سبز بخورد. این کار دیتابیس را می‌سازد، رمزها را روی Cloudflare می‌گذارد، سرور را بالا می‌برد و ربات تلگرام را وصل می‌کند.
+4. **اتصال دامنه به سرور:** در Cloudflare برو به **Workers & Pages → cloudgold → Settings → Domains & Routes → Add → Custom domain** و `api.yourdomain.com` را وارد کن. چند دقیقه بعد `https://api.yourdomain.com/health` باید `{"ok":true}` بدهد.
+   - اگر فعلاً دامنه نداری، در همان صفحه آدرس `workers.dev` را روشن کن و آن آدرس را به‌جای `api.yourdomain.com` همه‌جا استفاده کن (ولی ممکن است در ایران باز نشود).
+
+## قدم ۷: وصل کردن ربات و تنظیم فروشگاه
+1. ربات تلگرامت را باز کن و `/id` بفرست. عددی که می‌دهد **چت آیدی** توست.
+2. در GitHub یک Secret جدید بساز: `TELEGRAM_CHAT_ID` با همان عدد. بعد یک بار دیگر **Deploy Cloud Gold server** را اجرا کن تا اعمال شود.
+3. حالا در ربات این دستورها را بفرست تا فروشگاه را تنظیم کنی:
+   ```
+   /set card_number 6037xxxxxxxxxxxx
+   /set card_holder نام صاحب کارت
+   /set card_bank ملی
+   /set support_url https://t.me/your_id
+   /set usdt_rate_toman 70000
+   /set pg_group_ids 1
+   ```
+   - `pg_group_ids`: شماره‌ی گروه فروش در PasarGuard (اگر چند تا: `1,3`).
+   - `/help` همه‌ی دستورها را نشان می‌دهد؛ `/plans` پلن‌ها، `/stats` آمار فروش.
+4. **تأیید رسید:** وقتی مشتری کارت‌به‌کارت کند و رسید بفرستد، عکس رسید با دو دکمه‌ی **✅ Approve** و **❌ Reject** برایت در تلگرام می‌آید. با یک لمس تأیید یا رد کن.
+
+## قدم ۸: ساخت APK
+1. در تب **Actions**، **Create signing key (run once)** را اجرا کن، یک رمز بده (یادداشت کن)، فایل `signing-key` را دانلود کن.
+2. در **Settings → Secrets** این چهارتا را بساز: `APP_KEYSTORE_BASE64` (محتوای فایل txt داخل signing-key)، `APP_KEYSTORE_PASSWORD`، `APP_KEY_PASSWORD` (همان رمز)، `APP_KEYSTORE_ALIAS` = `cloudgold`.
+3. در **Settings → Variables** یک Variable بساز: `CG_API_BASE` با مقدار آدرس سرورت. می‌توانی چند آدرس را با کاما بگذاری تا اگر یکی فیلتر شد اپ سراغ بعدی برود:
+   ```
+   https://api.yourdomain.com
+   ```
+4. در **Actions** → **Build Cloud Gold APK** → Run workflow. حدود ۲۰ دقیقه بعد فایل `CloudGold-1.0.0` را دانلود کن (`...universal.apk` روی همه‌ی گوشی‌ها نصب می‌شود).
+
+## قدم ۹: تست
+1. APK را روی گوشی نصب کن.
+2. ثبت‌نام کن (ایمیل + رمز، بدون کد تأیید).
+3. **Start Free Trial** را بزن یا در ربات `/grant ایمیل شماره‌پلن` بفرست.
+4. دکمه‌ی پاور را بزن و درخواست VPN را قبول کن → باید **Connected** شود.
+5. یک خرید کارت‌به‌کارت آزمایشی کن و از تلگرام تأییدش کن.
+
+---
+
+## نکته‌های مهم
+- **دسترسی از ایران:** مشتری قبل از خرید فیلترشکن ندارد، پس سرور باید بدون فیلترشکن باز شود. Cloudflare معمولاً در ایران در دسترس است، مخصوصاً با دامنه‌ی خودت. اپ چند آدرس را امتحان می‌کند (`CG_API_BASE` با کاما) و اگر کاربر VPN وصل داشته باشد از همان مسیر هم تلاش می‌کند. اگر خواستی مطمئن‌تر شود، می‌توانیم بعداً یک «تونل راه‌انداز» (کانفیگ مخفی داخل اپ فقط برای ارتباط خود اپ) اضافه کنیم؛ آن بخش باید روی گوشی واقعی تست شود.
+- **امنیت رمزها:** رمز کاربرها با یک «فلفل» مخفی (SECRET_KEY) ترکیب و بعد هش می‌شود. حتی اگر یک نفر به دیتابیس برسد، بدون SECRET_KEY نمی‌تواند رمزها را باز کند. پس `SECRET_KEY` را عوض نکن و جایی لو نده.
+- **بازیابی رمز:** چون ایمیل تأیید نداریم، اگر مشتری رمزش را فراموش کرد، در ربات `/reset ایمیل رمزجدید` بزن.
+- **پشتیبان‌گیری:** داده‌ها در دیتابیس D1 کلودفلر است. برای گرفتن پشتیبان: در Cloudflare → Workers & Pages → D1 → cloudgold → Export، یا با دستور `wrangler d1 export`.
+- **محدودیت‌های رایگان Cloudflare:** ۱۰۰٬۰۰۰ درخواست در روز و ۵ گیگ دیتابیس — برای چند هزار مشتری کافی است.
+- **پرچم کشورها:** اگر اسم سرورها در پنل با ایموجی پرچم شروع شود (`🇳🇱 Netherlands`)، اپ کشور را روی کره نشان می‌دهد.
+- **مجوز v2rayNG (GPL-3.0):** اگر اپ را پخش می‌کنی، باید سورس پوشه‌ی `android` را هم در دسترس بگذاری.
+- **دیدن فروشگاه روی کامپیوتر (اختیاری):** در پوشه‌ی `worker` دستور `node --experimental-sqlite test/dev_server.mjs` را بزن و `http://127.0.0.1:8787/` را باز کن. تست‌های خودکار سرور: در همان پوشه `node --experimental-sqlite test/run.mjs`.
+
+راه‌اندازی این نسخه چند قدم دارد. از قدم ۱ شروع کن و هر جا گیر کردی یا خطا دیدی، عکس صفحه یا متن خطا را بفرست تا با هم حلش کنیم.

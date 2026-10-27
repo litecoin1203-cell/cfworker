@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>Cloud Gold VPN</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<div id="app"></div>
+<script src="land.js"></script>
+<script src="netglobe.js"></script>
+<script src="geo.js"></script>
+<script>if(!window.CGHost)document.write('<scr'+'ipt src="mock.js"></scr'+'ipt>');</script>
+<script src="core.js"></script>
+<script src="home.js"></script>
+<script src="screens.js"></script>
+<script>
+(function () {
+  var CG = window.CG;
+  // deep links forwarded by the app: cloudgold://payment?order=12, cloudgold://ref/CODE
+  window.__cgDeepLink = function (url) {
+    var m = /payment\?order=(\d+)/.exec(url);
+    if (m && CG.S.me) { CG.go('order', { id: +m[1] }); return; }
+    var r = /ref\/([A-Za-z0-9]{4,16})/.exec(url);
+    if (r) { try { localStorage.setItem('cg_ref', r[1].toUpperCase()); } catch (e) {} }
+  };
+  CG.call('vpnState', {}).then(function (v) {
+    CG.S.vpn.running = !!(v && v.running);
+    if (CG.S.vpn.running) {
+      var since = 0;
+      try { since = +localStorage.getItem('cg_since') || 0; } catch (e) {}
+      CG.S.vpn.since = since || Date.now();
+    }
+  }).catch(function () {});
+  var start = (location.hash || '').slice(1);
+  CG.reset(CG.screens[start] ? start : 'splash', start === 'auth' ? { mode: 'login' } : start === 'onboarding' ? { step: 0 } : {});
+})();
+</script>
+</body>
+</html>

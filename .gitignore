@@ -1,0 +1,5 @@
+node_modules/
+worker/.wrangler/
+*.jks
+*.log
+__pycache__/

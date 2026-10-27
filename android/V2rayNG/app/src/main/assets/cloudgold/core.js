@@ -1,0 +1,240 @@
+/* Cloud Gold app shell: native bridge, state, router and helpers. Classic script (no modules). */
+(function () {
+  'use strict';
+
+  // ---------------- helpers ----------------
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const toman = (n) => Number(n || 0).toLocaleString('en-US');
+  const $ = (sel, root) => (root || document).querySelector(sel);
+  const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const FLAG_RE = /[\u{1F1E6}-\u{1F1FF}]{2}/u;
+
+  function ccToFlag(cc) {
+    if (!cc || cc.length !== 2) return '🌐';
+    return String.fromCodePoint(...cc.toUpperCase().split('').map((c) => 0x1f1e6 + c.charCodeAt(0) - 65));
+  }
+  function parseRemark(remark) {
+    const m = (remark || '').match(FLAG_RE);
+    let cc = '';
+    if (m) cc = Array.from(m[0]).map((ch) => String.fromCharCode(ch.codePointAt(0) - 0x1f1e6 + 65)).join('');
+    const name = (remark || '').replace(FLAG_RE, '').replace(/^[\s\-|·]+|[\s\-|·]+$/g, '') || 'Server';
+    return { cc, name };
+  }
+  function flag(cc, size) {
+    return `<span class="flag" style="width:${size}px;height:${size}px"><i style="font-size:${Math.round(size * 0.62)}px">${ccToFlag(cc)}</i></span>`;
+  }
+  function bytes(n) {
+    n = Number(n || 0);
+    if (n >= 1024 ** 3) return (n / 1024 ** 3).toFixed(1) + ' GB';
+    if (n >= 1024 ** 2) return (n / 1024 ** 2).toFixed(0) + ' MB';
+    return Math.round(n / 1024) + ' KB';
+  }
+
+  // ---------------- bridge ----------------
+  let seq = 0;
+  const pending = {};
+  const listeners = {};
+  window.__cgResolve = function (id, ok, payload) {
+    const p = pending[id];
+    delete pending[id];
+    if (!p) return;
+    let v = null;
+    try { v = payload ? JSON.parse(payload) : null; } catch (e) { v = payload; }
+    ok ? p.res(v) : p.rej(v || { message: 'Something went wrong' });
+  };
+  window.__cgEvent = function (name, payload) {
+    let v = null;
+    try { v = payload ? JSON.parse(payload) : null; } catch (e) { v = payload; }
+    (listeners[name] || []).slice().forEach((fn) => fn(v));
+  };
+  const on = (name, fn) => { (listeners[name] = listeners[name] || []).push(fn); return () => { listeners[name] = listeners[name].filter((f) => f !== fn); }; };
+
+  const host = window.CGHost || window.CGMockHost;
+  function call(method, args) {
+    return new Promise((res, rej) => {
+      const id = ++seq;
+      pending[id] = { res, rej };
+      host.call(id, method, JSON.stringify(args || {}));
+    });
+  }
+
+  class ApiError extends Error {
+    constructor(status, detail) {
+      super((detail && detail.message) || 'Something went wrong');
+      this.status = status;
+      this.code = (detail && detail.code) || 'error';
+      this.detail = detail;
+    }
+  }
+  async function api(method, path, body) {
+    let r;
+    try {
+      r = await call('api', { method, path, body: body == null ? null : body });
+    } catch (e) {
+      throw new ApiError(0, { code: 'network', message: 'No connection to the server. Check your internet and try again.' });
+    }
+    if (r.status === 0) throw new ApiError(0, { code: 'network', message: 'No connection to the server. Check your internet and try again.' });
+    if (r.status >= 400) {
+      const d = r.data && r.data.detail;
+      const detail = typeof d === 'object' && d ? d : { code: 'error', message: typeof d === 'string' ? d : 'Something went wrong' };
+      if (r.status === 401 && ['token_invalid', 'token_expired', 'not_authenticated'].includes(detail.code)) {
+        await call('logout', {});
+        go('auth', { mode: 'login' });
+      }
+      throw new ApiError(r.status, detail);
+    }
+    return r.data;
+  }
+
+  // ---------------- state ----------------
+  const S = {
+    me: null, plans: null, config: null,
+    servers: [], selected: null,
+    vpn: { running: false, busy: null, since: 0 },
+    ping: null, traffic: { up: 0, down: 0 },
+  };
+
+  async function loadMe() { S.me = await api('GET', '/me'); return S.me; }
+  async function loadConfig() { if (!S.config) S.config = await api('GET', '/app-config'); return S.config; }
+
+  function decorate(list) {
+    S.serverPings = S.serverPings || {};
+    (list || []).forEach((s) => { if (s.delay) S.serverPings[s.guid] = s.delay; });
+    return (list || []).map((s) => Object.assign({}, s, parseRemark(s.remarks)));
+  }
+  async function syncVpn() {
+    let r;
+    try { r = await call('vpnSync', {}); } catch (e) { S.syncError = e; throw e; }
+    S.syncError = null;
+    S.servers = decorate(r.servers);
+    S.selected = r.selected || (S.servers[0] && S.servers[0].guid) || null;
+    return r;
+  }
+  async function refreshServers() {
+    const r = await call('vpnServers', {});
+    S.servers = decorate(r.servers);
+    S.selected = r.selected || (S.servers[0] && S.servers[0].guid) || null;
+  }
+  const selectedServer = () => S.servers.find((s) => s.guid === S.selected) || S.servers[0] || null;
+  const hasActivePlan = () => !!(S.me && S.me.subscription && S.me.subscription.active);
+
+  // VPN events from the native core
+  on('vpn', (v) => {
+    const was = S.vpn.running;
+    S.vpn.running = !!(v && v.running);
+    if (S.vpn.running && !was) { S.vpn.since = Date.now(); try { localStorage.setItem('cg_since', String(S.vpn.since)); } catch (e) {} }
+    if (!S.vpn.running) S.vpn.since = 0;
+    // while switching servers the core stops before it starts again; keep showing "Connecting..."
+    if (S.vpn.running || S.vpn.busy !== 'connecting') S.vpn.busy = null;
+  });
+  on('vpnError', (v) => { S.vpn.busy = null; toast((v && v.message) || 'Could not connect', true); });
+  on('ping', (v) => { S.ping = v && v.ms ? v.ms : null; });
+
+  // ---------------- ui helpers ----------------
+  let toastTimer = null;
+  function toast(msg, bad) {
+    const old = $('.toast');
+    if (old) old.remove();
+    const el = document.createElement('div');
+    el.className = 'toast' + (bad ? ' bad' : '');
+    el.setAttribute('role', 'status');
+    el.textContent = msg;
+    ($('.stage') || document.body).appendChild(el);
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.remove(), 3600);
+  }
+  function busyButton(btn, busy, dark) {
+    if (!btn) return;
+    if (busy) {
+      btn.dataset.label = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = `<span class="spinner${dark ? ' light' : ''}"></span>`;
+    } else {
+      btn.disabled = false;
+      if (btn.dataset.label) btn.innerHTML = btn.dataset.label;
+    }
+  }
+  function sheet(html, onMount) {
+    const scr = $('.stage');
+    const wrap = document.createElement('div');
+    wrap.innerHTML = `<div class="sheet-scrim"></div><div class="sheet" role="dialog" aria-modal="true"><div class="grab"></div>${html}</div>`;
+    const close = () => wrap.remove();
+    wrap.querySelector('.sheet-scrim').onclick = close;
+    scr.appendChild(wrap);
+    if (onMount) onMount(wrap.querySelector('.sheet'), close);
+    return close;
+  }
+
+  // ---------------- router ----------------
+  const screens = {};
+  let current = null;
+  let cleanup = null;
+  const stack = [];
+
+  // Every screen is laid out in 390-wide design units inside .stage, then scaled to the phone width.
+  // fit:'both' screens (no text inputs) also shrink to fit short phones; the stage height grows with tall ones.
+  function layout() {
+    if (!current) return;
+    const def = screens[current.name];
+    const W = window.innerWidth || 390, H = window.innerHeight || 844;
+    // width always fills the phone; screens that are positioned absolutely adapt to the leftover height themselves
+    const k = Math.max(0.6, Math.min(W / 390, 1.6));
+    S.k = k; S.sh = H / k;
+    const scr = $('.screen');
+    if (scr) { scr.style.setProperty('--k', k); scr.style.setProperty('--sh', S.sh + 'px'); scr.style.setProperty('--c', Math.max(0, 844 - S.sh) + 'px'); }
+    if (def.resize) def.resize(S.sh, k);
+  }
+  window.addEventListener('resize', layout);
+
+  function render(name, params, push) {
+    if (cleanup) { try { cleanup(); } catch (e) {} cleanup = null; }
+    const def = screens[name];
+    if (!def) throw new Error('Unknown screen ' + name);
+    const app = $('#app');
+    current = { name, params: params || {} };
+    app.innerHTML = `<div class="screen" data-screen="${name}" style="background:${def.bg || 'var(--bg)'}"><div class="stage">${def.html(current.params)}</div></div>`;
+    layout();
+    const root = $('.stage', app);
+    if (push !== false && name !== stack[stack.length - 1]) stack.push(name);
+    if (stack.length > 12) stack.splice(0, stack.length - 12);
+    const c = def.mount ? def.mount(root, current.params) : null;
+    if (typeof c === 'function') cleanup = c;
+  }
+  function go(name, params) { render(name, params, true); }
+  // replace the whole history, e.g. after login or after a purchase lands on home
+  function reset(name, params) { stack.length = 0; render(name, params, true); }
+  function back(fallback) {
+    stack.pop();
+    const prev = stack.pop();
+    go(prev || fallback || 'home');
+  }
+  // Android back button
+  window.__cgBack = function () {
+    const scrim = $('.sheet-scrim');
+    if (scrim) { scrim.click(); return true; }
+    const drawer = $('.drawer-scrim');
+    if (drawer && drawer.style.pointerEvents === 'auto') { drawer.click(); return true; }
+    if (!current || ['home', 'onboarding', 'splash'].includes(current.name) || stack.length <= 1) return false;
+    back();
+    return true;
+  };
+
+  // ---------------- icons ----------------
+  const I = {
+    close: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M1.5 1.5l13 13M14.5 1.5l-13 13"/></svg>',
+    back: '<svg aria-hidden="true" width="20" height="16" viewBox="0 0 20 16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 8H1.5M8 1.5L1.5 8 8 14.5"/></svg>',
+    chevL: '<svg aria-hidden="true" width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 1.5L1.8 9 9 16.5"/></svg>',
+    check: '<svg aria-hidden="true" width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.4l3 3 6-6.6"/></svg>',
+    gem: '<svg aria-hidden="true" width="18" height="16" viewBox="0 0 18 16"><defs><linearGradient id="cgGem" x1="0" y1="0" x2="18" y2="16" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#8FE3FF"/><stop offset=".5" stop-color="#5E8BFF"/><stop offset="1" stop-color="#B26BFF"/></linearGradient></defs><path d="M4.2.8h9.6l3.4 4.6L9 15.2.8 5.4z" fill="url(#cgGem)"/><path d="M.8 5.4h16.4M4.2.8l2.2 4.6L9 15.2l2.6-9.8L13.8.8M6.4 5.4L9 .8l2.6 4.6" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width=".7" stroke-linejoin="round"/></svg>',
+    globe: '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.3"><circle cx="8" cy="8" r="6.6"/><path d="M1.4 8h13.2M8 1.4c2 2 2.8 4.2 2.8 6.6S10 12.6 8 14.6C6 12.6 5.2 10.4 5.2 8S6 3.4 8 1.4z"/></svg>',
+    wallet: '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M3 7h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 7l12-3v3"/><circle cx="16.5" cy="13.5" r="1.3" fill="#fff"/></svg>',
+    card: '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19M6 15h4"/></svg>',
+    crypto: '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 7.5h4a2.2 2.2 0 0 1 0 4.4h-4zM9.5 11.9h4.6a2.3 2.3 0 0 1 0 4.6H9.5zM9.5 7.5v9M11 6v1.5M13 6v1.5M11 16.5V18M13 16.5V18"/></svg>',
+    copy: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+  };
+
+  window.CG = { esc, toman, $, $$, sleep, flag, ccToFlag, parseRemark, bytes, call, api, ApiError, on, S, loadMe, loadConfig,
+    syncVpn, refreshServers, selectedServer, hasActivePlan, toast, busyButton, sheet, screens, go, reset, back, layout, I,
+    get current() { return current; } };
+})();

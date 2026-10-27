@@ -1,0 +1,91 @@
+# Deploys the Cloud Gold store to Cloudflare Workers + D1, then points the Telegram bot at it.
+# Run from GitHub: Actions -> "Deploy Cloud Gold server" -> Run workflow.
+name: Deploy Cloud Gold server
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      WRANGLER: npx --yes wrangler@4
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Check required secrets
+        run: |
+          miss=""
+          for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
+            [ -z "${!v}" ] && miss="$miss $v"
+          done
+          if [ -n "$miss" ]; then echo "::error::Missing GitHub secrets:$miss"; exit 1; fi
+          if [ -z "${{ secrets.SECRET_KEY }}" ]; then echo "::error::Set the SECRET_KEY secret"; exit 1; fi
+          if [ -z "${{ secrets.PUBLIC_BASE_URL }}" ]; then echo "::error::Set the PUBLIC_BASE_URL secret (your Worker address)"; exit 1; fi
+
+      - name: Create / find the D1 database
+        run: |
+          DB_ID=$($WRANGLER d1 list --json 2>/dev/null | jq -r '.[] | select(.name=="cloudgold") | .uuid' | head -1)
+          if [ -z "$DB_ID" ] || [ "$DB_ID" = "null" ]; then
+            echo "Creating database 'cloudgold'..."
+            $WRANGLER d1 create cloudgold || true
+            DB_ID=$($WRANGLER d1 list --json | jq -r '.[] | select(.name=="cloudgold") | .uuid' | head -1)
+          fi
+          if [ -z "$DB_ID" ] || [ "$DB_ID" = "null" ]; then echo "::error::Could not create or find the D1 database"; exit 1; fi
+          echo "Database id: $DB_ID"
+          sed -i "s/PLACEHOLDER_FILLED_BY_DEPLOY/$DB_ID/" wrangler.jsonc
+
+      - name: Apply database migrations
+        run: $WRANGLER d1 migrations apply cloudgold --remote
+
+      - name: Upload secrets
+        env:
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
+          PASARGUARD_URL: ${{ secrets.PASARGUARD_URL }}
+          PASARGUARD_USERNAME: ${{ secrets.PASARGUARD_USERNAME }}
+          PASARGUARD_PASSWORD: ${{ secrets.PASARGUARD_PASSWORD }}
+          PASARGUARD_API_KEY: ${{ secrets.PASARGUARD_API_KEY }}
+          PASARGUARD_USERNAME_PREFIX: ${{ secrets.PASARGUARD_USERNAME_PREFIX }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+          NOWPAYMENTS_API_KEY: ${{ secrets.NOWPAYMENTS_API_KEY }}
+          NOWPAYMENTS_IPN_SECRET: ${{ secrets.NOWPAYMENTS_IPN_SECRET }}
+          NOWPAYMENTS_PAY_CURRENCY: ${{ secrets.NOWPAYMENTS_PAY_CURRENCY }}
+        run: |
+          put() {
+            local name="$1"; local val="${!1}"
+            if [ -n "$val" ]; then printf '%s' "$val" | $WRANGLER secret put "$name" >/dev/null && echo "set $name"; fi
+          }
+          for n in SECRET_KEY PUBLIC_BASE_URL PASARGUARD_URL PASARGUARD_USERNAME PASARGUARD_PASSWORD \
+                   PASARGUARD_API_KEY PASARGUARD_USERNAME_PREFIX TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID \
+                   TELEGRAM_WEBHOOK_SECRET NOWPAYMENTS_API_KEY NOWPAYMENTS_IPN_SECRET NOWPAYMENTS_PAY_CURRENCY; do
+            put "$n"
+          done
+
+      - name: Deploy the Worker
+        run: $WRANGLER deploy
+
+      - name: Point the Telegram bot at the Worker
+        if: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          BASE: ${{ secrets.PUBLIC_BASE_URL }}
+          HOOK: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
+        run: |
+          HOOK="${HOOK:-webhook}"
+          curl -s "https://api.telegram.org/bot$TOKEN/setWebhook?url=${BASE%/}/tg/$HOOK" | jq -c . || true
+          echo "Webhook set to ${BASE%/}/tg/$HOOK"
