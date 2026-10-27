@@ -80,7 +80,6 @@ jobs:
         run: $WRANGLER deploy
 
       - name: Point the Telegram bot at the Worker
-        if: ${{ secrets.TELEGRAM_BOT_TOKEN != '' }}
         env:
           TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           BASE: ${{ secrets.PUBLIC_BASE_URL }}
