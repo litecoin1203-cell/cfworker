@@ -65,8 +65,8 @@
         ${ui.appBar(t('st.title'))}
         <h2 class="section">${esc(t('st.protect'))}</h2>
         <div class="list">
-          <button type="button" class="row" id="st-ks">${ui.ic('lock', 'ri')}<span class="rb"><b>${esc(t('st.ks'))}</b><span>${esc(t('st.ks.sub'))}</span></span><span class="status js-ksv"></span></button>
-          <button type="button" class="row" id="st-aon">${ui.ic('shieldOk', 'ri')}<span class="rb"><b>${esc(t('st.aon'))}</b><span>${esc(t('st.aon.sub'))}</span></span><span class="status js-aonv"></span></button>
+          <button type="button" class="row" id="st-ks">${ui.ic('lock', 'ri')}<span class="rb"><b>${esc(t('st.ks'))}</b><span>${esc(t('st.ks.sub'))}</span><em class="status js-ksv"></em></span>${ui.ic('chevron', 'ri flip-rtl')}</button>
+          <button type="button" class="row" id="st-aon">${ui.ic('shieldOk', 'ri')}<span class="rb"><b>${esc(t('st.aon'))}</b><span>${esc(t('st.aon.sub'))}</span><em class="status js-aonv"></em></span>${ui.ic('chevron', 'ri flip-rtl')}</button>
         </div>
         <p class="t-small c-2 st-why js-polwhy" hidden></p>
         <div class="js-sysnote"></div>

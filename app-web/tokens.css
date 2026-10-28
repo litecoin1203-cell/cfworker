@@ -330,9 +330,14 @@ button.row:active,.row.tap:active{background:rgba(127,127,127,var(--st-pressed))
 
 /* ---- settings ---- */
 .chips.wrap{flex-wrap:wrap;overflow:visible;margin:0;padding-inline:0}
-.row .status{flex-shrink:0;font-size:.8125rem;min-height:1.75rem}
+.row .rb .status{display:inline-flex;font-style:normal;font-size:.8125rem;min-height:1.75rem;margin-top:var(--s-2)}
 .steps{margin:var(--s-3) 0 var(--s-4);padding-inline-start:1.25rem;line-height:1.8;color:var(--c-text)}
 .c-ok{color:var(--c-ok)}.c-bad{color:var(--c-bad)}
 .row[aria-busy="true"] .ri{animation:cgSpin 1s linear infinite}
 .settings .notice{margin-top:var(--s-3)}
 .st-why{margin:var(--s-2) var(--s-1) 0}
+
+/* people who asked Android for less motion get none */
+@media (prefers-reduced-motion:reduce){
+  .screen.flow *,.fsheet,.fsheet *{animation:none!important;transition:none!important}
+}
