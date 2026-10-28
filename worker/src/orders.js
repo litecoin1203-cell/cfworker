@@ -92,17 +92,28 @@ async function attachCoinQuote(env, order, coinId) {
 }
 
 // ---------------- discount codes ----------------
+// how long an unpaid order keeps its discount code reserved (same window as a card payment's SMS match)
+const COUPON_HOLD_SEC = 36 * 3600;
+const OPEN_STATUSES = "'pending','review','settling'";
+
 async function findCoupon(env, user, code, plan) {
   code = String(code || '').trim().toUpperCase();
   if (!code) return null;
   const c = await first(env, 'SELECT * FROM coupons WHERE code = ?', code);
   if (!c || !c.is_active) throw err(400, 'coupon_invalid', 'این کد تخفیف معتبر نیست.', 'coupon');
   if (c.expires_at && c.expires_at < nowSec()) throw err(400, 'coupon_expired', 'مهلت این کد تخفیف تمام شده است.', 'coupon');
-  if (c.max_uses && c.used >= c.max_uses) throw err(400, 'coupon_used_up', 'ظرفیت این کد تخفیف پر شده است.', 'coupon');
   if (c.plan_id && plan && c.plan_id !== plan.id) throw err(400, 'coupon_wrong_plan', 'این کد تخفیف برای این پلن نیست.', 'coupon');
   if (await first(env, 'SELECT 1 FROM coupon_uses WHERE coupon_id = ? AND user_id = ?', c.id, user.id)) {
     throw err(400, 'coupon_used', 'این کد تخفیف را قبلاً استفاده کرده‌ای.', 'coupon');
   }
+  // a use is only recorded when an order is paid, so open orders that carry the code count too: otherwise one
+  // user could open two orders with it and pay both, and a nearly used-up code could be oversold
+  const since = nowSec() - COUPON_HOLD_SEC;
+  const open = await all(env, `SELECT user_id FROM orders WHERE coupon_id = ? AND status IN (${OPEN_STATUSES}) AND created_at > ?`, c.id, since);
+  if (open.some((o) => o.user_id === user.id)) {
+    throw err(400, 'coupon_in_use', 'یک سفارش باز با این کد تخفیف داری. اول آن را پرداخت یا لغو کن.', 'coupon');
+  }
+  if (c.max_uses && c.used + open.length >= c.max_uses) throw err(400, 'coupon_used_up', 'ظرفیت این کد تخفیف پر شده است.', 'coupon');
   return c;
 }
 const discounted = (price, c) => (c ? Math.max(0, Math.round((price * (100 - c.percent)) / 100 / 1000) * 1000) : price);
