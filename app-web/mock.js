@@ -33,14 +33,19 @@
     return r;
   }
   function serverFromLink(link, i) {
-    const name = decodeURIComponent((link.split('#')[1] || 'Server ' + (i + 1)));
+    let name = decodeURIComponent((link.split('#')[1] || 'Server ' + (i + 1)));
+    if (link.startsWith('vmess://')) { try { name = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(link.slice(8)), (c) => c.charCodeAt(0)))).ps || name; } catch (e) {} }
     let host = '';
     try { host = link.split('@')[1].split(/[:?#]/)[0]; } catch (e) {}
-    return { guid: 'g' + i, remarks: name, server: host, port: 443, type: link.split('://')[0] };
+    // like the app: a stable key instead of the address (FNV-1a of type|host|port, see CgVpn.serverKey)
+    const str = `${link.split('://')[0]}|${host}|443`.toLowerCase();
+    let h = 0x811c9dc5;
+    for (let j = 0; j < str.length; j++) { h ^= str.charCodeAt(j); h = Math.imul(h, 0x01000193) >>> 0; }
+    return { guid: 'g' + i, remarks: name, k: 'k' + h.toString(16).padStart(8, '0'), type: link.split('://')[0] };
   }
   const H = {
     async api(a) { return http(a.method, a.path, a.body); },
-    async session() { const s = LS.get('session'); return { loggedIn: !!(s && s.refresh_token), email: s && s.email, version: '1.0.0-web', core: '2.2.6' }; },
+    async session() { const s = LS.get('session'); return { loggedIn: !!(s && s.refresh_token), email: s && s.email, version: '1.0.0-web', core: '2.2.6', fontScale: +(new URLSearchParams(location.search).get('fs') || 1) }; },
     async setSession(a) { LS.set('session', a); return {}; },
     async logout() { LS.set('session', null); LS.set('servers', null); vpn.servers = []; vpn.running = false; emit('vpn', { running: false }); return {}; },
     async device() { return { id: deviceId, model: 'Web preview' }; },
@@ -85,12 +90,29 @@
       if (!vpn.running) throw { message: 'اول به یک سرور وصل شو.' };
       await new Promise((r) => setTimeout(r, 1200));
       const s = vpn.servers.find((x) => x.guid === vpn.selected) || {};
-      const iran = /nl1/.test(s.server || '');   // preview: pretend Google sees the Netherlands node as Iran
+      const iran = /amsterdam/i.test(s.remarks || '');   // preview: pretend Google sees the Netherlands node as Iran
       return { ip: iran ? '185.12.1.9' : '45.128.199.56', cc: iran ? 'NL' : 'DE', google_cc: iran ? 'IR' : 'DE', gemini: !iran, gemini_region: iran ? null : 'DEU', google_blocked: false };
     },
     async setTune(a) { LS.set('iran', !!a.iranDirect); return { iranDirect: !!a.iranDirect }; },
+    // preview: ?policy=on|off decides what "Android" reports while connected
+    async vpnPolicy() {
+      if (!vpn.running) return { known: false, reason: 'not_connected' };
+      const p = new URLSearchParams(location.search).get('policy');
+      if (!p) return { known: false, reason: 'no_answer' };
+      return { known: true, alwaysOn: p === 'on', lockdown: p === 'on' };
+    },
+    async systemBars() { return {}; },
+    // preview: ?autodeny=1 makes the VPN permission dialog say no; ?notif=off starts with notifications off
+    async getAutoStart() { return { on: !!LS.get('boot'), hasServer: true }; },
+    async setAutoStart(a) {
+      if (!a.on) { LS.set('boot', false); return { on: false }; }
+      if (new URLSearchParams(location.search).get('autodeny')) return { on: false, denied: true };
+      LS.set('boot', true); return { on: true };
+    },
+    async notifState() { const v = LS.get('notif'); return { on: v == null ? new URLSearchParams(location.search).get('notif') !== 'off' : !!v, canAsk: true }; },
+    async notifEnable() { if (new URLSearchParams(location.search).get('notif') === 'off') return { on: false, canAsk: true }; LS.set('notif', true); return { on: true, canAsk: true }; },
+    async openNotifSettings() { console.log('[mock] open notification settings'); return { opened: true }; },
     async vpnSystemSettings() { console.log('[mock] open Android VPN settings'); return { opened: true }; },
-    async advanced() { console.log('[mock] open v2rayNG settings'); return {}; },
   };
   window.CGMockHost = {
     call(id, method, argsJson) {

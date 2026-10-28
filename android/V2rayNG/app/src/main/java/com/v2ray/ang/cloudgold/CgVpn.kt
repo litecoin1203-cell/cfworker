@@ -111,26 +111,43 @@ object CgVpn {
         return servers()
     }
 
-    /** Servers currently stored for the Cloud Gold subscription: {servers:[{guid, remarks, server, port, type, delay}], selected} */
+    /**
+     * Servers currently stored for the Cloud Gold subscription: {servers:[{guid, remarks, k, type, delay}], selected}.
+     * The page never gets a server's address or port: `k` is a stable, anonymous key for favorites and the
+     * per-operator statistics.
+     */
     fun servers(): JSONObject {
         val arr = JSONArray()
         val guids = MmkvManager.decodeServerList(SUB_ID)
         guids.forEach { guid ->
             val p = MmkvManager.decodeServerConfig(guid) ?: return@forEach
             val delay = MmkvManager.decodeServerAffiliationInfo(guid)?.testDelayMillis ?: 0L
+            val type = p.configType.name.lowercase()
             arr.put(
                 JSONObject()
                     .put("guid", guid)
                     .put("remarks", p.remarks)
-                    .put("server", p.server ?: "")
-                    .put("port", p.serverPort ?: "")
-                    .put("type", p.configType.name.lowercase())
+                    .put("k", serverKey(type, p.server.orEmpty(), p.serverPort.orEmpty()))
+                    .put("type", type)
                     .put("delay", delay)
             )
         }
         var selected = MmkvManager.getSelectServer()
         if (selected.isNullOrEmpty() || !guids.contains(selected)) selected = guids.firstOrNull()
         return JSONObject().put("servers", arr).put("selected", selected ?: JSONObject.NULL)
+    }
+
+    /**
+     * "k" + FNV-1a (32-bit, over UTF-16 units) of "type|host|port" in lower case, as 8 hex digits. Must stay equal to
+     * the key older app pages computed (app-web core.js serverKey) so saved statistics and favorites keep matching.
+     */
+    fun serverKey(type: String, host: String, port: String): String {
+        var h = 0x811c9dc5.toInt()
+        for (c in "$type|$host|$port".lowercase()) {
+            h = h xor c.code
+            h *= 0x01000193
+        }
+        return "k" + Integer.toHexString(h).padStart(8, '0')
     }
 
     fun select(guid: String): Boolean {

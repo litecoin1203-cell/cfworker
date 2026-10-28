@@ -187,99 +187,7 @@
   CG.planFacts = planFacts;
 
   // ---------------- PREMIUM ----------------
-  screens.premium = {
-    fit: 'both',
-    html: (p) => `
-      <div aria-hidden="true" class="pr-bowl" style="position:absolute;left:0;top:0;width:390px;height:250px;overflow:hidden">
-        <div style="position:absolute;left:-40px;right:-40px;top:-225px;height:420px;border-radius:50%;background:radial-gradient(closest-side,rgba(120,88,30,.14) 0,rgba(190,140,52,.30) 62%,rgba(170,124,44,.2) 70%,rgba(100,72,24,.07) 84%,transparent)"></div>
-        <div class="pb on" style="position:absolute;left:45px;top:-165px;display:block;transform:scale(${300 / 196});transform-origin:0 0;cursor:default">${halo({ icon: false })}</div>
-        <div style="position:absolute;left:0;right:0;bottom:0;height:90px;background:linear-gradient(180deg,rgba(11,10,8,0),#0B0A08)"></div>
-      </div>
-      ${p.from ? `<button type="button" aria-label="بستن" class="js-close" style="position:absolute;right:14px;top:56px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;z-index:5">${I.close}</button>` : ''}
-      <h1 class="title-grad pr-h1" style="position:absolute;right:21px;top:190px;margin:0;font-size:32px;line-height:42px">اشتراک ویژه‌ی Cloud Gold</h1>
-      <ul class="pr-perks" style="position:absolute;right:21px;top:254px;margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:20px">
-        ${['دسترسی آزاد به همه‌ی سایت‌ها و اپ‌ها', 'اتصال هوشمند به سریع‌ترین سرور', 'سرعت بالا و اتصال پایدار'].map((t) => `<li style="display:flex;align-items:center;gap:11px;height:24px"><span aria-hidden="true" style="width:24px;height:24px;border-radius:50%;box-shadow:inset 0 0 0 1px rgba(214,174,92,.55);display:flex;align-items:center;justify-content:center;flex-shrink:0">${I.check.replace('stroke="#F2EADB"', 'stroke="#E8C77A"')}</span><span style="font-size:15px;font-weight:500;line-height:20px;color:#E6DCC8">${t}</span></li>`).join('')}
-      </ul>
-      <div role="radiogroup" aria-label="انتخاب پلن" class="pr-plans" style="position:absolute;left:20px;top:390px;width:350px;display:flex;flex-direction:column;gap:24px">
-        ${[0, 1, 2].map(() => '<div class="skeleton" style="height:70px;border-radius:20px"></div>').join('')}
-      </div>
-      <button type="button" class="pill-btn white pr-cta" style="position:absolute;left:20px;top:calc(var(--sh) - 145px);width:350px;font-size:16px">ادامه</button>
-      <div style="position:absolute;left:0;top:calc(var(--sh) - 83px);width:390px;display:flex;justify-content:center;align-items:center;gap:12px;font-size:11.3px;font-weight:500">
-        <button type="button" class="pr-support" style="color:var(--bullion);padding:4px 0">سؤال داری؟ پیام به پشتیبانی</button>
-        <span aria-hidden="true" style="width:3px;height:3px;border-radius:50%;background:var(--dim)"></span>
-        <button type="button" class="pr-orders" style="color:var(--bullion);padding:4px 0">پرداخت‌های من</button>
-      </div>`,
-    mount(root, p) {
-      const $ = (c) => root.querySelector(c);
-      const c = $('.js-close'); if (c) c.onclick = () => back('home');
-      $('.pr-support').onclick = openSupport;
-      $('.pr-orders').onclick = () => go('orders');
-      let plans = S.plans || [], sel = -1;
-      // the design is 844 tall; on shorter phones pull the header up and tighten the gaps so the CTA never covers a plan
-      function place() {
-        const c = 844 - S.sh, up = c > 0 ? Math.min(c * 0.55, 90) : 0;
-        $('.pr-bowl').style.transform = `translateY(${-up}px)`;
-        $('.pr-h1').style.top = 197 - up + 'px';
-        const perks = $('.pr-perks');
-        perks.style.top = 254 - up + 'px';
-        perks.style.gap = c > 60 ? '12px' : '20px';
-        perks.style.display = c > 175 ? 'none' : 'flex';
-        const pl = $('.pr-plans');
-        pl.style.top = (c > 175 ? 254 - up : 390 - (c > 0 ? Math.min(c * 0.8, 140) : 0)) + 'px';
-        pl.style.gap = c > 60 ? '16px' : '24px';
-      }
-      screens.premium.resize = place;
-      const trialOk = () => S.me && S.me.trial_available;
-      function draw() {
-        if (!plans.length) { $('.pr-plans').innerHTML = '<p style="color:var(--body);text-align:center">فعلاً پلنی برای فروش نیست. کمی بعد دوباره سر بزن.</p>'; return; }
-        if (sel < 0) { sel = plans.findIndex((x) => x.badge); if (sel < 0) sel = 0; }
-        place();
-        $('.pr-plans').innerHTML = plans.slice(0, 4).map((pl, i) => {
-          const onn = i === sel, hasOld = pl.old_price_toman > pl.price_toman, trial = onn && pl.trial_days > 0 && trialOk();
-          const months = Math.max(1, Math.round(pl.duration_days / 30));
-          const right = months > 1 ? `ماهی ${toman(pl.monthly_toman)} ت` : `${toman(pl.price_toman)} تومان`;
-          const h = hasOld ? (trial ? 97 : 71) : trial ? 90 : 70;
-          return `<div style="position:relative">
-            ${pl.badge ? `<div class="badge" style="z-index:2">${esc(pl.badge)}</div>` : ''}
-            <button type="button" role="radio" aria-checked="${onn}" data-i="${i}" class="plan-card${onn ? ' on' : ''}" style="height:${h}px">
-              <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
-                <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
-                  <span style="font-size:${onn ? 17 : 15.5}px;font-weight:${onn ? 700 : 500};line-height:22px;color:${onn ? 'var(--gilt)' : 'var(--ivory)'}">${esc(pl.name)}</span>
-                  ${hasOld ? `<span style="font-size:13.5px;font-weight:500;line-height:18px"><s style="color:var(--dim);font-weight:400">${toman(pl.old_price_toman)}</s>  ${toman(pl.price_toman)} تومان</span>` : `<span style="font-size:12.5px;line-height:18px;color:var(--ash)">${planFacts(pl)}</span>`}
-                </div>
-                <div style="display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0">
-                  <span class="serif" style="font-size:${onn ? 22 : 19}px;font-weight:600;line-height:24px;color:${onn ? 'var(--gilt)' : 'var(--ivory)'}">${right}</span>
-                  ${hasOld ? `<span style="font-size:12px;font-weight:600;line-height:18px;color:var(--jade)">${faNum(pl.save_percent)}٪ تخفیف</span>` : ''}
-                </div>
-              </div>
-              ${trial ? `<div style="margin-top:9px;font-size:14px;font-weight:600;line-height:20px;color:var(--gilt)">${faNum(pl.trial_days)} روز تست رایگان؛ اگر راضی بودی بخر.</div>` : ''}
-            </button></div>`;
-        }).join('');
-        root.querySelectorAll('[data-i]').forEach((b) => { b.onclick = () => { sel = +b.dataset.i; draw(); }; });
-        const pl = plans[sel];
-        $('.pr-cta').textContent = pl && pl.trial_days > 0 && trialOk() ? `شروع ${faNum(pl.trial_days)} روز تست رایگان` : (S.me && S.me.subscription ? 'تمدید با این پلن' : 'خرید این پلن');
-      }
-      draw();
-      Promise.all([api('GET', '/plans'), loadConfig().catch(() => null), S.me ? null : loadMe().catch(() => null)])
-        .then(([pl]) => { S.plans = plans = pl; draw(); }).catch((e) => toast(e.message, true));
-      $('.pr-cta').onclick = async (ev) => {
-        const pl = plans[sel];
-        if (!pl) return;
-        if (!S.me) { go('auth', { mode: 'register' }); return; }
-        if (pl.trial_days > 0 && trialOk()) {
-          const btn = ev.currentTarget;
-          busyButton(btn, true);
-          try {
-            S.me = await api('POST', '/trial', { plan_id: pl.id });
-            try { await syncVpn(); } catch (e) { /* servers load again on home */ }
-            go('success', { title: 'تست رایگان فعال شد', text: `${faNum(pl.trial_days)} روز اشتراک ویژه برایت فعال شد. دکمه‌ی اتصال را بزن.` });
-          } catch (e) { toast(e.message, true); } finally { if (document.body.contains(btn)) busyButton(btn, false); }
-          return;
-        }
-        payFor({ plan: pl });
-      };
-    },
-  };
+  // the plan list is in plans.js
 
   // ---------------- PAYMENT ----------------
   // what: {plan} or {topup: amount}
@@ -366,7 +274,8 @@
     const planName = order.kind === 'plan' ? order.plan_name : order.activate_plan_name;
     if (order.kind === 'plan' || order.plan_activated) {
       try { await syncVpn(); } catch (e) { /* home retries */ }
-      go('success', { title: 'اشتراکت فعال شد', text: `${esc(planName || 'پلن')} فعال است. دکمه‌ی اتصال را بزن و وصل شو.` });
+      // the new status as the server now reports it (plans.js); same account, no new UUID
+      go('success', { title: 'اشتراکت فعال شد', text: `${esc(planName || 'پلن')} فعال است. ${esc(CG.planDoneText ? CG.planDoneText() : '')}` });
     } else if (order.activate_plan_id) {
       go('success', { title: 'کیف پول شارژ شد', text: `${toman(order.amount_toman)} تومان به کیف پولت اضافه شد ولی فعال‌سازی خودکار پلن انجام نشد. از صفحه‌ی خرید، پلن را با کیف پول بخر یا با پشتیبانی تماس بگیر.`, to: 'wallet' });
     } else {
@@ -791,138 +700,17 @@
     },
   };
 
-  // ---------------- CONNECTION SETTINGS (sheet) ----------------
-  CG.connSettings = function (after) {
-    sheet(`<h3>تنظیمات اتصال</h3><p>این تنظیمات برای بهترین کیفیت اتصال از قبل روشن شده‌اند.</p>
-      <div class="panel" style="padding:4px 16px;margin-bottom:14px">
-        <button type="button" class="row-line js-auto" style="width:100%;gap:12px"><span style="flex:1"><b style="font-weight:500">اتصال هوشمند</b><br><span class="muted" style="font-size:12px">سریع‌ترین سرور خودکار انتخاب می‌شود و اگر جواب نداد، سرور بعدی</span></span><span class="switch${S.auto ? ' on' : ''}"></span></button>
-        <button type="button" class="row-line js-gmode" style="width:100%;gap:12px"><span style="flex:1"><b style="font-weight:500"><span class="g-dot" style="display:inline-block;margin-inline-end:6px"></span>حالت گوگل و Gemini</b><br><span class="muted" style="font-size:12px">فقط به سرورهایی وصل شو که گوگل آن‌ها را ایران نمی‌بیند و Gemini روی‌شان باز است</span></span><span class="switch${S.googleMode ? ' on' : ''}"></span></button>
-        <button type="button" class="row-line js-iran" style="width:100%;gap:12px"><span style="flex:1"><b style="font-weight:500">سایت‌های ایرانی بدون VPN</b><br><span class="muted" style="font-size:12px">بانک‌ها و سایت‌های داخلی سریع‌تر باز می‌شوند و از حجم اشتراکت کم نمی‌شود</span></span><span class="switch"></span></button>
-      </div>
-      <button type="button" class="row-line js-kill" style="width:100%;gap:12px;margin:-6px 0 14px;padding:14px 16px;border-radius:18px;background:rgba(226,113,92,.06);border:1px solid rgba(226,113,92,.22)"><span style="flex:1"><b style="font-weight:500">Kill Switch: اینترنت بدون VPN قطع شود</b><br><span class="muted" style="font-size:12px">اگر VPN قطع شد، IP واقعی‌ات لو نرود</span></span><span>‹</span></button>
-      <div class="js-isp muted" style="font-size:12px;text-align:center;margin:-4px 0 6px;line-height:19px"></div>
-      <div class="js-leak" style="font-size:11.5px;text-align:center;margin:0 0 12px;color:#8FCFA4;line-height:18px"></div>
-      ${S.vpn.running ? '<button class="pill-btn gold js-gtest" style="margin-bottom:10px">تست گوگل و Gemini روی همین اتصال</button>' : ''}
-      <button class="pill-btn white" data-sync>به‌روزرسانی لیست سرورها</button><div style="height:10px"></div>
-      <button class="pill-btn dark" data-test>تست سرعت همه‌ی سرورها</button><div style="height:10px"></div>
-      <button class="pill-btn ghost" data-adv>تنظیمات پیشرفته (v2rayNG)</button>`, (el, close) => {
-      const iranSw = el.querySelector('.js-iran .switch');
-      call('getTune', {}).then((t) => {
-        iranSw.classList.toggle('on', !!(t && t.iranDirect));
-        const box = el.querySelector('.js-leak');
-        if (box) box.innerHTML = `🛡 ضد نشت: DNS و WebRTC از داخل تونل · IPv6 ${t && t.ipv6Tunnel ? 'از داخل تونل' : 'مسدود (بدون نشت)'} · QUIC مسدود`;
-      }).catch(() => {});
-      el.querySelector('.js-auto').onclick = () => { CG.setAuto(!S.auto); el.querySelector('.js-auto .switch').classList.toggle('on', S.auto); toast(S.auto ? 'اتصال هوشمند روشن شد' : 'اتصال هوشمند خاموش شد؛ لوکیشن را خودت انتخاب کن'); if (after) after(); };
-      el.querySelector('.js-iran').onclick = async () => {
-        const on_ = !iranSw.classList.contains('on');
-        iranSw.classList.toggle('on', on_);
-        try { await call('setTune', { iranDirect: on_ }); toast(on_ ? 'سایت‌های ایرانی مستقیم باز می‌شوند' : 'همه‌ی ترافیک از VPN عبور می‌کند'); }
-        catch (e) { iranSw.classList.toggle('on', !on_); toast(e.message, true); }
-      };
-      el.querySelector('[data-sync]').onclick = async (ev) => {
-        busyButton(ev.currentTarget, true);
-        try { const r = await syncVpn(); close(); toast(r && r.stale ? 'به سرور دسترسی نبود؛ لیست قبلی حفظ شد.' : `لیست سرورها به‌روز شد (${faNum(S.servers.length)} سرور)`); if (after) after(); }
-        catch (e) { busyButton(ev.currentTarget, false); toast(e.message, true); }
-      };
-      el.querySelector('[data-test]').onclick = () => { close(); toast('در حال تست سرورها...'); CG.testAll(9000).then(() => { toast('تست تمام شد'); if (after) after(); }); };
-      el.querySelector('[data-adv]').onclick = () => { close(); call('advanced', {}); };
-      el.querySelector('.js-kill').onclick = () => { close(); killSwitchGuide(); };
-      el.querySelector('.js-gmode').onclick = () => {
-        CG.setGoogleMode(!S.googleMode);
-        el.querySelector('.js-gmode .switch').classList.toggle('on', S.googleMode);
-        toast(S.googleMode ? 'حالت گوگل روشن شد: اتصال هوشمند فقط سرورهای سالم برای گوگل را انتخاب می‌کند' : 'حالت گوگل خاموش شد');
-        if (after) after();
-      };
-      const gt = el.querySelector('.js-gtest');
-      if (gt) gt.onclick = async () => {
-        busyButton(gt, true);
-        try { const r = await CG.probeGoogle(true); close(); googleResult(r); }
-        catch (e) { busyButton(gt, false); toast(e.message || 'تست انجام نشد.', true); }
-      };
-      if (CG.ispRank) CG.ispRank().then((r) => {
-        const q = CG.quality && S.vpn.running ? CG.quality() : null;
-        const box = el.querySelector('.js-isp');
-        if (box && r && r.asn) box.textContent = `اینترنت شما: ${r.isp}${r.geo ? ' · ' + r.geo : ''}${q ? ` · کیفیت فعلی ${faNum(q.score)} (${q.label})` : ''} · سرورها بر اساس تجربه‌ی کاربران همین اپراتور در همین استان، در ساعت‌های اخیر مرتب می‌شوند`;
-      }).catch(() => {});
-    });
-  };
-
-  // what Google sees through the connected server, in plain words
-  const COUNTRY_FA = (cc) => { try { return new Intl.DisplayNames(['fa'], { type: 'region' }).of(cc); } catch (e) { return cc; } };
-  function googleResult(r) {
-    if (!r || r.error) { toast(r && r.error === 'no_network' ? 'از این سرور به گوگل دسترسی نبود.' : 'تست انجام نشد؛ دوباره امتحان کن.', true); return; }
-    const gcc = r.google_cc, iran = gcc === 'IR';
-    const gem = r.gemini === true || (r.gemini == null && gcc && !['IR', 'CN', 'RU', 'KP', 'SY', 'CU', 'BY', 'HK', 'MO'].includes(gcc));
-    const good = !iran && !r.google_blocked && gem;
-    const row = (k, v, ok) => `<div class="gp-row"><span class="muted">${k}</span><b style="color:${ok === false ? '#EE9A86' : ok ? '#8FCFA4' : '#F2EADB'}">${v}</b></div>`;
-    sheet(`<h3>${good ? '✅ این اتصال برای گوگل و Gemini سالم است' : '⚠️ این اتصال برای گوگل مناسب نیست'}</h3>
-      <p>${good ? 'گوگل تو را در ' + esc(COUNTRY_FA(gcc) || gcc || '?') + ' می‌بیند، نه ایران.' : iran ? 'گوگل IP این سرور را «ایران» می‌شناسد؛ برای همین Gemini و بعضی سرویس‌ها باز نمی‌شوند.' : r.google_blocked ? 'گوگل این IP را مشکوک می‌داند و کپچا نشان می‌دهد.' : 'Gemini روی این سرور در دسترس نیست.'}</p>
-      <div class="panel" style="padding:2px 16px;margin-bottom:14px">
-        ${row('IP خروجی', `<span class="ltr">${esc(r.ip || '?')}</span>`)}
-        ${row('کشور از دید اینترنت', esc(COUNTRY_FA(r.cc) || r.cc || '?'))}
-        ${row('کشور از دید گوگل', esc(COUNTRY_FA(gcc) || gcc || '?'), gcc ? !iran : null)}
-        ${row('Gemini', gem ? 'باز است' : 'بسته است', gem)}
-        ${row('جست‌وجوی گوگل', r.google_blocked ? 'کپچا / مشکوک' : 'عادی', !r.google_blocked)}
-      </div>
-      ${good ? '' : '<button class="pill-btn white" data-gclean>وصل شدن به یک سرور سالم برای گوگل</button><div style="height:10px"></div>'}
-      <button class="pill-btn dark" data-no>بستن</button>`, (el, close) => {
-      el.querySelector('[data-no]').onclick = close;
-      const pk = el.querySelector('[data-gclean]');
-      if (pk) pk.onclick = () => { close(); CG.setGoogleMode(true); CG.setAuto(true); CG.connect(); };
-    });
-  }
-  CG.googleResult = googleResult;
-
-  // Android's own always-on VPN + "block connections without VPN" is the strongest kill switch there is
-  function killSwitchGuide() {
-    sheet(`<h3>Kill Switch</h3><p>با این دو گزینه‌ی خود اندروید، اگر VPN به هر دلیلی قطع شود، اینترنت گوشی هم قطع می‌شود تا IP واقعی‌ات لو نرود. VPN هم بعد از ری‌استارت گوشی خودکار وصل می‌شود.</p>
-      <ol class="ks-steps">
-        <li>دکمه‌ی زیر را بزن تا صفحه‌ی <b>VPN</b> اندروید باز شود.</li>
-        <li>کنار <b>Cloud Gold</b> روی آیکن چرخ‌دنده ⚙️ بزن.</li>
-        <li><b>VPN همیشه روشن</b> (Always-on VPN) را روشن کن.</li>
-        <li><b>مسدود کردن اتصال‌های بدون VPN</b> (Block connections without VPN) را روشن کن.</li>
-      </ol>
-      <button class="pill-btn white" data-open>باز کردن تنظیمات VPN اندروید</button><div style="height:10px"></div><button class="pill-btn dark" data-no>بعداً</button>`, (el, close) => {
-      el.querySelector('[data-no]').onclick = close;
-      el.querySelector('[data-open]').onclick = async () => {
-        close();
-        try { const r = await call('vpnSystemSettings', {}); if (r && r.opened === false) toast('تنظیمات VPN باز نشد؛ از تنظیمات گوشی ← شبکه ← VPN برو.', true); }
-        catch (e) { toast('این قابلیت در نسخه‌ی جدید اپ فعال می‌شود.', true); }
-      };
-    });
-  }
-  CG.killSwitchGuide = killSwitchGuide;
+  // ---------------- CONNECTION SETTINGS ----------------
+  // these used to be sheets; they all live on the settings tab now (settings.js)
+  CG.connSettings = () => CG.tab('settings');
+  CG.killSwitchGuide = () => CG.tab('settings', { ks: true });
 
   // ---------------- ACCOUNT / MY SUBSCRIPTION ----------------
-  const fmtBytes = CG.bytes;
-  const STATUS_FA = { active: 'فعال', expired: 'تمام شده', limited: 'حجم تمام شده', disabled: 'غیرفعال', on_hold: 'در انتظار شروع', missing: 'پیدا نشد', unknown: 'فعال' };
+  // the plan card lives on the usage tab now; here only a short line that leads there, from /me's own fields
   function subCard(sub) {
-    if (!sub) {
-      return `<div style="font-size:12.5px;font-weight:500">اشتراک نداری</div>
-        <div style="font-size:14px;margin-top:10px;color:var(--body);line-height:23px">با یک پلن یا تست رایگان، به همه‌ی سرورها وصل شو.</div>
-        <button type="button" class="pill-btn white js-renew" style="margin-top:22px;height:44px;font-size:14px">دیدن پلن‌ها</button>`;
-    }
-    const u = CG.usageInfo(sub);
-    const cls = u.level === 2 ? ' bad' : u.level === 1 ? ' warn' : '';
-    const timePct = sub.unlimited_time ? 100 : sub.period_days ? Math.max(2, Math.min(100, Math.round((100 * (sub.seconds_left || 0)) / (sub.period_days * 86400)))) : 100;
-    const dataPct = sub.unlimited_data ? 100 : sub.data_limit_bytes ? Math.max(2, Math.round((100 * (sub.remaining_bytes || 0)) / sub.data_limit_bytes)) : 100;
-    const hrs = sub.seconds_left != null && sub.days_left <= 1 ? Math.floor(sub.seconds_left / 3600) : null;
-    return `<div style="display:flex;justify-content:space-between;align-items:center"><span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--gilt)">${mark(22)}${esc(sub.plan_name || 'Cloud Gold')}</span>
-        <span style="font-size:12px;padding:3px 10px;border-radius:10px;color:${sub.active ? '#8FCFA4' : '#EE9A86'};background:${sub.active ? 'rgba(143,207,164,.1)' : 'rgba(226,113,92,.1)'}">${STATUS_FA[sub.status] || sub.status}</span></div>
-      <div style="display:flex;align-items:baseline;gap:8px;margin-top:12px"><span class="serif" style="font-size:58px;font-weight:600;line-height:60px;color:var(--ivory)">${sub.unlimited_time ? '∞' : hrs != null && hrs < 24 && sub.active ? faNum(hrs) : faNum(sub.days_left)}</span>
-        <span style="font-size:14px;color:var(--body)">${sub.unlimited_time ? 'زمان نامحدود' : hrs != null && hrs < 24 && sub.active ? 'ساعت مانده' : 'روز مانده'}</span></div>
-      ${sub.expires_at ? `<div style="font-size:12.5px;margin-top:2px;color:var(--ash)">تا ${faDate(sub.expires_at)}</div>` : ''}
-      <div class="meter${cls}"><i style="width:${timePct}%"></i></div>
-      <div style="height:1px;background:linear-gradient(90deg,transparent,rgba(214,174,92,.3),transparent);margin:20px 0"></div>
-      <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--body)"><span>حجم باقی‌مانده</span><span>${sub.unlimited_data ? 'نامحدود' : fmtBytes(sub.remaining_bytes) + ' از ' + fmtBytes(sub.data_limit_bytes)}</span></div>
-      ${sub.unlimited_data ? '' : `<div class="meter${cls}"><i style="width:${dataPct}%"></i></div>`}
-      <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ash);margin-top:12px"><span>مصرف شده</span><span>${fmtBytes(sub.used_bytes)}</span></div>
-      <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ash);margin-top:8px"><span>تعداد دستگاه</span><span>${sub.device_limit ? faNum(sub.device_limit) : 'نامحدود'}</span></div>
-      ${sub.live === false ? '<div style="font-size:11.5px;color:var(--gilt);margin-top:10px">اطلاعات زنده از سرور در دسترس نبود؛ آخرین اطلاعات نمایش داده شده.</div>' : ''}
-      <div style="display:flex;gap:10px;margin-top:20px">
-        <button type="button" class="pill-btn white js-renew" style="height:44px;font-size:14px;flex:2">${sub.active ? 'تمدید یا تغییر پلن' : 'تمدید اشتراک'}</button>
-        <button type="button" class="pill-btn ghost js-refresh" style="height:44px;font-size:14px;flex:1">به‌روزرسانی</button>
-      </div>`;
+    if (!sub) return `<button type="button" class="row-line js-usage" style="width:100%">${esc(CG.t('stop.none'))}<span>‹</span></button>`;
+    const left = sub.unlimited_time ? CG.t('us.no_expiry') : CG.i18n.n(sub.days_left) + ' ' + CG.t('us.days_left');
+    return `<button type="button" class="row-line js-usage" style="width:100%"><span>${esc(sub.plan_name || CG.t('app.name'))} · ${esc(CG.t('us.status.' + (sub.status || 'unknown')))}<br><span class="muted" style="font-size:12px">${esc(left)}</span></span><span>‹</span></button>`;
   }
   screens.account = {
     fit: 'width',
@@ -935,7 +723,7 @@
         ${ann ? `<div class="ann">${esc(ann)}</div>` : ''}
         <div style="position:relative;border-radius:26px;overflow:hidden;background:linear-gradient(155deg,#2A2216 0%,#16130E 38%,#100E0A 100%);box-shadow:inset 0 1px 0 rgba(243,221,160,.25),inset 0 0 0 1px rgba(214,174,92,.28),0 30px 60px -24px rgba(0,0,0,.9)">
           <svg aria-hidden="true" width="260" height="260" viewBox="0 0 260 260" fill="none" stroke="#D6AE5C" style="position:absolute;left:-90px;top:-90px;opacity:.13;pointer-events:none"><circle cx="130" cy="130" r="94" stroke-width="1.2"/><circle cx="130" cy="130" r="124" stroke-width="1"/></svg>
-          <div class="js-card" style="position:relative;padding:22px 22px 22px">${subCard(me.subscription)}</div>
+          <div class="js-card" style="position:relative;padding:6px 18px">${subCard(me.subscription)}</div>
         </div>
         <h2 style="font-size:17px;font-weight:500;margin:28px 0 8px">دستگاه‌ها</h2>
         <div class="panel js-devs" style="padding:4px 18px"><div class="skeleton" style="height:44px;margin:12px 0"></div></div>
@@ -955,13 +743,7 @@
     mount(root) {
       wireBack(root);
       const b = (c, fn) => { const el = root.querySelector(c); if (el) el.onclick = fn; };
-      const bindCard = () => {
-        b('.js-renew', () => go('premium', { from: 'account' }));
-        b('.js-refresh', async (ev) => {
-          const btn = ev.currentTarget; busyButton(btn, true, true);
-          try { await loadMe(); paintCard(); toast('اطلاعات اشتراک به‌روز شد'); } catch (e) { busyButton(btn, false); toast(e.message, true); }
-        });
-      };
+      const bindCard = () => b('.js-usage', () => CG.tab('usage'));
       const paintCard = () => { root.querySelector('.js-card').innerHTML = subCard(S.me && S.me.subscription); bindCard(); };
       bindCard();
       b('.js-orders', () => go('orders'));

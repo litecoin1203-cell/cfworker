@@ -85,6 +85,9 @@ export async function subscriptionOut(env, user, live = true) {
     seconds_left: expires ? Math.max(0, expires - now) : null,
     unlimited_time: !expires, unlimited_data: !dataLimit,
     data_limit_bytes: dataLimit, used_bytes: used, remaining_bytes: dataLimit ? Math.max(0, dataLimit - used) : null,
+    // whole percent of the data used (0-100, rounded down so 100 means really used up); null when data is unlimited.
+    // The app shows its 80/95/100% warnings from this number instead of working it out itself.
+    used_percent: dataLimit ? Math.min(100, Math.floor((used * 100) / dataLimit)) : null,
     device_limit: sub.device_limit, online_at: onlineAt, period_days: sub.period_days || (plan ? plan.duration_days : null),
     sub_url: status === 'missing' ? '' : sub.sub_url,
   };
