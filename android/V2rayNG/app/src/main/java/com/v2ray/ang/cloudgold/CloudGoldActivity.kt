@@ -109,13 +109,13 @@ class CloudGoldActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge(
             statusBarStyle = SystemBarStyle.dark(Color.TRANSPARENT),
-            navigationBarStyle = SystemBarStyle.dark(Color.parseColor("#010315")),
+            navigationBarStyle = SystemBarStyle.dark(Color.parseColor("#0B0A08")),
         )
         super.onCreate(savedInstanceState)
 
-        val root = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#010315")) }
+        val root = FrameLayout(this).apply { setBackgroundColor(Color.parseColor("#0B0A08")) }
         web = WebView(this).apply {
-            setBackgroundColor(Color.parseColor("#010315"))
+            setBackgroundColor(Color.parseColor("#0B0A08"))
             overScrollMode = View.OVER_SCROLL_NEVER
             isVerticalScrollBarEnabled = false
             settings.javaScriptEnabled = true
@@ -298,7 +298,8 @@ class CloudGoldActivity : AppCompatActivity() {
                 MessageUtil.sendMsg2TestService(ctx, TestServiceMessage(key = AppConfig.MSG_MEASURE_CONFIG_START, subscriptionId = CgVpn.SUB_ID))
                 resolve(id, true, JSONObject())
             }
-            "getTune" -> resolve(id, true, JSONObject().put("iranDirect", CgTune.iranDirect()))
+            "getTune" -> resolve(id, true, JSONObject().put("iranDirect", CgTune.iranDirect())
+                .put("ipv6Tunnel", MmkvManager.decodeSettingsBool(AppConfig.PREF_IPV6_ENABLED, false)))
             "setTune" -> {
                 withContext(Dispatchers.IO) { CgTune.setIranDirect(ctx, a.optBoolean("iranDirect", true)) }
                 if (vpnRunning) MessageUtil.sendMsg2Service(ctx, AppConfig.MSG_STATE_RESTART, "")
@@ -331,6 +332,16 @@ class CloudGoldActivity : AppCompatActivity() {
                 val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, a.optString("text"))
                 startActivity(Intent.createChooser(send, getString(R.string.app_name)))
                 resolve(id, true, JSONObject())
+            }
+            "probeGoogle" -> {
+                if (!vpnRunning) throw CgError("not_connected", "اول به یک سرور وصل شو.")
+                resolve(id, true, withContext(Dispatchers.IO) { CgProbe.run() })
+            }
+            "vpnSystemSettings" -> {
+                // Android's own "Always-on VPN" + "Block connections without VPN" = a real kill switch
+                val opened = try { startActivity(Intent(android.provider.Settings.ACTION_VPN_SETTINGS)); true }
+                    catch (_: Exception) { try { startActivity(Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS)); true } catch (_: Exception) { false } }
+                resolve(id, true, JSONObject().put("opened", opened))
             }
             "advanced" -> {
                 startActivity(Intent(ctx, MainActivity::class.java))

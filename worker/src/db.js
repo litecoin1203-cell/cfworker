@@ -24,6 +24,29 @@ export const SETTING_DEFAULTS = {
   min_topup_toman: '50000',
   announcement: '',
   trial_data_gb: '0',
+  // Cloud Gold Pay: dollar price in toman + your own wallet address per coin (empty = coin hidden)
+  usd_rate_toman: '0',
+  coin_minutes: '30',
+  // card-to-card: unique amount per order, and confirmation from the bank's deposit SMS
+  card_unique: '1',
+  card_auto: 'auto',   // auto = activate on a trusted bank SMS, detect = ask the admin, off = receipts only
+  sms_senders: '',
+  sms_key: '',         // secret part of the SMS webhook URL (created by /sms)     // trusted bank SMS senders, comma separated (set from the bot)
+  coin_auto: 'auto',  // auto = activate by itself, detect = flag for one-tap approval, off = manual only
+  wallet_xlm: '',
+  wallet_xlm_memo: '',
+  wallet_xrp: '',
+  wallet_xrp_memo: '',
+  wallet_trx: '',
+  wallet_sol: '',
+  wallet_ton: '',
+  wallet_ton_memo: '',
+  wallet_ltc: '',
+  wallet_doge: '',
+  wallet_bch: '',
+  wallet_bnb: '',
+  wallet_pol: '',
+  wallet_algo: '',
 };
 
 export async function getSettings(env) {

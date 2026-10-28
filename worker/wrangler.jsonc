@@ -5,8 +5,8 @@
   "main": "src/index.js",
   "compatibility_date": "2025-09-01",
   "observability": { "enabled": true },
-  // 20:30 UTC = midnight in Iran: daily report + backup to the admin's Telegram
-  "triggers": { "crons": ["30 20 * * *"] },
+  // every minute: on-chain check of crypto payments; 20:30 UTC (midnight in Iran): daily report + backup
+  "triggers": { "crons": ["* * * * *", "30 20 * * *"] },
   "d1_databases": [
     {
       "binding": "DB",

@@ -101,6 +101,27 @@ export function installFakes({ panelBase }) {
       return resText('panel: unhandled ' + method + ' ' + path, 500);
     }
 
+    if (url.includes('api.coingecko.com')) {
+      if (globalThis.__fakePriceDown) return resText('down', 503);
+      return resJson({ stellar: { usd: 0.4 }, ripple: { usd: 2.5 }, tron: { usd: 0.25 }, solana: { usd: 200 },
+        'the-open-network': { usd: 5 }, litecoin: { usd: 100 }, dogecoin: { usd: 0.2 }, 'bitcoin-cash': { usd: 500 },
+        binancecoin: { usd: 700 }, 'polygon-ecosystem-token': { usd: 0.25 }, algorand: { usd: 0.2 } });
+    }
+    if (url.includes('min-api.cryptocompare.com')) return resText('down', 503);
+    // public blockchain APIs; tests push records into globalThis.__chain
+    const ch = (globalThis.__chain = globalThis.__chain || { xlm: [], xrp: [], trx: [], ton: [], algo: [] });
+    if (url.startsWith('https://horizon.stellar.org/')) return resJson({ _embedded: { records: ch.xlm } });
+    if (url.startsWith('https://xrplcluster.com/')) return resJson({ result: { transactions: ch.xrp } });
+    if (url.startsWith('https://api.trongrid.io/')) return resJson({ data: ch.trx });
+    if (url.startsWith('https://toncenter.com/')) return resJson({ ok: true, result: ch.ton });
+    if (url.startsWith('https://mainnet-idx.algonode.cloud/')) return resJson({ transactions: ch.algo });
+    // Iranian exchanges (USDT/toman = free-market dollar). tabdeal is a deliberate outlier.
+    if (/nobitex|wallex|bitpin|ramzinex|tabdeal/.test(url) && globalThis.__fakeRateDown) return resText('down', 503);
+    if (url.includes('api.nobitex.ir/market/stats')) return resJson({ status: 'ok', stats: { 'usdt-rls': { bestBuy: '999000', bestSell: '1001000', latest: '1000000' } } });
+    if (url.includes('api.wallex.ir/v1/markets')) return resJson({ result: { symbols: { USDTTMN: { stats: { bidPrice: '99900', askPrice: '100100', lastPrice: '100000' } } } } });
+    if (url.includes('api.bitpin.org')) return resJson([{ symbol: 'USDT_IRT', price: '100000' }]);
+    if (url.includes('publicapi.ramzinex.com')) return resJson({ data: [{ base_currency_symbol: { en: 'usdt' }, quote_currency_symbol: { en: 'irr' }, buy: 999000, sell: 1001000 }] });
+    if (url.includes('api1.tabdeal.org')) return resJson({ symbol: 'USDTIRT', price: '150000' });
     if (url.includes('api.nowpayments.io')) {
       const b = JSON.parse(body);
       const inv = { id: 5000 + np.invoices.length, invoice_url: 'https://nowpayments.io/pay/' + b.order_id };

@@ -75,16 +75,16 @@ function makeNetGlobe(maskB64) {
       ctx.clearRect(0, 0, W, H);
       var cx = o.cx, cy = o.cy, R = o.R, pw = o.power;
       var band = ctx.createLinearGradient(0, o.bandY, 0, cy - R * 0.9);
-      band.addColorStop(0, 'rgba(10,24,42,0)'); band.addColorStop(0.08, 'rgba(10,26,46,0.85)'); band.addColorStop(1, 'rgba(18,44,74,0.9)');
+      band.addColorStop(0, 'rgba(11,10,8,0)'); band.addColorStop(0.08, 'rgba(16,13,9,0.85)'); band.addColorStop(1, 'rgba(30,24,14,0.9)');
       ctx.fillStyle = band; ctx.fillRect(0, o.bandY, W, cy - R * 0.9 - o.bandY);
       // haze above the horizon
       var hz = ctx.createRadialGradient(cx, cy - R, R * 0.05, cx, cy - R, R * 0.95);
-      hz.addColorStop(0, 'rgba(44,88,140,' + (0.42 + 0.18 * pw) + ')'); hz.addColorStop(0.45, 'rgba(22,52,92,' + (0.28 + 0.1 * pw) + ')'); hz.addColorStop(1, 'rgba(6,16,32,0)');
+      hz.addColorStop(0, 'rgba(120,88,34,' + (0.30 + 0.22 * pw) + ')'); hz.addColorStop(0.45, 'rgba(60,44,18,' + (0.22 + 0.1 * pw) + ')'); hz.addColorStop(1, 'rgba(11,10,8,0)');
       ctx.save(); ctx.translate(cx, cy - R); ctx.scale(1.25, 0.62); ctx.translate(-cx, -(cy - R));
       ctx.fillStyle = hz; ctx.beginPath(); ctx.arc(cx, cy - R, R * 0.95, 0, Math.PI * 2); ctx.fill(); ctx.restore();
       // sphere body
       var sg = ctx.createRadialGradient(cx, cy, R * 0.3, cx, cy, R);
-      sg.addColorStop(0, '#0a1c30'); sg.addColorStop(0.7, '#0f2a45'); sg.addColorStop(0.93, '#1a4166'); sg.addColorStop(1, '#2f5f8a');
+      sg.addColorStop(0, '#0d0b08'); sg.addColorStop(0.7, '#17130c'); sg.addColorStop(0.93, '#2a2112'); sg.addColorStop(1, '#4a391b');
       ctx.fillStyle = sg; ctx.beginPath(); ctx.arc(cx, cy, R, 0, Math.PI * 2); ctx.fill();
       ctx.save(); ctx.globalCompositeOperation = 'lighter';
       // land dots
@@ -97,7 +97,7 @@ function makeNetGlobe(maskB64) {
         if (sx < -2 || sx > W + 2 || sy < -2 || sy > H + 2) continue;
         var hv = P[i + 3], lim = 1 - z;
         var a = (0.3 + 0.45 * hv * hv + (hv > 0.9 ? 0.5 : 0)) * (0.55 + 0.45 * z) + lim * lim * 0.6;
-        ctx.fillStyle = hv > 0.9 ? 'rgba(235,245,255,' + Math.min(1, a) + ')' : 'rgba(170,205,240,' + Math.min(1, a) + ')';
+        ctx.fillStyle = hv > 0.9 ? 'rgba(250,232,185,' + Math.min(1, a) + ')' : 'rgba(196,158,86,' + Math.min(1, a * 0.85) + ')';
         ctx.fillRect(sx - ds / 2, sy - ds / 2, ds, ds);
       }
       // network edges
@@ -112,7 +112,7 @@ function makeNetGlobe(maskB64) {
           if (!started) { ctx.moveTo(p[0], p[1]); started = true; } else ctx.lineTo(p[0], p[1]);
         }
         if (!vis) continue;
-        ctx.strokeStyle = hot ? 'rgba(170,215,255,' + (0.35 + 0.45 * pw) + ')' : 'rgba(150,195,240,' + (0.16 + 0.22 * pw) + ')';
+        ctx.strokeStyle = hot ? 'rgba(246,222,160,' + (0.35 + 0.45 * pw) + ')' : 'rgba(214,174,92,' + (0.14 + 0.22 * pw) + ')';
         ctx.lineWidth = (hot ? 1.2 : 0.8) * dpr; ctx.stroke();
       }
       // packets along edges into the target node
@@ -126,7 +126,7 @@ function makeNetGlobe(maskB64) {
           var pp = proj([A[0] + (B[0] - A[0]) * fr, A[1] + (B[1] - A[1]) * fr, A[2] + (B[2] - A[2]) * fr], q);
           if (pp[2] < 0) continue;
           var gr = ctx.createRadialGradient(pp[0], pp[1], 0, pp[0], pp[1], 5 * dpr);
-          gr.addColorStop(0, 'rgba(255,255,255,' + o.packets + ')'); gr.addColorStop(1, 'rgba(140,200,255,0)');
+          gr.addColorStop(0, 'rgba(255,244,214,' + o.packets + ')'); gr.addColorStop(1, 'rgba(214,174,92,0)');
           ctx.fillStyle = gr; ctx.beginPath(); ctx.arc(pp[0], pp[1], 5 * dpr, 0, Math.PI * 2); ctx.fill();
         }
       }
@@ -135,15 +135,15 @@ function makeNetGlobe(maskB64) {
         var np = proj(nodes[nI].v, q); if (np[2] < 0.02) continue;
         var big = nodes[nI].h > 1.01, rr = (big ? 2.3 : 1.5) * dpr * (0.6 + 0.4 * np[2]);
         var g2 = ctx.createRadialGradient(np[0], np[1], 0, np[0], np[1], rr * 4.5);
-        g2.addColorStop(0, 'rgba(255,255,255,' + (0.75 + 0.25 * pw) + ')'); g2.addColorStop(0.25, 'rgba(200,230,255,' + (0.4 * (0.5 + pw)) + ')'); g2.addColorStop(1, 'rgba(120,180,255,0)');
+        g2.addColorStop(0, 'rgba(255,246,222,' + (0.75 + 0.25 * pw) + ')'); g2.addColorStop(0.25, 'rgba(232,196,112,' + (0.4 * (0.5 + pw)) + ')'); g2.addColorStop(1, 'rgba(214,174,92,0)');
         ctx.fillStyle = g2; ctx.beginPath(); ctx.arc(np[0], np[1], rr * 4.5, 0, Math.PI * 2); ctx.fill();
       }
       // horizon rim light
       var rimg = ctx.createLinearGradient(0, cy - R, 0, cy - R * 0.7);
-      rimg.addColorStop(0, 'rgba(150,200,245,0.0)');
-      ctx.strokeStyle = 'rgba(110,165,225,' + (0.18 + 0.12 * pw) + ')'; ctx.lineWidth = 14 * dpr; ctx.filter = 'blur(' + (8 * dpr) + 'px)';
+      rimg.addColorStop(0, 'rgba(214,174,92,0.0)');
+      ctx.strokeStyle = 'rgba(190,140,60,' + (0.16 + 0.14 * pw) + ')'; ctx.lineWidth = 14 * dpr; ctx.filter = 'blur(' + (8 * dpr) + 'px)';
       ctx.beginPath(); ctx.arc(cx, cy, R, Math.PI * 1.0, Math.PI * 2.0); ctx.stroke(); ctx.filter = 'none';
-      ctx.strokeStyle = 'rgba(150,200,245,' + (0.3 + 0.15 * pw) + ')'; ctx.lineWidth = 1.6 * dpr;
+      ctx.strokeStyle = 'rgba(232,200,128,' + (0.32 + 0.2 * pw) + ')'; ctx.lineWidth = 1.6 * dpr;
       ctx.beginPath(); ctx.arc(cx, cy, R - 1 * dpr, Math.PI * 1.0, Math.PI * 2.0); ctx.stroke();
       ctx.restore();
       // bokeh and specks
@@ -154,10 +154,10 @@ function makeNetGlobe(maskB64) {
         var br = b.r * dpr;
         if (b.r > 2.5) {
           var g3 = ctx.createRadialGradient(bx, by, 0, bx, by, br);
-          g3.addColorStop(0, 'rgba(120,170,225,' + b.a + ')'); g3.addColorStop(0.7, 'rgba(110,160,220,' + b.a * 0.7 + ')'); g3.addColorStop(1, 'rgba(110,160,220,0)');
+          g3.addColorStop(0, 'rgba(214,174,92,' + b.a * 0.45 + ')'); g3.addColorStop(0.7, 'rgba(190,150,80,' + b.a * 0.3 + ')'); g3.addColorStop(1, 'rgba(190,150,80,0)');
           ctx.fillStyle = g3;
         } else {
-          ctx.fillStyle = 'rgba(225,238,255,' + b.a * (0.6 + 0.4 * Math.sin(o.t * 1.3 * b.sp + b.ph)) + ')';
+          ctx.fillStyle = 'rgba(246,226,176,' + b.a * 0.6 * (0.6 + 0.4 * Math.sin(o.t * 1.3 * b.sp + b.ph)) + ')';
         }
         ctx.beginPath(); ctx.arc(bx, by, br, 0, Math.PI * 2); ctx.fill();
       }

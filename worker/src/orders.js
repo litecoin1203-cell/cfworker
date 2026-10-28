@@ -5,6 +5,9 @@ import { payWithWallet, settle, BillingError } from './billing.js';
 import { cryptoEnabled, tomanToUsd, createInvoice, verifyIpn, PAID_STATES, FAILED_STATES } from './nowpayments.js';
 import { sendReceipt, notifyAdmin } from './telegram.js';
 import { planName } from './account.js';
+import { bankOf, cardDigits } from './banks.js';
+import { coinById, walletKey, memoKey, enabledCoins, usdRate, prices, quoteAmount, cleanTxid } from './coins.js';
+import { sendCoinNotice } from './telegram.js';
 
 async function orderOut(env, o) {
   const plan = o.plan_id ? await first(env, 'SELECT * FROM plans WHERE id = ?', o.plan_id) : null;
@@ -12,7 +15,12 @@ async function orderOut(env, o) {
   let card = null;
   if (o.method === 'card' && ['pending', 'review', 'rejected'].includes(o.status)) {
     const s = await getSettings(env);
-    card = { number: s.card_number, holder: s.card_holder, bank: s.card_bank };
+    const b = bankOf(s.card_number);
+    card = {
+      number: cardDigits(s.card_number), holder: s.card_holder, bank: s.card_bank || b.name, color1: b.c1, color2: b.c2,
+      amount_rial: o.amount_toman * 10,
+      auto: s.card_auto !== 'off' && !!String(s.sms_senders || '').trim(), // a trusted bank SMS confirms it by itself
+    };
   }
   let activated = null;
   if (o.result_order_id) {
@@ -26,7 +34,61 @@ async function orderOut(env, o) {
     created_at: new Date(o.created_at * 1000).toISOString(),
     paid_at: o.paid_at ? new Date(o.paid_at * 1000).toISOString() : null,
     card, crypto_pay_url: o.crypto_pay_url, crypto_amount_usd: o.crypto_amount_usd, admin_note: o.admin_note,
+    coin: coinInfo(o), txid: o.txid || null,
   };
+}
+
+const AUTO_COINS = ['xlm', 'xrp', 'trx', 'ton', 'algo']; // chains watched by chainwatch.js
+
+function coinInfo(o) {
+  if (o.method !== 'coin' || !o.coin) return null;
+  const c = coinById(o.coin);
+  if (!c) return null;
+  return {
+    id: c.id, symbol: c.symbol, name: c.name, fa: c.fa, network: c.network, color: c.color,
+    amount: o.coin_amount, address: o.coin_address, price_usd: o.coin_price_usd, fee: c.fee,
+    memo: o.coin_memo || null, memo_label: o.coin_memo ? c.memo : null,
+    expires_at: o.coin_expires_at ? new Date(o.coin_expires_at * 1000).toISOString() : null,
+    seconds_left: o.coin_expires_at ? Math.max(0, o.coin_expires_at - nowSec()) : 0,
+    explorer: c.addr + o.coin_address,
+    auto: AUTO_COINS.includes(c.id),
+  };
+}
+
+// 1..99 toman, avoiding an amount that another open card order already uses
+async function uniqueSuffix(env, order) {
+  const since = nowSec() - 36 * 3600;
+  for (let i = 0; i < 99; i++) {
+    const sfx = ((order.id * 37 + i) % 99) + 1;
+    const clash = await first(env, "SELECT id FROM orders WHERE method = 'card' AND id != ? AND amount_toman = ? AND status IN ('pending','review') AND created_at > ?", order.id, order.amount_toman + sfx, since);
+    if (!clash) return sfx;
+  }
+  return (order.id % 99) + 1;
+}
+
+// a crypto quote that ran out without the user saying they paid is closed, so a stale price is never used
+async function expireIfDue(env, o) {
+  if (o.method === 'coin' && o.status === 'pending' && o.coin_expires_at && o.coin_expires_at < nowSec()) {
+    await run(env, "UPDATE orders SET status = 'expired' WHERE id = ? AND status = 'pending'", o.id);
+    o.status = 'expired';
+  }
+  return o;
+}
+
+// Lock a quote for this order: unique amount of the chosen coin, the admin's wallet, and an expiry.
+async function attachCoinQuote(env, order, coinId) {
+  const c = coinById(coinId);
+  const enabled = await enabledCoins(env);
+  if (!c || !enabled.some((x) => x.id === c.id)) throw err(400, 'coin_unavailable', 'این ارز الان برای پرداخت فعال نیست.', 'coin');
+  const usd = await usdRate(env);
+  const p = await prices(env);
+  if (!usd || !p || !p[c.id]) throw err(503, 'price_unavailable', 'قیمت لحظه‌ای ارز در دسترس نیست. چند دقیقه دیگر امتحان کن.');
+  const s = await getSettings(env);
+  const minutes = Math.max(10, Math.min(180, parseInt(s.coin_minutes, 10) || 30));
+  const amount = quoteAmount(order.amount_toman, usd, p[c.id], c, order.id);
+  const memo = c.memo ? String(s[memoKey(c)] || '').trim() || null : null;
+  await run(env, 'UPDATE orders SET coin = ?, coin_amount = ?, coin_address = ?, coin_memo = ?, coin_price_usd = ?, coin_expires_at = ? WHERE id = ?',
+    c.id, amount, String(s[walletKey(c)]).trim(), memo, p[c.id], nowSec() + minutes * 60, order.id);
 }
 
 // ---------------- discount codes ----------------
@@ -55,7 +117,8 @@ export async function checkCoupon(env, user, body) {
 
 export async function createOrder(env, user, body) {
   const method = body.method;
-  if (!['wallet', 'card', 'crypto'].includes(method)) throw err(422, 'invalid_input', 'روش پرداخت را انتخاب کن.', 'method');
+  if (!['wallet', 'card', 'crypto', 'coin'].includes(method)) throw err(422, 'invalid_input', 'روش پرداخت را انتخاب کن.', 'method');
+  if (method === 'coin' && !coinById(body.coin)) throw err(422, 'invalid_input', 'یک ارز دیجیتال انتخاب کن.', 'coin');
   let orderId;
   if (body.plan_id) {
     const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', body.plan_id);
@@ -78,7 +141,7 @@ export async function createOrder(env, user, body) {
       });
     }
   } else if (body.topup_toman) {
-    if (method === 'wallet') throw err(400, 'bad_method', 'کیف پول را با کارت یا کریپتو شارژ کن.');
+    if (method === 'wallet') throw err(400, 'bad_method', 'کیف پول را با کارت یا ارز دیجیتال شارژ کن.');
     const amount = Math.floor(Number(body.topup_toman) || 0);
     const min = await getSettingInt(env, 'min_topup_toman');
     if (amount < min) throw err(400, 'amount_too_small', `حداقل مبلغ شارژ ${min.toLocaleString('fa-IR')} تومان است.`);
@@ -95,9 +158,16 @@ export async function createOrder(env, user, body) {
       await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ?", order.id);
       throw err(400, 'method_unavailable', 'کارت‌به‌کارت الان فعال نیست.');
     }
+    // a unique amount (e.g. 189,037 instead of 189,000) lets the bank SMS point at exactly this order
+    if (s.card_unique !== '0' && order.amount_toman > 0) {
+      await run(env, 'UPDATE orders SET amount_toman = amount_toman + ? WHERE id = ?', await uniqueSuffix(env, order), order.id);
+    }
   } else if (order.method === 'wallet') {
     try { await payWithWallet(env, user, order); }
     catch (e) { if (e instanceof BillingError) throw err(400, e.code, e.message); throw e; }
+  } else if (order.method === 'coin') {
+    try { await attachCoinQuote(env, order, body.coin); }
+    catch (e) { await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ?", order.id); throw e; }
   } else if (order.method === 'crypto') {
     if (!cryptoEnabled(env)) {
       await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ?", order.id);
@@ -118,6 +188,7 @@ export async function createOrder(env, user, body) {
 
 export async function listOrders(env, user) {
   const rows = await all(env, 'SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 50', user.id);
+  for (const o of rows) await expireIfDue(env, o);
   return json(await Promise.all(rows.map((o) => orderOut(env, o))));
 }
 
@@ -128,7 +199,32 @@ async function ownOrder(env, user, orderId) {
 }
 
 export async function getOrder(env, user, orderId) {
-  return json(await orderOut(env, await ownOrder(env, user, orderId)));
+  let o = await ownOrder(env, user, orderId);
+  // the payment screen polls this: look on the blockchain right now so the user sees it within seconds
+  if (o.method === 'coin') {
+    try {
+      const { checkOrder } = await import('./chainwatch.js');
+      if (await checkOrder(env, o)) o = await first(env, 'SELECT * FROM orders WHERE id = ?', o.id);
+    } catch (e) { /* the cron will try again */ }
+  }
+  return json(await orderOut(env, await expireIfDue(env, o)));
+}
+
+// "I paid": the user sent the crypto (optionally with the transaction hash). The admin gets a one-tap check.
+export async function markCoinPaid(env, user, orderId, body) {
+  const order = await ownOrder(env, user, orderId);
+  if (order.method !== 'coin') throw err(400, 'bad_state', 'این سفارش پرداخت ارز دیجیتال نیست.');
+  if (order.status === 'paid') return json(await orderOut(env, order));
+  if (!['pending', 'expired', 'review', 'rejected'].includes(order.status)) throw err(400, 'bad_state', 'این سفارش بسته شده است.');
+  const txid = cleanTxid(body.txid);
+  if (txid === null) throw err(422, 'invalid_input', 'هش تراکنش درست به نظر نمی‌رسد. دوباره کپی کن.', 'txid');
+  const same = txid && (await first(env, "SELECT id FROM orders WHERE txid = ? AND id != ? AND status IN ('review','paid')", txid, order.id));
+  if (same) throw err(409, 'txid_used', 'این هش تراکنش قبلاً برای سفارش دیگری ثبت شده است.', 'txid');
+  const wasReview = order.status === 'review';
+  await run(env, "UPDATE orders SET status = 'review', txid = COALESCE(?, txid), admin_note = NULL WHERE id = ?", txid || null, order.id);
+  const fresh = await first(env, 'SELECT * FROM orders WHERE id = ?', order.id);
+  if (!wasReview || txid) await sendCoinNotice(env, fresh, user);
+  return json(await orderOut(env, fresh));
 }
 
 const MAGIC = [
@@ -164,8 +260,8 @@ export async function uploadReceipt(env, user, orderId, request) {
 }
 
 export async function cancelOrder(env, user, orderId) {
-  const order = await ownOrder(env, user, orderId);
-  if (order.status !== 'pending') throw err(400, 'bad_state', 'فقط سفارش پرداخت‌نشده لغو می‌شود.');
+  const order = await expireIfDue(env, await ownOrder(env, user, orderId));
+  if (!['pending', 'expired'].includes(order.status)) throw err(400, 'bad_state', 'فقط سفارش پرداخت‌نشده لغو می‌شود.');
   await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ?", order.id);
   return json(await orderOut(env, await first(env, 'SELECT * FROM orders WHERE id = ?', order.id)));
 }

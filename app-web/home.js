@@ -1,7 +1,7 @@
 /* Home (network globe + power button) and Servers (slide to connect) screens. */
 (function () {
   'use strict';
-  const { esc, flag, call, api, on, S, go, toast, screens, I, selectedServer, hasActivePlan, syncVpn, faNum, bytes } = window.CG;
+  const { esc, flag, call, api, on, S, go, toast, screens, I, selectedServer, hasActivePlan, syncVpn, faNum, bytes, halo, mark } = window.CG;
 
   const D = Math.PI / 180;
   let globe = null;
@@ -20,7 +20,7 @@
     return S.vpn.running ? 'connected' : 'disconnected';
   }
   function bars(ms, size) {
-    const g = '#40FF00', dim = 'rgba(64,255,0,.3)', lvl = !ms ? 0 : ms < 150 ? 4 : ms < 300 ? 3 : ms < 600 ? 2 : 1;
+    const g = '#E8C77A', dim = 'rgba(214,174,92,.25)', lvl = !ms ? 0 : ms < 150 ? 4 : ms < 300 ? 3 : ms < 600 ? 2 : 1;
     const c = (i) => (i <= lvl ? g : dim);
     return size === 'big'
       ? `<svg aria-hidden="true" width="14" height="9" viewBox="0 0 14 9"><rect x="0" y="6" width="2.2" height="3" fill="${c(1)}"/><rect x="3.8" y="4" width="2.2" height="5" fill="${c(2)}"/><rect x="7.6" y="2" width="2.2" height="7" fill="${c(3)}"/><rect x="11.4" y="0" width="2.2" height="9" fill="${c(4)}"/></svg>`
@@ -82,29 +82,116 @@
     return testing;
   }
   window.CG.testAll = testAll;
+
+  // ---- ISP intelligence: what worked for other users on the same operator (anonymous, per server) ----
+  let rankAt = 0, rankP = null;
+  function ispRank() {
+    if (S.rank && Date.now() - rankAt < 10 * 60 * 1000) return Promise.resolve(S.rank);
+    if (!rankP) rankP = api('GET', '/net/rank').then((r) => { S.rank = r; rankAt = Date.now(); return r; }).catch(() => S.rank || null).finally(() => { rankP = null; });
+    return rankP;
+  }
+  window.CG.ispRank = ispRank;
+  const reportQ = [];
+  let reportT = 0;
+  function reportNet(items) {
+    items.forEach((x) => { if (x && x.k) reportQ.push(x); });
+    clearTimeout(reportT);
+    reportT = setTimeout(() => { const batch = reportQ.splice(0, 60); if (batch.length) api('POST', '/net/report', { results: batch }).catch(() => {}); }, 1500);
+  }
+  const ispScore = (s) => { const r = S.rank && S.rank.servers && S.rank.servers[s.k]; return r && r.n >= 3 ? r.score : null; };
+  window.CG.ispScore = ispScore;
+
+  // ---- Google / Gemini: how Google sees each server's exit IP (tested by phones through that config) ----
+  S.googleMode = recall('cg_gmode', '0') === '1';
+  window.CG.setGoogleMode = (v) => { S.googleMode = !!v; keep('cg_gmode', v ? '1' : '0'); };
+  const gInfo = (s) => (S.rank && S.rank.google && S.rank.google[s.k]) || null;
+  const googleOk = (s) => { const g = gInfo(s); return g ? g.status === 'google' : null; };
+  window.CG.gInfo = gInfo;
+  window.CG.googleOk = googleOk;
+  // in Google mode, only servers known to be clean for Google are candidates (if we know any)
+  const pool = () => {
+    if (!S.googleMode) return S.servers;
+    const good = S.servers.filter((s) => googleOk(s) === true);
+    return good.length ? good : S.servers;
+  };
+  // run the Google test on the connected server: automatically once per server every 12h, or on demand
+  async function probeGoogle(force) {
+    const s = S.servers.find((x) => x.guid === S.selected);
+    if (!s || !S.vpn.running) throw { message: 'اول به یک سرور وصل شو.' };
+    const key = 'cg_gp_' + s.k;
+    if (!force && +recall(key, '0') > Date.now() - 12 * 3600 * 1000) return null;
+    keep(key, String(Date.now()));
+    const r = await call('probeGoogle', {});
+    if (r && !r.error) {
+      const saved = await api('POST', '/net/google', Object.assign({ k: s.k, name: s.remarks || s.name }, r)).catch(() => null);
+      if (saved && saved.status) { S.rank = S.rank || { servers: {}, google: {} }; S.rank.google = S.rank.google || {}; S.rank.google[s.k] = saved; }
+    }
+    return Object.assign({ server: s }, r || {});
+  }
+  window.CG.probeGoogle = probeGoogle;
+
+  // fastest on this phone, weighted by how well it works on this operator for everyone
   const ranked = (exclude) => {
     const p = S.serverPings || {};
-    return S.servers.filter((s) => p[s.guid] > 0 && !(exclude || []).includes(s.guid)).sort((a, b) => p[a.guid] - p[b.guid]);
+    const score = (s) => {
+      const ms = p[s.guid];
+      const local = ms > 0 ? 1 - Math.min(ms, 1500) / 1500 : 0;
+      const isp = ispScore(s);
+      return isp == null ? local : local * 0.45 + isp * 0.55;
+    };
+    return pool().filter((s) => p[s.guid] > 0 && !(exclude || []).includes(s.guid)).sort((a, b) => score(b) - score(a));
   };
   async function bestServer(exclude) {
+    await ispRank();
+    // strong evidence from this operator: connect straight away, no testing (failover still protects us)
+    if (!(exclude || []).length) {
+      const strong = pool().map((s) => ({ s, r: S.rank && S.rank.servers && S.rank.servers[s.k] }))
+        .filter((x) => x.r && x.r.n >= 8 && x.r.score >= 0.8).sort((a, b) => b.r.score - a.r.score)[0];
+      if (strong) { S.fastPick = true; return strong.s; }
+    }
+    S.fastPick = false;
     const fresh = S.pingAt && Date.now() - S.pingAt < 10 * 60 * 1000 && ranked(exclude).length;
-    if (!fresh) await testAll(7000);
+    if (!fresh) {
+      await testAll(7000);
+      const p = S.serverPings || {};
+      reportNet(S.servers.filter((s) => s.guid in p).map((s) => ({ k: s.k, ok: p[s.guid] > 0, ms: p[s.guid] > 0 ? p[s.guid] : 0 })));
+    }
     return ranked(exclude)[0] || null;
   }
 
+  // ---- live connection quality: ping, jitter and loss over the last minute -> 0..100 ----
+  S.qual = [];
+  function quality() {
+    const q = S.qual.slice(-6);
+    if (q.length < 2) return null;
+    const ok = q.filter((x) => x > 0);
+    const loss = 1 - ok.length / q.length;
+    if (!ok.length) return { score: 0, label: 'قطع', color: '#E2715C' };
+    const avg = ok.reduce((a, b) => a + b, 0) / ok.length;
+    let jit = 0;
+    for (let i = 1; i < ok.length; i++) jit += Math.abs(ok[i] - ok[i - 1]);
+    jit = ok.length > 1 ? jit / (ok.length - 1) : 0;
+    const score = Math.round(Math.max(0, Math.min(100, 100 - Math.min(40, avg / 15) - Math.min(30, jit / 4) - loss * 60)));
+    const label = score >= 85 ? 'عالی' : score >= 65 ? 'خوب' : score >= 40 ? 'متوسط' : 'ضعیف';
+    const color = score >= 85 ? '#F3DDA0' : score >= 65 ? '#D6AE5C' : score >= 40 ? '#C9893F' : '#E2715C';
+    return { score, label, color, avg: Math.round(avg), jitter: Math.round(jit), loss: Math.round(loss * 100) };
+  }
+  window.CG.quality = quality;
+
   let connectWatch = null;
-  const fo = { tried: [], misses: 0 };
+  const fo = { tried: [], misses: 0, resynced: false, reported: false };
   async function connect(guid, opts) {
     opts = opts || {};
     if (!hasActivePlan()) { go('premium', { from: 'home' }); return; }
     try {
       if (!S.servers.length) await syncVpn();
       if (!S.servers.length) { toast('هنوز سروری برای اشتراک شما تعریف نشده. چند دقیقه دیگر دوباره امتحان کن.', true); return; }
-      if (!opts.failover) { fo.tried = []; fo.misses = 0; }
+      if (!opts.failover) { fo.tried = []; fo.misses = 0; fo.resynced = false; }
+      fo.reported = false; S.qual = [];
       S.vpn.busy = 'connecting';
       if (guid) S.selected = guid;
       else if (S.auto && S.servers.length > 1) {
-        S.vpn.label = 'در حال پیدا کردن سریع‌ترین سرور...';
+        S.vpn.label = 'در حال پیدا کردن بهترین سرور برای اینترنت شما...';
         const best = await bestServer(fo.tried);
         S.vpn.label = null;
         if (S.vpn.busy !== 'connecting') return; // cancelled meanwhile
@@ -120,19 +207,43 @@
       toast(e.message || 'اتصال برقرار نشد.', true);
     }
   }
-  // in smart mode, a server that fails or stops answering is replaced by the next fastest one (at most twice)
+  const cur = () => S.servers.find((s) => s.guid === S.selected);
+  // in smart mode, a server that fails or stops answering is replaced by the next best one (at most twice);
+  // when every tried server failed, the server list is refreshed from the panel once and we try again
   function failover(why) {
-    if (!S.auto || fo.tried.length >= 3) return false;
-    const next = ranked(fo.tried)[0] || S.servers.find((s) => !fo.tried.includes(s.guid));
-    if (!next) return false;
-    toast(why === 'dead' ? 'این سرور جواب نمی‌دهد؛ رفتیم سراغ سرور بعدی...' : 'اتصال برقرار نشد؛ سرور بعدی را امتحان می‌کنیم...');
-    connect(next.guid, { failover: true });
-    return true;
+    const s0 = cur();
+    if (s0) reportNet([{ k: s0.k, ok: false }]);
+    if (!S.auto) return false;
+    const next = fo.tried.length < 3 ? ranked(fo.tried)[0] || S.servers.find((s) => !fo.tried.includes(s.guid)) : null;
+    if (next) {
+      toast(why === 'dead' ? 'این سرور جواب نمی‌دهد؛ رفتیم سراغ سرور بعدی...' : 'اتصال برقرار نشد؛ سرور بعدی را امتحان می‌کنیم...');
+      connect(next.guid, { failover: true });
+      return true;
+    }
+    if (!fo.resynced) {
+      fo.resynced = true;
+      toast('سرورها جواب ندادند؛ لیست تازه را از سرور می‌گیریم...');
+      S.pingAt = 0;
+      syncVpn().then(() => { fo.tried = []; connect(undefined, { failover: true }); }).catch((e) => toast(e.message, true));
+      return true;
+    }
+    return false;
   }
   on('vpnError', () => { if (fo.tried.length) failover('error'); });
   on('ping', (v) => {
     if (!S.vpn.running) return;
-    if (v && v.ms) { fo.misses = 0; return; }
+    S.qual.push(v && v.ms ? v.ms : 0);
+    if (S.qual.length > 12) S.qual.shift();
+    if (v && v.ms) {
+      fo.misses = 0;
+      const s0 = cur();
+      if (!fo.reported && s0) {
+        fo.reported = true;
+        reportNet([{ k: s0.k, ok: true, ms: v.ms }]);
+        setTimeout(() => { if (S.vpn.running) probeGoogle(false).catch(() => {}); }, 6000);
+      }
+      return;
+    }
     if (++fo.misses >= 2 && failover('dead')) fo.misses = 0;
     else if (fo.misses === 2 && !S.auto) toast('این سرور الان جواب نمی‌دهد. لوکیشن دیگری را امتحان کن.', true);
   });
@@ -167,15 +278,16 @@
     items.push(['settings', 'تنظیمات اتصال', 'conn']);
     return `<div class="drawer-scrim" style="opacity:0;pointer-events:none"></div>
       <nav class="drawer" aria-label="منو" style="transform:translateX(300px);padding-top:70px">
-        <div style="font-family:Michroma;font-size:15px;letter-spacing:3.5px">CLOUD GOLD</div>
-        <div style="margin-top:6px;font-family:Outfit;font-size:13px;color:#8EA3BC">${line}</div>
-        <div class="ltr" style="margin-top:2px;font-family:Outfit;font-size:12px;color:#5f7590;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right">${esc(S.me ? S.me.email : '')}</div>
+        <div style="display:flex;align-items:center;gap:10px">${mark(30)}<span class="serif" style="font-size:25px;font-weight:600;color:var(--ivory);line-height:30px">Cloud Gold</span></div>
+        <div style="margin-top:12px;font-size:13px;color:var(--gilt)">${line}</div>
+        <div class="ltr" style="margin-top:3px;font-size:12px;color:var(--ash);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;text-align:right">${esc(S.me ? S.me.email : '')}</div>
+        <div style="height:1px;margin-top:20px;background:linear-gradient(90deg,transparent,rgba(214,174,92,.35),transparent)"></div>
         <div style="margin-top:24px;display:flex;flex-direction:column;gap:4px">
-          ${items.map(([ic, label, to], i) => `<button type="button" class="item" data-to="${to}" style="${i === 0 ? 'background:rgba(127,196,255,.1)' : ''}">
-            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#9CC4EE" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${MENU_ICONS[ic]}"/></svg>${label}</button>`).join('')}
+          ${items.map(([ic, label, to], i) => `<button type="button" class="item" data-to="${to}" >
+            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#D6AE5C" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${MENU_ICONS[ic]}"/></svg>${label}</button>`).join('')}
         </div>
-        <button type="button" class="item" data-to="logout" style="position:absolute;left:20px;right:20px;bottom:30px;width:auto;color:#ff8a8e">
-          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ff8a8e" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/></svg>خروج از حساب</button>
+        <button type="button" class="item" data-to="logout" style="position:absolute;left:20px;right:20px;bottom:30px;width:auto;color:#EE9A86">
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#EE9A86" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 4h4v16h-4M10 8l-4 4 4 4M6 12h10"/></svg>خروج از حساب</button>
       </nav>`;
   }
   function bindDrawer(root) {
@@ -250,48 +362,38 @@
   // ---------------- HOME ----------------
   screens.home = {
     fit: 'both',
-    bg: 'linear-gradient(180deg,#000 0%,#010812 12%,#010812 100%)',
+    bg: 'radial-gradient(90% 45% at 50% 36%,#1A150E 0%,#0B0A08 70%)',
     html: () => `
       <canvas aria-hidden="true" class="h-canvas" style="position:absolute;left:0;top:0;width:390px;height:var(--sh)"></canvas>
       <button type="button" aria-label="منو" class="h-menu" style="position:absolute;left:339px;top:63px;width:40px;height:40px">
-        <svg aria-hidden="true" width="26" height="20" viewBox="0 0 26 20" style="position:absolute;left:7px;top:10px" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round"><path d="M2 2.5h22M2 10h22M2 17.5h15"/></svg>
+        <svg aria-hidden="true" width="26" height="20" viewBox="0 0 26 20" style="position:absolute;left:7px;top:10px" fill="none" stroke="#F2EADB" stroke-width="2" stroke-linecap="round"><path d="M2 2.5h22M2 10h22M2 17.5h15"/></svg>
       </button>
       <button type="button" class="h-glass usage h-usage" aria-label="اشتراک من" style="left:143px;width:190px;display:none"><span class="u1"></span><span class="u2"><i style="width:0"></i></span></button>
-      <button type="button" class="h-prem" style="position:absolute;left:17px;top:63px;width:119px;height:41px;border-radius:21px;background:linear-gradient(90deg,#3465A1 0%,#4C55A8 55%,#5844AE 100%);border:1px solid rgba(255,255,255,.14);box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 6px 18px rgba(60,70,180,.35);display:flex;align-items:center;justify-content:center;gap:7px;font-family:Outfit;font-size:15px;font-weight:600;letter-spacing:0">${I.gem}<span class="h-premt">خرید اشتراک</span></button>
+      <button type="button" class="h-prem" style="position:absolute;left:17px;top:63px;width:119px;height:41px;border-radius:21px;background:rgba(214,174,92,.08);box-shadow:inset 0 0 0 1px rgba(214,174,92,.45);display:flex;align-items:center;justify-content:center;gap:7px;font-size:14px;font-weight:600;color:var(--gilt)">${I.gem}<span class="h-premt">خرید اشتراک</span></button>
       <div class="h-cluster" style="position:absolute;left:0;top:var(--hdy,0px);width:390px;height:0">
-      <svg aria-hidden="true" width="390" height="480" viewBox="0 0 390 480" style="position:absolute;top:0;left:0;pointer-events:none">
-        <circle cx="195" cy="315" r="112" fill="none" stroke="#fff" stroke-opacity=".07"/>
-        <circle cx="195" cy="315" r="159" fill="none" stroke="#fff" stroke-opacity=".06"/>
-      </svg>
-      <div aria-hidden="true" class="h-rip" style="position:absolute;left:36px;top:156px;width:318px;height:318px;display:none;pointer-events:none">
-        <span class="ripple"></span><span class="ripple" style="animation-delay:-.9s"></span>
-      </div>
-      <div aria-live="polite" class="h-time ltr" style="position:absolute;left:0;top:159px;width:390px;text-align:center;font-family:Outfit;font-size:44px;font-weight:600;line-height:52px;letter-spacing:-.3px;font-variant-numeric:tabular-nums;transition:color 400ms">00:00:00</div>
-      <div class="h-sec" style="position:absolute;left:0;top:215px;width:390px;height:16px;display:flex;align-items:center;justify-content:center;gap:5px;font-family:Outfit;font-size:12px;transition:color 400ms"></div>
-      <button class="h-disc" type="button" style="position:absolute;left:126px;top:246px;width:138px;height:138px;border-radius:50%">
-        <span aria-hidden="true" class="h-arc spin" style="display:none;position:absolute;left:-5px;top:-5px;width:148px;height:148px;border-radius:50%;background:conic-gradient(from 0deg,rgba(127,196,255,0) 0deg,rgba(127,196,255,0) 230deg,rgba(160,215,255,.95) 350deg,rgba(127,196,255,0) 360deg);-webkit-mask:radial-gradient(closest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));mask:radial-gradient(closest-side,transparent calc(100% - 3px),#000 calc(100% - 2px));animation-duration:1.1s"></span>
-        <svg aria-hidden="true" width="46" height="48" viewBox="0 0 46 48" style="position:absolute;left:46px;top:44px"><path class="h-ic" d="M23 4v19" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round"/><path class="h-ic" d="M13.5 10.6A17.2 17.2 0 1 0 32.5 10.6" fill="none" stroke="#fff" stroke-width="4.6" stroke-linecap="round"/></svg>
-      </button>
-      <div class="h-status" style="position:absolute;left:0;top:396px;width:390px;text-align:center;font-family:Outfit;font-size:21px;font-weight:700;line-height:24px;letter-spacing:.1px;transition:color 400ms"></div>
-      <div style="position:absolute;left:0;top:425px;width:390px;height:22px;display:flex;align-items:center;justify-content:center;gap:7px;font-family:Outfit;font-size:16.5px;letter-spacing:.1px">${I.gem}<span class="h-ip"></span></div>
+      <div aria-live="polite" class="h-time ltr serif" style="position:absolute;left:0;top:118px;width:390px;text-align:center;font-size:50px;font-weight:500;line-height:62px;font-variant-numeric:tabular-nums;transition:color 400ms">00:00:00</div>
+      <div class="h-sec" style="position:absolute;left:0;top:184px;width:390px;height:18px;display:flex;align-items:center;justify-content:center;gap:6px;font-size:12.5px;transition:color 400ms"></div>
+      <button class="h-disc pb off" type="button" style="position:absolute;left:97px;top:217px">${halo()}</button>
+      <div class="h-status serif" style="position:absolute;left:0;top:424px;width:390px;text-align:center;font-size:31px;font-weight:600;line-height:38px;transition:color 400ms"></div>
+      <div style="position:absolute;left:0;top:462px;width:390px;height:22px;display:flex;align-items:center;justify-content:center;gap:7px;font-size:14.5px">${I.gem}<span class="h-ip"></span></div>
       </div>
       <div class="h-marker" style="position:absolute;left:0;top:0;width:0;height:0;display:none">
         <span class="h-dot" aria-hidden="true" style="position:absolute;left:-7px;top:-7px;width:14px;height:14px;border-radius:50%"></span>
-        <div dir="ltr" class="h-glass h-fade h-card" style="position:absolute;left:1px;top:0;width:183px;height:94px;border-radius:16px;padding:12px 0 0 12px;font-family:Outfit">
+        <div dir="ltr" class="h-glass h-fade h-card" style="position:absolute;left:1px;top:0;width:183px;height:94px;border-radius:16px;padding:12px 0 0 12px">
           <div style="display:flex;align-items:center;gap:6px;height:18px;font-size:13.5px"><span class="h-cflag"></span><span class="h-cname" style="white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:140px"></span></div>
           <div style="margin-top:8px;display:flex;align-items:center;gap:6px;height:18px;font-size:14px">${I.globe.replace('width="14" height="14"', 'width="16" height="16"')}<span class="h-cip"></span></div>
           <div style="margin-top:8px;display:flex;align-items:center;gap:6px;height:16px;font-size:11px;font-variant-numeric:tabular-nums">
-            <svg aria-hidden="true" width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"><path d="M1.5 9.5l8-8M3.5 1.5h6v6"/></svg><span class="h-up"></span>
-            <svg aria-hidden="true" width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round" style="margin-left:6px"><path d="M9.5 1.5l-8 8M7.5 9.5h-6v-6"/></svg><span class="h-down"></span>
+            <svg aria-hidden="true" width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="#D6AE5C" stroke-width="1.3" stroke-linecap="round"><path d="M1.5 9.5l8-8M3.5 1.5h6v6"/></svg><span class="h-up"></span>
+            <svg aria-hidden="true" width="11" height="11" viewBox="0 0 11 11" fill="none" stroke="#D6AE5C" stroke-width="1.3" stroke-linecap="round" style="margin-left:6px"><path d="M9.5 1.5l-8 8M7.5 9.5h-6v-6"/></svg><span class="h-down"></span>
           </div>
         </div>
       </div>
-      <button type="button" class="h-glass h-pill" style="position:absolute;left:19px;top:calc(var(--sh) - 93px);width:350px;height:64px;border-radius:32px;text-align:right;font-family:Outfit;transition:transform 140ms">
+      <button type="button" class="h-glass h-pill" style="position:absolute;left:19px;top:calc(var(--sh) - 93px);width:350px;height:64px;border-radius:32px;text-align:right;transition:transform 140ms;box-shadow:0 18px 40px -16px rgba(0,0,0,.8)">
         <span class="h-pflag" style="position:absolute;right:6px;top:4px"></span>
         <span class="h-pname" style="position:absolute;right:69px;top:7px;left:40px;font-size:16px;font-weight:500;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></span>
-        <span class="h-pip" style="position:absolute;right:69px;left:40px;top:27px;font-size:11px;line-height:14px;color:#E8EEF6;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></span>
+        <span class="h-pip" style="position:absolute;right:69px;left:40px;top:27px;font-size:11px;line-height:14px;color:#CDBF9F;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></span>
         <span class="h-pping" style="position:absolute;right:69px;top:43px;display:flex;align-items:center;gap:4px;font-size:11px;line-height:14px;font-variant-numeric:tabular-nums"></span>
-        <svg aria-hidden="true" width="9" height="15" viewBox="0 0 9 15" style="position:absolute;left:20px;top:25px" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 1.5l-6 6 6 6"/></svg>
+        <svg aria-hidden="true" width="9" height="15" viewBox="0 0 9 15" style="position:absolute;left:20px;top:25px" fill="none" stroke="#D6AE5C" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7.5 1.5l-6 6 6 6"/></svg>
       </button>
       ${drawerHtml()}`,
     mount(root) {
@@ -339,9 +441,17 @@
       // short phones: lift the power cluster and sink the globe; tall phones: centre the cluster in the extra room
       function fitHeight() {
         const c = 844 - S.sh;
-        const dy = c <= 0 ? -c * 0.3 : -Math.min(56, c * 0.36);
         gOff = c > 0 ? c * 0.6 : 0;
+        // the cluster (timer 118 -> address line 484) must sit between the header (ends ~112) and the globe's horizon
+        let dy = -c * 0.3, f = 1;
+        if (c > 0) {
+          const horizon = S.sh + 96 + gOff - 420;
+          f = Math.max(0.7, Math.min(1, (horizon - 4 - 112) / 366));
+          dy = -6;
+        }
         root.style.setProperty('--hdy', dy + 'px');
+        const cl = root.querySelector('.h-cluster');
+        if (cl) { cl.style.transformOrigin = '195px 118px'; cl.style.transform = f < 1 ? `scale(${f.toFixed(3)})` : ''; }
       }
       fitHeight();
       screens.home.resize = () => { scale = size(); fitHeight(); };
@@ -352,27 +462,24 @@
         const sec = onn && S.vpn.since ? Math.floor((Date.now() - S.vpn.since) / 1000) : 0;
         if (sec !== lastSec) { $('.h-time').textContent = clock(sec); lastSec = sec; }
         const sub = S.me && S.me.subscription;
-        const key = [m, act, srv && srv.guid, S.syncError && S.syncError.code, live.ip, live.publicIp, S.ping, Math.round(live.up / 100), Math.round(live.down / 100), S.vpn.label, S.meAt, S.auto].join('|');
+        const key = [m, act, srv && srv.guid, S.syncError && S.syncError.code, live.ip, live.publicIp, S.ping, Math.round(live.up / 100), Math.round(live.down / 100), S.vpn.label, S.meAt, S.auto, S.qual.length, S.qual[S.qual.length - 1]].join('|');
         if (key === lastKey) return;
         lastKey = key;
-        $('.h-time').style.color = onn || m === 'disconnecting' ? '#fff' : 'rgba(255,255,255,.38)';
-        const secColor = onn ? '#43FF00' : m === 'connecting' ? '#7FC4FF' : '#FF5A5F';
+        $('.h-time').style.color = onn || m === 'disconnecting' ? '#F2EADB' : 'rgba(242,234,219,.32)';
+        const secColor = onn ? '#E8C77A' : m === 'connecting' ? '#F3DDA0' : '#E2715C';
         const secText = onn ? 'اتصال شما امن است' : m === 'connecting' ? (S.vpn.label || 'در حال امن کردن اتصال...') : 'اتصال شما محافظت نمی‌شود';
         $('.h-sec').style.color = secColor;
-        $('.h-sec').innerHTML = `<svg aria-hidden="true" width="11" height="12" viewBox="0 0 11 12"><path d="M5.5.4l4.8 1.8v3.6c0 3-2.1 5.1-4.8 5.9C2.8 10.9.7 8.8.7 5.8V2.2z" fill="${secColor}"/>${onn ? '<path d="M3.2 5.9l1.6 1.6 3-3.2" fill="none" stroke="#031006" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>' : m === 'connecting' ? '' : '<path d="M5.5 3.4v3M5.5 8.3v.2" fill="none" stroke="#1a0606" stroke-width="1.4" stroke-linecap="round"/>'}</svg>${secText}`;
-        const statusMap = { connected: ['متصل', '#52FF00'], connecting: ['در حال اتصال...', '#7FC4FF'], disconnecting: ['در حال قطع...', '#9FB0C4'], disconnected: act ? ['قطع', '#FF5A5F'] : [sub ? (sub.status === 'limited' ? 'حجم تمام شده' : 'اشتراک تمام شده') : 'اشتراک فعال ندارید', '#FCFF58'] };
+        $('.h-sec').innerHTML = `<svg aria-hidden="true" width="11" height="12" viewBox="0 0 11 12"><path d="M5.5.4l4.8 1.8v3.6c0 3-2.1 5.1-4.8 5.9C2.8 10.9.7 8.8.7 5.8V2.2z" fill="${secColor}"/>${onn ? '<path d="M3.2 5.9l1.6 1.6 3-3.2" fill="none" stroke="#1B1307" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>' : m === 'connecting' ? '' : '<path d="M5.5 3.4v3M5.5 8.3v.2" fill="none" stroke="#1a0606" stroke-width="1.4" stroke-linecap="round"/>'}</svg>${secText}`;
+        const statusMap = { connected: ['متصل', '#F3DDA0'], connecting: ['در حال اتصال...', '#D6AE5C'], disconnecting: ['در حال قطع...', '#A39783'], disconnected: act ? ['قطع', '#C9BFAE'] : [sub ? (sub.status === 'limited' ? 'حجم تمام شده' : 'اشتراک تمام شده') : 'اشتراک فعال ندارید', '#E8C77A'] };
         $('.h-status').textContent = statusMap[m][0];
         $('.h-status').style.color = statusMap[m][1];
         const ipEl = $('.h-ip');
-        ipEl.textContent = onn ? (live.ip || 'در حال بررسی IP...') : !act ? (sub ? 'برای اتصال، اشتراک را تمدید کن' : 'برای اتصال، اشتراک بگیر') : live.publicIp ? 'IP شما ' + live.publicIp : 'برای اتصال دکمه را بزن';
-        ipEl.style.color = onn ? '#fff' : 'rgba(255,255,255,.6)';
+        ipEl.textContent = onn ? (live.ip || 'در حال بررسی IP...') : m === 'connecting' ? (S.auto ? 'انتخاب بهترین سرور برای اینترنت تو' : 'چند لحظه صبر کن') : m === 'disconnecting' ? 'در حال بستن تونل' : !act ? (sub ? 'برای اتصال، اشتراک را تمدید کن' : 'برای اتصال، اشتراک بگیر') : live.publicIp ? 'IP شما ' + live.publicIp : 'برای اتصال دکمه را بزن';
+        ipEl.style.color = onn ? '#F2EADB' : 'rgba(242,234,219,.55)';
         const disc = $('.h-disc');
-        disc.style.background = onn ? 'radial-gradient(circle at 50% 30%,#3E434C 0%,#343840 55%,#2D3138 100%)' : 'radial-gradient(circle at 50% 30%,#2F333A 0%,#262A31 60%,#20232A 100%)';
-        disc.style.boxShadow = onn ? '0 0 0 1px rgba(255,255,255,.05),0 0 46px rgba(67,255,0,.16),0 14px 30px rgba(0,0,0,.45)' : '0 0 0 1px rgba(255,255,255,.05),0 14px 30px rgba(0,0,0,.45)';
+        const coreState = onn ? 'on' : busy ? 'busy' : 'off';
+        if (!disc.classList.contains(coreState)) { disc.classList.remove('on', 'busy', 'off'); disc.classList.add(coreState); }
         disc.setAttribute('aria-label', onn ? 'قطع اتصال' : m === 'connecting' ? 'لغو اتصال' : 'اتصال');
-        root.querySelectorAll('.h-ic').forEach((p) => p.setAttribute('stroke', onn ? '#fff' : m === 'connecting' ? '#BFE2FF' : 'rgba(255,255,255,.7)'));
-        $('.h-arc').style.display = m === 'connecting' ? 'block' : 'none';
-        $('.h-rip').style.display = m === 'connecting' ? 'block' : 'none';
         // live usage from the panel: days and data left
         const chip = $('.h-usage');
         $('.h-premt').textContent = sub ? 'تمدید اشتراک' : 'خرید اشتراک';
@@ -385,8 +492,8 @@
         } else chip.style.display = 'none';
         // marker card
         const dot = $('.h-dot');
-        dot.style.background = onn ? '#3DDC5A' : '#7D8896';
-        dot.style.boxShadow = '0 0 0 5px ' + (onn ? 'rgba(61,220,90,.28)' : 'rgba(125,136,150,.25)');
+        dot.style.background = onn ? '#F3DDA0' : '#6F6656';
+        dot.style.boxShadow = '0 0 0 5px ' + (onn ? 'rgba(214,174,92,.3)' : 'rgba(111,102,86,.25)');
         dot.classList.toggle('pulse', onn);
         dot.style.animation = onn ? 'cgPulse 2s ease-out infinite' : 'none';
         const card = $('.h-card');
@@ -401,10 +508,11 @@
           $('.h-pflag').innerHTML = flag(srv.cc, 54);
           $('.h-pname').textContent = countryName(srv);
           const alias = srv.name && srv.name !== countryName(srv) && srv.name.indexOf(countryName(srv)) === 0 ? srv.name : '';
-          $('.h-pip').textContent = onn && live.ip ? 'IP ' + live.ip : S.auto && !onn ? 'اتصال هوشمند: سریع‌ترین سرور' : alias || 'آماده';
-          $('.h-pping').innerHTML = onn && S.ping ? `<span class="ltr" style="display:flex;align-items:center;gap:4px">${bars(S.ping)} ${S.ping} ms</span>` : busy ? 'لطفاً صبر کن...' : 'برای تغییر لوکیشن بزن';
+          $('.h-pip').textContent = onn && live.ip ? 'IP ' + live.ip : S.auto && !onn ? `${S.googleMode ? 'حالت گوگل' : 'اتصال هوشمند'}${S.rank && S.rank.asn ? ' · بهترین برای ' + S.rank.isp + (S.rank.geo ? ' ' + S.rank.geo : '') : ': سریع‌ترین سرور'}` : alias || 'آماده';
+          const q = onn ? quality() : null;
+          $('.h-pping').innerHTML = onn && S.ping ? `<span class="ltr" style="display:flex;align-items:center;gap:4px">${bars(S.ping)} ${S.ping} ms</span>${q ? `<span class="q-chip" style="color:${q.color}">کیفیت ${faNum(q.score)} · ${q.label}</span>` : ''}` : busy ? 'لطفاً صبر کن...' : 'برای تغییر لوکیشن بزن';
         } else {
-          $('.h-pflag').innerHTML = `<span class="flag" style="width:54px;height:54px;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#3465A1,#5844AE)">${I.gem}</span>`;
+          $('.h-pflag').innerHTML = `<span class="flag" style="width:54px;height:54px;display:flex;align-items:center;justify-content:center;background:#16130F;box-shadow:inset 0 0 0 1px rgba(214,174,92,.35)">${mark(34)}</span>`;
           const se = act && S.syncError;
           $('.h-pname').textContent = se ? (se.code === 'device_limit' ? 'سقف تعداد گوشی پر شده' : 'سرورها در دسترس نیستند') : act ? 'یک لوکیشن انتخاب کن' : 'خرید اشتراک Cloud Gold';
           $('.h-pip').textContent = se ? (se.code === 'device_limit' ? 'یک گوشی قدیمی را از «اشتراک من» حذف کن' : 'برای تلاش دوباره بزن') : act ? 'در حال دریافت سرورها...' : 'سرورهای پرسرعت در کشورهای مختلف';
@@ -457,40 +565,40 @@
   // ---------------- SERVERS ----------------
   screens.servers = {
     fit: 'width',
-    bg: 'linear-gradient(180deg,#0B2232 0%,#071826 22%,#030D17 48%,#04101C 78%,#071321 100%)',
+    bg: 'linear-gradient(180deg,#17130D 0%,#0B0A08 46%)',
     html: () => `
       <button type="button" aria-label="بازگشت" class="sv-back" style="position:absolute;left:340px;top:58px;width:32px;height:32px;display:flex;align-items:center;justify-content:center">${I.chevL}</button>
-      <h1 style="position:absolute;left:0;top:63px;width:390px;margin:0;text-align:center;font-family:Outfit;font-size:16.5px;font-weight:400;line-height:22px;pointer-events:none">سرورها</h1>
+      <h1 class="serif" style="position:absolute;left:0;top:58px;width:390px;margin:0;text-align:center;font-size:24px;font-weight:600;line-height:32px;pointer-events:none">سرورها</h1>
       <button type="button" aria-label="تنظیمات سرورها" class="sv-gear" style="position:absolute;left:18px;top:58px;width:32px;height:32px;display:flex;align-items:center;justify-content:center">
-        <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.9" stroke-linejoin="round"><path d="M10.3 2.6h3.4l.5 2.6 1.9 1.1 2.5-.9 1.7 2.9-2 1.7v2.2l2 1.7-1.7 2.9-2.5-.9-1.9 1.1-.5 2.6h-3.4l-.5-2.6-1.9-1.1-2.5.9-1.7-2.9 2-1.7v-2.2l-2-1.7 1.7-2.9 2.5.9 1.9-1.1z"/><circle cx="12" cy="12" r="3.1"/></svg>
+        <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#D6AE5C" stroke-width="1.7" stroke-linejoin="round"><path d="M10.3 2.6h3.4l.5 2.6 1.9 1.1 2.5-.9 1.7 2.9-2 1.7v2.2l2 1.7-1.7 2.9-2.5-.9-1.9 1.1-.5 2.6h-3.4l-.5-2.6-1.9-1.1-2.5.9-1.7-2.9 2-1.7v-2.2l-2-1.7 1.7-2.9 2.5.9 1.9-1.1z"/><circle cx="12" cy="12" r="3.1"/></svg>
       </button>
-      <div style="position:absolute;left:17px;top:108px;width:356px;height:256px;border-radius:34px;background:linear-gradient(180deg,#1C2F3D 0%,#1A2633 45%,#171E28 100%);border:1px solid rgba(255,255,255,.05);box-shadow:inset 0 1px 0 rgba(255,255,255,.05),0 20px 40px rgba(0,0,0,.35);font-family:Outfit">
+      <div style="position:absolute;left:17px;top:108px;width:356px;height:256px;border-radius:30px;background:linear-gradient(180deg,#1C1812 0%,#14110D 100%);border:1px solid rgba(214,174,92,.16);box-shadow:inset 0 1px 0 rgba(243,221,160,.1),0 24px 50px -20px rgba(0,0,0,.9)">
         <span class="sv-flag" style="position:absolute;right:16px;top:16px"></span>
-        <div class="sv-name" style="position:absolute;right:83px;top:21px;left:16px;font-size:21px;font-weight:500;line-height:26px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
+        <div class="sv-name serif" style="position:absolute;right:83px;top:16px;left:16px;font-size:27px;font-weight:600;line-height:32px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis"></div>
         <div style="position:absolute;right:83px;top:50px;display:flex;align-items:center;gap:5px;font-size:12.5px;line-height:16px">${I.globe.replace('width="14" height="14"', 'width="13" height="13"')}<span class="sv-ip"></span></div>
         <div dir="ltr" class="sv-stats" style="position:absolute;left:0;top:104px;width:356px;height:46px;transition:opacity 300ms">
-          <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" style="position:absolute;left:20px;top:18px" fill="none" stroke="#fff" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 1.5l-9 9M8 10.5H1.5V4"/></svg>
-          <span style="position:absolute;left:47px;top:0;font-size:12px;line-height:16px;color:#8C9297">دانلود</span>
+          <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" style="position:absolute;left:20px;top:18px" fill="none" stroke="#D6AE5C" stroke-width="1.4" stroke-linecap="round"><path d="M10.5 1.5l-9 9M8 10.5H1.5V4"/></svg>
+          <span style="position:absolute;left:47px;top:0;font-size:12px;line-height:16px;color:var(--ash)">دانلود</span>
           <span style="position:absolute;left:47px;top:19px;font-size:19.5px;font-weight:600;line-height:26px;font-variant-numeric:tabular-nums"><span class="sv-dl">--</span><span style="font-size:13px;font-weight:500">mbps</span></span>
-          <span style="position:absolute;left:124px;top:3px;width:1px;height:34px;background:rgba(255,255,255,.08)"></span>
+          <span style="position:absolute;left:124px;top:3px;width:1px;height:34px;background:rgba(214,174,92,.14)"></span>
           <span class="sv-bars" style="position:absolute;left:140px;top:18px"></span>
-          <span style="position:absolute;left:169px;top:0;font-size:12px;line-height:16px;color:#8C9297">پینگ</span>
+          <span style="position:absolute;left:169px;top:0;font-size:12px;line-height:16px;color:var(--ash)">پینگ</span>
           <span style="position:absolute;left:169px;top:19px;font-size:19.5px;font-weight:600;line-height:26px;font-variant-numeric:tabular-nums"><span class="sv-ping">--</span><span style="font-size:13px;font-weight:500">ms</span></span>
-          <span style="position:absolute;left:236px;top:3px;width:1px;height:34px;background:rgba(255,255,255,.08)"></span>
-          <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" style="position:absolute;left:255px;top:18px" fill="none" stroke="#fff" stroke-width="1.4" stroke-linecap="round"><path d="M1.5 10.5l9-9M4 1.5h6.5V8"/></svg>
-          <span style="position:absolute;left:282px;top:0;font-size:12px;line-height:16px;color:#8C9297">آپلود</span>
+          <span style="position:absolute;left:236px;top:3px;width:1px;height:34px;background:rgba(214,174,92,.14)"></span>
+          <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" style="position:absolute;left:255px;top:18px" fill="none" stroke="#D6AE5C" stroke-width="1.4" stroke-linecap="round"><path d="M1.5 10.5l9-9M4 1.5h6.5V8"/></svg>
+          <span style="position:absolute;left:282px;top:0;font-size:12px;line-height:16px;color:var(--ash)">آپلود</span>
           <span style="position:absolute;left:282px;top:19px;font-size:19.5px;font-weight:600;line-height:26px;font-variant-numeric:tabular-nums"><span class="sv-ul">--</span><span style="font-size:13px;font-weight:500">mbps</span></span>
         </div>
-        <div dir="ltr" class="sv-track" style="position:absolute;left:16px;top:174px;width:324px;height:65px;border-radius:33px;background:linear-gradient(180deg,#2A323B 0%,#2E363F 100%);box-shadow:inset 0 2px 6px rgba(0,0,0,.35),inset 0 -1px 0 rgba(255,255,255,.04)">
+        <div dir="ltr" class="sv-track" style="position:absolute;left:16px;top:174px;width:324px;height:65px;border-radius:33px;background:#0E0C09;box-shadow:inset 0 2px 8px rgba(0,0,0,.6),inset 0 0 0 1px rgba(214,174,92,.14)">
           <span class="sv-label" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:16.5px;pointer-events:none"></span>
           <svg aria-hidden="true" class="sv-chev" width="38" height="16" viewBox="0 0 38 16" style="position:absolute;left:257px;top:25px;pointer-events:none" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path style="animation:svChev 1.6s ease-in-out infinite" d="M2 1.5l6.5 6.5L2 14.5"/><path style="animation:svChev 1.6s ease-in-out infinite;animation-delay:.2s" d="M14 1.5l6.5 6.5L14 14.5"/><path style="animation:svChev 1.6s ease-in-out infinite;animation-delay:.4s" d="M26 1.5l6.5 6.5L26 14.5"/></svg>
-          <button type="button" class="knob sv-knob" style="position:absolute;left:6px;top:6px;width:52px;height:52px;border-radius:50%;box-shadow:0 4px 14px rgba(40,50,140,.45),inset 0 1px 0 rgba(255,255,255,.25)">
-            <svg aria-hidden="true" class="sv-spin spin" width="22" height="22" viewBox="0 0 22 22" style="position:absolute;left:15px;top:15px;animation-duration:.9s"><circle cx="11" cy="11" r="8.5" fill="none" stroke="#fff" stroke-opacity=".3" stroke-width="2.2"/><path d="M11 2.5a8.5 8.5 0 0 1 8.5 8.5" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/></svg>
-            <svg aria-hidden="true" class="sv-arrow" width="20" height="16" viewBox="0 0 20 16" style="position:absolute;left:16px;top:18px" fill="none" stroke="#fff" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8h16M11 1.5L17.5 8 11 14.5"/></svg>
+          <button type="button" class="knob sv-knob" style="position:absolute;left:6px;top:6px;width:52px;height:52px;border-radius:50%;box-shadow:0 6px 18px -4px rgba(214,174,92,.5),inset 0 1px 0 rgba(255,250,232,.6)">
+            <svg aria-hidden="true" class="sv-spin spin" width="22" height="22" viewBox="0 0 22 22" style="position:absolute;left:15px;top:15px;animation-duration:.9s"><circle cx="11" cy="11" r="8.5" fill="none" stroke="#1B1307" stroke-opacity=".3" stroke-width="2.2"/><path d="M11 2.5a8.5 8.5 0 0 1 8.5 8.5" fill="none" stroke="#1B1307" stroke-width="2.2" stroke-linecap="round"/></svg>
+            <svg aria-hidden="true" class="sv-arrow" width="20" height="16" viewBox="0 0 20 16" style="position:absolute;left:16px;top:18px" fill="none" stroke="#1B1307" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M1.5 8h16M11 1.5L17.5 8 11 14.5"/></svg>
           </button>
         </div>
       </div>
-      <div class="scroll sv-list" style="top:392px;font-family:Outfit"></div>`,
+      <div class="scroll sv-list" style="top:392px"></div>`,
     mount(root) {
       const $ = (c) => root.querySelector(c);
       $('.sv-back').onclick = () => window.CG.back('home');
@@ -504,7 +612,7 @@
 
       function groups() {
         const map = new Map();
-        S.servers.forEach((s) => {
+        (S.gFilter ? S.servers.filter((s) => googleOk(s) === true) : S.servers).forEach((s) => {
           const key = s.cc || '_' + s.name;
           if (!map.has(key)) map.set(key, []);
           map.get(key).push(s);
@@ -516,41 +624,51 @@
         const el = $('.sv-list');
         const act = hasActivePlan();
         if (!act) {
-          el.innerHTML = `<div style="padding:10px 24px;text-align:center;color:#8F949B;font-size:15px;line-height:23px">برای دسترسی به همه‌ی لوکیشن‌ها اشتراک بگیر یا تمدید کن.<div style="height:16px"></div><button class="pill-btn white" data-buy>دیدن پلن‌ها</button></div>`;
+          el.innerHTML = `<div style="padding:10px 24px;text-align:center;color:var(--ash);font-size:15px;line-height:24px">برای دسترسی به همه‌ی لوکیشن‌ها اشتراک بگیر یا تمدید کن.<div style="height:16px"></div><button class="pill-btn white" data-buy>دیدن پلن‌ها</button></div>`;
           el.querySelector('[data-buy]').onclick = () => go('premium', { from: 'servers' });
           return;
         }
         if (!S.servers.length) {
-          el.innerHTML = `<h2 style="margin:0;padding:0 17px;font-size:17.5px;font-weight:500;line-height:24px">لوکیشن‌ها</h2>${[0, 1, 2].map(() => '<div class="srv-row"><div class="skeleton" style="width:38px;height:38px;border-radius:50%"></div><div class="skeleton" style="width:140px;height:16px"></div></div>').join('')}`;
+          el.innerHTML = `<h2 class="serif" style="margin:0;padding:0 17px;font-size:22px;font-weight:600;line-height:30px">لوکیشن‌ها</h2>${[0, 1, 2].map(() => '<div class="srv-row"><div class="skeleton" style="width:38px;height:38px;border-radius:50%"></div><div class="skeleton" style="width:140px;height:16px"></div></div>').join('')}`;
           return;
         }
         const m = mode(), gs = groups();
+        const topIsp = S.rank && S.rank.asn ? S.servers.filter((s) => window.CG.ispScore(s) != null).sort((a, b) => window.CG.ispScore(b) - window.CG.ispScore(a))[0] : null;
         const autoOn = S.auto;
-        let h = `<button type="button" class="smart" data-smart style="${autoOn ? '' : 'background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.08)'}">
-            <svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="${autoOn ? '#52FF00' : '#9FB0C4'}" stroke-width="1.9" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>
-            <span style="flex:1;min-width:0"><b>اتصال هوشمند ${autoOn ? '<span style="display:inline;color:#52FF00;font-size:12px;font-weight:500">· روشن</span>' : ''}</b><span>سریع‌ترین سرور خودکار انتخاب می‌شود و اگر قطع شد، سرور بعدی</span></span></button>
-          <h2 style="margin:12px 0 0;padding:0 17px;font-size:17.5px;font-weight:500;line-height:24px">لوکیشن‌ها</h2>`;
+        const gKnown = S.servers.some((x) => googleOk(x) !== null);
+        let h = `<button type="button" class="smart" data-smart style="${autoOn ? '' : 'background:transparent;border-color:rgba(214,174,92,.12)'}">
+            <svg aria-hidden="true" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="${autoOn ? '#E8C77A' : '#8F8676'}" stroke-width="1.9" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>
+            <span style="flex:1;min-width:0"><b>اتصال هوشمند ${autoOn ? '<span style="display:inline;color:var(--gilt);font-size:12px;font-weight:500">· روشن</span>' : ''}</b><span>سریع‌ترین سرور خودکار انتخاب می‌شود و اگر قطع شد، سرور بعدی</span></span></button>
+          <h2 class="serif" style="margin:14px 0 0;padding:0 17px;font-size:22px;font-weight:600;line-height:30px">لوکیشن‌ها</h2>
+          <div class="sv-filter"><button type="button" class="${S.gFilter ? '' : 'on'}" data-gf="0">همه</button><button type="button" class="${S.gFilter ? 'on' : ''}" data-gf="1"><span class="g-dot"></span>مناسب Gemini و گوگل</button></div>`;
+        if (S.gFilter && !S.servers.some((x) => googleOk(x) === true)) {
+          h += `<p class="muted" style="padding:6px 22px 0;font-size:13px;line-height:22px">${gKnown ? 'فعلاً هیچ سروری از دید گوگل سالم نیست. پشتیبانی خبردار است.' : 'هنوز تست گوگل برای سرورها ثبت نشده. به یک سرور وصل شو؛ اپ خودکار آن را تست می‌کند.'}</p>`;
+        }
         gs.forEach((list, gi) => {
           const head = list[0], isCur = list.some((s) => s.guid === S.selected);
           const ms = list.map((s) => pings[s.guid]).filter((x) => x > 0);
           const sub = `${faNum(list.length)} سرور${ms.length ? ' · ' + Math.min(...ms) + ' ms' : ''}`;
           const label = isCur && m === 'connected' ? 'متصل' : isCur && m === 'connecting' ? 'در حال اتصال' : 'اتصال';
+          const isBest = topIsp && list.some((s) => s.k === topIsp.k);
+          const gs_ = list.map(gInfo).filter(Boolean);
+          const gBadge = !gs_.length ? '' : gs_.some((g) => g.status === 'google') ? '<span class="g-badge ok">Gemini ✓</span>'
+            : gs_.some((g) => g.status === 'iran') ? '<span class="g-badge bad">گوگل: ایران</span>' : gs_.some((g) => g.status === 'flagged') ? '<span class="g-badge warn">کپچای گوگل</span>' : '<span class="g-badge warn">Gemini ✗</span>';
           const last = gi === gs.length - 1 && !expanded[gi];
           h += `<div class="srv-row" data-g="${gi}" style="${last ? 'border-bottom:0' : ''}">
-            ${flag(head.cc, 38).replace('class="flag"', 'class="flag" style="box-shadow:0 0 0 1px rgba(255,255,255,.06)"').replace('" style="width', ';width')}
+            ${flag(head.cc, 38).replace('class="flag"', 'class="flag" style="box-shadow:0 0 0 1px rgba(214,174,92,.25)"').replace('" style="width', ';width')}
             <div style="min-width:0;flex:1">
               <div style="font-size:16px;line-height:20px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(countryName(head))}</div>
-              <div style="font-size:10.5px;line-height:14px;color:#8F949B;margin-top:4px">${sub}${list.length > 1 ? (expanded[gi] ? ' ▴' : ' ▾') : ''}</div>
+              <div style="font-size:10.5px;line-height:14px;color:var(--ash);margin-top:4px">${sub}${list.length > 1 ? (expanded[gi] ? ' ▴' : ' ▾') : ''}${isBest ? ` <span class="isp-best">★ بهترین روی ${esc(S.rank.isp)}${S.rank.servers[topIsp.k] && S.rank.servers[topIsp.k].level === 'city' && S.rank.geo ? ' در ' + esc(S.rank.geo) : ''}</span>` : ''} ${gBadge}</div>
             </div>
-            <button type="button" class="srv-btn" data-pick="${gi}" style="background:${isCur && m === 'connected' ? 'rgba(64,255,0,.16)' : '#1A2A37'}">${label}</button>
+            <button type="button" class="srv-btn" data-pick="${gi}" style="${isCur && m === 'connected' ? 'background:var(--metal);color:#1B1307;box-shadow:none;font-weight:700' : ''}">${label}</button>
           </div>`;
           if (expanded[gi]) {
             list.forEach((s, si) => {
               const cur = s.guid === S.selected;
               h += `<div class="srv-row" style="height:56px;padding-left:49px;${gi === gs.length - 1 && si === list.length - 1 ? 'border-bottom:0' : ''}">
                 <div style="min-width:0;flex:1"><div style="font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(s.name)}</div>
-                <div style="font-size:10.5px;color:#8F949B;margin-top:2px">${esc((s.type || '').toUpperCase())}${pings[s.guid] > 0 ? ' · ' + pings[s.guid] + ' ms' : pings[s.guid] < 0 ? ' · بدون پاسخ' : ''}</div></div>
-                <button type="button" class="srv-btn" data-one="${esc(s.guid)}" style="width:80px;height:30px;background:${cur && m === 'connected' ? 'rgba(64,255,0,.16)' : '#1A2A37'}">${cur && m === 'connected' ? 'فعال' : 'انتخاب'}</button></div>`;
+                <div style="font-size:10.5px;color:var(--ash);margin-top:2px">${esc((s.type || '').toUpperCase())}${pings[s.guid] > 0 ? ' · ' + pings[s.guid] + ' ms' : pings[s.guid] < 0 ? ' · بدون پاسخ' : ''}</div></div>
+                <button type="button" class="srv-btn" data-one="${esc(s.guid)}" style="width:80px;height:30px;${cur && m === 'connected' ? 'background:var(--metal);color:#1B1307;box-shadow:none;font-weight:700' : ''}">${cur && m === 'connected' ? 'فعال' : 'انتخاب'}</button></div>`;
             });
           }
         });
@@ -572,6 +690,7 @@
           };
         });
         el.querySelectorAll('[data-one]').forEach((b) => { b.onclick = () => { window.CG.setAuto(false); connect(b.dataset.one); renderList(); }; });
+        el.querySelectorAll('[data-gf]').forEach((x) => { x.onclick = () => { S.gFilter = x.dataset.gf === '1'; renderList(); }; });
         const smart = el.querySelector('[data-smart]');
         if (smart) smart.onclick = () => {
           window.CG.setAuto(true);
@@ -611,7 +730,7 @@
 
       function paint() {
         const m = mode(), srv = selectedServer(), onn = m === 'connected', busy = m === 'connecting' || m === 'disconnecting';
-        $('.sv-flag').innerHTML = srv ? flag(srv.cc, 54) : `<span class="flag" style="width:54px;height:54px;background:linear-gradient(135deg,#3465A1,#5844AE)"></span>`;
+        $('.sv-flag').innerHTML = srv ? flag(srv.cc, 54) : `<span class="flag" style="width:54px;height:54px;display:flex;align-items:center;justify-content:center;background:#16130F;box-shadow:inset 0 0 0 1px rgba(214,174,92,.35)">${mark(34)}</span>`;
         $('.sv-name').textContent = srv ? countryName(srv) : hasActivePlan() ? 'یک لوکیشن انتخاب کن' : 'اشتراک فعال ندارید';
         $('.sv-ip').textContent = onn ? live.ip || 'در حال بررسی...' : busy ? (S.vpn.label || (srv ? srv.name : '')) : 'متصل نیستی';
         $('.sv-stats').style.opacity = onn ? 1 : 0.45;
@@ -623,8 +742,8 @@
         const labels = { connected: 'قطع اتصال', disconnected: 'برای اتصال بکش', connecting: 'در حال اتصال...', disconnecting: 'در حال قطع...' };
         $('.sv-label').textContent = labels[m];
         knob.setAttribute('aria-label', labels[m]);
-        knob.style.background = m === 'disconnected' ? 'linear-gradient(135deg,#2FBF5A 0%,#1E8F7E 100%)' : 'linear-gradient(135deg,#3663A2 0%,#4B55A9 55%,#5046AA 100%)';
-        $('.sv-chev').setAttribute('stroke', m === 'disconnected' ? '#7BE59A' : '#74AAE0');
+        knob.style.background = m === 'disconnected' ? 'linear-gradient(180deg,#F6E3AA 0%,#E2BE6A 40%,#B08436 100%)' : 'linear-gradient(180deg,#C9A458 0%,#8E6A2C 100%)';
+        $('.sv-chev').setAttribute('stroke', m === 'disconnected' ? '#D6AE5C' : '#8E6A2C');
         $('.sv-spin').style.display = busy ? 'block' : 'none';
         $('.sv-arrow').style.display = busy ? 'none' : 'block';
         if (m !== lastMode) {
@@ -635,6 +754,7 @@
       }
       renderList();
       paint();
+      window.CG.ispRank().then(() => renderList()).catch(() => {});
       const iv = setInterval(paint, 500);
       if (hasActivePlan() && !S.servers.length) syncVpn().then(renderList).catch((e) => toast(e.message, true));
       return () => { clearInterval(iv); stopLive(); offPing(); clearTimeout(pend); };

@@ -53,6 +53,36 @@ export async function sendReceipt(env, order, user, bytes, filename, contentType
   } catch (e) { return null; }
 }
 
+// The user says they sent crypto: amount, network, wallet and one-tap links to check it on the blockchain.
+export async function sendCoinNotice(env, order, user, note) {
+  if (!env.TELEGRAM_CHAT_ID) return;
+  const { coinById } = await import('./coins.js');
+  const c = coinById(order.coin);
+  if (!c) return;
+  let what = 'شارژ کیف پول';
+  if (order.kind === 'plan' || order.activate_plan_id) {
+    const p = await first(env, 'SELECT name FROM plans WHERE id = ?', order.plan_id || order.activate_plan_id);
+    what = order.kind === 'plan' ? `پلن ${p ? p.name : ''}` : `شارژ + فعال‌سازی پلن ${p ? p.name : ''}`;
+  }
+  const lines = [
+    `💎 پرداخت ارز دیجیتال — سفارش #${order.id}`,
+    what,
+    `مبلغ دقیق: ${order.coin_amount} ${c.symbol}  (${fa(order.amount_toman)} تومان)`,
+    `شبکه: ${c.network}`,
+    `به ولت: ${order.coin_address}`,
+    ...(order.coin_memo ? [`${c.memo}: ${order.coin_memo}`] : []),
+    `کاربر: ${user.email}`,
+    `هش: ${order.txid || '— (وارد نکرده؛ با مبلغ دقیق در ولت پیدا کن)'}`,
+    '',
+    note || 'بعد از دیدن واریز روی بلاک‌چین، تأیید را بزن.',
+  ];
+  const kb = [];
+  if (order.txid) kb.push([{ text: '🔍 دیدن تراکنش', url: c.tx + encodeURIComponent(order.txid) }]);
+  kb.push([{ text: '👛 ورودی‌های ولت', url: c.addr + order.coin_address }]);
+  kb.push([{ text: '✅ تأیید', callback_data: `ap:${order.id}` }, { text: '❌ رد', callback_data: `rj:${order.id}` }]);
+  await tg(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, text: lines.join('\n'), reply_markup: { inline_keyboard: kb }, disable_web_page_preview: true });
+}
+
 const buttons = (orderId) => ({
   inline_keyboard: [[
     { text: '✅ تأیید', callback_data: `ap:${orderId}` },
@@ -75,6 +105,15 @@ async function onCallback(env, cq) {
   const chatId = cq.message?.chat?.id;
   if (!isAdmin(env, chatId)) return tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: 'اجازه نداری' });
   const [action, idStr] = String(cq.data || '').split(':');
+  if (action === 'ts') {
+    const { normSender } = await import('./sms.js');
+    const list = String((await getSettings(env)).sms_senders || '').split(',').map(normSender).filter(Boolean);
+    const snd = normSender(String(cq.data).slice(3));
+    if (snd && !list.includes(snd)) list.push(snd);
+    await setSetting(env, 'sms_senders', list.join(','));
+    await tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: 'از این به بعد پیامک‌های این فرستنده خودکار تأیید می‌شوند', show_alert: true });
+    return;
+  }
   const orderId = parseInt(idStr, 10);
   const order = await first(env, 'SELECT * FROM orders WHERE id = ?', orderId);
   const ack = (text, alert) => tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: String(text || '').slice(0, 190), show_alert: !!alert });
@@ -91,18 +130,24 @@ async function onCallback(env, cq) {
       // settle already sent the panel's exact error with a retry button
       return ack('⚠️ ' + (e instanceof BillingError ? 'ساخت اکانت روی پنل انجام نشد. پیام بعدی را ببین.' : e.message), true);
     }
-    const done = `✅ تأیید و فعال شد — سفارش #${order.id} (${user.email})`;
-    if (action === 'ap') await tg(env, 'editMessageCaption', { chat_id: chatId, message_id: cq.message.message_id, caption: done });
-    else await tg(env, 'editMessageText', { chat_id: chatId, message_id: cq.message.message_id, text: done });
+    await editStatus(env, cq, `✅ تأیید و فعال شد — سفارش #${order.id} (${user.email})`);
     return ack('فعال شد');
   }
   if (action === 'rj') {
     if (order.status === 'paid') return ack('پرداخت شده؛ رد نمی‌شود');
-    await run(env, "UPDATE orders SET status = 'rejected', admin_note = ? WHERE id = ?", 'رسید تأیید نشد. اگر واریز کرده‌ای با پشتیبانی تماس بگیر.', orderId);
-    await tg(env, 'editMessageCaption', { chat_id: chatId, message_id: cq.message.message_id, caption: `❌ رد شد — سفارش #${order.id} (${user.email})` });
+    const note = order.method === 'coin' ? 'واریز ارز دیجیتال پیدا نشد. اگر واریز کرده‌ای، هش تراکنش را دوباره بفرست یا با پشتیبانی تماس بگیر.' : 'رسید تأیید نشد. اگر واریز کرده‌ای با پشتیبانی تماس بگیر.';
+    await run(env, "UPDATE orders SET status = 'rejected', admin_note = ? WHERE id = ?", note, orderId);
+    await editStatus(env, cq, `❌ رد شد — سفارش #${order.id} (${user.email})`);
     return ack('رد شد');
   }
   return ack('');
+}
+
+// photo receipts are edited through their caption, text notices (crypto, retry) through their text
+async function editStatus(env, cq, text) {
+  const m = cq.message || {};
+  if (m.photo) return tg(env, 'editMessageCaption', { chat_id: m.chat.id, message_id: m.message_id, caption: text });
+  return tg(env, 'editMessageText', { chat_id: m.chat.id, message_id: m.message_id, text: (m.text ? m.text + '\n\n' : '') + text, disable_web_page_preview: true });
 }
 
 // ---------------- diagnostics ----------------
@@ -194,6 +239,17 @@ const HELP = `دستورهای ربات Cloud Gold:
    مثال: /coupon YALDA 20 100 7
 📋 /coupons — لیست کدها    🗑 /delcoupon کد
 
+🔎 /google — کدام سرورها با گوگل و Gemini مشکل دارند
+💳 /sms — تأیید خودکار کارت‌به‌کارت با پیامک بانک
+   (یا پیامک واریز را کپی کن و همین‌جا بفرست)
+
+💎 /wallets — ولت‌های درگاه ارز دیجیتال و قیمت لحظه‌ای
+   /rate — قیمت لحظه‌ای دلار از صرافی‌های ایرانی (خودکار)
+   /set coin_auto auto — تأیید خودکار روی بلاک‌چین (XLM XRP TRX TON ALGO)
+     detect = فقط پیدا کند و تو تأیید کنی · off = همه دستی
+   /set wallet_xlm آدرس — (xrp trx sol ton ltc doge bch bnb pol algo هم همین‌طور)
+   /set wallet_xlm_memo ... — Memo برای ولت صرافی (xrp و ton هم دارند)
+
 ⚙️ /settings — تنظیمات    /set کلید مقدار — تغییر
    trial_data_gb = حجم تست رایگان (0 = مثل پلن)`;
 
@@ -210,6 +266,20 @@ async function onMessage(env, msg) {
   if (!isAdmin(env, chatId)) return;
 
   if (cmd === '/start' || cmd === '/help') return say(HELP);
+
+  // the admin pasted a bank SMS: find the card order and confirm it
+  if (text && !text.startsWith('/')) {
+    const { parseBankSms, handleBankSms } = await import('./sms.js');
+    const p = parseBankSms(text);
+    if (p.deposit && p.amounts.length) {
+      const r = await handleBankSms(env, { sender: 'admin-paste', text, trusted: true, source: 'paste' });
+      if (r.result === 'paid') return say(`✅ سفارش #${r.orderId} تأیید و فعال شد.`);
+      if (r.result === 'duplicate') return say('این پیامک قبلاً بررسی شده است.');
+      if (r.result === 'settle_failed') return say(`⚠️ سفارش #${r.orderId} پیدا شد ولی فعال‌سازی انجام نشد: ${r.message}`);
+      if (r.result === 'no_order' || r.result === 'ambiguous') return; // handleBankSms already explained it
+      return say('سفارش برای تأیید تو فرستاده شد.');
+    }
+  }
 
   if (cmd === '/panel') {
     await say('⏳ در حال تست پنل...');
@@ -298,23 +368,105 @@ async function onMessage(env, msg) {
     const r = await run(env, 'DELETE FROM coupons WHERE code = ?', code);
     return say(r.meta && r.meta.changes ? `🗑 کد ${code} پاک شد.` : 'این کد پیدا نشد.');
   }
+  if (cmd === '/wallets') {
+    const { COINS, walletKey, memoKey, prices } = await import('./coins.js');
+    const { usdRateInfo } = await import('./usdrate.js');
+    const s = await getSettings(env);
+    const ri = await usdRateInfo(env);
+    const p = await prices(env);
+    const lines = ['💎 درگاه ارز دیجیتال Cloud Gold Pay', `قیمت دلار: ${ri.rate ? fa(ri.rate) + ' تومان · ' + RATE_FROM[ri.from] : '❌ از هیچ صرافی دریافت نشد → /rate'}`, ''];
+    for (const c of COINS) {
+      const w = String(s[walletKey(c)] || '').trim();
+      const price = p && p[c.id] ? `$${p[c.id]}` : 'قیمت نامعلوم';
+      const memo = c.memo ? String(s[memoKey(c)] || '').trim() : '';
+      lines.push(`${w ? '✅' : '⚪️'} ${c.symbol} (${c.network}) · ${price} · کارمزد ${c.fee}\n   ${w || `خالی → /set ${walletKey(c)} آدرس`}${c.memo ? `\n   ${c.memo}: ${memo || `ندارد (اگر ولت صرافی است حتماً بگذار → /set ${memoKey(c)} ...)`}` : ''}`);
+    }
+    lines.push('', 'ارزی که آدرس ندارد در اپ نشان داده نمی‌شود.');
+    return say(lines.join('\n'));
+  }
+  if (cmd === '/sms') {
+    const { smsKey } = await import('./sms.js');
+    const k = await smsKey(env);
+    const s = await getSettings(env);
+    const base = String(env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+    const senders = String(s.sms_senders || '').split(',').filter(Boolean);
+    return say([
+      '💳 تأیید خودکار کارت‌به‌کارت با پیامک بانک',
+      '',
+      '۱) روی گوشی‌ای که پیامک بانک می‌آید، اپ رایگان «Incoming SMS to URL forwarder» را نصب کن (از F-Droid یا صفحه‌ی Releases گیت‌هاب).',
+      '۲) در اپ یک قانون بساز:',
+      '   Sender: *  (یا شماره‌ی بانک)',
+      `   URL: ${base}/sms/${k}`,
+      '   بقیه را دست نزن (JSON پیش‌فرض درست است) → Test → Save',
+      '۳) اولین پیامک واریز که آمد، در تلگرام دکمه‌ی «🏦 این فرستنده بانک من است» را بزن. از آن به بعد خودکار تأیید می‌شود.',
+      '',
+      `فرستنده‌های بانکی مورد اعتماد: ${senders.length ? senders.join('، ') : 'هنوز هیچ'}`,
+      `حالت: card_auto = ${s.card_auto} · مبلغ یکتا: ${s.card_unique === '0' ? 'خاموش' : 'روشن'}`,
+      '',
+      'بدون نصب اپ: پیامک واریز را کپی کن و همین‌جا برای ربات بفرست.',
+      'این آدرس را به کسی نده؛ اگر لو رفت: /set sms_key  (خالی) و دوباره /sms',
+    ].join('\n'));
+  }
+  if (cmd === '/google') {
+    const { googleSummary } = await import('./netstats.js');
+    const rows = await googleSummary(env);
+    if (!rows.length) return say('هنوز تست گوگلی ثبت نشده. هر کاربر بعد از اتصال، سرورش را خودکار تست می‌کند؛ کمی بعد دوباره بزن.');
+    const ico = { google: '🟢', no_gemini: '🟡', iran: '🔴', flagged: '🟠' };
+    const txt = { google: 'گوگل و Gemini سالم', no_gemini: 'گوگل سالم، Gemini نه', iran: 'گوگل آن را «ایران» می‌بیند', flagged: 'گوگل IP را مشکوک می‌داند (کپچا)' };
+    const lines = ['🔎 وضعیت سرورها از دید گوگل (۳ روز اخیر)', ''];
+    for (const r of rows.sort((a, b) => (a.status === 'google') - (b.status === 'google'))) {
+      lines.push(`${ico[r.status]} ${r.name} — ${txt[r.status]} · کشور از دید گوگل: ${r.google_cc || '?'} · ${r.tests} تست`);
+    }
+    lines.push('', 'برای 🔴 و 🟠: روی همان نود، خروجی را از IP دیگری بده (مثلاً WARP یا یک IP تمیز) تا گوگل آن را کشور دیگری ببیند.');
+    return say(lines.join('\n'));
+  }
+  if (cmd === '/rate') {
+    const { usdRateInfo } = await import('./usdrate.js');
+    const ri = await usdRateInfo(env, { force: true });
+    const lines = ['💵 قیمت لحظه‌ای دلار (تتر/تومان صرافی‌ها)', ''];
+    for (const x of ri.sources || []) lines.push(`${x.rate ? ((ri.used || []).includes(x.id) ? '✅' : '⚠️') : '❌'} ${x.name}: ${x.rate ? fa(x.rate) + ' تومان' : 'جواب نداد' + (x.error ? ` (${x.error})` : '')}`);
+    lines.push('', ri.rate ? `قیمت استفاده‌شده: ${fa(ri.rate)} تومان · ${RATE_FROM[ri.from]}` : '❌ قیمتی در دسترس نیست. موقتاً می‌توانی دستی بگذاری: /set usd_rate_toman 100000');
+    lines.push('میانه‌ی قیمت صرافی‌ها استفاده می‌شود؛ قیمت‌های خیلی دور از بقیه (⚠️) کنار گذاشته می‌شوند.');
+    return say(lines.join('\n'));
+  }
   if (cmd === '/set') {
     const rest = text.replace(/^\/set(@\w+)?\s*/i, '');
     const i = rest.indexOf(' ');
     const key = i < 0 ? rest : rest.slice(0, i);
     const val = i < 0 ? '' : rest.slice(i + 1).trim();
     if (!(key in SETTING_DEFAULTS)) return say(`کلید ناشناخته. کلیدها:\n${Object.keys(SETTING_DEFAULTS).join('\n')}`);
+    if (key === 'card_number' && val) {
+      const { luhnOk, bankOf, cardDigits } = await import('./banks.js');
+      if (!luhnOk(val)) return say('❌ این شماره کارت درست نیست (۱۶ رقم و معتبر). دوباره از روی کارت بنویس.');
+      const b = bankOf(val);
+      await setSetting(env, key, cardDigits(val));
+      return say(`✅ شماره کارت ثبت شد${b.name ? ` — بانک ${b.name}` : ''}.`);
+    }
+    if (key.startsWith('wallet_') && val) {
+      const { validAddress, coinById } = await import('./coins.js');
+      const c = coinById(key.slice(7));
+      if (key.endsWith('_memo')) {
+        const { validMemo } = await import('./coins.js');
+        const cid = key.slice(7, -5);
+        if (!validMemo(cid, val)) return say(cid === 'xrp' ? '❌ Destination Tag ریپل فقط عدد است (حداکثر ۱۰ رقم).' : '❌ این Memo طولانی‌تر از حد مجاز است.');
+        await setSetting(env, key, val);
+        return say(`✅ ${key} = ${val}`);
+      }
+      if (!validAddress(key.slice(7), val)) return say(`❌ این آدرس برای ${c ? c.symbol + ' (' + c.network + ')' : key} درست به نظر نمی‌رسد. دوباره از ولتت کپی کن.\nبرای خاموش کردن این ارز: /set ${key}`);
+    }
     await setSetting(env, key, val);
     return say(`✅ ${key} = ${val || '(خالی)'}`);
   }
   if (cmd === '/settings') {
     const s = await getSettings(env);
-    return say(Object.entries(s).map(([k, v]) => `${k} = ${v || '—'}`).join('\n'));
+    return say(Object.entries(s).filter(([k]) => k in SETTING_DEFAULTS).map(([k, v]) => `${k} = ${v || '—'}`).join('\n'));
   }
   if (cmd === '/stats') {
     return say(await statsText(env));
   }
 }
+
+const RATE_FROM = { live: 'زنده از صرافی‌ها', saved: 'آخرین قیمت ذخیره‌شده', manual: 'دستی (usd_rate_toman)', none: 'نامشخص' };
 
 export async function statsText(env) {
   const now = nowSec();

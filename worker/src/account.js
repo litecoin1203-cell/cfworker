@@ -4,6 +4,7 @@ import { json, err, nowSec } from './util.js';
 import { PasarGuard, PasarGuardError, pgOrThrow } from './pasarguard.js';
 import { provision, parseExpire } from './billing.js';
 import { cryptoEnabled } from './nowpayments.js';
+import { enabledCoins, coinOut } from './coins.js';
 import { notifyAdmin } from './telegram.js';
 
 export async function appConfig(env) {
@@ -12,7 +13,13 @@ export async function appConfig(env) {
     support_url: s.support_url,
     announcement: s.announcement,
     card_enabled: !!s.card_number,
+    card_auto: !!s.card_number && s.card_auto !== 'off' && !!String(s.sms_senders || '').trim(),
     crypto_enabled: cryptoEnabled(env) && parseInt(s.usdt_rate_toman, 10) > 0,
+    coins: await (async () => {
+      const { autoCoins, autoMode } = await import('./chainwatch.js');
+      const mode = await autoMode(env);
+      return (await enabledCoins(env)).map((c) => ({ ...coinOut(c), auto: mode !== 'off' && autoCoins().includes(c.id) }));
+    })(),
     min_topup_toman: parseInt(s.min_topup_toman, 10) || 0,
     referral_percent: parseInt(s.referral_percent, 10) || 0,
   });

@@ -107,10 +107,17 @@
   async function loadMe() { S.me = await api('GET', '/me'); S.meAt = Date.now(); return S.me; }
   async function loadConfig() { if (!S.config) S.config = await api('GET', '/app-config'); return S.config; }
 
+  // a short key that is the same for this server on every phone (protocol|host|port) — for per-ISP stats
+  function serverKey(s) {
+    let h = 0x811c9dc5;
+    const str = `${s.type || ''}|${s.server || ''}|${s.port || ''}`.toLowerCase();
+    for (let i = 0; i < str.length; i++) { h ^= str.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+    return 'k' + h.toString(16).padStart(8, '0');
+  }
   function decorate(list) {
     S.serverPings = S.serverPings || {};
     (list || []).forEach((s) => { if (s.delay) S.serverPings[s.guid] = s.delay; });
-    return (list || []).map((s) => Object.assign({}, s, parseRemark(s.remarks)));
+    return (list || []).map((s) => Object.assign({}, s, parseRemark(s.remarks), { k: serverKey(s) }));
   }
   async function syncVpn() {
     let r;
@@ -232,19 +239,71 @@
 
   // ---------------- icons ----------------
   const I = {
-    close: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"><path d="M1.5 1.5l13 13M14.5 1.5l-13 13"/></svg>',
-    back: '<svg aria-hidden="true" width="20" height="16" viewBox="0 0 20 16" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8h17.5M12 1.5L18.5 8 12 14.5"/></svg>',
-    chevL: '<svg aria-hidden="true" width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 1.5L9.2 9 2 16.5"/></svg>',
-    check: '<svg aria-hidden="true" width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.4l3 3 6-6.6"/></svg>',
-    gem: '<svg aria-hidden="true" width="18" height="16" viewBox="0 0 18 16"><defs><linearGradient id="cgGem" x1="0" y1="0" x2="18" y2="16" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#8FE3FF"/><stop offset=".5" stop-color="#5E8BFF"/><stop offset="1" stop-color="#B26BFF"/></linearGradient></defs><path d="M4.2.8h9.6l3.4 4.6L9 15.2.8 5.4z" fill="url(#cgGem)"/><path d="M.8 5.4h16.4M4.2.8l2.2 4.6L9 15.2l2.6-9.8L13.8.8M6.4 5.4L9 .8l2.6 4.6" fill="none" stroke="#fff" stroke-opacity=".55" stroke-width=".7" stroke-linejoin="round"/></svg>',
-    globe: '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#fff" stroke-width="1.3"><circle cx="8" cy="8" r="6.6"/><path d="M1.4 8h13.2M8 1.4c2 2 2.8 4.2 2.8 6.6S10 12.6 8 14.6C6 12.6 5.2 10.4 5.2 8S6 3.4 8 1.4z"/></svg>',
-    wallet: '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><path d="M3 7h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 7l12-3v3"/><circle cx="16.5" cy="13.5" r="1.3" fill="#fff"/></svg>',
-    card: '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19M6 15h4"/></svg>',
-    crypto: '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 7.5h4a2.2 2.2 0 0 1 0 4.4h-4zM9.5 11.9h4.6a2.3 2.3 0 0 1 0 4.6H9.5zM9.5 7.5v9M11 6v1.5M13 6v1.5M11 16.5V18M13 16.5V18"/></svg>',
-    copy: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+    close: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#F2EADB" stroke-width="2" stroke-linecap="round"><path d="M1.5 1.5l13 13M14.5 1.5l-13 13"/></svg>',
+    back: '<svg aria-hidden="true" width="20" height="16" viewBox="0 0 20 16" fill="none" stroke="#F2EADB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8h17.5M12 1.5L18.5 8 12 14.5"/></svg>',
+    chevL: '<svg aria-hidden="true" width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="#F2EADB" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 1.5L9.2 9 2 16.5"/></svg>',
+    check: '<svg aria-hidden="true" width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="#F2EADB" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.4l3 3 6-6.6"/></svg>',
+    gem: '<svg aria-hidden="true" width="18" height="16" viewBox="0 0 18 16"><defs><linearGradient id="cgGem" x1="0" y1="0" x2="18" y2="16" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#F6E3AA"/><stop offset=".5" stop-color="#D6AE5C"/><stop offset="1" stop-color="#8E6A2C"/></linearGradient></defs><path d="M4.2.8h9.6l3.4 4.6L9 15.2.8 5.4z" fill="url(#cgGem)"/><path d="M.8 5.4h16.4M4.2.8l2.2 4.6L9 15.2l2.6-9.8L13.8.8M6.4 5.4L9 .8l2.6 4.6" fill="none" stroke="#3A2A0E" stroke-opacity=".45" stroke-width=".7" stroke-linejoin="round"/></svg>',
+    globe: '<svg aria-hidden="true" width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="#F2EADB" stroke-width="1.3"><circle cx="8" cy="8" r="6.6"/><path d="M1.4 8h13.2M8 1.4c2 2 2.8 4.2 2.8 6.6S10 12.6 8 14.6C6 12.6 5.2 10.4 5.2 8S6 3.4 8 1.4z"/></svg>',
+    wallet: '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F2EADB" stroke-width="1.8" stroke-linejoin="round"><path d="M3 7h16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2zM3 7l12-3v3"/><circle cx="16.5" cy="13.5" r="1.3" fill="#F2EADB"/></svg>',
+    card: '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F2EADB" stroke-width="1.8"><rect x="2.5" y="5" width="19" height="14" rx="2.5"/><path d="M2.5 10h19M6 15h4"/></svg>',
+    crypto: '<svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#F2EADB" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M9.5 7.5h4a2.2 2.2 0 0 1 0 4.4h-4zM9.5 11.9h4.6a2.3 2.3 0 0 1 0 4.6H9.5zM9.5 7.5v9M11 6v1.5M13 6v1.5M11 16.5V18M13 16.5V18"/></svg>',
+    copy: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F2EADB" stroke-width="1.8" stroke-linejoin="round"><rect x="8" y="8" width="12" height="12" rx="2.5"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/></svg>',
+  };
+
+  // ---------------- the Quiet Halo ----------------
+  // Cloud Gold's mark: a black lacquer disc inside one hairline gold ring. The CSS lives in app.css (.pb);
+  // halo() returns the button's inner markup, with gradient ids unique per instance.
+  let haloUid = 0;
+  const POWER = '<path d="M110.86 84.68A20 20 0 1 1 85.14 84.68"/><path d="M98 74v23"/>';
+  const CHECK = '<path d="M78 98.5L92 112.5L118 84.5" stroke-linejoin="round"/>';
+  function halo(opts) {
+    opts = opts || {};
+    const n = ++haloUid;
+    const metal = 'pbh-metal-' + n, gilt = 'pbh-gilt-' + n;
+    const glyph = opts.icon === 'check' ? CHECK : POWER;
+    const icon = opts.icon === false ? '' : `
+  <svg class="pb-icon" viewBox="0 0 196 196" aria-hidden="true">
+    <g class="pb-ico pb-ico-ash">${glyph}</g>
+    <g class="pb-ico pb-ico-gold" stroke="url(#${gilt})">${glyph}</g>
+  </svg>`;
+    return `<span class="pb-bloom"></span>
+  <span class="pb-glow"></span>
+  <span class="pb-pulse"></span>
+  <svg class="pb-ring" viewBox="0 0 196 196" aria-hidden="true">
+    <defs>
+      <linearGradient id="${metal}" gradientUnits="userSpaceOnUse" x1="60" y1="4" x2="136" y2="192">
+        <stop offset="0" stop-color="#F6E3AA"/><stop offset=".38" stop-color="#E2BE6A"/>
+        <stop offset=".7" stop-color="#C99A45"/><stop offset="1" stop-color="#8E6A2C"/>
+      </linearGradient>
+      <linearGradient id="${gilt}" gradientUnits="userSpaceOnUse" x1="0" y1="72" x2="0" y2="122">
+        <stop offset="0" stop-color="#FFF4D6"/><stop offset=".45" stop-color="#F5DDA2"/>
+        <stop offset="1" stop-color="#E0BB6C"/>
+      </linearGradient>
+    </defs>
+    <circle class="pb-track" cx="98" cy="98" r="94" stroke="url(#${metal})"/>
+    <path class="pb-halo" pathLength="100" d="M98 4a94 94 0 1 1 0 188a94 94 0 1 1 0-188" stroke="url(#${metal})"/>
+  </svg>
+  <span class="pb-comet"><span class="pb-arc"></span><span class="pb-head"></span></span>
+  <span class="pb-disc"><span class="pb-face"></span><span class="pb-warm"></span><span class="pb-lamp"></span><span class="pb-gloss"></span></span>${icon}`;
+  }
+
+  // the small brand mark: a black disc in a thin gold ring with a gilt power glyph (22-34px)
+  let markUid = 0;
+  const mark = (px) => {
+    const id = ++markUid, m = 'cgm' + id, g = 'cgg' + id, d = 'cgd' + id;
+    return `<span class="mark" style="width:${px}px;height:${px}px;position:relative;display:inline-block"><svg aria-hidden="true" viewBox="0 0 40 40" style="width:100%;height:100%;display:block;overflow:visible"><defs>
+      <linearGradient id="${m}" gradientUnits="userSpaceOnUse" x1="9" y1="1" x2="31" y2="39"><stop offset="0" stop-color="#F6E3AA"/><stop offset=".38" stop-color="#E2BE6A"/><stop offset=".7" stop-color="#C99A45"/><stop offset="1" stop-color="#8E6A2C"/></linearGradient>
+      <linearGradient id="${g}" gradientUnits="userSpaceOnUse" x1="0" y1="12" x2="0" y2="28"><stop offset="0" stop-color="#FFF4D6"/><stop offset=".45" stop-color="#F5DDA2"/><stop offset="1" stop-color="#E0BB6C"/></linearGradient>
+      <radialGradient id="${d}" cx=".5" cy=".62" r=".75"><stop offset="0" stop-color="#1D1914"/><stop offset=".6" stop-color="#0C0B09"/><stop offset="1" stop-color="#050505"/></radialGradient>
+    </defs>
+      <circle cx="20" cy="20" r="18.4" fill="none" stroke="url(#${m})" stroke-width="1.7"/>
+      <circle cx="20" cy="20" r="15" fill="url(#${d})" stroke="rgba(255,238,206,.16)" stroke-width=".7"/>
+      <g fill="none" stroke="url(#${g})" stroke-width="1.8" stroke-linecap="round"><path d="M24 16.2A6.2 6.2 0 1 1 16 16.2"/><path d="M20 12.9V20"/></g>
+    </svg></span>`;
   };
 
   window.CG = { esc, toman, faNum, num, faDate, $, $$, sleep, flag, ccToFlag, parseRemark, bytes, call, api, ApiError, on, S, loadMe, loadConfig,
-    syncVpn, refreshServers, selectedServer, hasActivePlan, toast, busyButton, sheet, screens, go, reset, back, layout, I,
+    syncVpn, refreshServers, selectedServer, hasActivePlan, toast, busyButton, sheet, screens, go, reset, back, layout, I, halo, mark,
     get current() { return current; } };
 })();

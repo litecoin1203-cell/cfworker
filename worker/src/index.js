@@ -41,10 +41,18 @@ function payDonePage(cancelled) {
 export default {
   // daily: backup file + short report to the admin's Telegram (cron in wrangler.jsonc)
   async scheduled(event, env, ctx) {
+    // every minute: look for crypto deposits on the blockchain and confirm matching orders
+    if (event && event.cron && event.cron !== '30 20 * * *') {
+      ctx.waitUntil((async () => { try { const { scanAll } = await import('./chainwatch.js'); await scanAll(env); } catch (e) {} })());
+      return;
+    }
     ctx.waitUntil((async () => {
       if (!env.TELEGRAM_CHAT_ID) return;
-      try { await notifyAdmin(env, '🌙 گزارش روزانه\n' + (await statsText(env))); } catch (e) {}
+      let rate = '';
+      try { const { usdRateInfo } = await import('./usdrate.js'); const ri = await usdRateInfo(env, { force: true }); rate = ri.rate ? `\n💵 دلار: ${ri.rate.toLocaleString('en-US')} تومان (${ri.from === 'live' ? 'زنده' : ri.from === 'saved' ? 'ذخیره‌شده' : 'دستی'})` : '\n⚠️ قیمت دلار از صرافی‌ها دریافت نشد → /rate'; } catch (e) {}
+      try { await notifyAdmin(env, '🌙 گزارش روزانه\n' + (await statsText(env)) + rate); } catch (e) {}
       try { await sendBackup(env); } catch (e) {}
+      try { const { prune } = await import('./netstats.js'); await prune(env); } catch (e) {}
     })());
   },
 
@@ -56,6 +64,12 @@ export default {
     try {
       if (path === '/health') return json({ ok: true });
       if (path === '/pay/done') return payDonePage(url.searchParams.get('cancelled'));
+
+      // bank SMS forwarded from the admin's phone (secret key in the path)
+      if (path.startsWith('/sms/') && request.method === 'POST') {
+        const { smsWebhook } = await import('./sms.js');
+        return await smsWebhook(env, request, path.slice(5));
+      }
 
       // Telegram webhook at a secret path so only Telegram can reach it
       if (path === `/tg/${env.TELEGRAM_WEBHOOK_SECRET || 'webhook'}` && request.method === 'POST') {
@@ -103,7 +117,7 @@ async function route(request, env, p) {
   // everything below needs a logged-in user
   const authed = [
     '/me', '/trial', '/vpn', '/vpn/sub', '/vpn/servers', '/devices', '/orders', '/wallet', '/referral', '/coupons/check',
-    '/auth/change-password', '/auth/logout-all',
+    '/auth/change-password', '/auth/logout-all', '/net/report', '/net/rank', '/net/google',
   ];
   const needsAuth = authed.includes(p) || p.startsWith('/devices/') || p.startsWith('/orders/');
   if (!needsAuth) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
@@ -116,6 +130,9 @@ async function route(request, env, p) {
   if (p === '/vpn' && m === 'GET') return account.vpn(env, user, request);
   if (p === '/vpn/servers' && m === 'GET') return account.vpnServers(env, user);
   if (p === '/vpn/sub' && m === 'GET') return account.vpnSub(env, user, request);
+  if (p === '/net/report' && m === 'POST') { const ns = await import('./netstats.js'); return ns.report(env, user, request, await body(request)); }
+  if (p === '/net/rank' && m === 'GET') { const ns = await import('./netstats.js'); return ns.rank(env, request); }
+  if (p === '/net/google' && m === 'POST') { const ns = await import('./netstats.js'); return ns.googleReport(env, user, await body(request)); }
   if (p === '/coupons/check' && m === 'POST') return orders.checkCoupon(env, user, await body(request));
   if (p === '/devices' && m === 'GET') return account.devices(env, user);
   if (p === '/wallet' && m === 'GET') return orders.wallet(env, user);
@@ -128,6 +145,7 @@ async function route(request, env, p) {
   if ((mm = p.match(/^\/orders\/(\d+)$/)) && m === 'GET') return orders.getOrder(env, user, parseInt(mm[1], 10));
   if ((mm = p.match(/^\/orders\/(\d+)\/receipt$/)) && m === 'POST') return orders.uploadReceipt(env, user, parseInt(mm[1], 10), request);
   if ((mm = p.match(/^\/orders\/(\d+)\/cancel$/)) && m === 'POST') return orders.cancelOrder(env, user, parseInt(mm[1], 10));
+  if ((mm = p.match(/^\/orders\/(\d+)\/paid$/)) && m === 'POST') return orders.markCoinPaid(env, user, parseInt(mm[1], 10), await body(request));
 
   return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
 }

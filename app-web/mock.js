@@ -80,8 +80,16 @@
     async openUrl(a) { console.log('[mock] open', a.url); return {}; },
     async copy(a) { try { await navigator.clipboard.writeText(a.text); } catch (e) {} return {}; },
     async share(a) { console.log('[mock] share', a.text); return {}; },
-    async getTune() { return { iranDirect: LS.get('iran') !== false }; },
+    async getTune() { return { iranDirect: LS.get('iran') !== false, ipv6Tunnel: false }; },
+    async probeGoogle() {
+      if (!vpn.running) throw { message: 'اول به یک سرور وصل شو.' };
+      await new Promise((r) => setTimeout(r, 1200));
+      const s = vpn.servers.find((x) => x.guid === vpn.selected) || {};
+      const iran = /nl1/.test(s.server || '');   // preview: pretend Google sees the Netherlands node as Iran
+      return { ip: iran ? '185.12.1.9' : '45.128.199.56', cc: iran ? 'NL' : 'DE', google_cc: iran ? 'IR' : 'DE', gemini: !iran, gemini_region: iran ? null : 'DEU', google_blocked: false };
+    },
     async setTune(a) { LS.set('iran', !!a.iranDirect); return { iranDirect: !!a.iranDirect }; },
+    async vpnSystemSettings() { console.log('[mock] open Android VPN settings'); return { opened: true }; },
     async advanced() { console.log('[mock] open v2rayNG settings'); return {}; },
   };
   window.CGMockHost = {
