@@ -97,20 +97,27 @@ export async function provision(env, user, plan, opts = {}) {
   return pgUser;
 }
 
+// Move money in or out of a wallet atomically. One D1 batch (a single transaction) logs the movement and
+// changes the balance, and only when the balance stays >= 0 and this order+reason was not applied before.
+// The check and the write happen inside SQLite, so two purchases racing for the same money can no longer
+// both pass the check, and a credit racing a debit is never lost.
 export async function walletApply(env, user, amount, reason, orderId, note) {
+  const nonce = randomHex(16);
+  const [tx] = await env.DB.batch([
+    // the UNIQUE(order_id, reason) index makes this idempotent per order+reason (OR IGNORE = already applied)
+    env.DB.prepare(`INSERT OR IGNORE INTO wallet_tx (user_id, amount, balance_after, reason, order_id, note, created_at, nonce)
+      SELECT id, ?, wallet_balance + ?, ?, ?, ?, ?, ? FROM users WHERE id = ? AND wallet_balance + ? >= 0`)
+      .bind(amount, amount, reason, orderId ?? null, note || null, nowSec(), nonce, user.id, amount),
+    env.DB.prepare('UPDATE users SET wallet_balance = wallet_balance + ? WHERE id = ? AND EXISTS (SELECT 1 FROM wallet_tx WHERE nonce = ?)')
+      .bind(amount, user.id, nonce),
+  ]);
   const fresh = await first(env, 'SELECT wallet_balance FROM users WHERE id = ?', user.id);
-  const balance = fresh.wallet_balance + amount;
-  if (balance < 0) throw new BillingError('insufficient_balance', 'موجودی کیف پول کافی نیست.');
-  // the UNIQUE(order_id, reason) index makes this idempotent per order+reason
-  try {
-    await insert(env, 'wallet_tx', { user_id: user.id, amount, balance_after: balance, reason, order_id: orderId ?? null, note: note || null, created_at: nowSec() });
-  } catch (e) {
-    if (String(e.message || '').includes('UNIQUE')) return fresh.wallet_balance; // already applied
-    throw e;
+  user.wallet_balance = fresh.wallet_balance;
+  if (!tx.meta.changes) {
+    const done = orderId != null && await first(env, 'SELECT 1 FROM wallet_tx WHERE order_id = ? AND reason = ?', orderId, reason);
+    if (!done) throw new BillingError('insufficient_balance', 'موجودی کیف پول کافی نیست.');
   }
-  await run(env, 'UPDATE users SET wallet_balance = ? WHERE id = ?', balance, user.id);
-  user.wallet_balance = balance;
-  return balance;
+  return fresh.wallet_balance;
 }
 
 async function referralCommission(env, buyer, order) {

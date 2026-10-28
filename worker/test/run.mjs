@@ -181,6 +181,49 @@ section('wallet purchase refunds when panel is down');
   ok(w.data.balance === 500000, 'wallet refunded in full');
 }
 
+section('wallet is atomic under concurrent purchases');
+{
+  const { walletApply } = await import('../src/billing.js');
+  const q = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const ledgerOk = async (uid) => {
+    const u = await q('SELECT wallet_balance b FROM users WHERE id = ?', uid);
+    const l = await q('SELECT COALESCE(SUM(amount),0) s FROM wallet_tx WHERE user_id = ?', uid);
+    const last = await q('SELECT balance_after a FROM wallet_tx WHERE user_id = ? ORDER BY id DESC LIMIT 1', uid);
+    return u.b >= 0 && u.b === l.s && (!last || last.a === u.b);
+  };
+
+  // straight on the wallet: 300k, ten debits of 100k fired at once -> exactly three go through
+  await signup('race1@example.com');
+  const u1 = await q("SELECT * FROM users WHERE email = 'race1@example.com'");
+  await walletApply(env, { ...u1 }, 300000, 'topup', 900001, 'test');
+  const results = await Promise.allSettled([...Array(10)].map((_, i) => walletApply(env, { ...u1 }, -100000, 'purchase', 900100 + i, 'test')));
+  ok(results.filter((r) => r.status === 'fulfilled').length === 3, 'exactly 3 of 10 concurrent debits succeed');
+  ok(results.filter((r) => r.status === 'rejected').every((r) => r.reason.code === 'insufficient_balance'), 'the rest fail with insufficient_balance');
+  ok((await q('SELECT wallet_balance b FROM users WHERE id = ?', u1.id)).b === 0, 'balance ends at 0, never negative');
+  ok(await ledgerOk(u1.id), 'ledger matches balance after concurrent debits');
+
+  // the same order+reason applied twice at once is applied only once (e.g. SMS and admin approve together)
+  await Promise.all([walletApply(env, { ...u1 }, 50000, 'topup', 900200, 'x'), walletApply(env, { ...u1 }, 50000, 'topup', 900200, 'x')]);
+  ok((await q('SELECT wallet_balance b FROM users WHERE id = ?', u1.id)).b === 50000, 'duplicate concurrent credit applied once');
+  // a credit racing a debit is not lost
+  await Promise.all([walletApply(env, { ...u1 }, 70000, 'topup', 900201, 'x'), walletApply(env, { ...u1 }, -40000, 'purchase', 900202, 'x')]);
+  ok((await q('SELECT wallet_balance b FROM users WHERE id = ?', u1.id)).b === 80000, 'concurrent credit + debit: no lost update');
+  ok(await ledgerOk(u1.id), 'ledger matches balance after mixed updates');
+
+  // end to end: wallet holds one annual plan, five purchases sent at once -> one paid, the rest refused
+  const tok = await signup('race2@example.com');
+  const u2 = await q("SELECT * FROM users WHERE email = 'race2@example.com'");
+  const annual = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ساله');
+  await walletApply(env, { ...u2 }, annual.price_toman, 'topup', 900300, 'test');
+  const buys = await Promise.all([...Array(5)].map(() => call('POST', '/api/v1/orders', { token: tok, json: { plan_id: annual.id, method: 'wallet' } })));
+  const paid = buys.filter((b) => b.status === 201 && b.data.status === 'paid').length;
+  ok(paid === 1, `one concurrent wallet purchase paid, got ${paid}`);
+  ok(buys.filter((b) => b.status === 400).every((b) => b.data.detail.code === 'insufficient_balance'), 'other concurrent purchases refused for balance');
+  const w = await call('GET', '/api/v1/wallet', { token: tok });
+  ok(w.data.balance === 0, `wallet not over-spent: ${w.data.balance}`);
+  ok(await ledgerOk(u2.id), 'ledger matches balance after concurrent purchases');
+}
+
 section('crypto invoice + IPN');
 {
   await botSet('usdt_rate_toman', '70000');
