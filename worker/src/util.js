@@ -75,6 +75,17 @@ export function timingSafeEqual(a, b) {
   return diff === 0;
 }
 
+// Compare two secrets without leaking their content or length through timing: hash both to a fixed size first.
+export async function safeEqual(a, b) {
+  const [x, y] = await Promise.all([a, b].map((v) => crypto.subtle.digest('SHA-256', enc.encode(String(v ?? '')))));
+  return timingSafeEqual(hex(x), hex(y));
+}
+
+// One JSON line per error, at error level, so Workers Logs can search and filter it.
+export function logError(message, e, extra = {}) {
+  console.error(JSON.stringify({ message, error: e instanceof Error ? e.message : String(e), stack: e && e.stack, ...extra }));
+}
+
 // ---------------- HMAC-SHA256 ----------------
 async function hmacKey(secret) {
   return crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);

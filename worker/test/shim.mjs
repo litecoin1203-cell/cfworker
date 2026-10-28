@@ -34,7 +34,18 @@ export function makeDB(schemaPath) {
   for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) db.exec(readFileSync(join(dir, f), 'utf8'));
   return {
     prepare: (sql) => new Stmt(db, sql),
-    async batch(stmts) { const out = []; for (const s of stmts) out.push(await s.run()); return out; },
+    // like D1: the whole batch is one transaction, run without anything else in between, rolled back on error
+    async batch(stmts) {
+      db.exec('BEGIN');
+      try {
+        const out = stmts.map((s) => {
+          const r = db.prepare(s.sql).run(...s.args);
+          return { success: true, meta: { changes: toNum(r.changes), last_row_id: toNum(r.lastInsertRowid) } };
+        });
+        db.exec('COMMIT');
+        return out;
+      } catch (e) { db.exec('ROLLBACK'); throw e; }
+    },
     exec: (sql) => db.exec(sql),
   };
 }
