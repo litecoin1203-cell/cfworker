@@ -502,6 +502,12 @@ object CoreServiceManager {
                 AppConfig.MSG_REGISTER_CLIENT -> {
                     if (coreController.isRunning) {
                         MessageUtil.sendMsg2UI(serviceControl.getService(), AppConfig.MSG_STATE_RUNNING, "")
+                        // only the running VpnService itself may ask Android about Always-on / lockdown (API 29+)
+                        val service = serviceControl.getService()
+                        if (service is android.net.VpnService && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                            val flags = "${if (service.isAlwaysOn) 1 else 0},${if (service.isLockdownEnabled) 1 else 0}"
+                            MessageUtil.sendMsg2UI(service, AppConfig.MSG_VPN_POLICY, flags)
+                        }
                     } else {
                         MessageUtil.sendMsg2UI(serviceControl.getService(), AppConfig.MSG_STATE_NOT_RUNNING, "")
                     }

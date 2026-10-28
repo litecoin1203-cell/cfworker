@@ -56,6 +56,7 @@
     try { v = payload ? JSON.parse(payload) : null; } catch (e) { v = payload; }
     (listeners[name] || []).slice().forEach((fn) => fn(v));
   };
+  const emit = (name, v) => (listeners[name] || []).slice().forEach((fn) => fn(v));
   const on = (name, fn) => { (listeners[name] = listeners[name] || []).push(fn); return () => { listeners[name] = listeners[name].filter((f) => f !== fn); }; };
 
   const host = window.CGHost || window.CGMockHost;
@@ -137,14 +138,19 @@
 
   // VPN events from the native core
   on('vpn', (v) => {
-    const was = S.vpn.running;
+    const was = S.vpn.running, wasBusy = S.vpn.busy;
     S.vpn.running = !!(v && v.running);
+    // edge for listeners registered later (vpn.js): 'up', 'down' or null when nothing changed
+    S.vpn.edge = S.vpn.running && !was ? 'up' : !S.vpn.running && was ? 'down' : null;
+    // closed while nobody asked (not our disconnect, not a server switch): onRevoke, another VPN app, the system
+    if (S.vpn.edge === 'down' && wasBusy !== 'disconnecting' && wasBusy !== 'connecting') S.vpn.dropped = true;
     if (S.vpn.running && !was) { S.vpn.since = Date.now(); try { localStorage.setItem('cg_since', String(S.vpn.since)); } catch (e) {} }
     if (!S.vpn.running) S.vpn.since = 0;
     // while switching servers the core stops before it starts again; keep showing "Connecting..."
     if (S.vpn.running || S.vpn.busy !== 'connecting') S.vpn.busy = null;
   });
-  on('vpnError', (v) => { S.vpn.busy = null; toast((v && v.message) || 'اتصال برقرار نشد.', true); });
+  // the message is shown by the screen from its code (vpn.js); raw core text never reaches the user
+  on('vpnError', () => { S.vpn.busy = null; });
   on('ping', (v) => { S.ping = v && v.ms ? v.ms : null; });
 
   // ---------------- ui helpers ----------------
@@ -231,8 +237,11 @@
     const app = $('#app');
     current = { name, params: params || {} };
     // flow screens (Phase 2) are laid out in normal document flow, follow the app's language direction and theme
+    // the document's direction follows the screen: flow screens use the app language, older screens are Persian
+    document.documentElement.setAttribute('dir', def.flow ? CGI18n.dir : 'rtl');
+    document.documentElement.setAttribute('lang', def.flow ? CGI18n.lang : 'fa');
     app.innerHTML = def.flow
-      ? `<div class="screen flow" data-screen="${name}" dir="${CGI18n.dir}" lang="${CGI18n.lang}"><div class="stage">${def.html(current.params)}</div></div>`
+      ? `<div class="screen flow" data-screen="${name}"><div class="stage">${def.html(current.params)}</div></div>`
       : `<div class="screen" data-screen="${name}" style="background:${def.bg || 'var(--bg)'}"><div class="stage">${def.html(current.params)}</div></div>`;
     layout();
     const root = $('.stage', app);
@@ -329,7 +338,7 @@
     </svg></span>`;
   };
 
-  window.CG = { t: CGI18n.t, i18n: CGI18n, themeSetting, setTheme, applyTheme, applyFontScale, esc, toman, faNum, num, faDate, $, $$, sleep, flag, ccToFlag, parseRemark, bytes, call, api, ApiError, on, S, loadMe, loadConfig,
+  window.CG = { t: CGI18n.t, i18n: CGI18n, themeSetting, setTheme, applyTheme, applyFontScale, esc, toman, faNum, num, faDate, $, $$, sleep, flag, ccToFlag, parseRemark, bytes, call, api, ApiError, on, emit, S, loadMe, loadConfig,
     syncVpn, refreshServers, selectedServer, hasActivePlan, toast, busyButton, sheet, screens, go, reset, back, tab, layout, I, halo, mark,
     get current() { return current; } };
 })();

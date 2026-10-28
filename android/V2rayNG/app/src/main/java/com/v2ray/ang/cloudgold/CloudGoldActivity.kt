@@ -33,6 +33,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.webkit.WebViewAssetLoader
@@ -66,6 +67,7 @@ class CloudGoldActivity : AppCompatActivity() {
     private var pendingDeepLink: String? = null
     private var vpnRunning = false
     private var stateWaiter: CompletableDeferred<Boolean>? = null
+    private var policyWaiter: CompletableDeferred<String>? = null
     private var pendingVpnCall: Int? = null
     private var pendingUpload: Pair<Int, JSONObject>? = null
     private val pingRegex by lazy {
@@ -228,7 +230,9 @@ class CloudGoldActivity : AppCompatActivity() {
                 } catch (e: CgError) {
                     fail(id, e.code, e.message ?: "مشکلی پیش آمد.")
                 } catch (e: Exception) {
-                    fail(id, "error", e.message ?: e.javaClass.simpleName)
+                    // technical detail stays in the log; the page gets a code and a plain sentence
+                    Log.w("CloudGold", "bridge $method failed", e)
+                    fail(id, "error", "کار انجام نشد. دوباره امتحان کن.")
                 }
             }
         }
@@ -246,7 +250,9 @@ class CloudGoldActivity : AppCompatActivity() {
                 .put("loggedIn", CgSession.loggedIn)
                 .put("email", CgSession.email ?: "")
                 .put("version", BuildConfig.VERSION_NAME)
-                .put("core", "2.2.6"))
+                .put("core", "2.2.6")
+                .put("fontScale", resources.configuration.fontScale.toDouble())
+                .put("sdk", Build.VERSION.SDK_INT))
             "setSession" -> {
                 CgSession.save(a.optString("access_token"), a.optString("refresh_token"), a.optString("email"))
                 resolve(id, true, JSONObject())
@@ -295,6 +301,36 @@ class CloudGoldActivity : AppCompatActivity() {
                 // the service only answers while it runs, so silence means "not running"
                 val running = withTimeoutOrNull(800) { waiter.await() } ?: vpnRunning
                 resolve(id, true, JSONObject().put("running", running))
+            }
+            "vpnPolicy" -> {
+                // Always-on VPN and "Block connections without VPN" (the kill switch) as Android reports them.
+                // Android tells only the running VpnService, and only on Android 10+; anything else is "unknown",
+                // never shown as on.
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+                    resolve(id, true, JSONObject().put("known", false).put("reason", "old_android"))
+                } else if (!vpnRunning || !SettingsManager.isVpnMode()) {
+                    resolve(id, true, JSONObject().put("known", false).put("reason", "not_connected"))
+                } else {
+                    val waiter = CompletableDeferred<String>()
+                    policyWaiter = waiter
+                    MessageUtil.sendMsg2Service(ctx, AppConfig.MSG_REGISTER_CLIENT, "")
+                    val flags = withTimeoutOrNull(1200) { waiter.await() }
+                    val parts = flags?.split(",")
+                    if (parts == null || parts.size != 2) {
+                        resolve(id, true, JSONObject().put("known", false).put("reason", "no_answer"))
+                    } else {
+                        resolve(id, true, JSONObject().put("known", true)
+                            .put("alwaysOn", parts[0] == "1").put("lockdown", parts[1] == "1"))
+                    }
+                }
+            }
+            "systemBars" -> {
+                val light = a.optBoolean("light", false)
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    isAppearanceLightStatusBars = light
+                    isAppearanceLightNavigationBars = light
+                }
+                resolve(id, true, JSONObject())
             }
             "vpnPing" -> {
                 if (vpnRunning) MessageUtil.sendMsg2Service(ctx, AppConfig.MSG_MEASURE_DELAY, "")
@@ -403,9 +439,14 @@ class CloudGoldActivity : AppCompatActivity() {
                 AppConfig.MSG_STATE_RUNNING, AppConfig.MSG_STATE_START_SUCCESS -> setRunning(true)
                 AppConfig.MSG_STATE_NOT_RUNNING, AppConfig.MSG_STATE_STOP_SUCCESS -> setRunning(false)
                 AppConfig.MSG_STATE_START_FAILURE -> {
-                    val msg = intent.getStringExtra("content").takeUnless { it.isNullOrBlank() } ?: "اتصال به این لوکیشن ممکن نشد. لوکیشن دیگری را امتحان کن."
-                    emit("vpnError", JSONObject().put("message", msg))
+                    // the core's text can name hosts and config details: log it, give the page only a code
+                    Log.w("CloudGold", "core start failed: ${intent.getStringExtra("content").orEmpty()}")
+                    emit("vpnError", JSONObject().put("code", "start_failed").put("message", "اتصال به این لوکیشن ممکن نشد. لوکیشن دیگری را امتحان کن."))
                     setRunning(false)
+                }
+                AppConfig.MSG_VPN_POLICY -> {
+                    policyWaiter?.complete(intent.getStringExtra("content").orEmpty())
+                    policyWaiter = null
                 }
                 AppConfig.MSG_MEASURE_DELAY_SUCCESS -> onPing(intent.getStringExtra("content").orEmpty())
                 AppConfig.MSG_MEASURE_CONFIG_SUCCESS -> {
@@ -429,7 +470,7 @@ class CloudGoldActivity : AppCompatActivity() {
         val ms = pingRegex.find(lines.firstOrNull().orEmpty())?.groupValues?.getOrNull(1)?.toIntOrNull()
         val out = JSONObject().put("ms", ms ?: JSONObject.NULL)
         Regex("\\((\\w+)\\)\\s+(\\S+)").find(lines.getOrNull(1).orEmpty())?.let {
-            if (it.groupValues[2] != "unknown") out.put("ip", it.groupValues[2])
+            // the exit IP is the server's address: it stays out of the page
             if (it.groupValues[1] != "unknown") out.put("cc", it.groupValues[1].uppercase())
         }
         emit("ping", out)

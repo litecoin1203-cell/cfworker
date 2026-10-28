@@ -159,6 +159,8 @@ object AppConfig {
     const val MSG_REGISTER_CLIENT = 1
     const val MSG_STATE_RUNNING = 11
     const val MSG_STATE_NOT_RUNNING = 12
+    /** Read-only report of Android's Always-on VPN / lockdown state for this app; content "alwaysOn,lockdown" as 0/1. */
+    const val MSG_VPN_POLICY = 13
     const val MSG_UNREGISTER_CLIENT = 2
     const val MSG_STATE_START = 3
     const val MSG_STATE_START_SUCCESS = 31

@@ -40,7 +40,7 @@
   }
   const H = {
     async api(a) { return http(a.method, a.path, a.body); },
-    async session() { const s = LS.get('session'); return { loggedIn: !!(s && s.refresh_token), email: s && s.email, version: '1.0.0-web', core: '2.2.6' }; },
+    async session() { const s = LS.get('session'); return { loggedIn: !!(s && s.refresh_token), email: s && s.email, version: '1.0.0-web', core: '2.2.6', fontScale: +(new URLSearchParams(location.search).get('fs') || 1) }; },
     async setSession(a) { LS.set('session', a); return {}; },
     async logout() { LS.set('session', null); LS.set('servers', null); vpn.servers = []; vpn.running = false; emit('vpn', { running: false }); return {}; },
     async device() { return { id: deviceId, model: 'Web preview' }; },
@@ -89,6 +89,14 @@
       return { ip: iran ? '185.12.1.9' : '45.128.199.56', cc: iran ? 'NL' : 'DE', google_cc: iran ? 'IR' : 'DE', gemini: !iran, gemini_region: iran ? null : 'DEU', google_blocked: false };
     },
     async setTune(a) { LS.set('iran', !!a.iranDirect); return { iranDirect: !!a.iranDirect }; },
+    // preview: ?policy=on|off decides what "Android" reports while connected
+    async vpnPolicy() {
+      if (!vpn.running) return { known: false, reason: 'not_connected' };
+      const p = new URLSearchParams(location.search).get('policy');
+      if (!p) return { known: false, reason: 'no_answer' };
+      return { known: true, alwaysOn: p === 'on', lockdown: p === 'on' };
+    },
+    async systemBars() { return {}; },
     async vpnSystemSettings() { console.log('[mock] open Android VPN settings'); return { opened: true }; },
     async advanced() { console.log('[mock] open v2rayNG settings'); return {}; },
   };

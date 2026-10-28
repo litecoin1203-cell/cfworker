@@ -45,7 +45,7 @@
     'conn.duration': 'مدت اتصال',
     'conn.session': 'مصرف این جلسه',
     'conn.ms': '{n} میلی‌ثانیه',
-    'conn.ms.short': '{n} ms',
+    'conn.ms.short': '{n} میلی‌ثانیه',
     'conn.none': '—',
     'conn.smart': 'اتصال هوشمند',
     'conn.smart.on': 'سریع‌ترین سرور خودکار',
@@ -377,6 +377,8 @@
     const num = Number(v || 0);
     return num.toLocaleString(lang === 'fa' ? 'fa-IR' : 'en-US', digits == null ? undefined : { minimumFractionDigits: 0, maximumFractionDigits: digits });
   }
+  // two-digit number for clocks (05, ۰۵)
+  const n2 = (v) => Number(v || 0).toLocaleString(lang === 'fa' ? 'fa-IR' : 'en-US', { minimumIntegerDigits: 2, useGrouping: false });
   const UNITS = { fa: ['کیلوبایت', 'مگابایت', 'گیگابایت', 'ترابایت'], en: ['KB', 'MB', 'GB', 'TB'] };
   // bytes from the API shown in binary units (1 GB = 1024³ bytes, as the panel counts them)
   function size(b) {
@@ -400,7 +402,7 @@
   }
 
   window.CGI18n = {
-    t, n, size, date, country,
+    t, n, n2, size, date, country,
     get lang() { return lang; },
     get dir() { return lang === 'fa' ? 'rtl' : 'ltr'; },
     setLang(v) { if (!dict[v]) return; lang = v; try { localStorage.setItem('cg_lang', v); } catch (e) {} },
