@@ -211,6 +211,8 @@ export async function backupJson(env) {
   for (const t of tables) {
     try { out.tables[t] = await all(env, `SELECT * FROM ${t}`); } catch (e) { out.tables[t] = []; }
   }
+  // password hashes never leave the database: a leaked chat must not leak them (D1 Time Travel restores everything)
+  out.tables.users = out.tables.users.map(({ password_hash, ...u }) => u);
   return JSON.stringify(out);
 }
 

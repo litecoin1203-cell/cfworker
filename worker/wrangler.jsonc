@@ -12,6 +12,12 @@
   },
   // every minute: on-chain check of crypto payments; 20:30 UTC (midnight in Iran): daily report + backup
   "triggers": { "crons": ["* * * * *", "30 20 * * *"] },
+  // Workers Rate Limiting (counted per Cloudflare location): RL_IP caps sign-ups, logins and free trials per IP,
+  // RL_LOGIN caps login attempts per email. namespace_id is any number unique within the account.
+  "ratelimits": [
+    { "name": "RL_IP", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
+    { "name": "RL_LOGIN", "namespace_id": "1002", "simple": { "limit": 5, "period": 60 } }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -21,7 +27,7 @@
     }
   ]
   // Secrets (set with `wrangler secret put` or in the dashboard, NOT here):
-  //   SECRET_KEY, PASARGUARD_URL, PASARGUARD_USERNAME, PASARGUARD_PASSWORD, PASARGUARD_API_KEY,
+  //   SECRET_KEY, JWT_SECRET (optional), PASARGUARD_URL, PASARGUARD_USERNAME, PASARGUARD_PASSWORD, PASARGUARD_API_KEY,
   //   PASARGUARD_USERNAME_PREFIX, PUBLIC_BASE_URL, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
   //   TELEGRAM_WEBHOOK_SECRET, NOWPAYMENTS_API_KEY, NOWPAYMENTS_IPN_SECRET, NOWPAYMENTS_PAY_CURRENCY
 }

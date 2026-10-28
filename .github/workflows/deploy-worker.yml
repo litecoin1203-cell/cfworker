@@ -61,6 +61,7 @@ jobs:
       - name: Upload secrets
         env:
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}   # optional: own key for login tokens (everyone signs in again once)
           PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
           PASARGUARD_URL: ${{ secrets.PASARGUARD_URL }}
           PASARGUARD_USERNAME: ${{ secrets.PASARGUARD_USERNAME }}
@@ -78,7 +79,7 @@ jobs:
             local name="$1"; local val="${!1}"
             if [ -n "$val" ]; then printf '%s' "$val" | $WRANGLER secret put "$name" >/dev/null && echo "set $name"; fi
           }
-          for n in SECRET_KEY PUBLIC_BASE_URL PASARGUARD_URL PASARGUARD_USERNAME PASARGUARD_PASSWORD \
+          for n in SECRET_KEY JWT_SECRET PUBLIC_BASE_URL PASARGUARD_URL PASARGUARD_USERNAME PASARGUARD_PASSWORD \
                    PASARGUARD_API_KEY PASARGUARD_USERNAME_PREFIX TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID \
                    TELEGRAM_WEBHOOK_SECRET NOWPAYMENTS_API_KEY NOWPAYMENTS_IPN_SECRET NOWPAYMENTS_PAY_CURRENCY; do
             put "$n"
