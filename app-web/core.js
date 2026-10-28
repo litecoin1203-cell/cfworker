@@ -183,6 +183,26 @@
     return close;
   }
 
+  // ---------------- theme and text size ----------------
+  // 'system' | 'dark' | 'light'; applies to the Phase-2 screens (the sign-in and payment flows stay dark)
+  const themeQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: light)') : null;
+  function themeSetting() { try { return localStorage.getItem('cg_theme') || 'system'; } catch (e) { return 'system'; } }
+  function applyTheme() {
+    const v = themeSetting();
+    const light = v === 'light' || (v === 'system' && themeQuery && themeQuery.matches);
+    document.documentElement.setAttribute('data-theme', light ? 'light' : 'dark');
+    const flow = current && screens[current.name] && screens[current.name].flow;
+    // status/navigation bar icons follow the screen; ignored by older app builds
+    if (host) call('systemBars', { light: !!(light && flow) }).catch(() => {});
+  }
+  function setTheme(v) { try { localStorage.setItem('cg_theme', v); } catch (e) {} applyTheme(); }
+  if (themeQuery && themeQuery.addEventListener) themeQuery.addEventListener('change', applyTheme);
+  // Android's font size setting (the WebView itself is pinned to 100% so the older px-drawn screens keep their layout)
+  function applyFontScale(fs) {
+    const v = Math.max(0.85, Math.min(2, Number(fs) || 1));
+    document.documentElement.style.setProperty('--fs', String(v));
+  }
+
   // ---------------- router ----------------
   const screens = {};
   let current = null;
@@ -210,17 +230,23 @@
     if (!def) throw new Error('Unknown screen ' + name);
     const app = $('#app');
     current = { name, params: params || {} };
-    app.innerHTML = `<div class="screen" data-screen="${name}" style="background:${def.bg || 'var(--bg)'}"><div class="stage">${def.html(current.params)}</div></div>`;
+    // flow screens (Phase 2) are laid out in normal document flow, follow the app's language direction and theme
+    app.innerHTML = def.flow
+      ? `<div class="screen flow" data-screen="${name}" dir="${CGI18n.dir}" lang="${CGI18n.lang}"><div class="stage">${def.html(current.params)}</div></div>`
+      : `<div class="screen" data-screen="${name}" style="background:${def.bg || 'var(--bg)'}"><div class="stage">${def.html(current.params)}</div></div>`;
     layout();
     const root = $('.stage', app);
     if (push !== false && name !== stack[stack.length - 1]) stack.push(name);
     if (stack.length > 12) stack.splice(0, stack.length - 12);
     const c = def.mount ? def.mount(root, current.params) : null;
     if (typeof c === 'function') cleanup = c;
+    applyTheme();
   }
   function go(name, params) { render(name, params, true); }
   // replace the whole history, e.g. after login or after a purchase lands on home
   function reset(name, params) { stack.length = 0; render(name, params, true); }
+  // bottom tabs: home is always the root, the other tabs replace each other on top of it
+  function tab(name, params) { stack.length = 0; if (name !== 'home') stack.push('home'); render(name, params, true); }
   function back(fallback) {
     stack.pop();
     const prev = stack.pop();
@@ -303,7 +329,7 @@
     </svg></span>`;
   };
 
-  window.CG = { esc, toman, faNum, num, faDate, $, $$, sleep, flag, ccToFlag, parseRemark, bytes, call, api, ApiError, on, S, loadMe, loadConfig,
-    syncVpn, refreshServers, selectedServer, hasActivePlan, toast, busyButton, sheet, screens, go, reset, back, layout, I, halo, mark,
+  window.CG = { t: CGI18n.t, i18n: CGI18n, themeSetting, setTheme, applyTheme, applyFontScale, esc, toman, faNum, num, faDate, $, $$, sleep, flag, ccToFlag, parseRemark, bytes, call, api, ApiError, on, S, loadMe, loadConfig,
+    syncVpn, refreshServers, selectedServer, hasActivePlan, toast, busyButton, sheet, screens, go, reset, back, tab, layout, I, halo, mark,
     get current() { return current; } };
 })();

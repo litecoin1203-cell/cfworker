@@ -6,6 +6,7 @@
 <meta name="color-scheme" content="dark">
 <title>Cloud Gold VPN</title>
 <link rel="stylesheet" href="app.css">
+<link rel="stylesheet" href="tokens.css">
 </head>
 <body>
 <div id="app"></div>
@@ -14,7 +15,9 @@
 <script src="geo.js"></script>
 <script>if(!window.CGHost)document.write('<scr'+'ipt src="mock.js"></scr'+'ipt>');</script>
 <script src="vendor/qrcode.js"></script>
+<script src="i18n.js"></script>
 <script src="core.js"></script>
+<script src="ui.js"></script>
 <script src="home.js"></script>
 <script src="screens.js"></script>
 <script>
@@ -27,6 +30,8 @@
     var r = /ref\/([A-Za-z0-9]{4,16})/.exec(url);
     if (r) { try { localStorage.setItem('cg_ref', r[1].toUpperCase()); } catch (e) {} }
   };
+  CG.call('session', {}).then(function (x) { CG.applyFontScale(x && x.fontScale); }).catch(function () {});
+  CG.applyTheme();
   CG.call('vpnState', {}).then(function (v) {
     CG.S.vpn.running = !!(v && v.running);
     if (CG.S.vpn.running) {
