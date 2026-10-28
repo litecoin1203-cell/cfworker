@@ -894,35 +894,11 @@
   CG.killSwitchGuide = killSwitchGuide;
 
   // ---------------- ACCOUNT / MY SUBSCRIPTION ----------------
-  const fmtBytes = CG.bytes;
-  const STATUS_FA = { active: 'فعال', expired: 'تمام شده', limited: 'حجم تمام شده', disabled: 'غیرفعال', on_hold: 'در انتظار شروع', missing: 'پیدا نشد', unknown: 'فعال' };
+  // the plan card lives on the usage tab now; here only a short line that leads there, from /me's own fields
   function subCard(sub) {
-    if (!sub) {
-      return `<div style="font-size:12.5px;font-weight:500">اشتراک نداری</div>
-        <div style="font-size:14px;margin-top:10px;color:var(--body);line-height:23px">با یک پلن یا تست رایگان، به همه‌ی سرورها وصل شو.</div>
-        <button type="button" class="pill-btn white js-renew" style="margin-top:22px;height:44px;font-size:14px">دیدن پلن‌ها</button>`;
-    }
-    const u = CG.usageInfo(sub);
-    const cls = u.level === 2 ? ' bad' : u.level === 1 ? ' warn' : '';
-    const timePct = sub.unlimited_time ? 100 : sub.period_days ? Math.max(2, Math.min(100, Math.round((100 * (sub.seconds_left || 0)) / (sub.period_days * 86400)))) : 100;
-    const dataPct = sub.unlimited_data ? 100 : sub.data_limit_bytes ? Math.max(2, Math.round((100 * (sub.remaining_bytes || 0)) / sub.data_limit_bytes)) : 100;
-    const hrs = sub.seconds_left != null && sub.days_left <= 1 ? Math.floor(sub.seconds_left / 3600) : null;
-    return `<div style="display:flex;justify-content:space-between;align-items:center"><span style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:var(--gilt)">${mark(22)}${esc(sub.plan_name || 'Cloud Gold')}</span>
-        <span style="font-size:12px;padding:3px 10px;border-radius:10px;color:${sub.active ? '#8FCFA4' : '#EE9A86'};background:${sub.active ? 'rgba(143,207,164,.1)' : 'rgba(226,113,92,.1)'}">${STATUS_FA[sub.status] || sub.status}</span></div>
-      <div style="display:flex;align-items:baseline;gap:8px;margin-top:12px"><span class="serif" style="font-size:58px;font-weight:600;line-height:60px;color:var(--ivory)">${sub.unlimited_time ? '∞' : hrs != null && hrs < 24 && sub.active ? faNum(hrs) : faNum(sub.days_left)}</span>
-        <span style="font-size:14px;color:var(--body)">${sub.unlimited_time ? 'زمان نامحدود' : hrs != null && hrs < 24 && sub.active ? 'ساعت مانده' : 'روز مانده'}</span></div>
-      ${sub.expires_at ? `<div style="font-size:12.5px;margin-top:2px;color:var(--ash)">تا ${faDate(sub.expires_at)}</div>` : ''}
-      <div class="meter${cls}"><i style="width:${timePct}%"></i></div>
-      <div style="height:1px;background:linear-gradient(90deg,transparent,rgba(214,174,92,.3),transparent);margin:20px 0"></div>
-      <div style="display:flex;justify-content:space-between;font-size:13px;color:var(--body)"><span>حجم باقی‌مانده</span><span>${sub.unlimited_data ? 'نامحدود' : fmtBytes(sub.remaining_bytes) + ' از ' + fmtBytes(sub.data_limit_bytes)}</span></div>
-      ${sub.unlimited_data ? '' : `<div class="meter${cls}"><i style="width:${dataPct}%"></i></div>`}
-      <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ash);margin-top:12px"><span>مصرف شده</span><span>${fmtBytes(sub.used_bytes)}</span></div>
-      <div style="display:flex;justify-content:space-between;font-size:12.5px;color:var(--ash);margin-top:8px"><span>تعداد دستگاه</span><span>${sub.device_limit ? faNum(sub.device_limit) : 'نامحدود'}</span></div>
-      ${sub.live === false ? '<div style="font-size:11.5px;color:var(--gilt);margin-top:10px">اطلاعات زنده از سرور در دسترس نبود؛ آخرین اطلاعات نمایش داده شده.</div>' : ''}
-      <div style="display:flex;gap:10px;margin-top:20px">
-        <button type="button" class="pill-btn white js-renew" style="height:44px;font-size:14px;flex:2">${sub.active ? 'تمدید یا تغییر پلن' : 'تمدید اشتراک'}</button>
-        <button type="button" class="pill-btn ghost js-refresh" style="height:44px;font-size:14px;flex:1">به‌روزرسانی</button>
-      </div>`;
+    if (!sub) return `<button type="button" class="row-line js-usage" style="width:100%">${esc(CG.t('stop.none'))}<span>‹</span></button>`;
+    const left = sub.unlimited_time ? CG.t('us.no_expiry') : CG.i18n.n(sub.days_left) + ' ' + CG.t('us.days_left');
+    return `<button type="button" class="row-line js-usage" style="width:100%"><span>${esc(sub.plan_name || CG.t('app.name'))} · ${esc(CG.t('us.status.' + (sub.status || 'unknown')))}<br><span class="muted" style="font-size:12px">${esc(left)}</span></span><span>‹</span></button>`;
   }
   screens.account = {
     fit: 'width',
@@ -935,7 +911,7 @@
         ${ann ? `<div class="ann">${esc(ann)}</div>` : ''}
         <div style="position:relative;border-radius:26px;overflow:hidden;background:linear-gradient(155deg,#2A2216 0%,#16130E 38%,#100E0A 100%);box-shadow:inset 0 1px 0 rgba(243,221,160,.25),inset 0 0 0 1px rgba(214,174,92,.28),0 30px 60px -24px rgba(0,0,0,.9)">
           <svg aria-hidden="true" width="260" height="260" viewBox="0 0 260 260" fill="none" stroke="#D6AE5C" style="position:absolute;left:-90px;top:-90px;opacity:.13;pointer-events:none"><circle cx="130" cy="130" r="94" stroke-width="1.2"/><circle cx="130" cy="130" r="124" stroke-width="1"/></svg>
-          <div class="js-card" style="position:relative;padding:22px 22px 22px">${subCard(me.subscription)}</div>
+          <div class="js-card" style="position:relative;padding:6px 18px">${subCard(me.subscription)}</div>
         </div>
         <h2 style="font-size:17px;font-weight:500;margin:28px 0 8px">دستگاه‌ها</h2>
         <div class="panel js-devs" style="padding:4px 18px"><div class="skeleton" style="height:44px;margin:12px 0"></div></div>
@@ -955,13 +931,7 @@
     mount(root) {
       wireBack(root);
       const b = (c, fn) => { const el = root.querySelector(c); if (el) el.onclick = fn; };
-      const bindCard = () => {
-        b('.js-renew', () => go('premium', { from: 'account' }));
-        b('.js-refresh', async (ev) => {
-          const btn = ev.currentTarget; busyButton(btn, true, true);
-          try { await loadMe(); paintCard(); toast('اطلاعات اشتراک به‌روز شد'); } catch (e) { busyButton(btn, false); toast(e.message, true); }
-        });
-      };
+      const bindCard = () => b('.js-usage', () => CG.tab('usage'));
       const paintCard = () => { root.querySelector('.js-card').innerHTML = subCard(S.me && S.me.subscription); bindCard(); };
       bindCard();
       b('.js-orders', () => go('orders'));
