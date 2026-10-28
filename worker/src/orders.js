@@ -30,7 +30,7 @@ async function orderOut(env, o) {
   return {
     id: o.id, kind: o.kind, plan_id: o.plan_id, plan_name: plan ? planName(plan.name) : null,
     activate_plan_id: o.activate_plan_id || null, activate_plan_name: target ? planName(target.name) : null, plan_activated: activated,
-    amount_toman: o.amount_toman, list_price_toman: o.list_price_toman || null, method: o.method, status: o.status,
+    amount_toman: o.amount_toman, list_price_toman: o.list_price_toman || null, method: o.method, status: o.status === 'settling' ? 'review' : o.status, // 'settling' lasts a moment; the app knows it as review
     created_at: new Date(o.created_at * 1000).toISOString(),
     paid_at: o.paid_at ? new Date(o.paid_at * 1000).toISOString() : null,
     card, crypto_pay_url: o.crypto_pay_url, crypto_amount_usd: o.crypto_amount_usd, admin_note: o.admin_note,
@@ -221,7 +221,7 @@ export async function markCoinPaid(env, user, orderId, body) {
   const same = txid && (await first(env, "SELECT id FROM orders WHERE txid = ? AND id != ? AND status IN ('review','paid')", txid, order.id));
   if (same) throw err(409, 'txid_used', 'این هش تراکنش قبلاً برای سفارش دیگری ثبت شده است.', 'txid');
   const wasReview = order.status === 'review';
-  await run(env, "UPDATE orders SET status = 'review', txid = COALESCE(?, txid), admin_note = NULL WHERE id = ?", txid || null, order.id);
+  await run(env, "UPDATE orders SET status = 'review', txid = COALESCE(?, txid), admin_note = NULL WHERE id = ? AND status NOT IN ('paid', 'settling')", txid || null, order.id);
   const fresh = await first(env, 'SELECT * FROM orders WHERE id = ?', order.id);
   if (!wasReview || txid) await sendCoinNotice(env, fresh, user);
   return json(await orderOut(env, fresh));
@@ -245,6 +245,8 @@ export async function uploadReceipt(env, user, orderId, request) {
   if (order.method !== 'card' || !['pending', 'review', 'rejected'].includes(order.status)) {
     throw err(400, 'bad_state', 'برای این سفارش نمی‌شود رسید فرستاد.');
   }
+  // refuse an oversized upload before reading it into memory (the photo itself must stay under 8 MB)
+  if (Number(request.headers.get('content-length') || 0) > 9 * 1024 * 1024) throw err(413, 'too_large', 'حجم عکس باید کمتر از ۸ مگابایت باشد.');
   const form = await request.formData();
   const file = form.get('file');
   if (!file || typeof file === 'string') throw err(400, 'bad_file', 'عکس رسید را انتخاب کن.');
@@ -254,7 +256,7 @@ export async function uploadReceipt(env, user, orderId, request) {
   if (!kind) throw err(400, 'bad_file', 'عکس رسید را بفرست (JPG، PNG یا WEBP).');
   const ref = String(form.get('ref') || '').trim().slice(0, 64) || null;
   const fileId = await sendReceipt(env, order, user, buf, `receipt_${order.id}${kind.ext}`, kind.type);
-  await run(env, "UPDATE orders SET status = 'review', receipt_ref = ?, receipt_file_id = ?, admin_note = NULL WHERE id = ?", ref, fileId, order.id);
+  await run(env, "UPDATE orders SET status = 'review', receipt_ref = ?, receipt_file_id = ?, admin_note = NULL WHERE id = ? AND status NOT IN ('paid', 'settling')", ref, fileId, order.id);
   if (!env.TELEGRAM_CHAT_ID) await notifyAdmin(env, `رسید جدید برای سفارش #${order.id} آمد ولی TELEGRAM_CHAT_ID تنظیم نشده.`);
   return json(await orderOut(env, await first(env, 'SELECT * FROM orders WHERE id = ?', order.id)));
 }

@@ -7,7 +7,7 @@
 // Fake-SMS protection: only SMS from senders the admin marked as their bank (sms_senders) can confirm by
 // themselves. Anything else is sent to the admin for a one-tap decision, with a button to trust that sender.
 import { first, all, run, insert, getSettings, getSetting, setSetting } from './db.js';
-import { json, err, nowSec, hmacHex } from './util.js';
+import { json, err, nowSec, hmacHex, safeEqual } from './util.js';
 
 const fa2en = (s) => String(s || '').replace(/[۰-۹]/g, (d) => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d));
 export const normSender = (s) => fa2en(s).toLowerCase().replace(/[\s\-()]/g, '').replace(/^(\+98|0098)/, '0');
@@ -124,7 +124,7 @@ export async function smsKey(env) {
 
 export async function smsWebhook(env, request, key) {
   const real = await getSetting(env, 'sms_key');
-  if (!real || key !== real) throw err(404, 'not_found', 'Not found');
+  if (!real || !(await safeEqual(key, real))) throw err(404, 'not_found', 'Not found');
   const raw = await request.text();
   let sender = '', text = '';
   try {

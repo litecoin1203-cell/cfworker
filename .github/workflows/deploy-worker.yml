@@ -17,13 +17,17 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      HOOK: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
       WRANGLER: npx --yes wrangler@4
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'   # the tests use node:sqlite
+
+      - name: Run the tests (nothing is deployed if they fail)
+        run: npm test
 
       - name: Check required secrets
         run: |
@@ -34,6 +38,10 @@ jobs:
           if [ -n "$miss" ]; then echo "::error::Missing GitHub secrets:$miss"; exit 1; fi
           if [ -z "${{ secrets.SECRET_KEY }}" ]; then echo "::error::Set the SECRET_KEY secret"; exit 1; fi
           if [ -z "${{ secrets.PUBLIC_BASE_URL }}" ]; then echo "::error::Set the PUBLIC_BASE_URL secret (your Worker address)"; exit 1; fi
+          # the admin bot only accepts calls carrying this secret; Telegram allows A-Z a-z 0-9 _ - (1-256)
+          if ! printf '%s' "$HOOK" | grep -Eq '^[A-Za-z0-9_-]{8,256}$'; then
+            echo "::error::Set the TELEGRAM_WEBHOOK_SECRET secret: at least 8 characters, only letters, digits, _ and -"; exit 1
+          fi
 
       - name: Create / find the D1 database
         run: |
@@ -83,8 +91,7 @@ jobs:
         env:
           TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           BASE: ${{ secrets.PUBLIC_BASE_URL }}
-          HOOK: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
         run: |
-          HOOK="${HOOK:-webhook}"
-          curl -s "https://api.telegram.org/bot$TOKEN/setWebhook?url=${BASE%/}/tg/$HOOK" | jq -c . || true
-          echo "Webhook set to ${BASE%/}/tg/$HOOK"
+          # secret_token makes Telegram send the X-Telegram-Bot-Api-Secret-Token header the Worker checks
+          curl -s "https://api.telegram.org/bot$TOKEN/setWebhook" --data-urlencode "url=${BASE%/}/tg/$HOOK" --data-urlencode "secret_token=$HOOK" | jq -c . || true
+          echo "Webhook set to ${BASE%/}/tg/<secret>"

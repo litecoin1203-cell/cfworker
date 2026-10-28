@@ -156,7 +156,8 @@ async function matchAndConfirm(env, orders, txsByKey, mode) {
         await notifyAdmin(env, `⚡ تأیید خودکار روی بلاک‌چین — سفارش #${o.id}\n${o.coin_amount} ${o.coin.toUpperCase()} از ${user.email}\nهش: ${hit.txid}`);
         done.push({ orderId: o.id, result: 'paid' });
       } catch (e) {
-        await run(env, "UPDATE orders SET status = 'review' WHERE id = ?", o.id);
+        // settle() already put it back; a busy order is being settled by another caller right now
+        await run(env, "UPDATE orders SET status = 'review' WHERE id = ? AND status NOT IN ('paid', 'settling')", o.id);
         done.push({ orderId: o.id, result: 'review' }); // settle() already told the admin why (with a retry button)
       }
     } else {

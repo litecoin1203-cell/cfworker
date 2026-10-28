@@ -4,7 +4,12 @@
   "name": "cloudgold",
   "main": "src/index.js",
   "compatibility_date": "2025-09-01",
-  "observability": { "enabled": true },
+  // Workers Logs for every request + Traces for a sample (traces need their own switch)
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 0.1 }
+  },
   // every minute: on-chain check of crypto payments; 20:30 UTC (midnight in Iran): daily report + backup
   "triggers": { "crons": ["* * * * *", "30 20 * * *"] },
   "d1_databases": [

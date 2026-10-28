@@ -1,6 +1,6 @@
 // Cloud Gold store on Cloudflare Workers. One Worker serves the app API, the NOWPayments webhook
 // and the Telegram admin bot. State lives in D1 (env.DB).
-import { json, err, ApiError } from './util.js';
+import { json, err, ApiError, safeEqual, logError } from './util.js';
 import { first, run, insert } from './db.js';
 import * as auth from './auth.js';
 import * as account from './account.js';
@@ -43,16 +43,16 @@ export default {
   async scheduled(event, env, ctx) {
     // every minute: look for crypto deposits on the blockchain and confirm matching orders
     if (event && event.cron && event.cron !== '30 20 * * *') {
-      ctx.waitUntil((async () => { try { const { scanAll } = await import('./chainwatch.js'); await scanAll(env); } catch (e) {} })());
+      ctx.waitUntil((async () => { try { const { scanAll } = await import('./chainwatch.js'); await scanAll(env); } catch (e) { logError('chain scan failed', e); } })());
       return;
     }
     ctx.waitUntil((async () => {
       if (!env.TELEGRAM_CHAT_ID) return;
       let rate = '';
-      try { const { usdRateInfo } = await import('./usdrate.js'); const ri = await usdRateInfo(env, { force: true }); rate = ri.rate ? `\n💵 دلار: ${ri.rate.toLocaleString('en-US')} تومان (${ri.from === 'live' ? 'زنده' : ri.from === 'saved' ? 'ذخیره‌شده' : 'دستی'})` : '\n⚠️ قیمت دلار از صرافی‌ها دریافت نشد → /rate'; } catch (e) {}
-      try { await notifyAdmin(env, '🌙 گزارش روزانه\n' + (await statsText(env)) + rate); } catch (e) {}
-      try { await sendBackup(env); } catch (e) {}
-      try { const { prune } = await import('./netstats.js'); await prune(env); } catch (e) {}
+      try { const { usdRateInfo } = await import('./usdrate.js'); const ri = await usdRateInfo(env, { force: true }); rate = ri.rate ? `\n💵 دلار: ${ri.rate.toLocaleString('en-US')} تومان (${ri.from === 'live' ? 'زنده' : ri.from === 'saved' ? 'ذخیره‌شده' : 'دستی'})` : '\n⚠️ قیمت دلار از صرافی‌ها دریافت نشد → /rate'; } catch (e) { logError('daily usd rate failed', e); }
+      try { await notifyAdmin(env, '🌙 گزارش روزانه\n' + (await statsText(env)) + rate); } catch (e) { logError('daily report failed', e); }
+      try { await sendBackup(env); } catch (e) { logError('daily backup failed', e); }
+      try { const { prune } = await import('./netstats.js'); await prune(env); } catch (e) { logError('net stats prune failed', e); }
     })());
   },
 
@@ -71,8 +71,14 @@ export default {
         return await smsWebhook(env, request, path.slice(5));
       }
 
-      // Telegram webhook at a secret path so only Telegram can reach it
-      if (path === `/tg/${env.TELEGRAM_WEBHOOK_SECRET || 'webhook'}` && request.method === 'POST') {
+      // Telegram webhook: the secret path AND the secret_token header Telegram sends (the deploy workflow
+      // passes it to setWebhook). Without TELEGRAM_WEBHOOK_SECRET the bot stays closed: anyone who knew the
+      // admin's chat id could otherwise approve orders or change the card number.
+      if (path.startsWith('/tg/') && request.method === 'POST') {
+        const secret = env.TELEGRAM_WEBHOOK_SECRET;
+        const okPath = !!secret && (await safeEqual(path.slice(4), secret));
+        const okHeader = !!secret && (await safeEqual(request.headers.get('x-telegram-bot-api-secret-token') || '', secret));
+        if (!okPath || !okHeader) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
         const update = await request.json().catch(() => ({}));
         ctx.waitUntil(handleWebhook(env, update));
         return json({ ok: true });
@@ -87,7 +93,7 @@ export default {
       return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
     } catch (e) {
       if (e instanceof ApiError) return json(e.body, e.status, CORS);
-      console.log('error', e && e.stack || e);
+      logError('request failed', e, { method: request.method, path });
       return json({ detail: { code: 'server_error', message: 'مشکلی در سرور پیش آمد. چند لحظه دیگر دوباره امتحان کن.' } }, 500, CORS);
     }
   },

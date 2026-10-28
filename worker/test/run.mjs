@@ -51,10 +51,11 @@ async function signup(email, { referral, device = 'dev-1', password = 'password1
 }
 
 // admin settings via the Telegram bot webhook
+const TG = { 'x-telegram-bot-api-secret-token': 'hook' }; // what Telegram sends after setWebhook(secret_token)
 async function botSet(key, value) {
-  await call('POST', '/tg/hook', { json: { message: { chat: { id: 12345 }, text: `/set ${key} ${value}` } } });
+  await call('POST', '/tg/hook', { headers: TG, json: { message: { chat: { id: 12345 }, text: `/set ${key} ${value}` } } });
 }
-async function tgWebhook(update) { const r = await call('POST', '/tg/hook', { json: update }); await drain(); return r; }
+async function tgWebhook(update) { const r = await call('POST', '/tg/hook', { headers: TG, json: update }); await drain(); return r; }
 
 // ---------------- tests ----------------
 section('health');
@@ -222,6 +223,65 @@ section('wallet is atomic under concurrent purchases');
   const w = await call('GET', '/api/v1/wallet', { token: tok });
   ok(w.data.balance === 0, `wallet not over-spent: ${w.data.balance}`);
   ok(await ledgerOk(u2.id), 'ledger matches balance after concurrent purchases');
+}
+
+section('settle is claimed once under concurrent confirmations');
+{
+  const { settle } = await import('../src/billing.js');
+  const get = async (id) => env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.duration_days === 30);
+  const daysLeft = async (email) => {
+    const sub = await env.DB.prepare('SELECT s.expires_at e FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE u.email = ?').bind(email).first();
+    return Math.round((sub.e - Date.now() / 1000) / 86400);
+  };
+
+  // a new user's first order confirmed twice at once: one panel account, one delivery
+  const tok = await signup('claim1@example.com');
+  const o = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card' } });
+  const row = await get(o.data.id);
+  const panelBefore = Object.keys(fakes.pg.users).length;
+  const rs = await Promise.allSettled([settle(env, { ...row }), settle(env, { ...row }), settle(env, { ...row })]);
+  ok(rs.every((r) => r.status === 'fulfilled' || r.reason.code === 'settle_busy'), 'concurrent settles either deliver or report busy');
+  ok(Object.keys(fakes.pg.users).length === panelBefore + 1, 'exactly one panel account created');
+  ok((await get(o.data.id)).status === 'paid', 'order paid');
+  ok(await daysLeft('claim1@example.com') === 30, 'plan days added once');
+  await settle(env, { ...row }); // a late duplicate (stale object) is a no-op
+  ok(await daysLeft('claim1@example.com') === 30, 'late duplicate settle adds nothing');
+
+  // admin button while the order is being settled: told it is busy, no second delivery
+  const o2 = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card' } });
+  await env.DB.prepare("UPDATE orders SET status = 'settling', settling_at = ? WHERE id = ?").bind(Math.floor(Date.now() / 1000), o2.data.id).run();
+  await tgWebhook({ callback_query: { id: 'cb-busy', data: `rj:${o2.data.id}`, message: { chat: { id: 12345 }, message_id: 9 } } });
+  ok((await get(o2.data.id)).status === 'settling', 'reject does not touch an order being settled');
+  const busy = await settle(env, await get(o2.data.id)).catch((e) => e);
+  ok(busy && busy.code === 'settle_busy', 'second settle sees the claim');
+
+  // a claim left by a crashed run expires; the retry does not add the days again if the panel was already done
+  await env.DB.prepare("UPDATE orders SET settling_at = ?, provisioned_at = ? WHERE id = ?").bind(Math.floor(Date.now() / 1000) - 600, Math.floor(Date.now() / 1000) - 600, o2.data.id).run();
+  await settle(env, await get(o2.data.id));
+  ok((await get(o2.data.id)).status === 'paid', 'stale claim is settled by the retry');
+  ok(await daysLeft('claim1@example.com') === 30, 'retry after crash does not extend the account twice');
+
+  // a failed delivery puts the order back where it was
+  const o3 = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card' } });
+  const savedUrl = env.PASARGUARD_URL; env.PASARGUARD_URL = 'http://panel.down';
+  const f = await settle(env, await get(o3.data.id), { quiet: true }).catch((e) => e);
+  env.PASARGUARD_URL = savedUrl;
+  ok(f && f.code === 'provision_failed' && (await get(o3.data.id)).status === 'pending', 'failed settle releases the claim');
+}
+
+section('telegram webhook needs the secret path and header');
+{
+  const upd = { message: { chat: { id: 12345 }, text: '/set card_holder Mallory' } };
+  ok((await call('POST', '/tg/hook', { json: upd })).status === 404, 'no secret header -> 404');
+  ok((await call('POST', '/tg/hook', { json: upd, headers: { 'x-telegram-bot-api-secret-token': 'nope' } })).status === 404, 'wrong header -> 404');
+  ok((await call('POST', '/tg/webhook', { json: upd, headers: TG })).status === 404, 'default path is closed');
+  const saved = env.TELEGRAM_WEBHOOK_SECRET; delete env.TELEGRAM_WEBHOOK_SECRET;
+  ok((await call('POST', '/tg/webhook', { json: upd })).status === 404, 'no secret configured -> bot closed');
+  env.TELEGRAM_WEBHOOK_SECRET = saved;
+  const holder = await env.DB.prepare("SELECT value FROM settings WHERE key = 'card_holder'").first();
+  ok(!holder || holder.value !== 'Mallory', 'forged updates changed nothing');
+  ok((await call('POST', '/tg/hook', { json: { message: { chat: { id: 12345 }, text: '/help' } }, headers: TG })).status === 200, 'real Telegram call accepted');
 }
 
 section('crypto invoice + IPN');

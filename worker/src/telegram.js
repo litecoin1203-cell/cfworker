@@ -128,6 +128,7 @@ async function onCallback(env, cq) {
       await settle(env, order);
     } catch (e) {
       // settle already sent the panel's exact error with a retry button
+      if (e instanceof BillingError && e.code === 'settle_busy') return ack(e.message, true);
       return ack('⚠️ ' + (e instanceof BillingError ? 'ساخت اکانت روی پنل انجام نشد. پیام بعدی را ببین.' : e.message), true);
     }
     await editStatus(env, cq, `✅ تأیید و فعال شد — سفارش #${order.id} (${user.email})`);
@@ -136,7 +137,8 @@ async function onCallback(env, cq) {
   if (action === 'rj') {
     if (order.status === 'paid') return ack('پرداخت شده؛ رد نمی‌شود');
     const note = order.method === 'coin' ? 'واریز ارز دیجیتال پیدا نشد. اگر واریز کرده‌ای، هش تراکنش را دوباره بفرست یا با پشتیبانی تماس بگیر.' : 'رسید تأیید نشد. اگر واریز کرده‌ای با پشتیبانی تماس بگیر.';
-    await run(env, "UPDATE orders SET status = 'rejected', admin_note = ? WHERE id = ?", note, orderId);
+    const r = await run(env, "UPDATE orders SET status = 'rejected', admin_note = ? WHERE id = ? AND status NOT IN ('paid', 'settling')", note, orderId);
+    if (!r.meta.changes) return ack('همین الان پرداخت یا فعال شد؛ رد نمی‌شود', true);
     await editStatus(env, cq, `❌ رد شد — سفارش #${order.id} (${user.email})`);
     return ack('رد شد');
   }
