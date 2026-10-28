@@ -15,6 +15,7 @@
     'common.on': 'روشن',
     'common.off': 'خاموش',
     'common.loading': 'در حال بارگذاری',
+    'common.sep': '، ',
 
     'tab.home': 'اتصال',
     'tab.servers': 'سرورها',
@@ -256,7 +257,7 @@
   const en = {
     'app.name': 'Cloud Gold',
     'common.back': 'Back', 'common.close': 'Close', 'common.retry': 'Try again', 'common.later': 'Later', 'common.cancel': 'Cancel',
-    'common.on': 'On', 'common.off': 'Off', 'common.loading': 'Loading',
+    'common.on': 'On', 'common.off': 'Off', 'common.loading': 'Loading', 'common.sep': ', ',
     'tab.home': 'Connect', 'tab.servers': 'Servers', 'tab.usage': 'Plan', 'tab.settings': 'Settings', 'tab.nav': 'Main sections',
     'conn.connected': 'Connected', 'conn.connecting': 'Connecting', 'conn.disconnecting': 'Disconnecting', 'conn.disconnected': 'Disconnected',
     'conn.error': 'Error', 'conn.blocked': 'Cannot connect',

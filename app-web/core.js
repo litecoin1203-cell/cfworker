@@ -118,7 +118,12 @@
   function decorate(list) {
     S.serverPings = S.serverPings || {};
     (list || []).forEach((s) => { if (s.delay) S.serverPings[s.guid] = s.delay; });
-    return (list || []).map((s) => Object.assign({}, s, parseRemark(s.remarks), { k: serverKey(s) }));
+    // the app sends each server's key, never its address; serverKey() is only for older app builds
+    return (list || []).map((s) => {
+      const d = Object.assign({}, s, parseRemark(s.remarks), { k: s.k || serverKey(s) });
+      delete d.server; delete d.port;
+      return d;
+    });
   }
   async function syncVpn() {
     let r;

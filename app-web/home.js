@@ -89,7 +89,7 @@
         coin.classList.toggle('blocked', p === 'blocked');
         const action = p === 'connected' ? 'conn.btn.disconnect' : p === 'connecting' ? 'conn.btn.cancel' : p === 'blocked' ? (S.me && S.me.subscription ? 'conn.btn.renew' : 'conn.btn.buy') : 'conn.btn.connect';
         const stateWord = t(ui.PHASE[p].word);
-        coin.setAttribute('aria-label', t(action) + '، ' + stateWord);
+        coin.setAttribute('aria-label', t(action) + t('common.sep') + stateWord);
         coin.setAttribute('aria-disabled', p === 'disconnecting' ? 'true' : 'false');
         if (p !== lastPhase) $('.js-status').innerHTML = ui.statusChip(p);
         const reason = CG.stopReason();
@@ -116,7 +116,7 @@
       function paintPing() {
         const q = S.vpn.running ? CG.quality() : null;
         $('.js-lat').textContent = S.vpn.running && S.ping
-          ? t('conn.ms.short', { n: I18.n(S.ping) }) + (q ? '، ' + t('conn.quality') + ' ' + t(q.word) : '')
+          ? t('conn.ms.short', { n: I18.n(S.ping) }) + (q ? t('common.sep') + t('conn.quality') + ' ' + t(q.word) : '')
           : t('conn.none');
       }
       function paintTick() {

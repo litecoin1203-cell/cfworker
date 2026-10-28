@@ -33,10 +33,15 @@
     return r;
   }
   function serverFromLink(link, i) {
-    const name = decodeURIComponent((link.split('#')[1] || 'Server ' + (i + 1)));
+    let name = decodeURIComponent((link.split('#')[1] || 'Server ' + (i + 1)));
+    if (link.startsWith('vmess://')) { try { name = JSON.parse(new TextDecoder().decode(Uint8Array.from(atob(link.slice(8)), (c) => c.charCodeAt(0)))).ps || name; } catch (e) {} }
     let host = '';
     try { host = link.split('@')[1].split(/[:?#]/)[0]; } catch (e) {}
-    return { guid: 'g' + i, remarks: name, server: host, port: 443, type: link.split('://')[0] };
+    // like the app: a stable key instead of the address (FNV-1a of type|host|port, see CgVpn.serverKey)
+    const str = `${link.split('://')[0]}|${host}|443`.toLowerCase();
+    let h = 0x811c9dc5;
+    for (let j = 0; j < str.length; j++) { h ^= str.charCodeAt(j); h = Math.imul(h, 0x01000193) >>> 0; }
+    return { guid: 'g' + i, remarks: name, k: 'k' + h.toString(16).padStart(8, '0'), type: link.split('://')[0] };
   }
   const H = {
     async api(a) { return http(a.method, a.path, a.body); },
@@ -85,7 +90,7 @@
       if (!vpn.running) throw { message: 'اول به یک سرور وصل شو.' };
       await new Promise((r) => setTimeout(r, 1200));
       const s = vpn.servers.find((x) => x.guid === vpn.selected) || {};
-      const iran = /nl1/.test(s.server || '');   // preview: pretend Google sees the Netherlands node as Iran
+      const iran = /amsterdam/i.test(s.remarks || '');   // preview: pretend Google sees the Netherlands node as Iran
       return { ip: iran ? '185.12.1.9' : '45.128.199.56', cc: iran ? 'NL' : 'DE', google_cc: iran ? 'IR' : 'DE', gemini: !iran, gemini_region: iran ? null : 'DEU', google_blocked: false };
     },
     async setTune(a) { LS.set('iran', !!a.iranDirect); return { iranDirect: !!a.iranDirect }; },
