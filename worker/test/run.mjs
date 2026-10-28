@@ -336,6 +336,29 @@ section('device limit + freeing a slot frees panel HWID');
   ok(fakes.pg.deletedHwids.length >= 1, 'panel HWID freed on device removal');
 }
 
+section('used_percent on /me comes from the server');
+{
+  const tok = await signup('pct@example.com', { device: 'pct-phone' });
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
+  await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant pct@example.com ${monthly.id}` } });
+  const u = Object.values(fakes.pg.users).find((x) => (x.note || '').includes('pct@example.com'));
+  ok(!!u, 'panel user for pct@example.com');
+  const pct = async (limit, used) => {
+    u.data_limit = limit; u.used_traffic = used;
+    return (await call('GET', '/api/v1/me', { token: tok })).data.subscription;
+  };
+  let s = await pct(1000, 850);
+  ok(s.used_percent === 85 && s.used_bytes === 850 && s.remaining_bytes === 150, '85% used ' + JSON.stringify(s));
+  s = await pct(1000, 799);
+  ok(s.used_percent === 79, 'rounded down, so the 80% warning starts at 80');
+  s = await pct(1000, 1000);
+  ok(s.used_percent === 100 && s.status === 'limited', '100% = used up');
+  s = await pct(1000, 1500);
+  ok(s.used_percent === 100, 'capped at 100');
+  s = await pct(0, 5000);
+  ok(s.used_percent === null && s.unlimited_data === true, 'unlimited data has no percent');
+}
+
 section('telegram admin commands');
 {
   await tgWebhook({ message: { chat: { id: 12345 }, text: '/stats' } });
