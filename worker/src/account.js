@@ -218,16 +218,19 @@ export async function startTrial(env, user, body, request) {
     if (reused) throw err(400, 'trial_used', 'روی این گوشی قبلاً تست رایگان استفاده شده است.');
   }
   const trialGb = await getSettingInt(env, 'trial_data_gb');
+  // claim the trial before building it, so two requests at the same moment cannot both get one
+  const claim = await run(env, 'UPDATE users SET trial_used = 1 WHERE id = ? AND trial_used = 0', user.id);
+  if (!claim.meta.changes) throw err(400, 'trial_used', 'تست رایگان را قبلاً استفاده کرده‌ای.');
   try {
     await provision(env, user, plan, { days: plan.trial_days, dataGb: trialGb > 0 ? trialGb : undefined });
   } catch (e) {
+    await run(env, 'UPDATE users SET trial_used = 0 WHERE id = ?', user.id); // not built: the trial is still theirs
     if (e instanceof PasarGuardError) {
       await notifyAdmin(env, `⚠️ تست رایگان برای ${user.email} ساخته نشد.\n\nخطای پنل:\n${e.message}\n\nبرای عیب‌یابی /panel را بزن.`);
       throw err(503, 'provision_failed', 'فعال‌سازی تست رایگان الان ممکن نشد. پشتیبانی خبردار شد؛ چند دقیقه دیگر دوباره امتحان کن.');
     }
     throw e;
   }
-  await run(env, 'UPDATE users SET trial_used = 1 WHERE id = ?', user.id);
   if (deviceId) {
     const d = await first(env, 'SELECT id FROM devices WHERE user_id = ? AND device_id = ?', user.id, deviceId);
     if (!d) await run(env, 'INSERT INTO devices (user_id, device_id, model, last_seen) VALUES (?,?,?,?)', user.id, deviceId, request.headers.get('x-device-model') || '', nowSec());

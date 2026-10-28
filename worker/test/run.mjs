@@ -811,5 +811,111 @@ section('Google / Gemini view of each server');
   ok(msg.includes('🔴 NL 2') && msg.includes('🟢 Germany 1') && msg.includes('🟠 US 3'), '/google report for the admin:\n' + msg);
 }
 
+section('auth tokens: expired, tampered, wrong type, other key');
+{
+  const { signJwt } = await import('../src/util.js');
+  const tok = await signup('jwt@example.com');
+  const me = (t) => call('GET', '/api/v1/me', { token: t });
+  ok((await call('GET', '/api/v1/me')).status === 401, 'no token -> 401');
+  const parts = tok.split('.');
+  const tampered = [parts[0], btoa(JSON.stringify({ ...JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'))), sub: '1' })).replace(/=+$/, ''), parts[2]].join('.');
+  ok((await me(tampered)).status === 401, 'payload changed without re-signing -> 401');
+  const uid = String((await me(tok)).data.id);
+  const expired = await signJwt({ sub: uid, ver: 0, typ: 'access' }, env.SECRET_KEY, -10);
+  ok((await me(expired)).status === 401, 'expired access token -> 401');
+  const login = await call('POST', '/api/v1/auth/login', { json: { email: 'jwt@example.com', password: 'password123' } });
+  ok((await me(login.data.refresh_token)).status === 401, 'refresh token is not accepted as an access token');
+  ok((await call('POST', '/api/v1/auth/refresh', { json: { refresh_token: login.data.access_token } })).status === 401, 'access token is not accepted as a refresh token');
+  const forged = await signJwt({ sub: uid, ver: 0, typ: 'access' }, 'some-other-key-0123456789', 600);
+  ok((await me(forged)).status === 401, 'token signed with another key -> 401');
+  // a separate JWT_SECRET: old tokens stop working, new logins work, passwords are untouched
+  env.JWT_SECRET = 'jwt-only-secret-0123456789abcdef';
+  ok((await me(tok)).status === 401, 'tokens signed with SECRET_KEY rejected once JWT_SECRET is set');
+  const relog = await call('POST', '/api/v1/auth/login', { json: { email: 'jwt@example.com', password: 'password123' } });
+  ok(relog.status === 200 && (await me(relog.data.access_token)).status === 200, 'login and API work with JWT_SECRET');
+  delete env.JWT_SECRET;
+  const unknown = await call('POST', '/api/v1/auth/login', { json: { email: 'nobody@example.com', password: 'password123' } });
+  ok(unknown.status === 401 && unknown.data.detail.code === 'bad_credentials', 'unknown email gets the same answer as a wrong password');
+}
+
+section("a user cannot read or change another user's order");
+{
+  const a = await signup('owner@example.com');
+  const b = await signup('other@example.com');
+  const o = await call('POST', '/api/v1/orders', { token: a, json: { topup_toman: 500000, method: 'card' } });
+  ok(o.status === 201, 'order created ' + o.status);
+  ok((await call('GET', `/api/v1/orders/${o.data.id}`, { token: b })).status === 404, "other user's order -> 404");
+  ok((await call('POST', `/api/v1/orders/${o.data.id}/cancel`, { token: b })).status === 404, "cannot cancel another user's order");
+  ok((await call('GET', `/api/v1/orders/${o.data.id}`, { token: a })).status === 200, 'owner can read it');
+}
+
+section('rate limits on login, sign-up and free trial');
+{
+  // a stand-in for the Workers Rate Limiting binding: N calls per key
+  const limiter = (n) => { const seen = new Map(); return { limit: async ({ key }) => { const c = (seen.get(key) || 0) + 1; seen.set(key, c); return { success: c <= n }; } }; };
+  await signup('rl@example.com');
+  env.RL_LOGIN = limiter(5);
+  const tries = [];
+  for (let i = 0; i < 6; i++) tries.push((await call('POST', '/api/v1/auth/login', { json: { email: 'RL@example.com', password: 'wrong-' + i } })).status);
+  ok(tries.slice(0, 5).every((s) => s === 401) && tries[5] === 429, 'sixth login attempt for one email in a minute -> 429: ' + tries.join(','));
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 'someone@example.com', password: 'x' } })).status === 401, 'other emails are not affected');
+  delete env.RL_LOGIN;
+  env.RL_IP = limiter(2);
+  const ipH = { 'cf-connecting-ip': '5.6.7.8' };
+  const regs = [];
+  for (let i = 0; i < 3; i++) regs.push((await call('POST', '/api/v1/auth/register', { headers: ipH, json: { email: `rlreg${i}@example.com`, password: 'password123' } })).status);
+  ok(regs[0] === 201 && regs[1] === 201 && regs[2] === 429, 'third sign-up from one IP in a minute -> 429: ' + regs.join(','));
+  ok((await call('POST', '/api/v1/auth/register', { headers: { 'cf-connecting-ip': '9.9.9.9' }, json: { email: 'rlreg-other@example.com', password: 'password123' } })).status === 201, 'another IP can still sign up');
+  env.RL_IP = { limit: async () => { throw new Error('limiter down'); } };
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 'rl@example.com', password: 'password123' } })).status === 200, 'a failing limiter never locks users out');
+  delete env.RL_IP;
+}
+
+section('two sign-ups with the same email at the same moment');
+{
+  const r = await Promise.all([1, 2].map(() => call('POST', '/api/v1/auth/register', { json: { email: 'race@example.com', password: 'password123' } })));
+  const st = r.map((x) => x.status).sort();
+  ok(st[0] === 201 && st[1] === 409, 'one account, the other gets 409 (not 500): ' + st.join(','));
+}
+
+section('free trial requested twice at the same moment');
+{
+  const tok = await signup('trialrace@example.com', { device: 'race-phone' });
+  const annual = (await call('GET', '/api/v1/plans')).data.find((p) => p.trial_days > 0);
+  const created = fakes.pg.users ? Object.keys(fakes.pg.users).length : null;
+  const r = await Promise.all([1, 2].map(() => call('POST', '/api/v1/trial', { token: tok, json: { plan_id: annual.id }, headers: { 'x-device-id': 'race-phone' } })));
+  const good = r.filter((x) => x.status === 200).length;
+  ok(good === 1 && r.some((x) => x.data.detail && x.data.detail.code === 'trial_used'), 'exactly one trial: ' + r.map((x) => x.status).join(','));
+  if (created !== null) ok(Object.keys(fakes.pg.users).length === created + 1, 'one panel account built');
+}
+
+section('a discount code cannot be used twice through two open orders');
+{
+  await tgWebhook({ message: { chat: { id: 12345 }, text: '/coupon TWICE30 30' } });
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.price_toman >= 10000);
+  const tok = await signup('twice@example.com');
+  const o1 = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card', coupon_code: 'TWICE30' } });
+  ok(o1.status === 201 && o1.data.amount_toman < monthly.price_toman, 'first order gets the discount');
+  const o2 = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card', coupon_code: 'TWICE30' } });
+  ok(o2.status === 400 && o2.data.detail.code === 'coupon_in_use', 'second open order with the same code refused: ' + JSON.stringify(o2.data));
+  await call('POST', `/api/v1/orders/${o1.data.id}/cancel`, { token: tok });
+  const o3 = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card', coupon_code: 'TWICE30' } });
+  ok(o3.status === 201, 'after cancelling, the code can be used again');
+  // a code with one use left is reserved by the first open order
+  await tgWebhook({ message: { chat: { id: 12345 }, text: '/coupon LAST1 20 1' } });
+  const u1 = await signup('last1a@example.com');
+  const u2 = await signup('last1b@example.com');
+  ok((await call('POST', '/api/v1/orders', { token: u1, json: { plan_id: monthly.id, method: 'card', coupon_code: 'LAST1' } })).status === 201, 'first user reserves the last use');
+  const late = await call('POST', '/api/v1/orders', { token: u2, json: { plan_id: monthly.id, method: 'card', coupon_code: 'LAST1' } });
+  ok(late.status === 400 && late.data.detail.code === 'coupon_used_up', 'second user cannot oversell it: ' + JSON.stringify(late.data));
+}
+
+section('backup never contains password hashes');
+{
+  const { backupJson } = await import('../src/telegram.js');
+  const b = JSON.parse(await backupJson(env));
+  ok(b.tables.users.length > 0 && b.tables.users.every((u) => !('password_hash' in u) && u.email), 'users are backed up without password_hash');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

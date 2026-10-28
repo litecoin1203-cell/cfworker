@@ -1,6 +1,6 @@
 // Cloud Gold store on Cloudflare Workers. One Worker serves the app API, the NOWPayments webhook
 // and the Telegram admin bot. State lives in D1 (env.DB).
-import { json, err, ApiError, safeEqual, logError } from './util.js';
+import { json, err, ApiError, safeEqual, logError, rateLimit } from './util.js';
 import { first, run, insert } from './db.js';
 import * as auth from './auth.js';
 import * as account from './account.js';
@@ -112,9 +112,18 @@ async function route(request, env, p) {
   if (p === '/plans' && m === 'GET') return account.plans(env);
   if (p === '/ip' && m === 'GET') return account.myIp(env, request);
 
-  // auth
-  if (p === '/auth/register' && m === 'POST') return auth.register(env, await body(request), H);
-  if (p === '/auth/login' && m === 'POST') return auth.login(env, await body(request), H);
+  // auth (rate-limited per IP, and login also per email, against password guessing and mass sign-ups)
+  const ip = H.get('cf-connecting-ip') || '';
+  if (p === '/auth/register' && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'register:' + ip);
+    return auth.register(env, await body(request), H);
+  }
+  if (p === '/auth/login' && m === 'POST') {
+    const b = await body(request);
+    await rateLimit(env, 'RL_IP', 'login:' + ip);
+    await rateLimit(env, 'RL_LOGIN', 'login:' + String(b.email || '').trim().toLowerCase());
+    return auth.login(env, b, H);
+  }
   if (p === '/auth/refresh' && m === 'POST') return auth.refresh(env, await body(request));
 
   // crypto webhook (no auth, signature-checked)
@@ -132,7 +141,10 @@ async function route(request, env, p) {
   if (p === '/auth/change-password' && m === 'POST') return auth.changePassword(env, user, await body(request));
   if (p === '/auth/logout-all' && m === 'POST') return auth.logoutAll(env, user);
   if (p === '/me' && m === 'GET') return account.me(env, user);
-  if (p === '/trial' && m === 'POST') return account.startTrial(env, user, await body(request), request);
+  if (p === '/trial' && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'trial:' + ip);
+    return account.startTrial(env, user, await body(request), request);
+  }
   if (p === '/vpn' && m === 'GET') return account.vpn(env, user, request);
   if (p === '/vpn/servers' && m === 'GET') return account.vpnServers(env, user);
   if (p === '/vpn/sub' && m === 'GET') return account.vpnSub(env, user, request);

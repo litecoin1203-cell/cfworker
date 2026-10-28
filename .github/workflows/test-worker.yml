@@ -1,0 +1,25 @@
+# Runs the Worker tests on every push and pull request, so a break shows up before anyone deploys.
+name: Test Cloud Gold server
+
+on:
+  push:
+    paths: ['worker/**', '.github/workflows/test-worker.yml']
+  pull_request:
+    paths: ['worker/**', '.github/workflows/test-worker.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: worker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'   # the tests use node:sqlite
+      - name: Run the tests
+        run: npm test

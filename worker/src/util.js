@@ -81,6 +81,20 @@ export async function safeEqual(a, b) {
   return timingSafeEqual(hex(x), hex(y));
 }
 
+// Per-key request limits from the Workers Rate Limiting bindings in wrangler.jsonc. A missing binding
+// (local runs) or a failing limiter lets the request through: the limiter must never lock users out.
+export async function rateLimit(env, binding, key) {
+  const limiter = env[binding];
+  if (!limiter || !key) return;
+  let outcome;
+  try { outcome = await limiter.limit({ key }); } catch (e) { logError('rate limiter failed', e, { binding }); return; }
+  if (outcome && outcome.success === false) throw err(429, 'too_many_requests', 'تعداد درخواست‌ها زیاد است. یک دقیقه صبر کن و دوباره امتحان کن.');
+}
+
+// JWTs get their own key when JWT_SECRET is set, so SECRET_KEY stays only the password pepper.
+// Setting JWT_SECRET signs everyone out once (old tokens no longer verify).
+export const jwtSecret = (env) => env.JWT_SECRET || env.SECRET_KEY;
+
 // One JSON line per error, at error level, so Workers Logs can search and filter it.
 export function logError(message, e, extra = {}) {
   console.error(JSON.stringify({ message, error: e instanceof Error ? e.message : String(e), stack: e && e.stack, ...extra }));
