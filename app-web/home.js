@@ -414,6 +414,12 @@
 
       const t0 = performance.now();
       function frame(now) {
+        raf = 0;
+        try { drawGlobe(now); } catch (e) {}
+        try { paint(); } catch (e) {}
+        raf = requestAnimationFrame(frame);
+      }
+      function drawGlobe(now) {
         const t = (now - t0) / 1000, m = mode(), srv = selectedServer();
         const goal = m === 'connected' ? 1 : m === 'connecting' ? 0.55 : 0.12;
         pw += (goal - pw) * 0.06;
@@ -431,16 +437,20 @@
           marker.style.display = p[2] > 0 ? 'block' : 'none';
           marker.style.transform = `translate(${(p[0] / s).toFixed(1)}px,${(p[1] / s).toFixed(1)}px)`;
         } else marker.style.display = 'none';
-        paint();
-        raf = requestAnimationFrame(frame);
       }
+      // Draw the screen once, synchronously, so the status/usage/server pill are correct immediately —
+      // even if this WebView drops the first requestAnimationFrame after an in-app navigation.
+      try { paint(); } catch (e) {}
       raf = requestAnimationFrame(frame);
+      // Safety net: on some Android WebViews rAF stalls after returning from another screen, which would
+      // freeze the home screen on its blank initial markup. This keeps the UI live and restarts the loop.
+      const uiTimer = setInterval(() => { try { paint(); } catch (e) {} if (!raf) raf = requestAnimationFrame(frame); }, 1000);
       const refresh = () => window.CG.loadMe().then(maybeRemind).catch(() => {});
       const offResume = on('resume', refresh);
       // usage and days left come live from the panel; refresh them every minute while home is open
       const meTimer = setInterval(refresh, 60000);
       if (!S.meAt || Date.now() - S.meAt > 20000) refresh(); else setTimeout(maybeRemind, 800);
-      return () => { cancelAnimationFrame(raf); stopLive(); offResume(); clearInterval(meTimer); screens.home.resize = null; };
+      return () => { cancelAnimationFrame(raf); clearInterval(uiTimer); stopLive(); offResume(); clearInterval(meTimer); screens.home.resize = null; };
     },
   };
 

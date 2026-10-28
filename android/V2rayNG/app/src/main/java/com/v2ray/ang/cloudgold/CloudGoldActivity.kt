@@ -168,7 +168,7 @@ class CloudGoldActivity : AppCompatActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        CgTune.applyDefaults(this)
+        lifecycleScope.launch(Dispatchers.IO) { try { CgTune.init(this@CloudGoldActivity) } catch (_: Exception) {} }
         intent?.data?.let { pendingDeepLink = it.toString() }
         web.loadUrl("https://appassets.androidplatform.net/assets/cloudgold/index.html")
     }

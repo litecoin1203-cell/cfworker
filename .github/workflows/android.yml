@@ -96,6 +96,18 @@ jobs:
           mkdir -p V2rayNG/app/src/main/assets/cloudgold
           cp -r ../app-web/. V2rayNG/app/src/main/assets/cloudgold/
 
+      - name: Download geo data (geoip.dat + geosite.dat)
+        run: |
+          # the core needs these to build routing (geoip:ir, geoip:private, ...) or it refuses to connect.
+          A=V2rayNG/app/src/main/assets
+          mkdir -p "$A"
+          base="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
+          curl -fL --retry 3 -o "$A/geoip.dat"   "$base/geoip.dat"
+          curl -fL --retry 3 -o "$A/geosite.dat" "$base/geosite.dat"
+          # fail the build early if a download produced an empty/broken file
+          test -s "$A/geoip.dat" && test -s "$A/geosite.dat"
+          ls -la "$A/geoip.dat" "$A/geosite.dat"
+
       - name: Setup Java
         uses: actions/setup-java@v4
         with:

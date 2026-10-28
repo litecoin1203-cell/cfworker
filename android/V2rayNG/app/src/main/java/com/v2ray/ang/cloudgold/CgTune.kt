@@ -16,6 +16,14 @@ object CgTune {
     private const val PRESET_DEFAULT = 0   // RoutingType.WHITE
     private const val PRESET_IRAN = 3      // RoutingType.WHITE_IRAN
 
+    /** Copy the bundled geoip.dat/geosite.dat into the core's asset folder, then apply routing defaults. */
+    fun init(ctx: Context) {
+        // the stock copy runs on v2rayNG's own MainActivity, which Cloud Gold never opens, so do it here:
+        // without geoip.dat/geosite.dat the core cannot build routing and refuses to connect.
+        try { SettingsManager.initAssets(ctx, ctx.assets) } catch (_: Exception) {}
+        applyDefaults(ctx)
+    }
+
     fun applyDefaults(ctx: Context) {
         if (MmkvManager.decodeSettingsBool(APPLIED, false)) return
         try { setIranDirect(ctx, true) } catch (_: Exception) {}
