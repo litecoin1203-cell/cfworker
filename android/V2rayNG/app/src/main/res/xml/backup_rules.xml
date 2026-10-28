@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Auto Backup up to Android 11. The Cloud Gold session (login tokens and the device id) must not be restored on
+     another phone: it would sign in there without a password and reuse this phone's device slot. -->
+<full-backup-content>
+    <exclude domain="file" path="mmkv/cloudgold_session" />
+    <exclude domain="file" path="mmkv/cloudgold_session.crc" />
+</full-backup-content>

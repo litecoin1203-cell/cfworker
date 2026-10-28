@@ -2,6 +2,7 @@ package com.v2ray.ang.cloudgold
 
 import android.content.Context
 import android.os.Build
+import android.util.Log
 import com.v2ray.ang.BuildConfig
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -11,7 +12,12 @@ import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import org.json.JSONTokener
+import java.security.KeyStore
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLSocketFactory
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509TrustManager
 
 /**
  * HTTP client for the Cloud Gold API (a Cloudflare Worker). Adds the bearer token and device headers and
@@ -34,7 +40,28 @@ object CgApi {
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .writeTimeout(60, TimeUnit.SECONDS)
+            .apply { systemOnlyTls()?.let { (factory, trust) -> sslSocketFactory(factory, trust) } }
             .build()
+    }
+
+    /**
+     * TLS that trusts only the CAs shipped with Android, never a certificate the user (or another app) installed,
+     * so a network that pushes its own CA onto phones cannot read or change the login tokens. Null keeps the
+     * platform default if the system store cannot be read.
+     */
+    private fun systemOnlyTls(): Pair<SSLSocketFactory, X509TrustManager>? = try {
+        val store = KeyStore.getInstance("AndroidCAStore").apply { load(null) }
+        val anchors = KeyStore.getInstance(KeyStore.getDefaultType()).apply { load(null, null) }
+        for (alias in store.aliases().toList()) {
+            if (alias.startsWith("system:")) anchors.setCertificateEntry(alias, store.getCertificate(alias))
+        }
+        val tmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).apply { init(anchors) }
+        val trust = tmf.trustManagers.filterIsInstance<X509TrustManager>().first()
+        val tls = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trust), null) }
+        tls.socketFactory to trust
+    } catch (e: Exception) {
+        Log.w("CgApi", "system-only TLS unavailable, using the platform default", e)
+        null
     }
 
     class Result(val status: Int, val body: String) {

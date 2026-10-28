@@ -15,6 +15,7 @@ import android.net.Uri
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.util.Log
 import android.os.Process
 import android.provider.OpenableColumns
 import android.view.View
@@ -45,6 +46,7 @@ import com.v2ray.ang.handler.SettingsManager
 import com.v2ray.ang.ui.MainActivity
 import com.v2ray.ang.util.MessageUtil
 import com.v2ray.ang.util.Utils
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -168,7 +170,9 @@ class CloudGoldActivity : AppCompatActivity() {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
 
-        lifecycleScope.launch(Dispatchers.IO) { try { CgTune.init(this@CloudGoldActivity) } catch (_: Exception) {} }
+        lifecycleScope.launch(Dispatchers.IO) {
+            try { CgTune.init(this@CloudGoldActivity) } catch (e: CancellationException) { throw e } catch (e: Exception) { Log.w("CloudGold", "tune init failed", e) }
+        }
         intent?.data?.let { pendingDeepLink = it.toString() }
         web.loadUrl("https://appassets.androidplatform.net/assets/cloudgold/index.html")
     }
@@ -219,6 +223,8 @@ class CloudGoldActivity : AppCompatActivity() {
             lifecycleScope.launch {
                 try {
                     handle(id, method, args)
+                } catch (e: CancellationException) {
+                    throw e // the screen is closing: let the coroutine end instead of answering the page
                 } catch (e: CgError) {
                     fail(id, e.code, e.message ?: "مشکلی پیش آمد.")
                 } catch (e: Exception) {
