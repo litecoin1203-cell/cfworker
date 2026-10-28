@@ -31,6 +31,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -44,7 +45,6 @@ import com.v2ray.ang.core.CoreServiceManager
 import com.v2ray.ang.dto.TestServiceMessage
 import com.v2ray.ang.handler.MmkvManager
 import com.v2ray.ang.handler.SettingsManager
-import com.v2ray.ang.ui.MainActivity
 import com.v2ray.ang.util.MessageUtil
 import com.v2ray.ang.util.Utils
 import kotlinx.coroutines.CancellationException
@@ -88,7 +88,26 @@ class CloudGoldActivity : AppCompatActivity() {
         }
     }
 
-    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private var pendingNotifCall: Int? = null
+    private val notificationPermission = registerForActivityResult(ActivityResultContracts.RequestPermission()) {
+        val id = pendingNotifCall ?: return@registerForActivityResult
+        pendingNotifCall = null
+        resolve(id, true, notifState())
+    }
+
+    // "connect after the phone starts" needs the VPN permission up front, because the boot receiver cannot ask for it
+    private var pendingBootCall: Int? = null
+    private val bootPermission = registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { r ->
+        val id = pendingBootCall ?: return@registerForActivityResult
+        pendingBootCall = null
+        val granted = r.resultCode == RESULT_OK
+        MmkvManager.encodeStartOnBoot(granted)
+        resolve(id, true, JSONObject().put("on", granted).put("denied", !granted))
+    }
+
+    private fun notifState(): JSONObject = JSONObject()
+        .put("on", NotificationManagerCompat.from(this).areNotificationsEnabled())
+        .put("canAsk", Build.VERSION.SDK_INT >= 33)
 
     private val pickImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         val (id, args) = pendingUpload ?: return@registerForActivityResult
@@ -385,9 +404,53 @@ class CloudGoldActivity : AppCompatActivity() {
                     catch (_: Exception) { try { startActivity(Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS)); true } catch (_: Exception) { false } }
                 resolve(id, true, JSONObject().put("opened", opened))
             }
-            "advanced" -> {
-                startActivity(Intent(ctx, MainActivity::class.java))
-                resolve(id, true, JSONObject())
+            // the stock v2rayNG "auto connect at startup" setting; the UI shows only what is really saved
+            "getAutoStart" -> resolve(id, true, JSONObject().put("on", MmkvManager.decodeStartOnBoot())
+                .put("hasServer", !MmkvManager.getSelectServer().isNullOrEmpty()))
+            "setAutoStart" -> {
+                val want = a.optBoolean("on", false)
+                if (!want) {
+                    MmkvManager.encodeStartOnBoot(false)
+                    resolve(id, true, JSONObject().put("on", false))
+                } else if (MmkvManager.getSelectServer().isNullOrEmpty()) {
+                    resolve(id, true, JSONObject().put("on", false).put("noServer", true))
+                } else {
+                    val intent = if (SettingsManager.isVpnMode()) VpnService.prepare(ctx) else null
+                    if (intent == null) {
+                        MmkvManager.encodeStartOnBoot(true)
+                        resolve(id, true, JSONObject().put("on", true))
+                    } else {
+                        pendingBootCall?.let { resolve(it, true, JSONObject().put("on", false).put("denied", true)) }
+                        pendingBootCall = id
+                        bootPermission.launch(intent)
+                    }
+                }
+            }
+            "notifState" -> resolve(id, true, notifState())
+            "notifEnable" -> {
+                if (Build.VERSION.SDK_INT >= 33 &&
+                    ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    pendingNotifCall?.let { resolve(it, true, notifState()) }
+                    pendingNotifCall = id
+                    notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+                } else {
+                    resolve(id, true, notifState())
+                }
+            }
+            "openNotifSettings" -> {
+                val opened = try {
+                    if (Build.VERSION.SDK_INT < 26) throw IllegalStateException("no per-app notification page")
+                    startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS)
+                        .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, packageName))
+                    true
+                } catch (_: Exception) {
+                    try {
+                        startActivity(Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                        true
+                    } catch (_: Exception) { false }
+                }
+                resolve(id, true, JSONObject().put("opened", opened))
             }
             else -> fail(id, "unknown_method", "Unknown bridge method $method")
         }

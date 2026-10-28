@@ -102,8 +102,17 @@
       return { known: true, alwaysOn: p === 'on', lockdown: p === 'on' };
     },
     async systemBars() { return {}; },
+    // preview: ?autodeny=1 makes the VPN permission dialog say no; ?notif=off starts with notifications off
+    async getAutoStart() { return { on: !!LS.get('boot'), hasServer: true }; },
+    async setAutoStart(a) {
+      if (!a.on) { LS.set('boot', false); return { on: false }; }
+      if (new URLSearchParams(location.search).get('autodeny')) return { on: false, denied: true };
+      LS.set('boot', true); return { on: true };
+    },
+    async notifState() { const v = LS.get('notif'); return { on: v == null ? new URLSearchParams(location.search).get('notif') !== 'off' : !!v, canAsk: true }; },
+    async notifEnable() { if (new URLSearchParams(location.search).get('notif') === 'off') return { on: false, canAsk: true }; LS.set('notif', true); return { on: true, canAsk: true }; },
+    async openNotifSettings() { console.log('[mock] open notification settings'); return { opened: true }; },
     async vpnSystemSettings() { console.log('[mock] open Android VPN settings'); return { opened: true }; },
-    async advanced() { console.log('[mock] open v2rayNG settings'); return {}; },
   };
   window.CGMockHost = {
     call(id, method, argsJson) {
