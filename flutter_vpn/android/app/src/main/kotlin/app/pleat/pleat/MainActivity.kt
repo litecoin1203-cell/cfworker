@@ -41,6 +41,7 @@ class MainActivity : FlutterActivity() {
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "available" -> result.success(engineLoads())
+                    "engineError" -> result.success(engineError())
                     "state" -> result.success(TunnelHub.state)
                     "start" -> {
                         val config = call.argument<String>("config")
@@ -64,9 +65,16 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     "device" -> {
+                        // The same values the Cloud Gold app sends (CgSession.deviceModel, X-Ver-OS).
                         val maker = Build.MANUFACTURER.orEmpty().replaceFirstChar { it.uppercase() }
                         val model = Build.MODEL.orEmpty()
-                        result.success(if (model.startsWith(maker, true)) model else "$maker $model".trim())
+                        result.success(
+                            mapOf(
+                                "model" to if (model.startsWith(maker, true)) model else "$maker $model".trim(),
+                                "release" to Build.VERSION.RELEASE.orEmpty(),
+                                "hwid" to cloudGoldHwid()
+                            )
+                        )
                     }
                     "geo" -> background(result, false) { Engine.init(this); Engine.hasGeo(this) }
                     "ping" -> {
@@ -197,12 +205,32 @@ class MainActivity : FlutterActivity() {
         )
     }
 
+    /**
+     * The device id the Cloud Gold app sends for this phone (CgSession.deviceId):
+     * SHA-256 of ANDROID_ID + its package name, 32 hex. ANDROID_ID is the same
+     * for apps signed with the same key, and Pleat is signed with Cloud Gold's
+     * key, so the Worker and the panel's HWID limit see the same phone, not a
+     * second device. Empty when Android gives no ANDROID_ID.
+     */
+    private fun cloudGoldHwid(): String {
+        val androidId = Settings.Secure.getString(contentResolver, Settings.Secure.ANDROID_ID).orEmpty()
+        if (androidId.isEmpty()) return ""
+        return java.security.MessageDigest.getInstance("SHA-256")
+            .digest((androidId + "com.cloudgold.vpn").toByteArray())
+            .joinToString("") { "%02x".format(it) }
+            .take(32)
+    }
+
     /** True when this build ships the core and the tun library. */
-    private fun engineLoads(): Boolean = try {
+    private fun engineLoads(): Boolean = engineError() == null
+
+    /** Why the engine doesn't load (class and message), or null when it does. */
+    private fun engineError(): String? = try {
         Class.forName("libv2ray.Libv2ray")
         System.loadLibrary("hev-socks5-tunnel")
-        true
+        Engine.init(this)
+        null
     } catch (e: Throwable) {
-        false
+        "${e.javaClass.simpleName}: ${e.message.orEmpty().take(160)}"
     }
 }

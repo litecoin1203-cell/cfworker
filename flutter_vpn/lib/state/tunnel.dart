@@ -55,14 +55,33 @@ class Tunnel {
     if (await available()) await _method.invokeMethod<void>('systemSettings');
   }
 
-  /// "Maker Model" of this phone, or null off Android.
-  Future<String?> deviceModel() async {
+  /// "Maker Model" of this phone, its Android version and the device id
+  /// the Cloud Gold app uses for it; null off Android.
+  Future<({String model, String release, String hwid})?> device() async {
     try {
-      return await _method.invokeMethod<String>('device');
+      final m = await _method.invokeMapMethod<String, Object?>('device');
+      if (m == null) return null;
+      return (
+        model: '${m['model'] ?? ''}',
+        release: '${m['release'] ?? ''}',
+        hwid: '${m['hwid'] ?? ''}',
+      );
     } on MissingPluginException {
       return null;
     } on PlatformException {
       return null;
+    }
+  }
+
+  /// Why the engine doesn't load, as the platform says it; null when it
+  /// loads or off Android.
+  Future<String?> engineError() async {
+    try {
+      return await _method.invokeMethod<String>('engineError');
+    } on MissingPluginException {
+      return 'no native side';
+    } on PlatformException catch (e) {
+      return e.code;
     }
   }
 

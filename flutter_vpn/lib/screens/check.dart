@@ -100,7 +100,8 @@ class _CheckScreenState extends State<CheckScreen> {
       });
       await _step('Tunnel engine', () async {
         if (!await app.tunnel.available()) {
-          throw ApiError(0, 'no_engine', 'not in this build');
+          final why = await app.tunnel.engineError();
+          throw ApiError(0, 'no_engine', why ?? 'not in this build');
         }
         return await app.tunnel.hasGeo()
             ? 'core + place lists'

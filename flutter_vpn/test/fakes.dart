@@ -263,7 +263,10 @@ class FakeTunnel extends Tunnel {
   @override
   Future<({bool alwaysOn, bool lockdown})?> policy() async => guard;
   @override
-  Future<String?> deviceModel() async => 'Test Phone';
+  Future<({String model, String release, String hwid})?> device() async =>
+      (model: 'Test Phone', release: '14', hwid: '');
+  @override
+  Future<String?> engineError() async => null;
   final opened = <String>[];
   final shared = <String>[];
   Uint8List? photo;
