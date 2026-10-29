@@ -950,12 +950,21 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _pulse?.cancel();
   }
 
+  /// Before the first request: the phone's model and Android version, for
+  /// the headers the panel checks with the HWID.
+  Future<void> loadDevice() async {
+    final d = await tunnel.device();
+    if (d == null) return;
+    if (d.model.isNotEmpty) api.deviceModel = d.model;
+    api.osVersion = d.release;
+    // Same phone, same id as the Cloud Gold app: one device on the plan.
+    if (d.hwid.length == 32) await api.tokens.useDeviceId(d.hwid);
+  }
+
   /// On launch: a tunnel started earlier may still be running.
   Future<void> resumeTunnel() async {
     tunnelAvailable = await tunnel.available();
     if (tunnelAvailable!) geoAvailable = await tunnel.hasGeo();
-    final model = await tunnel.deviceModel();
-    if (model != null && model.isNotEmpty) api.deviceModel = model;
     notifyListeners();
     if (await tunnel.current() != TunnelState.up) return;
     tunnel.listen(_onTunnel);

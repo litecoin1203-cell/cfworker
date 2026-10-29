@@ -51,6 +51,13 @@ class TokenStore {
     }
   }
 
+  /// Replaces the random id with the phone's own (see `loadDevice`).
+  Future<void> useDeviceId(String id) async {
+    if (id == deviceId) return;
+    deviceId = id;
+    await _s.write(key: 'device', value: id);
+  }
+
   Future<void> save(String a, String r) async {
     access = a;
     refresh = r;
@@ -104,8 +111,11 @@ class ApiClient {
   final HttpClient _http;
   int _base = 0;
 
-  /// "Maker Model" of this phone, for the device list; set once at launch.
+  /// "Maker Model" of this phone and its Android version ("14"), set once
+  /// at launch. The Worker passes them to the panel with the HWID; they
+  /// must look like what the Cloud Gold app sends.
   String deviceModel = 'Pleat';
+  String osVersion = '';
 
   /// Called when the server rejects the session for good.
   void Function()? onSignedOut;
@@ -125,8 +135,10 @@ class ApiClient {
     // The panel limits phones by HWID, as it does for the Cloud Gold app;
     // without it a plan with a device limit gets no configs.
     'x-hwid': tokens.deviceId ?? '',
-    'x-device-os': Platform.operatingSystem,
-    'x-ver-os': Platform.operatingSystemVersion,
+    'x-device-os': Platform.isAndroid ? 'Android' : Platform.operatingSystem,
+    // The Android version only, as the Cloud Gold app sends it. Dart's own
+    // operatingSystemVersion is the long kernel string.
+    'x-ver-os': osVersion,
     'x-app-version': appVersion,
   };
 
