@@ -115,8 +115,9 @@ class _CheckScreenState extends State<CheckScreen> {
             throw ApiError(0, 'unsupported', 'protocol not supported');
           }
           final ms = await app.tunnel.ping(config);
-          if (ms == null)
+          if (ms == null) {
             throw ApiError(0, 'no_answer', 'no answer through the core');
+          }
           return '$ms ms through the core';
         });
       }
