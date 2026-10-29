@@ -15,6 +15,55 @@ was generic, it was replaced by the choices below and the reason is written next
 
 ---
 
+## 0. How each skill was applied (trace)
+
+Order used, as Ali asked: ui-ux-pro-max → frontend-design → design-system → web-design-guidelines (the last
+one runs at the end, on the rewritten files).
+
+**Install** (`npx skills add`, inside the repo, into `.agents/skills/`, git-ignored):
+`nextlevelbuilder/ui-ux-pro-max-skill` ✓ (also brought `design-system`, `ui-styling`, `brand`, `design`, `slides`),
+`anthropics/skills --skill frontend-design` ✓, `vercel-labs/agent-skills --skill web-design-guidelines` ✓,
+`supercent-io/skills-template --skill design-system` ✗ — "Authentication failed", the repository is private
+(retried 2026-10-29, same result). The `design-system` skill installed with ui-ux-pro-max (claudekit, MIT) is
+used for this step: same three-layer token method (primitive → semantic → component).
+
+**ui-ux-pro-max** (SKILL.md → Workflow steps 1–4, `references/pro-rules.md`)
+- Step 1, requirements: product = VPN utility app; audience = phone users in a censored network, short sessions;
+  keywords = trust, privacy, premium, dark-first; stack = plain HTML/CSS/JS in an Android WebView. No listed
+  stack matches (no React/Tailwind/Compose UI here), so per "Never assume a stack" no `--stack` rules were applied.
+- Step 2, `--design-system "VPN privacy security mobile app premium" -p "Cloud Gold" --variance 5 --motion 3 --density 5`
+  → pattern *Trust & Authority*, style *Minimalism & Swiss*, palette navy `#1E3A5F` + green CTA `#22C55E`,
+  font DM Sans, anti-patterns "excessive decoration", "pure white backgrounds". Kept: pattern, style, dark-navy
+  trust base, anti-patterns, standard density, subtle motion. Replaced (skill rule "verify fit for the user's
+  product before applying; do not persist unverified output"): the green CTA and DM Sans, because the brand is
+  gold and the app already bundles two fonts; see §3 and §4 for the reason on each line.
+- Step 2b, persist: the tool's `--persist` writes `design-system/<slug>/MASTER.md`; Ali fixed the path as
+  `design-system/MASTER.md`, so this file uses the same Master + `pages/` override structure at that path.
+- Step 3, domain searches run: `"luxury gold premium dark" --domain color` (accent `#A16207` family → bullion),
+  `"precise technical premium" --domain typography`, and one accessibility outcome per query in `--domain ux`:
+  focus not obscured, touch target size, reduced motion, color-only, text scaling, loading feedback; plus
+  `"accessibilityLabel touch safe-areas" --domain web` (safe-area insets, 8dp spacing). Results are in §7–§9.
+- Pre-delivery checklist from `references/pro-rules.md` copied into §9 and run before the PR.
+
+**frontend-design** (SKILL.md → "Ground your designs", "Process: plan, review, build, critique", "Restraint")
+- Subject: a private line out of a censored network, sold as "gold"; primary job of the app: connect in one tap
+  and know you are protected. Vernacular used: bullion vault, hallmark stamp, assay purity, guilloché engraving.
+- Plan in two passes: palette as named hex values (§3 tier 1), type roles (§4), layout with ASCII wireframes
+  (§1a), principles (§1). Reviewed against the calibration list; revisions are in §1b.
+- Restraint: boldness spent only on the Hallmark connect control; one orchestrated motion (§7).
+
+**design-system** (`references/token-architecture.md`, `component-tokens.md`, `states-and-variants.md`,
+`scripts/validate-tokens.cjs`)
+- Tokens stay three layers in the existing `app-web/tokens.css` (PR #3): primitives `--p-*`, semantic `--c-*`,
+  component `--btn-*`/`--row-*`/… — extended, not duplicated.
+- State priority from `states-and-variants.md`: disabled > loading > active > focus > (hover) > default.
+- Baseline run of `validate-tokens.cjs` on the five screen files + `ui.js` (before the redesign): 0 hard-coded
+  hex colours, 6 hard-coded rem values in inline `style=""` (servers.js, plans.js, usage.js). Target after the
+  redesign: 0 and 0. The halo button's colours in `app.css` (`.pb`) are replaced by the token-driven Hallmark.
+
+**web-design-guidelines** — runs last: fetches the current rules from
+`vercel-labs/web-interface-guidelines/command.md` and reviews every changed file, reported as `file:line`.
+
 ## 1. Direction: "Vault & Hallmark"
 
 Cloud Gold sells a private line out of the open network. The visual world is the **bullion vault**: cool
@@ -34,6 +83,44 @@ What we deliberately do **not** use (frontend-design review): purple or blue-vio
 cards in a row; one radius on everything; soft grey shadow under every card; ALL-CAPS tracked eyebrow labels;
 "A · B · C" meta strings; arrow glyphs appended to buttons; emoji used as UI icons; warm cream page with a
 clay accent; near-black with one acid accent; glassmorphism.
+
+### 1a. Layout wireframes (frontend-design: "ASCII wireframes to ideate and compare")
+
+Start-aligned text; only the Hallmark block is centred.
+
+```
+Connect (portrait)             Connect (landscape ≥640px)          Usage
+┌──────────────────────┐       ┌───────────────┬───────────────┐   ┌──────────────────────┐
+│ Cloud Gold  [23 days]│       │ Cloud Gold    │      [23 days]│   │ Usage            [↻] │
+│ [notice if any]      │       │   ╭───────╮   │ Server  🇩🇪 DE 2│   │ [80% warning notice] │
+│      ╭───────╮       │       │   │  (⏻)  │   │ Latency 128 ms│   │ 82%  used of 50 GB   │
+│      │  (⏻)  │       │       │   ╰───────╯   │ Time  01:24:07│   │ ▓▓▓▓▓▓▓▓▓▓▓▓▓░|░░|   │
+│      ╰───────╯       │       │  ● Connected  │ Data   412 MB │   │ Used / Left / Total  │
+│     ● Connected      │       │               │ Kill Switch ? │   │ Expires · days left  │
+│ ┌─────────┬────────┐ │       └───────────────┴───────────────┘   │ [ Renew plan       ] │
+│ │Server   │Latency │ │                                           └──────────────────────┘
+│ │Duration │Session │ │       Servers                             Plans
+│ └─────────┴────────┘ │       ┌──────────────────────┐            ┌──────────────────────┐
+│ Kill Switch  Unknown │       │ Servers          [↻] │            │ Renew                │
+├──────────────────────┤       │ [Fastest automatically]           │ Now: active, 9 GB…   │
+│ Connect Servers Usage│       │ [ search            ]│            │ ○ Monthly     290,000│
+│ Settings             │       │ All  Favorites  Sort │            │ ● Quarterly   790,000│
+└──────────────────────┘       │ 🇩🇪 DE 2  ▮▮▮▮ 128 ☆ │            │ ○ Yearly    2,900,000│
+                               │ 🇳🇱 NL 1  ▮▮▮  164 ☆ │            │ [ Renew with …     ] │
+                               └──────────────────────┘            └──────────────────────┘
+```
+
+Compared alternative for Connect: big-number hero (timer as the hero, small button under it). Rejected: the
+skill names "big number + small label" as the default treatment, and the person's first job is the button.
+
+### 1b. Review against the calibration list (frontend-design "review that plan against the brief")
+
+| Trait in the skill's list | Where the first plan was close | Revision |
+|---|---|---|
+| 2. near-black + one bright accent | first palette was walnut-black + gold (PR #3) | background moved to blue-steel `#0D1620` (a hue, not tinted black); gold limited to "certified" states |
+| 4. SaaS card kit, one radius, same shadow | PR #3 used a card for every block | grouped lists, radius hierarchy 10/14/20/28/pill, no card shadows |
+| 5. template chrome (ALL-CAPS eyebrows, `A · B · C`, `→` on buttons, mono data labels) | plan meta line used middle dots | facts are separate icon + text items; no eyebrows; numbers use Michroma, not a monospace |
+| typography default (Inter as safe face) | `body` in `app.css` uses Inter | flow screens use Outfit + Michroma only |
 
 ## 2. Product facts the design must respect
 
