@@ -95,9 +95,14 @@ export async function rateLimit(env, binding, key) {
 // Setting JWT_SECRET signs everyone out once (old tokens no longer verify).
 export const jwtSecret = (env) => env.JWT_SECRET || env.SECRET_KEY;
 
+// Panel addresses must never reach the bot, the logs or the app: every URL in a panel message becomes [url].
+export function redactUrls(text) {
+  return String(text ?? '').replace(/\bhttps?:\/\/[^\s"'<>)]+/gi, '[url]');
+}
+
 // One JSON line per error, at error level, so Workers Logs can search and filter it.
 export function logError(message, e, extra = {}) {
-  console.error(JSON.stringify({ message, error: e instanceof Error ? e.message : String(e), stack: e && e.stack, ...extra }));
+  console.error(JSON.stringify({ message, error: redactUrls(e instanceof Error ? e.message : String(e)), stack: redactUrls(e && e.stack), ...extra }));
 }
 
 // ---------------- HMAC-SHA256 ----------------

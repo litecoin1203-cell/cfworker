@@ -1,8 +1,10 @@
-// Public config, plans, profile, the VPN subscription (live from the panel), servers, devices and the free trial.
+// Public config, plans, profile, the VPN subscription (from the control plane), the unified server list, devices and the free trial.
 import { first, all, run, getSettings, getSettingInt } from './db.js';
 import { json, err, nowSec } from './util.js';
-import { PasarGuard, PasarGuardError, pgOrThrow } from './pasarguard.js';
-import { provision, parseExpire } from './billing.js';
+import { PasarGuard, PasarGuardError } from './pasarguard.js';
+import { provision } from './billing.js';
+import { collectLinks, flagToCc } from './panels.js';
+import { refreshUser, usedBytes } from './sync.js';
 import { cryptoEnabled } from './nowpayments.js';
 import { enabledCoins, coinOut } from './coins.js';
 import { notifyAdmin } from './telegram.js';
@@ -49,38 +51,35 @@ export async function plans(env) {
   return json(rows.map(planOut));
 }
 
-// Subscription as the app shows it. Usage, limit, expiry and status come live from the panel.
-export async function subscriptionOut(env, user, live = true) {
-  const sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
+// Subscription as the app shows it. The control plane decides; with live = true every panel of the user is read
+// first (so the numbers are fresh and a stop on quota happens right away). Nothing here names a panel.
+// withSubUrl: only app versions before 1.9.0 still get the panel link (they download from it themselves).
+export async function subscriptionOut(env, user, live = true, { withSubUrl = false } = {}) {
+  let sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
   if (!sub) return null;
-  const plan = sub.plan_id ? await first(env, 'SELECT * FROM plans WHERE id = ?', sub.plan_id) : null;
-  let status = 'active', used = 0, expires = sub.expires_at, dataLimit = sub.data_limit_bytes, liveOk = false, onlineAt = null;
-  if (live && env.PASARGUARD_URL) {
+  let liveOk = false, missing = false;
+  if (live) {
     try {
-      const pgUser = await new PasarGuard(env).getUser(sub.pg_username);
-      if (!pgUser) status = 'missing';
-      else {
-        liveOk = true;
-        status = pgUser.status || 'active';
-        used = parseInt(pgUser.used_traffic || 0, 10) || 0;
-        dataLimit = parseInt(pgUser.data_limit || 0, 10) || 0;
-        const exp = parseExpire(pgUser.expire);
-        expires = exp || null;
-        onlineAt = pgUser.online_at || null;
-        // keep our copy in step so /find and the trial checks stay right even when the panel is slow later
-        if (exp !== sub.expires_at || dataLimit !== sub.data_limit_bytes) {
-          await run(env, 'UPDATE subscriptions SET expires_at = ?, data_limit_bytes = ?, updated_at = ? WHERE id = ?', exp, dataLimit, nowSec(), sub.id);
-        }
-      }
-    } catch (e) { status = 'unknown'; }
+      const r = await refreshUser(env, user.id);
+      liveOk = r.reached > 0;
+      missing = r.accounts > 0 && r.missing === r.accounts;
+    } catch (e) { /* stale numbers are still right numbers */ }
+    sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
   }
+  const plan = sub.plan_id ? await first(env, 'SELECT * FROM plans WHERE id = ?', sub.plan_id) : null;
   const now = nowSec();
-  if (expires && expires < now && ['active', 'unknown'].includes(status)) status = 'expired';
-  if (dataLimit && used >= dataLimit && status === 'active') status = 'limited';
+  const expires = sub.expires_at, dataLimit = sub.data_limit_bytes;
+  const used = sub.period_id ? await usedBytes(env, sub.period_id) : 0;
+  let status = 'active';
+  if (missing) status = 'missing';
+  else if (sub.state === 'stopped') status = STOP_STATUS[sub.stop_reason] || 'disabled';
+  else if (expires && expires <= now) status = 'expired';
+  else if (dataLimit && used >= dataLimit) status = 'limited';
   const daysLeft = expires ? Math.max(0, Math.ceil((expires - now) / 86400)) : null;
-  const usable = status === 'active' || status === 'unknown' || status === 'on_hold';
-  return {
-    active: usable, status, live: liveOk, plan_name: plan ? faName(plan.name) : null,
+  const usable = status === 'active';
+  const out = {
+    active: usable, status, stop_reason: usable ? null : (sub.stop_reason || (status === 'expired' ? 'expired' : status === 'limited' ? 'quota' : null)),
+    live: liveOk, plan_name: plan ? faName(plan.name) : null,
     expires_at: expires ? new Date(expires * 1000).toISOString() : null, days_left: daysLeft,
     seconds_left: expires ? Math.max(0, expires - now) : null,
     unlimited_time: !expires, unlimited_data: !dataLimit,
@@ -88,9 +87,19 @@ export async function subscriptionOut(env, user, live = true) {
     // whole percent of the data used (0-100, rounded down so 100 means really used up); null when data is unlimited.
     // The app shows its 80/95/100% warnings from this number instead of working it out itself.
     used_percent: dataLimit ? Math.min(100, Math.floor((used * 100) / dataLimit)) : null,
-    device_limit: sub.device_limit, online_at: onlineAt, period_days: sub.period_days || (plan ? plan.duration_days : null),
-    sub_url: status === 'missing' ? '' : sub.sub_url,
+    device_limit: sub.device_limit, period_days: sub.period_days || (plan ? plan.duration_days : null),
   };
+  if (withSubUrl) out.sub_url = status === 'missing' ? '' : sub.sub_url;
+  return out;
+}
+const STOP_STATUS = { quota: 'limited', expired: 'expired', admin: 'disabled' };
+
+// "1.9.0 (Android 14)" -> true for 1.9.0 and newer; a missing or unreadable version counts as old
+export function centralApp(request) {
+  const m = String((request && request.headers.get('x-app-version')) || '').match(/^(\d+)\.(\d+)(?:\.(\d+))?/);
+  if (!m) return false;
+  const [maj, min] = [parseInt(m[1], 10), parseInt(m[2], 10)];
+  return maj > 1 || (maj === 1 && min >= 9);
 }
 
 async function trialAvailable(env, user) {
@@ -99,12 +108,12 @@ async function trialAvailable(env, user) {
   return !has;
 }
 
-export async function me(env, user) {
+export async function me(env, user, request) {
   return json({
     id: user.id, email: user.email, wallet_balance: user.wallet_balance, referral_code: user.referral_code,
     created_at: new Date(user.created_at * 1000).toISOString(),
     trial_available: await trialAvailable(env, user),
-    subscription: await subscriptionOut(env, user),
+    subscription: await subscriptionOut(env, user, true, { withSubUrl: !centralApp(request) }),
   });
 }
 
@@ -113,12 +122,6 @@ export function myIp(env, request) {
 }
 
 // ---------------- VPN ----------------
-const FLAG_RE = /[\u{1F1E6}-\u{1F1FF}]{2}/u;
-function flagToCc(text) {
-  const m = (text || '').match(FLAG_RE);
-  if (!m) return '';
-  return Array.from(m[0]).map((ch) => String.fromCharCode(ch.codePointAt(0) - 0x1f1e6 + 65)).join('');
-}
 function parseLink(index, link) {
   const scheme = link.split('://', 1)[0].toLowerCase();
   let name = '';
@@ -133,7 +136,7 @@ function parseLink(index, link) {
     try { name = decodeURIComponent(frag); } catch (e) { name = frag; }
   }
   const cc = flagToCc(name);
-  const clean = name.replace(FLAG_RE, '').replace(/^[\s\-|·]+|[\s\-|·]+$/g, '');
+  const clean = name.replace(/[\u{1F1E6}-\u{1F1FF}]{2}/u, '').replace(/^[\s\-|·]+|[\s\-|·]+$/g, '');
   return { index, name: clean || `Server ${index + 1}`, country_code: cc, protocol: scheme, link };
 }
 
@@ -158,41 +161,40 @@ async function checkDevice(env, user, sub, deviceId, model) {
 export async function vpn(env, user, request) {
   const sub = await activeSub(env, user);
   await checkDevice(env, user, sub, request.headers.get('x-device-id'), request.headers.get('x-device-model'));
-  const out = await subscriptionOut(env, user);
+  const out = await subscriptionOut(env, user, true, { withSubUrl: !centralApp(request) });
   if (out.status === 'missing') throw err(410, 'sub_missing', 'اکانت شما روی سرور پیدا نشد. با پشتیبانی تماس بگیر.');
   return json({ subscription: out, remarks: 'Cloud Gold' });
 }
 
-// The subscription body, fetched by the Worker. The app uses this when the panel address is filtered on the
-// phone's network: Cloudflare can still reach the panel. The phone's HWID headers are passed through.
+const fwdHeaders = (H) => ({ 'x-hwid': H.get('x-hwid'), 'x-device-os': H.get('x-device-os'), 'x-ver-os': H.get('x-ver-os'), 'x-device-model': H.get('x-device-model') });
+
+// The one server list: configs from every panel the user is on, renamed and merged by the Worker. The app
+// imports this body into v2rayNG; it never learns where the configs came from.
 export async function vpnSub(env, user, request) {
   const sub = await activeSub(env, user);
   const H = request.headers;
   await checkDevice(env, user, sub, H.get('x-device-id'), H.get('x-device-model'));
-  if (!sub.sub_url) throw err(404, 'no_servers', 'برای اشتراک شما هنوز سروری تعریف نشده است.');
-  let raw;
-  try {
-    raw = await pgOrThrow(env).subscriptionRaw(sub.sub_url, {
-      'x-hwid': H.get('x-hwid'), 'x-device-os': H.get('x-device-os'), 'x-ver-os': H.get('x-ver-os'), 'x-device-model': H.get('x-device-model'),
-    });
-  } catch (e) {
-    if (e instanceof PasarGuardError) throw err(503, 'panel_unavailable', 'الان به سرورها دسترسی نداریم. چند دقیقه دیگر دوباره امتحان کن.');
-    throw e;
-  }
-  if (raw.status === 403 || raw.status === 429) throw err(403, 'device_limit', 'این اشتراک روی حداکثر تعداد گوشی استفاده شده است.');
-  if (raw.status === 404) throw err(410, 'sub_missing', 'اکانت شما روی سرور پیدا نشد. با پشتیبانی تماس بگیر.');
-  if (raw.status < 200 || raw.status >= 300) throw err(503, 'panel_unavailable', `سرورها الان در دسترس نیستند (${raw.status}).`);
+  const r = await unifiedLinks(env, user, fwdHeaders(H));
+  const s = await subscriptionOut(env, user, false);
   const headers = { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' };
-  if (raw.userinfo) headers['subscription-userinfo'] = raw.userinfo;
-  return new Response(raw.text, { status: 200, headers });
+  // v2rayNG reads usage and expiry from this header; it is the control plane's total, not one panel's
+  headers['subscription-userinfo'] = `upload=0; download=${s.used_bytes}; total=${s.data_limit_bytes || 0}; expire=${sub.expires_at || 0}`;
+  return new Response(r.links.join('\n'), { status: 200, headers });
 }
 
-export async function vpnServers(env, user) {
-  const sub = await activeSub(env, user);
-  let links;
-  try { links = await pgOrThrow(env).subscriptionLinks(sub.sub_url); }
-  catch (e) { throw err(503, 'panel_unavailable', `سرورها الان در دسترس نیستند (${e.status || 'network'}).`); }
-  return json(links.map((link, i) => parseLink(i, link)));
+async function unifiedLinks(env, user, fwd) {
+  const r = await collectLinks(env, user.id, fwd);
+  if (!r.accounts) throw err(404, 'no_servers', 'برای اشتراک شما هنوز سروری تعریف نشده است.');
+  if (r.deviceLimit && !r.links.length) throw err(403, 'device_limit', 'این اشتراک روی حداکثر تعداد گوشی استفاده شده است.');
+  if (r.missing === r.accounts) throw err(410, 'sub_missing', 'اکانت شما روی سرور پیدا نشد. با پشتیبانی تماس بگیر.');
+  if (!r.links.length) throw err(503, 'panel_unavailable', 'الان به سرورها دسترسی نداریم. چند دقیقه دیگر دوباره امتحان کن.');
+  return r;
+}
+
+export async function vpnServers(env, user, request) {
+  await activeSub(env, user);
+  const r = await unifiedLinks(env, user, request ? fwdHeaders(request.headers) : {});
+  return json(r.links.map((link, i) => parseLink(i, link)));
 }
 
 export async function devices(env, user) {

@@ -338,25 +338,30 @@ section('device limit + freeing a slot frees panel HWID');
 
 section('used_percent on /me comes from the server');
 {
+  // the limit is the control plane's; the usage is read from the panel (it only ever grows)
   const tok = await signup('pct@example.com', { device: 'pct-phone' });
   const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
   await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant pct@example.com ${monthly.id}` } });
   const u = Object.values(fakes.pg.users).find((x) => (x.note || '').includes('pct@example.com'));
   ok(!!u, 'panel user for pct@example.com');
-  const pct = async (limit, used) => {
-    u.data_limit = limit; u.used_traffic = used;
-    return (await call('GET', '/api/v1/me', { token: tok })).data.subscription;
-  };
-  let s = await pct(1000, 850);
+  const uid = (await env.DB.prepare("SELECT id FROM users WHERE email = 'pct@example.com'").first()).id;
+  await env.DB.prepare('UPDATE subscriptions SET data_limit_bytes = 1000 WHERE user_id = ?').bind(uid).run();
+  const pct = async (used) => { u.used_traffic = used; return (await call('GET', '/api/v1/me', { token: tok })).data.subscription; };
+  let s = await pct(799);
+  ok(s.used_percent === 79, 'rounded down, so the 80% warning starts at 80 ' + JSON.stringify(s));
+  s = await pct(850);
   ok(s.used_percent === 85 && s.used_bytes === 850 && s.remaining_bytes === 150, '85% used ' + JSON.stringify(s));
-  s = await pct(1000, 799);
-  ok(s.used_percent === 79, 'rounded down, so the 80% warning starts at 80');
-  s = await pct(1000, 1000);
-  ok(s.used_percent === 100 && s.status === 'limited', '100% = used up');
-  s = await pct(1000, 1500);
+  s = await pct(1000);
+  ok(s.used_percent === 100 && s.status === 'limited' && s.stop_reason === 'quota' && !s.active, '100% = used up, reason quota');
+  ok(u.status === 'disabled', 'panel account switched off at once');
+  s = await pct(1500);
   ok(s.used_percent === 100, 'capped at 100');
-  s = await pct(0, 5000);
-  ok(s.used_percent === null && s.unlimited_data === true, 'unlimited data has no percent');
+  const tok2 = await signup('pct2@example.com', { device: 'pct2-phone' });
+  await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant pct2@example.com ${monthly.id}` } });
+  const u2 = Object.values(fakes.pg.users).find((x) => (x.note || '').includes('pct2@example.com'));
+  u2.used_traffic = 5000;
+  s = (await call('GET', '/api/v1/me', { token: tok2 })).data.subscription;
+  ok(s.used_percent === null && s.unlimited_data === true && s.used_bytes === 5000, 'unlimited data has no percent');
 }
 
 section('telegram admin commands');
@@ -486,7 +491,8 @@ section('bot: /panel diagnostic, /find, /plan, /backup');
   const before = fakes.tg.messages.length;
   await tgWebhook({ message: { chat: { id: 12345 }, text: '/panel' } });
   const report = fakes.tg.messages.slice(before).map((m) => m.text).join('\n');
-  ok(report.includes('ورود با یوزر') && report.includes('ساخت اکانت آزمایشی موفق') && report.includes('3 کانفیگ'), 'panel report all green:\n' + report);
+  ok(report.includes('ورود به API موفق') && report.includes('ساخت اکانت آزمایشی موفق') && report.includes('3 کانفیگ'), 'panel report all green:\n' + report);
+  ok(!report.includes('panel.test') && !report.includes(env.PASARGUARD_USERNAME + '»') && !/https?:\/\//.test(report), 'panel report shows no address or user name');
   ok(!Object.keys(fakes.pg.users).some((n) => n.startsWith('cgtest_')), 'test user cleaned up');
   const b2 = fakes.tg.messages.length;
   await tgWebhook({ message: { chat: { id: 12345 }, text: '/find diff@example.com' } });
@@ -938,6 +944,209 @@ section('backup never contains password hashes');
   const { backupJson } = await import('../src/telegram.js');
   const b = JSON.parse(await backupJson(env));
   ok(b.tables.users.length > 0 && b.tables.users.every((u) => !('password_hash' in u) && u.email), 'users are backed up without password_hash');
+}
+
+
+// ================= Phase 1: control plane over several panels =================
+const { runSync } = await import('../src/sync.js');
+const GB = 1024 ** 3;
+const P2 = 'http://panel2.test', P3 = 'http://panel3.test';
+const pg2 = fakes.addPanel(P2, 'n2.example.net');
+const pg3 = fakes.addPanel(P3, 'n3.example.org');
+env.PANEL_2_CRED = JSON.stringify({ url: P2, username: 'admin2', password: 'pass2' });
+env.PANEL_3_CRED = JSON.stringify({ url: P3, username: 'admin3', password: 'pass3' });
+const admin = (text) => tgWebhook({ message: { chat: { id: 12345 }, text } });
+const lastText = () => fakes.tg.messages[fakes.tg.messages.length - 1].text;
+const syncRounds = async (n) => { for (let i = 0; i < n; i++) await runSync(env); };
+const panelUser = (pg, email) => Object.values(pg.users).find((x) => (x.note || '').endsWith('· ' + email));
+const userId = async (email) => (await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first()).id;
+let tenGb;
+
+section('bot: add, test and roll out panels (with admin log)');
+{
+  await admin('/addpanel pasarguard پنل دوم');
+  ok(lastText().includes('PANEL_2_CRED') && !lastText().includes('pass2'), 'add panel names the secret to create, never asks for the password in chat');
+  await admin('/addpanel pasarguard پنل سوم');
+  await admin('/rollout 2 100');
+  ok(lastText().includes('اول پنل را تست کن'), 'an untested panel cannot take users');
+  await admin('/paneltest 2');
+  ok(lastText().includes('سالم است') && lastText().includes('1.0.0-test'), 'health test passes and reads the version: ' + lastText());
+  await admin('/paneltest 3');
+  await admin('/rollout 2 100');
+  await admin('/rollout 3 100');
+  const states = (await env.DB.prepare('SELECT state FROM panels ORDER BY id').all()).results.map((r) => r.state);
+  ok(states.join() === 'active,active,active', 'three active panels: ' + states.join());
+  const outsider = fakes.tg.messages.length;
+  await tgWebhook({ message: { chat: { id: 777 }, text: '/drainpanel 2' } });
+  ok(fakes.tg.messages.length === outsider, 'non-admin gets nothing back');
+  const log = (await env.DB.prepare('SELECT action FROM admin_audit').all()).results.map((r) => r.action);
+  ok(log.includes('panel.add') && log.includes('panel.test') && log.includes('panel.rollout'), 'admin log has the changes: ' + log.join());
+  await admin('/newplan ده گیگ|30|10|0|100000');
+  tenGb = (await env.DB.prepare("SELECT * FROM plans WHERE name = 'ده گیگ'").first());
+}
+
+section('acceptance: 2 + 4 + 5 GB on three panels = 11 GB; a 10 GB plan stops on every panel');
+{
+  const tok = await signup('q@example.com', { device: 'q-phone' });
+  await admin(`/grant q@example.com ${tenGb.id}`);
+  const [a, b, c] = [panelUser(fakes.pg, 'q@example.com'), panelUser(pg2, 'q@example.com'), panelUser(pg3, 'q@example.com')];
+  ok(a && b && c, 'one account on each of the three panels');
+  ok(a.data_limit === 10 * GB && b.data_limit === 10 * GB && !b.hwid_limit && a.hwid_limit === undefined, 'same limit everywhere; no panel HWID on the new panels');
+  a.used_traffic = 2 * GB; b.used_traffic = 4 * GB;
+  await syncRounds(3);
+  ok(c.data_limit <= 4 * GB + 64 * 1024 * 1024 && c.data_limit >= 4 * GB, 'panel 3 is tightened to what is left overall (4 GB): ' + c.data_limit);
+  c.used_traffic = 5 * GB;
+  await syncRounds(3);
+  const s = (await call('GET', '/api/v1/me', { token: tok, headers: { 'x-app-version': '1.9.0 (Android 14)' } })).data.subscription;
+  ok(s.used_bytes === 11 * GB, 'usage is summed across panels: ' + s.used_bytes);
+  ok(s.status === 'limited' && s.stop_reason === 'quota' && s.active === false && s.used_percent === 100, 'stopped, reason quota');
+  ok([a, b, c].every((x) => x.status === 'disabled'), 'disabled on all three panels');
+  const puts = [fakes.pg, pg2, pg3].map((p) => p.putLog.filter((n) => [a, b, c].some((x) => x.username === n)).length);
+  await syncRounds(4);
+  await call('GET', '/api/v1/me', { token: tok });
+  const puts2 = [fakes.pg, pg2, pg3].map((p) => p.putLog.filter((n) => [a, b, c].some((x) => x.username === n)).length);
+  ok(puts.join() === puts2.join(), 'stopping again changes nothing (idempotent): ' + puts + ' / ' + puts2);
+}
+
+section('a broken panel is never counted as zero; the stop is retried until it sticks');
+{
+  const tok = await signup('r@example.com', { device: 'r-phone' });
+  await admin(`/grant r@example.com ${tenGb.id}`);
+  const [a, b, c] = [panelUser(fakes.pg, 'r@example.com'), panelUser(pg2, 'r@example.com'), panelUser(pg3, 'r@example.com')];
+  a.used_traffic = 1 * GB; b.used_traffic = 2 * GB; c.used_traffic = 3 * GB;
+  await syncRounds(3);
+  pg2.down = true;
+  let s = (await call('GET', '/api/v1/me', { token: tok })).data.subscription;
+  ok(s.used_bytes === 6 * GB && s.active, 'panel 2 down: its 2 GB still count: ' + s.used_bytes);
+  await syncRounds(3);
+  ok((await call('GET', '/api/v1/me', { token: tok })).data.subscription.used_bytes === 6 * GB, 'still 6 GB after sync rounds with panel 2 down');
+  c.used_traffic = 7 * GB; // 1 + 2 + 7 = 10 -> stop while panel 2 cannot be reached
+  s = (await call('GET', '/api/v1/me', { token: tok })).data.subscription;
+  ok(s.stop_reason === 'quota' && a.status === 'disabled' && c.status === 'disabled' && b.status !== 'disabled', 'stopped where reachable');
+  const pending = (await env.DB.prepare("SELECT COUNT(*) c FROM panel_accounts WHERE user_id = ? AND dirty = 1").bind(await userId('r@example.com')).first()).c;
+  ok(pending === 1, 'the stop on panel 2 is still pending');
+  pg2.down = false;
+  await syncRounds(2);
+  ok(b.status === 'disabled', 'panel 2 back: the stop reaches it');
+}
+
+section('acceptance: removing a panel keeps its usage history and moves its users');
+{
+  const tok = await signup('d@example.com', { device: 'd-phone' });
+  await admin(`/grant d@example.com ${tenGb.id}`);
+  const c = panelUser(pg3, 'd@example.com');
+  c.used_traffic = 3 * GB;
+  panelUser(fakes.pg, 'd@example.com').used_traffic = 1 * GB;
+  await syncRounds(3);
+  await admin('/drainpanel 3');
+  const ask = fakes.tg.messages[fakes.tg.messages.length - 1];
+  ok(ask.text.includes('مطمئنی') && JSON.stringify(ask.reply_markup).includes('cf:'), 'removal asks "are you sure?" first');
+  ok((await env.DB.prepare('SELECT state FROM panels WHERE id = 3').first()).state === 'active', 'nothing happens before the confirmation');
+  const token = JSON.stringify(ask.reply_markup).match(/cf:([0-9a-f]+)/)[1];
+  await tgWebhook({ callback_query: { id: 'd1', data: `cf:${token}`, message: { chat: { id: 12345 }, message_id: 50, text: ask.text } } });
+  ok((await env.DB.prepare('SELECT state FROM panels WHERE id = 3').first()).state === 'draining', 'confirmed: panel 3 is draining');
+  await tgWebhook({ callback_query: { id: 'd2', data: `cf:${token}`, message: { chat: { id: 12345 }, message_id: 50, text: ask.text } } });
+  ok((await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE action = 'panel.drain'").first()).c === 1, 'a confirmation works once; logged once');
+  const sub = await call('GET', '/api/v1/vpn/sub', { token: tok, headers: { 'x-device-id': 'd-phone' } });
+  const body = await sub.res.text();
+  ok(!body.includes('n3.example.org') && body.includes('n2.example.net') && body.includes('example.com'), 'draining panel left the list at once');
+  await syncRounds(4);
+  ok((await env.DB.prepare('SELECT state FROM panels WHERE id = 3').first()).state === 'disabled', 'after its last reading the panel is disabled');
+  ok(c.status === 'disabled' && !!pg3.users[c.username], 'its accounts are switched off, not deleted');
+  const s = (await call('GET', '/api/v1/me', { token: tok })).data.subscription;
+  ok(s.used_bytes === 4 * GB && s.active, 'usage from the removed panel is still counted: ' + s.used_bytes);
+  const kept = (await env.DB.prepare('SELECT COUNT(*) c FROM usage_counters WHERE panel_id = 3').first()).c;
+  ok(kept > 0, 'usage rows of the removed panel are kept');
+  ok(!!panelUser(fakes.pg, 'd@example.com') && !!panelUser(pg2, 'd@example.com'), 'its users are on the healthy panels');
+  await admin('/drainpanel 3');
+  ok(lastText().includes('قبلاً خارج شده'), 'cannot remove twice');
+}
+
+section('acceptance: expiry stops like a used-up quota, with its own reason, and the history keeps the period');
+{
+  const tok = await signup('e@example.com', { device: 'e-phone' });
+  await admin(`/grant e@example.com ${tenGb.id}`);
+  const uid = await userId('e@example.com');
+  await env.DB.prepare('UPDATE subscriptions SET expires_at = ? WHERE user_id = ?').bind(Math.floor(Date.now() / 1000) - 5, uid).run();
+  await runSync(env);
+  const s = (await call('GET', '/api/v1/me', { token: tok })).data.subscription;
+  ok(s.status === 'expired' && s.stop_reason === 'expired' && !s.active, 'expired, reason expired');
+  ok(panelUser(fakes.pg, 'e@example.com').status === 'disabled' && panelUser(pg2, 'e@example.com').status === 'disabled', 'switched off on every panel');
+  const per = await env.DB.prepare('SELECT * FROM sub_periods WHERE user_id = ? ORDER BY id DESC').bind(uid).first();
+  ok(per.end_reason === 'expired' && per.ended_at, 'the period is closed with its reason');
+  // renewing starts a new period and switches the accounts back on
+  await admin(`/grant e@example.com ${tenGb.id}`);
+  const s2 = (await call('GET', '/api/v1/me', { token: tok })).data.subscription;
+  ok(s2.active && s2.used_bytes === 0 && s2.days_left >= 29, 'renewed from today');
+  ok(panelUser(pg2, 'e@example.com').status === 'active', 'back on');
+  ok((await env.DB.prepare('SELECT COUNT(*) c FROM sub_periods WHERE user_id = ?').bind(uid).first()).c === 2, 'both periods are in the history');
+}
+
+section('acceptance: the user sees one list with no trace of the panels');
+{
+  const tok = await signup('one@example.com', { device: 'one-phone' });
+  await admin(`/grant one@example.com ${tenGb.id}`);
+  const H = { 'x-device-id': 'one-phone', 'x-app-version': '1.9.0 (Android 14)' };
+  const bodies = [];
+  for (const p of ['/api/v1/me', '/api/v1/vpn', '/api/v1/vpn/servers', '/api/v1/vpn/sub']) {
+    const r = await call('GET', p, { token: tok, headers: H });
+    ok(r.status === 200, p + ' -> ' + r.status);
+    bodies.push(await r.res.text());
+  }
+  const all = bodies.join('\n');
+  ok(!/panel|\.test|MyPanel|sub_url|پنل/i.test(all), 'no panel name, address, label or link anywhere');
+  const servers = JSON.parse(bodies[2]);
+  ok(servers.length === 6 && servers.every((x) => /^(NL|DE|US) \d$/.test(x.name)), 'one merged list of 6, renamed by country: ' + servers.map((x) => x.name).join(', '));
+  ok(new Set(servers.map((x) => x.link)).size === 6, 'no duplicates');
+  const info = (await call('GET', '/api/v1/vpn/sub', { token: tok, headers: H })).res.headers.get('subscription-userinfo');
+  ok(/total=10737418240/.test(info), 'usage header is the logical total: ' + info);
+  const old = await call('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'one-phone', 'x-app-version': '1.8.0 (Android 14)' } });
+  ok(!!old.data.subscription.sub_url, 'apps before 1.9.0 still get their link (no forced update)');
+}
+
+section('webhook is registered by the Worker, with no secret in the path');
+{
+  await env.DB.prepare("DELETE FROM settings WHERE key = 'tg_webhook_sig'").run();
+  const before = fakes.tg.calls.filter((c) => c.method === 'setWebhook').length;
+  await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain();
+  const calls = fakes.tg.calls.filter((c) => c.method === 'setWebhook');
+  ok(calls.length === before + 1 && calls[calls.length - 1].body.url === 'https://api.test/tg' && calls[calls.length - 1].body.secret_token === 'hook', 'setWebhook to /tg with secret_token');
+  await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain();
+  ok(fakes.tg.calls.filter((c) => c.method === 'setWebhook').length === before + 1, 'not repeated while nothing changed');
+  ok((await call('POST', '/tg', { json: { message: { chat: { id: 12345 }, text: '/help' } }, headers: TG })).status === 200, '/tg with the header works');
+  ok((await call('POST', '/tg', { json: { message: { chat: { id: 12345 }, text: '/help' } } })).status === 404, '/tg without the header is closed');
+}
+
+section('backup and errors never carry a panel address');
+{
+  const { backupJson } = await import('../src/telegram.js');
+  const b = await backupJson(env);
+  ok(!b.includes('//panel.test') && !b.includes('panel2.test') && !b.includes('/sub/'), 'backup has no panel links');
+  const { PasarGuardError } = await import('../src/pasarguard.js');
+  ok(!new PasarGuardError('cannot reach http://panel.test/api (timeout)').message.includes('panel.test'), 'panel errors drop URLs');
+}
+
+section('acceptance: an existing user keeps account, link and session through the migration');
+{
+  const { signJwt } = await import('../src/util.js');
+  const DB2 = makeDB(new URL('../migrations/0001_init.sql', import.meta.url).pathname, { upto: '0010_indexes.sql' });
+  const now = Math.floor(Date.now() / 1000);
+  await DB2.prepare("INSERT INTO users (id, email, password_hash, referral_code, created_at) VALUES (1, 'old@example.com', 'x', 'OLD0001', ?)").bind(now - 86400 * 90).run();
+  await DB2.prepare("INSERT INTO plans (id, name, duration_days, price_toman) VALUES (1, 'Monthly', 30, 1)").run();
+  await DB2.prepare("INSERT INTO subscriptions (user_id, pg_username, plan_id, expires_at, data_limit_bytes, device_limit, sub_url, updated_at) VALUES (1, 'cg_1_abcd', 1, ?, ?, 2, 'http://panel.test/sub/oldtoken/', ?)")
+    .bind(now + 86400 * 10, 50 * GB, now - 86400).run();
+  fakes.pg.users['cg_1_abcd'] = { id: 999, username: 'cg_1_abcd', status: 'active', expire: now + 86400 * 12, data_limit: 50 * GB, used_traffic: 7 * GB, token: 'oldtoken' };
+  DB2.exec((await import('node:fs')).readFileSync(new URL('../migrations/0011_control_plane.sql', import.meta.url), 'utf8'));
+  const env2 = { ...env, DB: DB2 };
+  const oldToken = await signJwt({ sub: '1', ver: 0, typ: 'access' }, env.SECRET_KEY, 600);
+  const req = new Request('https://api.test/api/v1/me', { headers: { authorization: 'Bearer ' + oldToken } });
+  const me = await (await worker.fetch(req, env2, ctx)).json();
+  ok(me.email === 'old@example.com', 'the old session still works (no new login)');
+  ok(me.subscription.used_bytes === 7 * GB && me.subscription.days_left === 12 && me.subscription.data_limit_bytes === 50 * GB, 'same usage, expiry and limit as on the panel');
+  ok(!!me.subscription.sub_url && me.subscription.sub_url.includes('oldtoken'), 'old app keeps the same link');
+  const pa = await DB2.prepare('SELECT * FROM panel_accounts WHERE user_id = 1').first();
+  ok(pa && pa.remote_username === 'cg_1_abcd' && pa.panel_id === 1, 'panel account is the same user (same UUID)');
+  ok(fakes.pg.users['cg_1_abcd'].status === 'active' && fakes.pg.users['cg_1_abcd'].hwid_limit === undefined, 'nothing was changed on the panel');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

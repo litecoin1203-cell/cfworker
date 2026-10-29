@@ -2,11 +2,24 @@
 // - accepts whatever panel address the admin pasted (".../hub/#/login", ".../dashboard/") and finds the API root
 // - caches the admin token across requests in the same isolate, re-logs in on 401
 // - works for reseller (non-sudo) admins: falls back to the lightweight group list
-// - every error carries the panel's own message so the admin sees the real reason in Telegram
-import { err } from './util.js';
+// - every error carries the panel's own message so the admin sees the real reason in Telegram, but never the
+//   panel's address: messages go to the bot and to Workers Logs (redactUrls)
+// - also the panel adapter of the control plane (listUsage, setStatus, version); the quota logic is not here
+import { err, redactUrls } from './util.js';
 
 export class PasarGuardError extends Error {
-  constructor(message, status, detail) { super(message); this.status = status; this.detail = detail || ''; }
+  constructor(message, status, detail) { super(redactUrls(message)); this.status = status; this.detail = redactUrls(detail || ''); }
+}
+
+// panel datetimes: unix seconds, digits, or an ISO string in UTC; 0 / '' / null = never
+export function parseExpire(v) {
+  if (v == null || v === 0 || v === '') return null;
+  if (typeof v === 'number') return Math.floor(v);
+  if (/^\d+$/.test(String(v))) return parseInt(v, 10);
+  let s = String(v);
+  if (!/[zZ]|[+-]\d\d:?\d\d$/.test(s)) s += 'Z'; // panel datetimes are UTC
+  const t = Date.parse(s);
+  return Number.isNaN(t) ? null : Math.floor(t / 1000);
 }
 
 const TIMEOUT_MS = 15000;
@@ -46,11 +59,14 @@ async function timedFetch(url, init = {}) {
 }
 
 export class PasarGuard {
-  constructor(env) {
-    this.bases = panelBases(env.PASARGUARD_URL);
-    this.username = env.PASARGUARD_USERNAME || '';
-    this.password = env.PASARGUARD_PASSWORD || '';
-    this.apiKey = (env.PASARGUARD_API_KEY || '').trim();
+  // cred: {url, username, password, api_key} from a PANEL_<id>_CRED secret; without it the original
+  // PASARGUARD_* secrets are used (panel 1)
+  constructor(env, cred) {
+    const c = cred || { url: env.PASARGUARD_URL, username: env.PASARGUARD_USERNAME, password: env.PASARGUARD_PASSWORD, api_key: env.PASARGUARD_API_KEY };
+    this.bases = panelBases(c.url);
+    this.username = c.username || '';
+    this.password = c.password || '';
+    this.apiKey = String(c.api_key || '').trim();
     const cache = (globalThis.__cgPg = globalThis.__cgPg || {});
     this.cacheKey = this.bases.join('|') + '|' + this.username + '|' + (this.apiKey ? 'k' : 'p');
     const hit = cache[this.cacheKey];
@@ -73,12 +89,12 @@ export class PasarGuard {
       try {
         r = await timedFetch(`${base}/api/admin/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body });
       } catch (e) {
-        last = new PasarGuardError(`cannot reach panel at ${base} (${e.name === 'TimeoutError' ? 'timeout' : e.message})`, 0);
+        last = new PasarGuardError(`cannot reach panel (${e.name === 'TimeoutError' ? 'timeout' : e.message})`, 0);
         continue;
       }
       if (r.ok) {
         const j = await r.json().catch(() => ({}));
-        if (!j.access_token) { last = new PasarGuardError(`panel at ${base} did not return a token`, r.status); continue; }
+        if (!j.access_token) { last = new PasarGuardError('panel did not return a token', r.status); continue; }
         this.base = base;
         this._token = j.access_token;
         this._remember();
@@ -88,7 +104,7 @@ export class PasarGuard {
       if (r.status === 401 || r.status === 403 || r.status === 422) {
         throw new PasarGuardError(`panel login rejected (${r.status}): ${text || 'wrong username or password'}`, r.status, text);
       }
-      last = new PasarGuardError(`panel login failed at ${base} (${r.status}): ${text}`, r.status, text);
+      last = new PasarGuardError(`panel login failed (${r.status}): ${text}`, r.status, text);
     }
     throw last || new PasarGuardError('panel address is not set (PASARGUARD_URL)', 0);
   }
@@ -225,6 +241,39 @@ export class PasarGuard {
     const raw = await this.subscriptionRaw(subUrl);
     if (raw.status < 200 || raw.status >= 300) throw new PasarGuardError(`sub links ${raw.status}`, raw.status, short(raw.text));
     return decodeSub(raw.text);
+  }
+
+  // ---- control plane adapter contract ----
+
+  // One page of users with their counted traffic: {users: [{username, id, used, status, expire, data_limit}], total}.
+  // One request covers a whole page, so the chunked sync stays inside the Worker's subrequest limit.
+  async listUsage(offset = 0, limit = 200) {
+    const data = await this._json('GET', `/api/users?offset=${offset}&limit=${limit}`);
+    const users = (data.users || []).map((u) => ({
+      username: u.username, id: u.id ?? null, used: parseInt(u.used_traffic || 0, 10) || 0, status: u.status || '',
+      expire: parseExpire(u.expire), data_limit: parseInt(u.data_limit || 0, 10) || 0,
+    }));
+    return { users, total: Number.isFinite(data.total) ? data.total : offset + users.length };
+  }
+
+  // active | disabled (stop without deleting: the account and its usage stay on the panel)
+  setStatus(username, status) {
+    return this._json('PUT', `/api/user/${encodeURIComponent(username)}`, { status });
+  }
+
+  // panel version for the health test; null when the panel does not say
+  async version() {
+    try {
+      const r = await this._req('GET', '/api/system');
+      if (!r.ok) return null;
+      const j = await r.json().catch(() => ({}));
+      return j.version ? String(j.version).slice(0, 40) : null;
+    } catch (e) { return null; }
+  }
+
+  // host names of the panel (to compare with the node hosts in its configs; never shown)
+  panelHosts() {
+    return this.bases.map((b) => { try { return new URL(b).hostname.toLowerCase(); } catch (e) { return ''; } }).filter(Boolean);
   }
 
   async deleteHwid(username, hwid) {

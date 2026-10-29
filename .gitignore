@@ -3,3 +3,4 @@ worker/.wrangler/
 *.jks
 *.log
 __pycache__/
+worker/coverage/

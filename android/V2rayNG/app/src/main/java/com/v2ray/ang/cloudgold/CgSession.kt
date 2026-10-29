@@ -27,11 +27,6 @@ object CgSession {
         get() = kv.decodeString("email")
         set(v) = put("email", v)
 
-    /** "direct" or "api": how the subscription was last downloaded successfully. */
-    var subRoute: String?
-        get() = kv.decodeString("sub_route")
-        set(v) = put("sub_route", v)
-
     val loggedIn: Boolean get() = !refreshToken.isNullOrEmpty()
 
     fun save(access: String?, refresh: String?, email: String?) {

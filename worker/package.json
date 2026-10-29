@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "test": "node --experimental-sqlite test/run.mjs",
+    "coverage": "npx --yes c8@10.1.3 --include='src/**' --reporter=text-summary --check-coverage --lines 80 --functions 80 --statements 80 node --experimental-sqlite test/run.mjs",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy"
   },
