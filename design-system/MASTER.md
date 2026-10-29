@@ -9,23 +9,28 @@ Plans (buy / renew), Settings. The older flows in `screens.js` (sign-in, payment
 out of scope and keep their current look.
 
 Sources: `ui-ux-pro-max` (product pattern "Trust & Authority", style "Minimalism & Swiss", dark navy base, UX and
-pro-rules checklists), `frontend-design` (direction and anti-template review), `design-system` (three-layer token
-architecture), Android Material touch and state rules. Where the generated suggestion (navy + green, DM Sans)
+pro-rules checklists), `frontend-design` (direction and anti-template review), `design-system-patterns` (token
+hierarchy, naming, theming), Android Material touch and state rules. Where the generated suggestion (navy + green, DM Sans)
 was generic, it was replaced by the choices below and the reason is written next to each.
 
 ---
 
 ## 0. How each skill was applied (trace)
 
-Order used, as Ali asked: ui-ux-pro-max → frontend-design → design-system → web-design-guidelines (the last
+Order used, as Ali asked: ui-ux-pro-max → frontend-design → (tokens: design-system-patterns) → web-design-guidelines (the last
 one runs at the end, on the rewritten files).
 
-**Install** (`npx skills add`, inside the repo, into `.agents/skills/`, git-ignored):
-`nextlevelbuilder/ui-ux-pro-max-skill` ✓ (also brought `design-system`, `ui-styling`, `brand`, `design`, `slides`),
-`anthropics/skills --skill frontend-design` ✓, `vercel-labs/agent-skills --skill web-design-guidelines` ✓,
-`supercent-io/skills-template --skill design-system` ✗ — "Authentication failed", the repository is private
-(retried 2026-10-29, same result). The `design-system` skill installed with ui-ux-pro-max (claudekit, MIT) is
-used for this step: same three-layer token method (primitive → semantic → component).
+**Install** (`npx skills add`, inside the repo; files in `.agents/skills/`, linked from `.claude/skills/`,
+git-ignored). `ls .claude/skills` → `banner-design brand design design-system-patterns frontend-design slides
+ui-styling ui-ux-pro-max web-design-guidelines`.
+- `nextlevelbuilder/ui-ux-pro-max-skill --skill ui-ux-pro-max` ✓ (the bundle also adds `brand`, `design`,
+  `ui-styling`, `slides`, `banner-design`; not used)
+- `anthropics/skills --skill frontend-design` ✓
+- `vercel-labs/agent-skills --skill web-design-guidelines` ✓
+- `supercent-io/skills-template --skill design-system` ✗ "Authentication failed" (private repo). Dropped on
+  Ali's decision (2026-10-29). The same-named claudekit `design-system` that came with the ui-ux-pro-max bundle
+  was removed too, so it cannot be mistaken for it.
+- `wshobson/agents --skill design-system-patterns` ✓ — installed on Ali's instruction as the separate token skill.
 
 **ui-ux-pro-max** (SKILL.md → Workflow steps 1–4, `references/pro-rules.md`)
 - Step 1, requirements: product = VPN utility app; audience = phone users in a censored network, short sessions;
@@ -52,14 +57,22 @@ used for this step: same three-layer token method (primitive → semantic → co
   (§1a), principles (§1). Reviewed against the calibration list; revisions are in §1b.
 - Restraint: boldness spent only on the Hallmark connect control; one orchestrated motion (§7).
 
-**design-system** (`references/token-architecture.md`, `component-tokens.md`, `states-and-variants.md`,
-`scripts/validate-tokens.cjs`)
-- Tokens stay three layers in the existing `app-web/tokens.css` (PR #3): primitives `--p-*`, semantic `--c-*`,
-  component `--btn-*`/`--row-*`/… — extended, not duplicated.
-- State priority from `states-and-variants.md`: disabled > loading > active > focus > (hover) > default.
-- Baseline run of `validate-tokens.cjs` on the five screen files + `ui.js` (before the redesign): 0 hard-coded
-  hex colours, 6 hard-coded rem values in inline `style=""` (servers.js, plans.js, usage.js). Target after the
-  redesign: 0 and 0. The halo button's colours in `app.css` (`.pb`) are replaced by the token-driven Hallmark.
+**design-system-patterns** (wshobson; `SKILL.md` best practices, `references/design-tokens.md`,
+`references/theming-architecture.md`) — token work is led by ui-ux-pro-max and frontend-design (values,
+direction); this skill only governs the token structure:
+- "Maintain token hierarchy: primitives > semantic > component" — kept in the existing `app-web/tokens.css`
+  from PR #3 (`--p-*` → `--c-*` → `--btn-*`, `--row-*`, `--hallmark-*` …), extended, no second system.
+- "Name tokens by purpose", kebab-case, state suffixes — semantic names are roles (`--c-bad`, not `--c-red`).
+- "Missing dark mode" / "Test theme combinations" — every semantic token has a dark and a light value; the
+  contrast table in §3 is the "checkContrastRatios" step (AA ≥ 4.5).
+- "Hardcoded values" — screens and `ui.js` may only use tokens. Baseline (grep before the redesign): 0 hex
+  colours in the five screen files + `ui.js`, 6 inline `rem` sizes (servers.js, plans.js, usage.js), and the
+  old halo button's hex colours in `app.css` `.pb`. Target after the redesign: 0 everywhere in scope.
+- Theming accessibility (`theming-architecture.md`): reduced motion sets the duration tokens to `0ms`;
+  `forced-colors: active` gives controls a `currentColor` border; theme is applied before first paint (inline,
+  before the stylesheet's first use) so there is no dark→light flash.
+- Governance / deprecation: tokens renamed from PR #3 (`--r-row`, `--r-card`) stay as aliases marked
+  deprecated in a comment until the older screens stop using them.
 
 **web-design-guidelines** — runs last: fetches the current rules from
 `vercel-labs/web-interface-guidelines/command.md` and reviews every changed file, reported as `file:line`.
