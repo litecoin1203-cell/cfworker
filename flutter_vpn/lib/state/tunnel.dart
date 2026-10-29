@@ -115,6 +115,41 @@ class Tunnel {
     }
   }
 
+  // The same channel also carries the few phone actions the store needs.
+
+  /// Opens a web or Telegram link in its app; false when nothing opened.
+  Future<bool> openUrl(String url) async {
+    try {
+      return await _method.invokeMethod<bool>('openUrl', {'url': url}) ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<void> share(String text) async {
+    try {
+      await _method.invokeMethod<void>('share', {'text': text});
+    } on MissingPluginException {
+      // Nothing to share with off Android.
+    } on PlatformException {
+      // Same.
+    }
+  }
+
+  /// A photo from the gallery or files, as bytes; null when none was
+  /// picked.
+  Future<Uint8List?> pickImage() async {
+    try {
+      return await _method.invokeMethod<Uint8List>('pickImage');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   void listen(void Function(TunnelState) onState) {
     _sub?.cancel();
     _sub = _events.receiveBroadcastStream().listen(

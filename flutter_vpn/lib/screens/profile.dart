@@ -12,6 +12,8 @@ import '../design/widgets.dart';
 import '../state/app_state.dart';
 import 'login.dart';
 import 'plans.dart';
+import 'store_kit.dart';
+import 'wallet.dart';
 import 'states.dart';
 
 /// Profile, opened from the avatar: the account, plan and devices from the
@@ -134,6 +136,49 @@ class ProfileScreen extends StatelessWidget {
                 child: Column(
                   children: [
                     _Row(
+                      icon: PIcon.ticket,
+                      title: 'Wallet',
+                      body: toman(app.me.value?.wallet ?? 0),
+                      trailing: _RowAction(
+                        'OPEN',
+                        onTap: () => Navigator.of(
+                          context,
+                        ).push(FadeRoute(builder: (_) => const WalletScreen())),
+                      ),
+                    ),
+                    _Row(
+                      icon: PIcon.chart,
+                      title: 'Payments',
+                      body: 'Orders, receipts and their status.',
+                      trailing: _RowAction(
+                        'OPEN',
+                        onTap: () => Navigator.of(
+                          context,
+                        ).push(FadeRoute(builder: (_) => const OrdersScreen())),
+                      ),
+                    ),
+                    _Row(
+                      icon: PIcon.user,
+                      title: 'Invite friends',
+                      body: app.config.referralPercent > 0
+                          ? 'Earn ${app.config.referralPercent}% of what they buy.'
+                          : 'Share your invite code.',
+                      trailing: _RowAction(
+                        'INVITE',
+                        onTap: () => Navigator.of(
+                          context,
+                        ).push(FadeRoute(builder: (_) => const InviteScreen())),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 14),
+              SurfaceCard(
+                padding: const EdgeInsets.fromLTRB(20, 8, 10, 8),
+                child: Column(
+                  children: [
+                    _Row(
                       icon: PIcon.pulse,
                       title: 'Reduce motion',
                       body:
@@ -153,32 +198,25 @@ class ProfileScreen extends StatelessWidget {
                         onTap: () => _changePassword(context),
                       ),
                     ),
-                    if (app.me.value?.referralCode.isNotEmpty ?? false)
-                      _Row(
-                        icon: PIcon.ticket,
-                        title: 'Referral code',
-                        body: app.me.value!.referralCode,
-                        trailing: _RowAction(
-                          'COPY',
-                          onTap: () => _copy(
-                            context,
-                            app.me.value!.referralCode,
-                            'Referral code copied.',
-                          ),
-                        ),
-                      ),
                     if (app.config.supportUrl.isNotEmpty)
                       _Row(
                         icon: PIcon.mail,
                         title: 'Support',
-                        body: 'Copy the support link.',
+                        body: 'Message the team.',
                         trailing: _RowAction(
-                          'COPY',
-                          onTap: () => _copy(
-                            context,
-                            app.config.supportUrl,
-                            'Support link copied.',
-                          ),
+                          'OPEN',
+                          onTap: () async {
+                            final ok = await app.tunnel.openUrl(
+                              app.config.supportUrl,
+                            );
+                            if (!ok && context.mounted) {
+                              _copy(
+                                context,
+                                app.config.supportUrl,
+                                'Support link copied.',
+                              );
+                            }
+                          },
                         ),
                       ),
                   ],
@@ -225,7 +263,12 @@ class ProfileScreen extends StatelessWidget {
               const SizedBox(height: 16),
               Center(
                 child: Text(
-                  'Pleat 1.1  ·  Cloud Gold account  ·  no tunnel engine in this build',
+                  [
+                    'Pleat 1.2',
+                    app.tunnelAvailable == true
+                        ? 'tunnel engine on'
+                        : 'no tunnel engine in this build',
+                  ].join('  ·  '),
                   style: PType.meta(),
                 ),
               ),

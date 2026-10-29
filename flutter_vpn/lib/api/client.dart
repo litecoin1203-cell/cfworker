@@ -2,8 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import 'models.dart';
 
 /// Comma-separated Worker addresses, e.g.
 /// `--dart-define=PLEAT_API=https://api.example.com,https://b.example.com`.
@@ -91,7 +94,7 @@ class ApiClient {
 
   /// Contract version, not Pleat's own: 1.9 tells the Worker this client
   /// never wants a raw subscription address (see `centralApp`).
-  static const appVersion = '1.9.0 (Pleat 1.1.0)';
+  static const appVersion = '1.9.0 (Pleat 1.2.0)';
 
   final TokenStore tokens;
   final List<String> _bases;
@@ -126,10 +129,41 @@ class ApiClient {
       _send('POST', path, body: body ?? const {});
   Future<dynamic> delete(String path) => _send('DELETE', path);
 
+  /// Multipart form upload (the card receipt): text [fields] and one file.
+  Future<dynamic> upload(
+    String path,
+    Map<String, String> fields, {
+    required List<int> file,
+    required String filename,
+  }) {
+    final boundary = 'pleat${DateTime.now().microsecondsSinceEpoch}';
+    final out = BytesBuilder();
+    void line(String s) => out.add(utf8.encode('$s\r\n'));
+    fields.forEach((k, v) {
+      line('--$boundary');
+      line('Content-Disposition: form-data; name="$k"');
+      line('');
+      line(v);
+    });
+    line('--$boundary');
+    line('Content-Disposition: form-data; name="file"; filename="$filename"');
+    line('Content-Type: application/octet-stream');
+    line('');
+    out.add(file);
+    line('');
+    line('--$boundary--');
+    return _send(
+      'POST',
+      path,
+      raw: (out.takeBytes(), 'multipart/form-data; boundary=$boundary'),
+    );
+  }
+
   Future<dynamic> _send(
     String method,
     String path, {
     Map<String, Object?>? body,
+    (List<int>, String)? raw,
     bool retried = false,
   }) async {
     if (!configured) {
@@ -140,9 +174,9 @@ class ApiClient {
       );
     }
     final authed = !path.startsWith('/auth/') && tokens.access != null;
-    final (status, data) = await _roundTrip(method, path, body, authed);
+    final (status, data) = await _roundTrip(method, path, body, authed, raw);
     if (status == 401 && authed && !retried && await _refresh()) {
-      return _send(method, path, body: body, retried: true);
+      return _send(method, path, body: body, raw: raw, retried: true);
     }
     if (status >= 400) {
       final err = _error(status, data);
@@ -177,8 +211,9 @@ class ApiClient {
     String method,
     String path,
     Map<String, Object?>? body,
-    bool authed,
-  ) async {
+    bool authed, [
+    (List<int>, String)? raw,
+  ]) async {
     Object? lastError;
     for (var tries = 0; tries < _bases.length; tries++) {
       final base = _bases[(_base + tries) % _bases.length];
@@ -190,7 +225,11 @@ class ApiClient {
         if (authed) {
           req.headers.set('authorization', 'Bearer ${tokens.access}');
         }
-        if (body != null) {
+        if (raw != null) {
+          req.headers.set('content-type', raw.$2);
+          req.contentLength = raw.$1.length;
+          req.add(raw.$1);
+        } else if (body != null) {
           req.headers.contentType = ContentType.json;
           req.add(utf8.encode(jsonEncode(body)));
         }
@@ -239,7 +278,7 @@ class ApiClient {
   /// The app is English-only. The Worker writes its messages in Persian, so
   /// an unknown code gets a plain English line instead of that text.
   static String _englishOnly(String message) {
-    if (message.isNotEmpty && !RegExp(r'[\u0600-\u06FF]').hasMatch(message)) {
+    if (message.isNotEmpty && !isPersian(message)) {
       return message;
     }
     return 'Something went wrong on the server. Try again.';

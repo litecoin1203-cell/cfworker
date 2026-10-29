@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pleat/design/connect_control.dart';
 import 'package:pleat/design/tokens.dart';
 import 'package:pleat/main.dart';
+import 'package:pleat/screens/checkout.dart';
 import 'package:pleat/screens/onboarding.dart';
 import 'package:pleat/screens/shell.dart';
 import 'package:pleat/state/app_state.dart';
@@ -198,6 +199,37 @@ void main() {
     await app.loadServers();
     expect(app.exits, hasLength(count));
     expect(app.serversStale, isTrue);
+  });
+
+  testWidgets('checkout offers what the store has on and opens the card '
+      'transfer', (tester) async {
+    final (app, api) = await _boot(tester, {'onboarded': true});
+    final nav = tester.state<NavigatorState>(find.byType(Navigator).first);
+    nav.push(
+      MaterialPageRoute<void>(
+        builder: (_) => CheckoutScreen(plan: app.plans.value!.first),
+      ),
+    );
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Card to card'), findsOneWidget);
+    expect(find.text('Cryptocurrency'), findsOneWidget);
+    // No Persian from the server reaches the screen.
+    expect(find.textContaining('ترون'), findsNothing);
+    await tester.tap(find.text('Card to card'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.ensureVisible(find.textContaining('PAY 459'));
+    await tester.tap(find.textContaining('PAY 459'));
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(api.orderBodies.single['method'], 'card');
+    expect(find.text('Bank Melli'), findsOneWidget);
+    expect(find.text('Transfer exactly'), findsOneWidget);
+    // Leave before the poll timer fires.
+    nav.popUntil((r) => r.isFirst);
+    await tester.pump(const Duration(seconds: 1));
   });
 
   testWidgets('a rejected trial does not stay on', (tester) async {

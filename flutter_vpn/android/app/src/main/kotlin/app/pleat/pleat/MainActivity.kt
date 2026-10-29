@@ -20,7 +20,11 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : FlutterActivity() {
     private companion object {
         const val ASK_VPN = 41
+        const val PICK_IMAGE = 42
+        const val MAX_IMAGE = 8 * 1024 * 1024
     }
+
+    private var pendingImage: MethodChannel.Result? = null
 
     /** Server tests run a few at a time, off the main thread. */
     private val tests = Executors.newFixedThreadPool(4)
@@ -90,6 +94,35 @@ class MainActivity : FlutterActivity() {
                             }
                         )
                     }
+                    "openUrl" -> {
+                        val url = call.argument<String>("url").orEmpty()
+                        val ok = (url.startsWith("https://") || url.startsWith("http://") || url.startsWith("tg://")) &&
+                            try {
+                                startActivity(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(url)))
+                                true
+                            } catch (e: Exception) {
+                                false
+                            }
+                        result.success(ok)
+                    }
+                    "share" -> {
+                        val text = call.argument<String>("text").orEmpty()
+                        startActivity(
+                            Intent.createChooser(
+                                Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, text),
+                                null
+                            )
+                        )
+                        result.success(null)
+                    }
+                    "pickImage" -> {
+                        pendingImage?.success(null)
+                        pendingImage = result
+                        startActivityForResult(
+                            Intent(Intent.ACTION_GET_CONTENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE),
+                            PICK_IMAGE
+                        )
+                    }
                     "systemSettings" -> {
                         startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
                         result.success(null)
@@ -114,6 +147,35 @@ class MainActivity : FlutterActivity() {
     @Deprecated("Activity result API is not used by FlutterActivity")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == PICK_IMAGE) {
+            val result = pendingImage ?: return
+            pendingImage = null
+            val uri = data?.data
+            if (resultCode != RESULT_OK || uri == null) {
+                result.success(null)
+                return
+            }
+            // Read off the main thread; a photo can be several MB.
+            tests.execute {
+                val bytes = try {
+                    contentResolver.openInputStream(uri)?.use { input ->
+                        val buf = java.io.ByteArrayOutputStream()
+                        val chunk = ByteArray(64 * 1024)
+                        while (true) {
+                            val n = input.read(chunk)
+                            if (n < 0) break
+                            buf.write(chunk, 0, n)
+                            if (buf.size() > MAX_IMAGE) break
+                        }
+                        buf.toByteArray()
+                    }
+                } catch (e: Exception) {
+                    null
+                }
+                main.post { result.success(bytes) }
+            }
+            return
+        }
         if (requestCode != ASK_VPN) return
         val result = pendingResult ?: return
         val config = pendingConfig

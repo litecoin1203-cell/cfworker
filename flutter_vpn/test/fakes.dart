@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:pleat/api/client.dart';
 import 'package:pleat/state/tunnel.dart';
@@ -52,6 +53,38 @@ class FakeApi extends ApiClient {
   /// The Worker can't be reached for the server list.
   bool serversOffline = false;
   final reports = <Map<String, Object?>>[];
+  final orderBodies = <Map<String, Object?>>[];
+
+  Map<String, Object?> order(String method) => {
+    'id': 7,
+    'kind': 'plan',
+    'plan_name': 'Annual',
+    'amount_toman': 459037,
+    'method': method,
+    'status': 'pending',
+    'card': method == 'card'
+        ? {
+            'number': '6037991234567893',
+            'holder': 'علی',
+            'color1': '#0B3B8C',
+            'color2': '#1E6FD9',
+            'amount_rial': 4590370,
+            'auto': false,
+          }
+        : null,
+    'coin': method == 'coin'
+        ? {
+            'symbol': 'TRX',
+            'name': 'TRON',
+            'network': 'TRON (TRC20)',
+            'color': '#EB0029',
+            'amount': '1450.123',
+            'address': 'TXYZexampleaddress000000000000000',
+            'seconds_left': 1800,
+            'auto': true,
+          }
+        : null,
+  };
 
   /// Reports behind the one ranked exit; 8 or more makes it a sure pick.
   int rankReports = 41;
@@ -92,7 +125,29 @@ class FakeApi extends ApiClient {
           },
         ];
       case 'GET /app-config':
-        return {'support_url': '', 'announcement': ''};
+        return {
+          'support_url': '',
+          'announcement': '',
+          'card_enabled': true,
+          'card_auto': false,
+          'crypto_enabled': false,
+          'coins': [
+            {
+              'id': 'trx',
+              'symbol': 'TRX',
+              'name': 'TRON',
+              'fa': 'ترون',
+              'network': 'TRON (TRC20)',
+              'color': '#EB0029',
+              'auto': true,
+            },
+          ],
+          'min_topup_toman': 50000,
+          'referral_percent': 10,
+        };
+      case 'POST /orders':
+        orderBodies.add(body ?? const {});
+        return order(body?['method'] as String? ?? 'card');
       case 'GET /me':
         return {
           'id': 1,
@@ -155,6 +210,7 @@ class FakeApi extends ApiClient {
         );
         return {'ok': true};
     }
+    if (m == 'GET' && path == '/orders/7') return order('card');
     throw ApiError(404, 'not_found', 'Not found.');
   }
 
@@ -208,6 +264,19 @@ class FakeTunnel extends Tunnel {
   Future<({bool alwaysOn, bool lockdown})?> policy() async => guard;
   @override
   Future<String?> deviceModel() async => 'Test Phone';
+  final opened = <String>[];
+  final shared = <String>[];
+  Uint8List? photo;
+  @override
+  Future<bool> openUrl(String url) async {
+    opened.add(url);
+    return true;
+  }
+
+  @override
+  Future<void> share(String text) async => shared.add(text);
+  @override
+  Future<Uint8List?> pickImage() async => photo;
   @override
   void listen(void Function(TunnelState) onState) => _on = onState;
   void emit(TunnelState s) => _on?.call(s);

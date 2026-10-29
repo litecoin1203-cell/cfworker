@@ -337,6 +337,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     String address,
     String password, {
     bool create = false,
+    String invite = '',
   }) async {
     try {
       final data = await api.post(create ? '/auth/register' : '/auth/login', {
@@ -344,6 +345,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         'password': password,
         'device_id': api.tokens.deviceId,
         'device_model': api.deviceModel,
+        if (create && invite.isNotEmpty) 'referral_code': invite,
       });
       await api.tokens.save(
         data['access_token'] as String,
@@ -453,6 +455,88 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     await loadMe();
     await loadServers();
     return null;
+  }
+
+  // ---- store ----------------------------------------------------------
+  // Same Worker calls as the Cloud Gold app. The Worker decides prices,
+  // matches payments and activates plans; Pleat only shows and asks.
+
+  Future<Coupon> checkCoupon(PlanInfo p, String code) async => Coupon.fromJson(
+    ((await api.post('/coupons/check', {'code': code, 'plan_id': p.id})) as Map)
+        .cast<String, dynamic>(),
+  );
+
+  /// Places an order for [plan] or a wallet [topup]. [method] is wallet,
+  /// card, crypto or coin; [useWallet] spends the balance first.
+  Future<Order> placeOrder({
+    PlanInfo? plan,
+    int? topup,
+    required String method,
+    bool useWallet = false,
+    String? coupon,
+    String? coin,
+  }) async {
+    final body = <String, Object?>{
+      'method': method,
+      if (plan != null) ...{
+        'plan_id': plan.id,
+        'use_wallet': useWallet,
+        'coupon_code': ?coupon,
+      } else
+        'topup_toman': topup,
+      'coin': ?coin,
+    };
+    final o = Order.fromJson(
+      ((await api.post('/orders', body)) as Map).cast<String, dynamic>(),
+    );
+    if (o.status == 'paid') await afterPaid(o);
+    return o;
+  }
+
+  Future<Order> order(int id) async => Order.fromJson(
+    ((await api.get('/orders/$id')) as Map).cast<String, dynamic>(),
+  );
+
+  Future<List<Order>> orders() async => [
+    for (final o in (await api.get('/orders')) as List)
+      Order.fromJson((o as Map).cast<String, dynamic>()),
+  ];
+
+  Future<Order> cancelOrder(Order o) async => Order.fromJson(
+    ((await api.post('/orders/${o.id}/cancel')) as Map).cast<String, dynamic>(),
+  );
+
+  Future<Order> sendReceipt(Order o, List<int> photo, String ref) async =>
+      Order.fromJson(
+        ((await api.upload(
+          '/orders/${o.id}/receipt',
+          {'ref': ref},
+          file: photo,
+          filename: 'receipt.jpg',
+        )) as Map).cast<String, dynamic>(),
+      );
+
+  /// "I have paid" for a coin order, with the transaction hash if given.
+  Future<Order> coinPaid(Order o, String txid) async => Order.fromJson(
+    ((await api.post('/orders/${o.id}/paid', {'txid': txid})) as Map)
+        .cast<String, dynamic>(),
+  );
+
+  Future<WalletInfo> wallet() async {
+    final w = WalletInfo.fromJson(
+      ((await api.get('/wallet')) as Map).cast<String, dynamic>(),
+    );
+    return w;
+  }
+
+  Future<Referral> referral() async => Referral.fromJson(
+    ((await api.get('/referral')) as Map).cast<String, dynamic>(),
+  );
+
+  /// After a paid order: the plan and exits as the server now has them.
+  Future<void> afterPaid(Order o) async {
+    await loadMe();
+    if (o.kind == 'plan' || o.planActivated == true) await loadServers();
   }
 
   Future<String?> removeDevice(Device d) async {
