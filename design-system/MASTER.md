@@ -1,12 +1,12 @@
 # Cloud Gold — Design System (MASTER)
 
-> Status: **DRAFT — waiting for Ali's approval.** Once approved this file is locked: screens follow it, and any
-> change to a token or rule is made here first. Page-specific exceptions would go in `design-system/pages/<page>.md`
+> Status: **APPROVED by Ali on 2026-10-29 (D1, D3–D8 approved; D2 = A: older screens translated to English,
+> text only).** This file is locked: screens follow it, and any change to a token or rule is made here first. Page-specific exceptions would go in `design-system/pages/<page>.md`
 > (none exist; Master rules apply everywhere).
 
 Scope: the five app screens drawn by `app-web/` inside the Android WebView — Connect (home), Servers, Usage,
-Plans (buy / renew), Settings. The older flows in `screens.js` (sign-in, payments, orders, wallet, invite) are
-out of scope and keep their current look.
+Plans (buy / renew), Settings. The older flows in `screens.js` (sign-in, payments, orders, wallet, invite) keep their
+current look; per D2 = A only their text is translated to English (no layout, logic or payment-flow change).
 
 Sources: `ui-ux-pro-max` (product pattern "Trust & Authority", style "Minimalism & Swiss", dark navy base, UX and
 pro-rules checklists), `frontend-design` (direction and anti-template review), `design-system-patterns` (token

@@ -1,18 +1,19 @@
-/* Home: the connect button, the connection state (icon + word + color), current server, latency, duration,
- * this session's usage and the Kill Switch indicator. Repaints only the part that changed (see vpn.js events). */
+/* Connect (home): the Hallmark connect control, the connection state (icon + word + color), current server, latency,
+ * duration, this session's usage and the Kill Switch indicator (MASTER §6). Repaints only the part that changed
+ * (see vpn.js events). Connecting, disconnecting and switching still go through CG.connect / CG.disconnect. */
 (function () {
   'use strict';
   const CG = window.CG;
-  const { t, esc, S, on, screens, halo, mark, hasActivePlan, syncVpn } = CG;
+  const { t, esc, S, on, screens, hasActivePlan, syncVpn } = CG;
   const I18 = CG.i18n;
 
   // HH:MM:SS, always left to right, in the language's digits
   const clock = (sec) => [Math.floor(sec / 3600), Math.floor((sec % 3600) / 60), sec % 60].map(I18.n2).join(':');
 
+  // the server's name exactly as the API sends it (e.g. "🇩🇪 DE 2"); never translated or rewritten
   function serverName(srv) {
     if (!srv) return '';
-    const c = srv.cc ? I18.country(srv.cc) : '';
-    return c && c !== srv.cc ? c : srv.name;
+    return srv.remarks || srv.name || '';
   }
   CG.serverName = serverName;
 
@@ -33,28 +34,26 @@
     html: () => `
       <div class="fl-scroll"><div class="fl-col home">
         <div class="home-top">
-          <span class="home-brand">${mark(28)}<span>${esc(t('app.name'))}</span></span>
+          <h1 class="wordmark" translate="no">${esc(t('app.name'))}</h1>
           <button type="button" class="planchip js-plan" hidden></button>
         </div>
         <div class="js-notices"></div>
-        <section class="hero">
-          <button type="button" class="pb off js-coin">${halo()}</button>
+        <section class="hero" aria-label="${esc(t('conn.btn.connect'))}">
+          <button type="button" class="hallmark js-coin" data-s="off">${CG.ui.hallmark()}</button>
           <div class="hero-state">
             <div class="js-status" aria-live="polite"></div>
             <p class="t-small c-2 js-sub"></p>
           </div>
           <div class="js-cta"></div>
         </section>
-        <div class="list facts">
-          <button type="button" class="row js-server">
-            <span class="flag-c js-flag" aria-hidden="true"></span>
-            <span class="rb"><span>${esc(t('conn.server'))}</span><b class="js-sname"></b></span>
-            ${CG.ui.ic('chevron', 'ri flip-rtl')}
-          </button>
-          <div class="row">${CG.ui.ic('signal', 'ri')}<span class="rb"><span>${esc(t('conn.latency'))}</span><b class="js-lat"></b></span></div>
-          <div class="row">${CG.ui.ic('clock', 'ri')}<span class="rb"><span>${esc(t('conn.duration'))}</span><b class="js-dur num-ltr"></b></span></div>
-          <div class="row">${CG.ui.ic('arrows', 'ri')}<span class="rb"><span>${esc(t('conn.session'))}</span><b class="js-sess"></b></span></div>
-          <button type="button" class="row js-ks">${CG.ui.ic('lock', 'ri')}<span class="rb"><span>${esc(t('conn.ks.label'))}</span><b class="js-ksv"></b></span>${CG.ui.ic('chevron', 'ri flip-rtl')}</button>
+        <div class="readings js-readings">
+          <button type="button" class="reading js-server"><span>${esc(t('conn.server'))}</span><b class="name js-sname" translate="no"></b>${CG.ui.ic('chevron', 'ri')}</button>
+          <div class="reading"><span>${esc(t('conn.latency'))}</span><b class="t-read-m js-lat"></b><span class="js-q" hidden></span></div>
+          <div class="reading"><span>${esc(t('conn.duration'))}</span><b class="t-read-m js-dur"></b></div>
+          <div class="reading"><span>${esc(t('conn.session'))}</span><b class="t-read-m js-sess"></b></div>
+        </div>
+        <div class="list">
+          <button type="button" class="row js-ks">${CG.ui.ic('lock', 'ri lead-ic')}<span class="rb"><b>${esc(t('conn.ks.label'))}</b><span class="js-ksv"></span></span>${CG.ui.ic('chevron', 'ri')}</button>
         </div>
       </div></div>
       ${CG.ui.tabs('home')}`,
@@ -84,9 +83,11 @@
       let lastPhase = '';
       function paintPhase() {
         const p = CG.phase();
-        const cls = p === 'connected' ? 'on' : p === 'connecting' || p === 'disconnecting' ? 'busy' : 'off';
-        if (!coin.classList.contains(cls)) { coin.classList.remove('on', 'busy', 'off'); coin.classList.add(cls); }
-        coin.classList.toggle('blocked', p === 'blocked');
+        const s = p === 'connected' ? 'on' : p === 'connecting' || p === 'disconnecting' ? 'busy' : p === 'blocked' || p === 'error' ? 'bad' : 'off';
+        // the strike plays once, when the tunnel comes up while the screen is open
+        if (s === 'on' && lastPhase && lastPhase !== 'connected') coin.classList.add('struck');
+        if (s !== 'on') coin.classList.remove('struck');
+        coin.dataset.s = s;
         const action = p === 'connected' ? 'conn.btn.disconnect' : p === 'connecting' ? 'conn.btn.cancel' : p === 'blocked' ? (S.me && S.me.subscription ? 'conn.btn.renew' : 'conn.btn.buy') : 'conn.btn.connect';
         const stateWord = t(ui.PHASE[p].word);
         coin.setAttribute('aria-label', t(action) + t('common.sep') + stateWord);
@@ -103,21 +104,21 @@
           : `<button type="button" class="btn primary js-renew">${esc(t(action))}</button>`;
         const r = $('.js-renew'); if (r) r.onclick = () => CG.go('premium', { from: 'home' });
         const sp = $('.js-cta .js-sup'); if (sp) sp.onclick = () => CG.openSupport();
-        root.querySelector('.facts').classList.toggle('dim', p !== 'connected');
+        root.querySelector('.js-readings').classList.toggle('dim', p !== 'connected');
         lastPhase = p;
         paintTick(); paintPing(); paintNotices();
       }
       function paintServer() {
         const srv = CG.selectedServer();
-        $('.js-flag').textContent = srv && srv.cc ? CG.ccToFlag(srv.cc) : '';
         $('.js-server').setAttribute('aria-label', t('conn.server') + ': ' + (S.auto && !S.vpn.running && srv ? t('conn.smart.on') : serverName(srv) || t('conn.none')) + '. ' + t('conn.change'));
         $('.js-sname').textContent = !hasActivePlan() ? t('conn.none') : !srv ? t('sv.loading') : S.auto && !S.vpn.running ? t('conn.smart.on') : serverName(srv);
       }
       function paintPing() {
         const q = S.vpn.running ? CG.quality() : null;
-        $('.js-lat').textContent = S.vpn.running && S.ping
-          ? t('conn.ms.short', { n: I18.n(S.ping) }) + (q ? t('common.sep') + t('conn.quality') + ' ' + t(q.word) : '')
-          : t('conn.none');
+        $('.js-lat').textContent = S.vpn.running && S.ping ? t('conn.ms.short', { n: I18.n(S.ping) }) : t('conn.none');
+        const qv = $('.js-q');
+        qv.textContent = S.vpn.running && S.ping && q ? t('conn.quality') + ': ' + t(q.word) : '';
+        qv.hidden = !qv.textContent;
       }
       function paintTick() {
         $('.js-dur').textContent = S.vpn.running ? clock(CG.durationSec()) : t('conn.none');
@@ -136,7 +137,8 @@
         const w = planWarning(sub);
         chip.className = 'planchip js-plan' + (w ? ' ' + w.kind : '');
         const days = sub.unlimited_time ? t('us.no_expiry') : I18.n(sub.days_left) + ' ' + t('us.days_left');
-        chip.innerHTML = `${ui.ic('gauge')}<span>${esc(days)}</span>`;
+        chip.innerHTML = `${ui.ic('clock')}<span>${esc(days)}</span>`;
+        chip.setAttribute('aria-label', days + (w ? t('common.sep') + w.title : '') + '. ' + t('us.title'));
       }
       function paintNotices() {
         const out = [];
