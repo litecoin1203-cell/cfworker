@@ -89,14 +89,33 @@ jobs:
           tag: ${{ env.XRAY_LIB_TAG }}
           fileName: libv2ray.aar
           out-file-path: flutter_vpn/android/app/libs/
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.APP_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "PLEAT_KEYSTORE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          else
+            echo "::warning::APP_KEYSTORE_BASE64 is not set. Signing with this runner's debug key: uninstall an older Pleat before installing this APK."
+          fi
       - name: Build APK
         env:
           API_INPUT: ${{ github.event.inputs.api_base }}
           API_VAR: ${{ vars.CG_API_BASE }}
+          PLEAT_KEYSTORE_PASSWORD: ${{ secrets.APP_KEYSTORE_PASSWORD }}
+          PLEAT_KEY_ALIAS: ${{ secrets.APP_KEYSTORE_ALIAS || 'cloudgold' }}
+          PLEAT_KEY_PASSWORD: ${{ secrets.APP_KEY_PASSWORD }}
         run: |
           API="${API_INPUT:-$API_VAR}"
           [ -z "$API" ] && echo "::warning::No CG_API_BASE set; the APK will say it has no server address."
           flutter build apk --release --dart-define=PLEAT_API="$API"
+      - name: Check APK
+        run: |
+          apk=build/app/outputs/flutter-apk/app-release.apk
+          aapt=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
+          "$aapt" dump badging "$apk" | grep -E "^(package|sdkVersion|targetSdkVersion|native-code)"
+          unzip -l "$apk" | grep -E "lib/[^/]+/lib(hev-socks5-tunnel|gojni|flutter)\.so" | awk '{print $4}'
       - uses: actions/upload-artifact@v4
         with:
           name: pleat-apk
