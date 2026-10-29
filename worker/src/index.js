@@ -41,9 +41,14 @@ function payDonePage(cancelled) {
 export default {
   // daily: backup file + short report to the admin's Telegram (cron in wrangler.jsonc)
   async scheduled(event, env, ctx) {
-    // every minute: look for crypto deposits on the blockchain and confirm matching orders
+    // every minute: crypto deposits on the blockchain, one slice of the panel usage sync (quota and expiry
+    // stops), and the Telegram webhook kept pointed at this Worker
     if (event && event.cron && event.cron !== '30 20 * * *') {
-      ctx.waitUntil((async () => { try { const { scanAll } = await import('./chainwatch.js'); await scanAll(env); } catch (e) { logError('chain scan failed', e); } })());
+      ctx.waitUntil((async () => {
+        try { const { scanAll } = await import('./chainwatch.js'); await scanAll(env); } catch (e) { logError('chain scan failed', e); }
+        try { const { runSync } = await import('./sync.js'); await runSync(env); } catch (e) { logError('panel sync failed', e); }
+        try { const { ensureWebhook } = await import('./telegram.js'); await ensureWebhook(env); } catch (e) { logError('webhook check failed', e); }
+      })());
       return;
     }
     ctx.waitUntil((async () => {
@@ -71,12 +76,14 @@ export default {
         return await smsWebhook(env, request, path.slice(5));
       }
 
-      // Telegram webhook: the secret path AND the secret_token header Telegram sends (the deploy workflow
-      // passes it to setWebhook). Without TELEGRAM_WEBHOOK_SECRET the bot stays closed: anyone who knew the
-      // admin's chat id could otherwise approve orders or change the card number.
-      if (path.startsWith('/tg/') && request.method === 'POST') {
+      // Telegram webhook at /tg, checked by the secret_token header Telegram sends (the Worker registers it
+      // itself, see ensureWebhook). The secret is no longer in the path, so it never shows up in request logs;
+      // the old /tg/<secret> path still works until the webhook is re-registered. Without
+      // TELEGRAM_WEBHOOK_SECRET the bot stays closed: anyone who knew the admin's chat id could otherwise
+      // approve orders or change the card number.
+      if ((path === '/tg' || path.startsWith('/tg/')) && request.method === 'POST') {
         const secret = env.TELEGRAM_WEBHOOK_SECRET;
-        const okPath = !!secret && (await safeEqual(path.slice(4), secret));
+        const okPath = path === '/tg' || (!!secret && (await safeEqual(path.slice(4), secret)));
         const okHeader = !!secret && (await safeEqual(request.headers.get('x-telegram-bot-api-secret-token') || '', secret));
         if (!okPath || !okHeader) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
         const update = await request.json().catch(() => ({}));
@@ -140,13 +147,13 @@ async function route(request, env, p) {
 
   if (p === '/auth/change-password' && m === 'POST') return auth.changePassword(env, user, await body(request));
   if (p === '/auth/logout-all' && m === 'POST') return auth.logoutAll(env, user);
-  if (p === '/me' && m === 'GET') return account.me(env, user);
+  if (p === '/me' && m === 'GET') return account.me(env, user, request);
   if (p === '/trial' && m === 'POST') {
     await rateLimit(env, 'RL_IP', 'trial:' + ip);
     return account.startTrial(env, user, await body(request), request);
   }
   if (p === '/vpn' && m === 'GET') return account.vpn(env, user, request);
-  if (p === '/vpn/servers' && m === 'GET') return account.vpnServers(env, user);
+  if (p === '/vpn/servers' && m === 'GET') return account.vpnServers(env, user, request);
   if (p === '/vpn/sub' && m === 'GET') return account.vpnSub(env, user, request);
   if (p === '/net/report' && m === 'POST') { const ns = await import('./netstats.js'); return ns.report(env, user, request, await body(request)); }
   if (p === '/net/rank' && m === 'GET') { const ns = await import('./netstats.js'); return ns.rank(env, request); }

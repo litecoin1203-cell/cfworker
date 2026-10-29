@@ -1,8 +1,10 @@
-// Provisioning on the PasarGuard panel and all money movements.
-import { first, run, insert, getSettingInt, getSetting } from './db.js';
-import { PasarGuardError, pgOrThrow } from './pasarguard.js';
+// Provisioning on the panels (through the control plane) and all money movements.
+import { first, all, run, insert, getSettingInt, getSetting } from './db.js';
+import { PasarGuardError, pgOrThrow, parseExpire } from './pasarguard.js';
 import { nowSec } from './util.js';
 import { notifyAdmin } from './telegram.js';
+import { panelsFor, getPanel, adapterFor } from './panels.js';
+import { ensureAccount, usedBytes } from './sync.js';
 
 const GB = 1024 ** 3;
 const DAY = 86400;
@@ -11,90 +13,107 @@ export class BillingError extends Error {
   constructor(code, message) { super(message); this.code = code; }
 }
 
-export function parseExpire(v) {
-  if (v == null || v === 0 || v === '') return null;
-  if (typeof v === 'number') return Math.floor(v);
-  if (/^\d+$/.test(String(v))) return parseInt(v, 10);
-  let s = String(v);
-  if (!/[zZ]|[+-]\d\d:?\d\d$/.test(s)) s += 'Z'; // panel datetimes are UTC
-  const t = Date.parse(s);
-  return Number.isNaN(t) ? null : Math.floor(t / 1000);
-}
-
-async function groupIds(env, pg) {
-  const raw = (await getSetting(env, 'pg_group_ids')).trim();
-  if (raw) {
-    const ids = raw.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => n > 0);
-    if (ids.length) return ids;
-  }
-  let ids;
-  try { ids = await pg.listGroupIds(); }
-  catch (e) {
-    throw new PasarGuardError(`could not read panel groups (${e.message}). Set them by hand: /set pg_group_ids 1`, e.status || 0, e.detail);
-  }
-  if (!ids.length) throw new PasarGuardError('panel has no enabled groups for this admin. Create one, then /set pg_group_ids <id>', 0);
-  return ids;
-}
+export { parseExpire };
 
 function randomHex(n) {
   const b = crypto.getRandomValues(new Uint8Array(n));
   return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
 }
 
-// Create or extend the user's PasarGuard account.
+// Create or extend the user's logical subscription and its accounts on every panel the user belongs to.
 // opts.days overrides plan.duration_days and opts.dataGb overrides plan.data_limit_gb (used for trials).
+// The new expiry is worked out from the control plane, not from a panel. Each panel gets the same expiry and
+// limit; a panel that fails is left marked for the sync job to retry. Fails only when no panel took it.
 export async function provision(env, user, plan, opts = {}) {
   if (typeof opts === 'number') opts = { days: opts };
-  const pg = pgOrThrow(env);
+  pgOrThrow(env); // the original panel must be configured, as before
   const days = opts.days || plan.duration_days;
   const gb = opts.dataGb != null ? opts.dataGb : plan.data_limit_gb;
   const now = nowSec();
-  let sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
   const dataLimit = gb ? gb * GB : 0;
-  const hwid = plan.device_limit || null;
+  let sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
 
-  let pgUser = sub ? await pg.getUser(sub.pg_username) : null;
-  let newExpire;
-  if (pgUser) {
-    const current = parseExpire(pgUser.expire);
-    const st = String(pgUser.status || '');
-    // time left on an active plan carries over; an expired or used-up plan starts fresh from today
-    const base = current && current > now && st !== 'expired' ? current : now;
-    newExpire = base + days * DAY;
-    if (dataLimit || st === 'limited') {
-      try { await pg.resetUsage(sub.pg_username); } catch (e) { /* not fatal: the new limit still applies */ }
-    }
-    const fields = { status: 'active', expire: newExpire, data_limit: dataLimit, data_limit_reset_strategy: 'no_reset' };
-    if (hwid) fields.hwid_limit = hwid;
-    pgUser = await pg.modifyUser(sub.pg_username, fields);
-  } else {
-    const groups = await groupIds(env, pg);
-    newExpire = now + days * DAY;
-    const prefix = String(env.PASARGUARD_USERNAME_PREFIX || 'cg').toLowerCase().replace(/[^a-z0-9_]/g, '') || 'cg';
-    let username = '';
-    for (let attempt = 0; attempt < 3; attempt++) {
-      username = `${prefix}_${user.id}_${randomHex(2)}`.slice(0, 32);
-      try {
-        pgUser = await pg.createUser(username, { expire: newExpire, dataLimit, groupIds: groups, hwidLimit: hwid, note: `Cloud Gold · ${user.email}` });
-        break;
-      } catch (e) {
-        if (e instanceof PasarGuardError && e.status === 409 && attempt < 2) continue; // name taken, try another
-        throw e;
+  // time left on a running plan carries over; an expired plan starts fresh from today
+  const current = sub && sub.expires_at;
+  const base = current && current > now && sub.stop_reason !== 'expired' ? current : now;
+  const newExpire = base + days * DAY;
+
+  const targets = await panelsFor(env, user.id);
+  if (!targets.some((p) => p.id === 1)) {
+    const p1 = await getPanel(env, 1);
+    if (p1 && ['active', 'rollout'].includes(p1.state)) targets.unshift(p1);
+  }
+  const results = []; // {panel, pa, used}
+  let firstError = null;
+  for (const panel of targets) {
+    try {
+      const pg = adapterFor(env, panel);
+      // panel 1 keeps its own device limit (HWID); newer panels leave devices to the control plane
+      const hwid = panel.id === 1 ? plan.device_limit || null : null;
+      let pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
+      if (!pa && panel.id === 1 && sub && sub.pg_username) {
+        // subscription from before the control plane without its panel_accounts row
+        await run(env, `INSERT OR IGNORE INTO panel_accounts (user_id, panel_id, remote_username, sub_path, created_at) VALUES (?, 1, ?, ?, ?)`,
+          user.id, sub.pg_username, sub.sub_url || '', now);
+        pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1', user.id);
       }
-    }
-    if (sub) await run(env, 'UPDATE subscriptions SET pg_username = ? WHERE id = ?', username, sub.id);
-    else {
-      await insert(env, 'subscriptions', { user_id: user.id, pg_username: username });
-      sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
+      const remote = pa ? await pg.getUser(pa.remote_username) : null;
+      let used = 0;
+      if (remote) {
+        const st = String(remote.status || '');
+        used = parseInt(remote.used_traffic || 0, 10) || 0;
+        if (dataLimit || st === 'limited') {
+          try { await pg.resetUsage(pa.remote_username); used = 0; } catch (e) { /* not fatal: the new period starts from this reading */ }
+        }
+        const fields = { status: 'active', expire: newExpire, data_limit: dataLimit ? used + dataLimit : 0, data_limit_reset_strategy: 'no_reset' };
+        if (hwid) fields.hwid_limit = hwid;
+        const out = await pg.modifyUser(pa.remote_username, fields);
+        const subPath = pg.absoluteSubUrl(out.subscription_url || '') || pa.sub_path;
+        await run(env, `UPDATE panel_accounts SET sub_path = ?, desired = 'active', applied = 'active', desired_limit_bytes = ?, applied_limit_bytes = ?,
+          desired_expire = ?, applied_expire = ?, dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ?`,
+          subPath, fields.data_limit, fields.data_limit, newExpire, newExpire, now, pa.id);
+      } else {
+        pa = await ensureAccount(env, user, panel, { expire: newExpire, limit: dataLimit, hwid });
+      }
+      results.push({ panel, pa: await first(env, 'SELECT * FROM panel_accounts WHERE id = ?', pa.id), used });
+    } catch (e) {
+      if (!(e instanceof PasarGuardError)) throw e;
+      firstError = firstError || e;
+      // try again from the sync job: the account (if any) must end up active with the new expiry and limit
+      await run(env, `UPDATE panel_accounts SET desired = 'active', desired_limit_bytes = ?, desired_expire = ?, dirty = 1, attempts = 0
+        WHERE user_id = ? AND panel_id = ?`, dataLimit, newExpire, user.id, panel.id);
     }
   }
-  const expires = parseExpire(pgUser.expire) || newExpire;
-  const subUrl = pg.absoluteSubUrl(pgUser.subscription_url || '') || sub.sub_url;
-  if (!subUrl) throw new PasarGuardError('panel created the user but returned no subscription link', 0);
+  if (!results.length) throw firstError || new PasarGuardError('no panel is available', 0);
+
+  // close the old period (its usage stays in the history) and open the new one
+  if (sub && sub.period_id) {
+    const prevUsed = await usedBytes(env, sub.period_id);
+    await run(env, "UPDATE sub_periods SET ended_at = ?, end_reason = COALESCE(end_reason, 'renewed'), final_used_bytes = COALESCE(final_used_bytes, ?) WHERE id = ?",
+      now, prevUsed, sub.period_id);
+  }
+  const periodId = await insert(env, 'sub_periods', { user_id: user.id, plan_id: plan.id, order_id: opts.orderId || null, started_at: now, expires_at: newExpire, limit_bytes: dataLimit });
+  for (const r of results) {
+    await run(env, 'INSERT OR REPLACE INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at) VALUES (?, ?, ?, 0, ?)', periodId, r.panel.id, r.used, now);
+  }
+  // accounts that could not be updated now: their next reading only sets the starting point
+  for (const pa of await all(env, 'SELECT panel_id FROM panel_accounts WHERE user_id = ? AND dirty = 1', user.id)) {
+    await run(env, 'INSERT OR IGNORE INTO usage_counters (period_id, panel_id, baseline_pending, last_seen_at) VALUES (?, ?, 1, ?)', periodId, pa.panel_id, now);
+  }
+
+  const p1 = results.find((r) => r.panel.id === 1);
+  if (!sub) {
+    await insert(env, 'subscriptions', { user_id: user.id, pg_username: p1 ? p1.pa.remote_username : '' });
+    sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
+  }
+  const periodDays = Math.max(days, Math.ceil((newExpire - now) / DAY));
   await run(env,
-    'UPDATE subscriptions SET plan_id = ?, expires_at = ?, data_limit_bytes = ?, device_limit = ?, sub_url = ?, period_days = ?, updated_at = ? WHERE user_id = ?',
-    plan.id, expires, dataLimit, plan.device_limit, subUrl, Math.max(days, Math.ceil((expires - now) / DAY)), nowSec(), user.id);
-  return pgUser;
+    `UPDATE subscriptions SET plan_id = ?, expires_at = ?, data_limit_bytes = ?, device_limit = ?, period_days = ?, updated_at = ?,
+       period_id = ?, state = 'active', stop_reason = NULL, used_bytes = 0, used_at = ?, baselined = 1,
+       pg_username = COALESCE(?, pg_username), sub_url = COALESCE(?, sub_url) WHERE user_id = ?`,
+    plan.id, newExpire, dataLimit, plan.device_limit, periodDays, now, periodId, now,
+    p1 ? p1.pa.remote_username : null, p1 ? p1.pa.sub_path : null, user.id);
+  return { expires: newExpire, panels: results.length };
 }
 
 // Move money in or out of a wallet atomically. One D1 batch (a single transaction) logs the movement and
@@ -186,7 +205,7 @@ async function deliver(env, order, quiet) {
   const done = await first(env, 'SELECT provisioned_at FROM orders WHERE id = ?', order.id);
   if (!done || !done.provisioned_at) {
     try {
-      await provision(env, user, plan);
+      await provision(env, user, plan, { orderId: order.id });
     } catch (e) {
       if (e instanceof PasarGuardError) {
         if (!quiet) {

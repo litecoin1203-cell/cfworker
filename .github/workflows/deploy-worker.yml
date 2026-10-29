@@ -1,4 +1,5 @@
-# Deploys the Cloud Gold store to Cloudflare Workers + D1, then points the Telegram bot at it.
+# Deploys the Cloud Gold store to Cloudflare Workers + D1. The Worker registers its own Telegram webhook
+# (with secret_token) on its next cron run, so no secret passes through GitHub.
 # Run from GitHub: Actions -> "Deploy Cloud Gold server" -> Run workflow.
 name: Deploy Cloud Gold server
 
@@ -17,7 +18,6 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      HOOK: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
       WRANGLER: npx --yes wrangler@4
     steps:
       - uses: actions/checkout@v4
@@ -29,19 +29,29 @@ jobs:
       - name: Run the tests (nothing is deployed if they fail)
         run: npm test
 
-      - name: Check required secrets
+      - name: Check the Cloudflare login
         run: |
           miss=""
           for v in CLOUDFLARE_API_TOKEN CLOUDFLARE_ACCOUNT_ID; do
             [ -z "${!v}" ] && miss="$miss $v"
           done
           if [ -n "$miss" ]; then echo "::error::Missing GitHub secrets:$miss"; exit 1; fi
-          if [ -z "${{ secrets.SECRET_KEY }}" ]; then echo "::error::Set the SECRET_KEY secret"; exit 1; fi
-          if [ -z "${{ secrets.PUBLIC_BASE_URL }}" ]; then echo "::error::Set the PUBLIC_BASE_URL secret (your Worker address)"; exit 1; fi
-          # the admin bot only accepts calls carrying this secret; Telegram allows A-Z a-z 0-9 _ - (1-256)
-          if ! printf '%s' "$HOOK" | grep -Eq '^[A-Za-z0-9_-]{8,256}$'; then
-            echo "::error::Set the TELEGRAM_WEBHOOK_SECRET secret: at least 8 characters, only letters, digits, _ and -"; exit 1
+
+      # Every other secret lives only in Workers Secrets (Cloudflare dashboard -> Worker -> Settings ->
+      # Variables and Secrets). GitHub never sees them; this only checks their names exist.
+      - name: Check the Worker secrets (names only)
+        run: |
+          have=$($WRANGLER secret list --format json 2>/dev/null | jq -r '.[].name' || true)
+          if [ -z "$have" ]; then
+            echo "::warning::Could not list the Worker secrets (first deploy?). Add them in the Cloudflare dashboard."
+            exit 0
           fi
+          miss=""
+          for n in SECRET_KEY PUBLIC_BASE_URL PASARGUARD_URL TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID TELEGRAM_WEBHOOK_SECRET; do
+            printf '%s\n' "$have" | grep -qx "$n" || miss="$miss $n"
+          done
+          if [ -n "$miss" ]; then echo "::error::Add these Workers Secrets in the Cloudflare dashboard:$miss"; exit 1; fi
+          echo "Worker secrets present."
 
       - name: Create / find the D1 database
         run: |
@@ -58,41 +68,5 @@ jobs:
       - name: Apply database migrations
         run: $WRANGLER d1 migrations apply cloudgold --remote
 
-      - name: Upload secrets
-        env:
-          SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          JWT_SECRET: ${{ secrets.JWT_SECRET }}   # optional: own key for login tokens (everyone signs in again once)
-          PUBLIC_BASE_URL: ${{ secrets.PUBLIC_BASE_URL }}
-          PASARGUARD_URL: ${{ secrets.PASARGUARD_URL }}
-          PASARGUARD_USERNAME: ${{ secrets.PASARGUARD_USERNAME }}
-          PASARGUARD_PASSWORD: ${{ secrets.PASARGUARD_PASSWORD }}
-          PASARGUARD_API_KEY: ${{ secrets.PASARGUARD_API_KEY }}
-          PASARGUARD_USERNAME_PREFIX: ${{ secrets.PASARGUARD_USERNAME_PREFIX }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_WEBHOOK_SECRET: ${{ secrets.TELEGRAM_WEBHOOK_SECRET }}
-          NOWPAYMENTS_API_KEY: ${{ secrets.NOWPAYMENTS_API_KEY }}
-          NOWPAYMENTS_IPN_SECRET: ${{ secrets.NOWPAYMENTS_IPN_SECRET }}
-          NOWPAYMENTS_PAY_CURRENCY: ${{ secrets.NOWPAYMENTS_PAY_CURRENCY }}
-        run: |
-          put() {
-            local name="$1"; local val="${!1}"
-            if [ -n "$val" ]; then printf '%s' "$val" | $WRANGLER secret put "$name" >/dev/null && echo "set $name"; fi
-          }
-          for n in SECRET_KEY JWT_SECRET PUBLIC_BASE_URL PASARGUARD_URL PASARGUARD_USERNAME PASARGUARD_PASSWORD \
-                   PASARGUARD_API_KEY PASARGUARD_USERNAME_PREFIX TELEGRAM_BOT_TOKEN TELEGRAM_CHAT_ID \
-                   TELEGRAM_WEBHOOK_SECRET NOWPAYMENTS_API_KEY NOWPAYMENTS_IPN_SECRET NOWPAYMENTS_PAY_CURRENCY; do
-            put "$n"
-          done
-
       - name: Deploy the Worker
         run: $WRANGLER deploy
-
-      - name: Point the Telegram bot at the Worker
-        env:
-          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          BASE: ${{ secrets.PUBLIC_BASE_URL }}
-        run: |
-          # secret_token makes Telegram send the X-Telegram-Bot-Api-Secret-Token header the Worker checks
-          curl -s "https://api.telegram.org/bot$TOKEN/setWebhook" --data-urlencode "url=${BASE%/}/tg/$HOOK" --data-urlencode "secret_token=$HOOK" | jq -c . || true
-          echo "Webhook set to ${BASE%/}/tg/<secret>"

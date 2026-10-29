@@ -105,6 +105,7 @@ async function onCallback(env, cq) {
   const chatId = cq.message?.chat?.id;
   if (!isAdmin(env, chatId)) return tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: 'اجازه نداری' });
   const [action, idStr] = String(cq.data || '').split(':');
+  if (action === 'cf' || action === 'cx') return onConfirm(env, cq, action === 'cf');
   if (action === 'ts') {
     const { normSender } = await import('./sms.js');
     const list = String((await getSettings(env)).sms_senders || '').split(',').map(normSender).filter(Boolean);
@@ -152,67 +153,98 @@ async function editStatus(env, cq, text) {
   return tg(env, 'editMessageText', { chat_id: m.chat.id, message_id: m.message_id, text: (m.text ? m.text + '\n\n' : '') + text, disable_web_page_preview: true });
 }
 
+// ---------------- webhook registration ----------------
+// The Worker points the bot at itself (no secret in the deploy workflow). Runs every minute but only calls
+// Telegram when the address or the secret changed since the last successful registration.
+export async function ensureWebhook(env) {
+  const base = String(env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+  const secret = env.TELEGRAM_WEBHOOK_SECRET;
+  if (!env.TELEGRAM_BOT_TOKEN || !secret || !base) return false;
+  const { hmacHex } = await import('./util.js');
+  const want = await hmacHex(secret, base + '|' + env.TELEGRAM_BOT_TOKEN.slice(-6));
+  const have = (await first(env, "SELECT value FROM settings WHERE key = 'tg_webhook_sig'"))?.value;
+  if (have === want) return false;
+  const r = await tg(env, 'setWebhook', { url: base + '/tg', secret_token: secret, allowed_updates: ['message', 'callback_query'] });
+  if (!r || !r.ok) return false;
+  await setSetting(env, 'tg_webhook_sig', want);
+  return true;
+}
+
+// ---------------- admin log and "are you sure?" ----------------
+export async function audit(env, adminId, action, targetType, targetId, summary) {
+  await insert(env, 'admin_audit', { admin_id: String(adminId), action, target_type: targetType || null, target_id: targetId == null ? null : String(targetId),
+    summary: summary ? String(summary).slice(0, 300) : null, created_at: nowSec() });
+}
+
+// Dangerous actions wait for a second tap on a one-time button (2 minutes).
+async function askConfirm(env, chatId, action, payload, question) {
+  const token = [...crypto.getRandomValues(new Uint8Array(9))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  await insert(env, 'bot_confirm', { token, admin_id: String(chatId), action, payload_json: JSON.stringify(payload || {}), expires_at: nowSec() + 120 });
+  return tg(env, 'sendMessage', { chat_id: chatId, text: `⚠️ مطمئنی؟\n${question}`, reply_markup: { inline_keyboard: [[
+    { text: '✅ بله، انجام بده', callback_data: `cf:${token}` }, { text: '❌ انصراف', callback_data: `cx:${token}` },
+  ]] } });
+}
+
+async function onConfirm(env, cq, yes) {
+  const chatId = cq.message?.chat?.id;
+  const token = String(cq.data || '').slice(3);
+  const ack = (text) => tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text });
+  const row = await first(env, 'SELECT * FROM bot_confirm WHERE token = ?', token);
+  if (!row || row.admin_id !== String(chatId)) return ack('پیدا نشد');
+  const claim = await run(env, 'UPDATE bot_confirm SET used_at = ? WHERE token = ? AND used_at IS NULL AND expires_at >= ?', nowSec(), token, nowSec());
+  if (!claim.meta.changes) return ack('این تأیید منقضی یا قبلاً استفاده شده است');
+  if (!yes) { await editStatus(env, cq, '❌ لغو شد.'); return ack('لغو شد'); }
+  const payload = JSON.parse(row.payload_json || '{}');
+  let result = 'انجام شد';
+  if (row.action === 'drain_panel') {
+    const { getPanel, drainPanel } = await import('./panels.js');
+    const panel = await getPanel(env, payload.panel_id);
+    if (!panel) result = 'پنل پیدا نشد';
+    else {
+      await drainPanel(env, panel);
+      await audit(env, chatId, 'panel.drain', 'panel', panel.id, `خارج‌سازی ${panel.label}`);
+      result = `پنل #${panel.id} (${panel.label}) از لیست خارج شد. مصرفش یک بار دیگر خوانده می‌شود، بعد اکانت‌هایش خاموش و پنل غیرفعال می‌شود. تاریخچه‌ی مصرف پاک نمی‌شود.`;
+    }
+  }
+  await editStatus(env, cq, '✅ ' + result);
+  return ack('انجام شد');
+}
+
 // ---------------- diagnostics ----------------
+const STATE_FA = { new: 'تازه', testing: 'تست‌شده', rollout: 'ورود تدریجی', active: 'فعال', draining: 'در حال خارج‌شدن', disabled: 'غیرفعال' };
+
+// Health of every panel, by its label. Never prints a panel address, user name or password.
 export async function panelReport(env) {
-  const { PasarGuard, panelBases } = await import('./pasarguard.js');
-  const lines = ['🔎 تست اتصال به پنل'];
-  const bases = panelBases(env.PASARGUARD_URL);
-  if (!bases.length) return lines.concat('❌ PASARGUARD_URL خالی است. در GitHub Secret بساز و Deploy را دوباره اجرا کن.').join('\n');
-  lines.push(`آدرس واردشده: ${env.PASARGUARD_URL}`);
-  lines.push(`آدرس API: ${bases[0]}${bases[1] ? ` (یا ${bases[1]})` : ''}`);
-  const pg = new PasarGuard(env);
-  pg._token = null;
-  try {
-    if (pg.apiKey) lines.push('روش ورود: API Key');
-    else { await pg._login(); lines.push(`✅ ورود با یوزر «${pg.username}» موفق بود (${pg.base})`); }
-  } catch (e) {
-    lines.push(`❌ ورود ناموفق: ${e.message}`);
-    lines.push('راه حل: آدرس پنل را فقط به شکل https://domain.com (بدون /hub و #/login) و یوزر/رمز نمایندگی را درست وارد کن.');
-    return lines.join('\n');
-  }
-  const s = await getSettings(env);
-  let groups = [];
-  try {
-    groups = await pg.listGroups();
-    lines.push(`✅ گروه‌ها: ${groups.map((g) => `${g.id}=${g.name}`).join('، ') || 'هیچ'}`);
-  } catch (e) {
-    lines.push(`⚠️ خواندن گروه‌ها ممکن نشد: ${e.message}`);
-  }
-  lines.push(`pg_group_ids: ${s.pg_group_ids || '(خالی = همه‌ی گروه‌ها)'}`);
-  const ids = (s.pg_group_ids || '').split(',').map((x) => parseInt(x, 10)).filter((n) => n > 0);
-  const useIds = ids.length ? ids : groups.map((g) => g.id);
-  if (!useIds.length) {
-    lines.push('❌ هیچ گروهی برای ساخت اکانت نیست. شماره‌ی گروه را از پنل بردار و بزن: /set pg_group_ids 1');
-    return lines.join('\n');
-  }
-  const name = `cgtest_${Math.floor(Math.random() * 1e6)}`;
-  try {
-    const u = await pg.createUser(name, { expire: nowSec() + 3600, dataLimit: 10 * 1024 * 1024, groupIds: useIds, note: 'Cloud Gold test, safe to delete' });
-    lines.push(`✅ ساخت اکانت آزمایشی موفق بود (${name})`);
-    if (u.subscription_url) {
-      try {
-        const links = await pg.subscriptionLinks(u.subscription_url);
-        lines.push(links.length ? `✅ لینک ساب کار می‌کند: ${links.length} کانفیگ` : '⚠️ لینک ساب خالی است؛ در پنل برای این گروه Inbound/Host فعال کن.');
-      } catch (e) { lines.push(`⚠️ خواندن لینک ساب ممکن نشد: ${e.message}`); }
-    } else lines.push('⚠️ پنل لینک سابسکریپشن برنگرداند.');
-    try { await pg.deleteUser(name); lines.push('🧹 اکانت آزمایشی پاک شد.'); } catch (e) { lines.push(`(اکانت ${name} را دستی از پنل پاک کن)`); }
-    lines.push('\n🎉 همه‌چیز درست است؛ اپ می‌تواند اکانت بسازد.');
-  } catch (e) {
-    lines.push(`❌ ساخت اکانت ناموفق: ${e.message}`);
-    if (e.status === 403) lines.push('راه حل: نمایندگی تو اجازه‌ی ساخت کاربر یا استفاده از این گروه را ندارد. گروه درست را با /set pg_group_ids بگذار یا از مدیر پنل دسترسی بگیر.');
-    if (e.status === 400 || e.status === 422) lines.push('راه حل: معمولاً گروه اشتباه است یا سقف حجم/زمان نمایندگی پر شده. /set pg_group_ids را بررسی کن.');
+  const { listPanels, testPanel } = await import('./panels.js');
+  const lines = ['🔎 تست سلامت پنل‌ها'];
+  for (const p of await listPanels(env)) {
+    if (p.state === 'disabled') { lines.push('', `#${p.id} ${p.label}: غیرفعال`); continue; }
+    const t = await testPanel(env, p);
+    lines.push('', `#${p.id} ${p.label} (${p.kind}) — ${STATE_FA[p.state] || p.state}`);
+    lines.push(t.login ? '✅ ورود به API موفق بود' : `❌ ورود ناموفق: ${t.error || ''}`);
+    if (t.login) lines.push(t.create ? '✅ ساخت اکانت آزمایشی موفق بود' : `❌ ساخت اکانت ناموفق: ${t.error || ''}`);
+    if (t.create) lines.push(t.configs ? `✅ لینک ساب کار می‌کند: ${t.configs} کانفیگ` : '⚠️ لینک ساب خالی است؛ در پنل برای این گروه Inbound/Host فعال کن.');
+    if (t.version) lines.push(`نسخه‌ی پنل: ${t.version}`);
+    if (t.sameHost === true) lines.push('⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است؛ آدرس پنل داخل کانفیگ‌ها دیده می‌شود. برای نودها دامنه‌ی جدا بگذار.');
+    if (t.sameHost === false) lines.push('✅ دامنه‌ی نودها با دامنه‌ی پنل فرق دارد.');
+    if (!t.login && p.cred_ref !== 'PASARGUARD') lines.push(`راه حل: Secret با نام ${p.cred_ref} را در داشبورد Cloudflare بررسی کن.`);
   }
   return lines.join('\n');
 }
 
 export async function backupJson(env) {
-  const tables = ['users', 'plans', 'subscriptions', 'orders', 'wallet_tx', 'devices', 'settings', 'coupons', 'coupon_uses'];
+  const tables = ['users', 'plans', 'subscriptions', 'orders', 'wallet_tx', 'devices', 'settings', 'coupons', 'coupon_uses',
+    'panels', 'panel_accounts', 'sub_periods', 'usage_counters', 'admin_audit'];
   const out = { created_at: new Date().toISOString(), tables: {} };
   for (const t of tables) {
     try { out.tables[t] = await all(env, `SELECT * FROM ${t}`); } catch (e) { out.tables[t] = []; }
   }
   // password hashes never leave the database: a leaked chat must not leak them (D1 Time Travel restores everything)
   out.tables.users = out.tables.users.map(({ password_hash, ...u }) => u);
+  // subscription links contain the panel address, which never goes into a chat
+  out.tables.subscriptions = out.tables.subscriptions.map(({ sub_url, ...x }) => x);
+  out.tables.panel_accounts = out.tables.panel_accounts.map(({ sub_path, ...x }) => x);
+  out.tables.settings = out.tables.settings.filter((x) => x.key !== 'tg_webhook_sig');
   return JSON.stringify(out);
 }
 
@@ -225,7 +257,8 @@ export async function sendBackup(env, chatId) {
 
 const HELP = `دستورهای ربات Cloud Gold:
 
-🔎 /panel — تست کامل اتصال به پنل
+🔎 /panel — تست سلامت همه‌ی پنل‌ها
+🗂 /panels — پنل‌ها، افزودن، ورود تدریجی، خارج‌کردن
 📊 /stats — آمار فروش
 👤 /find ایمیل — اطلاعات زنده‌ی کاربر از پنل
 🎁 /grant ایمیل شماره‌پلن — دادن پلن به کاربر
@@ -292,6 +325,72 @@ async function onMessage(env, msg) {
 
   if (cmd === '/backup') return sendBackup(env, chatId);
 
+  if (cmd === '/panels') {
+    const { listPanels } = await import('./panels.js');
+    const rows = await listPanels(env);
+    const lines = ['🗂 پنل‌ها'];
+    for (const p of rows) {
+      const n = (await first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active'", p.id)).c;
+      lines.push(`#${p.id} ${p.label} (${p.kind}) — ${STATE_FA[p.state] || p.state}${p.state === 'rollout' ? ` ${p.rollout_percent}%` : ''} · سلامت ${p.health} · ${n} کاربر فعال${p.version ? ` · نسخه ${p.version}` : ''}`);
+    }
+    lines.push('', 'افزودن: /addpanel pasarguard نام', 'تست: /paneltest شماره · ورود تدریجی: /rollout شماره درصد', 'گروه‌ها: /panelgroups شماره 1,2 · خارج‌کردن: /drainpanel شماره');
+    return say(lines.join('\n'));
+  }
+  if (cmd === '/addpanel') {
+    const [, kind, ...labelParts] = text.split(/\s+/);
+    const label = labelParts.join(' ').trim();
+    const k = String(kind || '').toLowerCase();
+    if (!label || !['pasarguard', 'marzban', 'hiddify'].includes(k)) return say('شکل درست: /addpanel pasarguard نام‌دلخواه\n(marzban و hiddify هم پذیرفته می‌شوند؛ آداپتورشان در مرحله‌ی بعد اضافه می‌شود)');
+    const { addPanel } = await import('./panels.js');
+    const p = await addPanel(env, k, label);
+    await audit(env, chatId, 'panel.add', 'panel', p.id, `${k} ${label}`);
+    return say([
+      `✅ پنل #${p.id} (${p.label}) ثبت شد؛ هنوز به هیچ کاربری داده نمی‌شود.`,
+      '',
+      `۱) در داشبورد Cloudflare ← Workers ← cloudgold ← Settings ← Variables and Secrets یک Secret با نام ${p.cred_ref} بساز، با این شکل:`,
+      '{"url":"https://...","username":"...","password":"..."}',
+      '(یا {"url":"https://...","api_key":"..."})',
+      'رمز را هرگز در این چت ننویس.',
+      `۲) بعد بزن: /paneltest ${p.id}`,
+      `۳) اگر سالم بود: /rollout ${p.id} 10 (ده درصد کاربران)، بعد کم‌کم تا 100`,
+    ].join('\n'));
+  }
+  if (cmd === '/paneltest' || cmd === '/rollout' || cmd === '/drainpanel' || cmd === '/panelgroups') {
+    const parts = text.split(/\s+/);
+    const { getPanel, testPanel, setRollout, listPanels } = await import('./panels.js');
+    const panel = await getPanel(env, parseInt(parts[1], 10));
+    if (!panel) return say('پنل پیدا نشد. لیست: /panels');
+    if (cmd === '/paneltest') {
+      await say('⏳ در حال تست پنل...');
+      const t = await testPanel(env, panel);
+      await audit(env, chatId, 'panel.test', 'panel', panel.id, t.healthy ? 'سالم' : 'ناسالم');
+      return say(t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\nبرای شروع: /rollout ${panel.id} 10`
+        : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}`);
+    }
+    if (cmd === '/panelgroups') {
+      const ids = String(parts[2] || '').split(',').map((x) => parseInt(x, 10)).filter((n) => n > 0);
+      const { options } = await import('./panels.js');
+      await run(env, 'UPDATE panels SET options_json = ? WHERE id = ?', JSON.stringify({ ...options(panel), group_ids: ids }), panel.id);
+      await audit(env, chatId, 'panel.groups', 'panel', panel.id, ids.join(',') || 'همه');
+      return say(`✅ گروه‌های پنل #${panel.id}: ${ids.join(',') || 'همه‌ی گروه‌های مجاز'}`);
+    }
+    if (cmd === '/rollout') {
+      const pct = parseInt(parts[2], 10);
+      if (!(pct >= 0 && pct <= 100)) return say('شکل درست: /rollout شماره درصد (0 تا 100)');
+      if (!['testing', 'rollout', 'active'].includes(panel.state)) return say('اول پنل را تست کن: /paneltest ' + panel.id);
+      const p = await setRollout(env, panel, pct);
+      await audit(env, chatId, 'panel.rollout', 'panel', panel.id, `${pct}%`);
+      return say(`✅ پنل #${p.id}: ${STATE_FA[p.state]} ${p.rollout_percent}%. اکانت کاربران کم‌کم در هر دقیقه ساخته می‌شود.`);
+    }
+    if (cmd === '/drainpanel') {
+      if (['draining', 'disabled'].includes(panel.state)) return say('این پنل قبلاً خارج شده است.');
+      const others = (await listPanels(env)).filter((p) => p.id !== panel.id && ['active', 'rollout'].includes(p.state));
+      if (!others.length) return say('❌ این تنها پنل فعال است؛ اول یک پنل دیگر اضافه و فعال کن.');
+      return askConfirm(env, chatId, 'drain_panel', { panel_id: panel.id },
+        `پنل #${panel.id} (${panel.label}) از لیست سرورها خارج و بعد غیرفعال شود؟ کاربرانش روی پنل‌های دیگر می‌مانند و مصرفشان حفظ می‌شود.`);
+    }
+  }
+
   if (cmd === '/find' || cmd === '/user') {
     const email = text.split(/\s+/)[1]?.toLowerCase() || '';
     const u = await first(env, 'SELECT * FROM users WHERE email = ?', email);
@@ -304,7 +403,10 @@ async function onMessage(env, msg) {
       lines.push(`پلن: ${sub.plan_name || '-'} · وضعیت: ${sub.status}${sub.live ? '' : ' (پنل جواب نداد)'}`);
       lines.push(`زمان: ${sub.unlimited_time ? 'نامحدود' : `${sub.days_left} روز (تا ${sub.expires_at.slice(0, 10)})`}`);
       lines.push(`حجم: ${(sub.used_bytes / GB).toFixed(2)} از ${sub.unlimited_data ? 'نامحدود' : (sub.data_limit_bytes / GB).toFixed(1) + ' گیگ'}`);
-      lines.push(`یوزر پنل: ${sRow ? sRow.pg_username : '-'}`);
+      if (sub.stop_reason) lines.push(`دلیل توقف: ${{ quota: 'حجم تمام شد', expired: 'زمان تمام شد', admin: 'ادمین' }[sub.stop_reason] || sub.stop_reason}`);
+      const pas = await all(env, 'SELECT a.desired, p.label FROM panel_accounts a JOIN panels p ON p.id = a.panel_id WHERE a.user_id = ?', u.id);
+      lines.push(`پنل‌ها: ${pas.map((a) => `${a.label}${a.desired === 'active' ? '' : ' (خاموش)'}`).join('، ') || '-'}`);
+      lines.push(`یوزر پنل ۱: ${sRow ? sRow.pg_username : '-'}`);
     } else lines.push('اشتراک: ندارد');
     return say(lines.join('\n'));
   }
@@ -314,6 +416,7 @@ async function onMessage(env, msg) {
     const u = await first(env, 'SELECT * FROM users WHERE email = ?', email.toLowerCase());
     if (!u) return say('کاربری با این ایمیل نیست.');
     await run(env, 'UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?', await hashPassword(pass, env.SECRET_KEY), u.id);
+    await audit(env, chatId, 'user.reset_password', 'user', u.id, null);
     return say(`رمز ${email} عوض شد. گوشی‌های دیگر از حساب خارج شدند.`);
   }
   if (cmd === '/grant') {
@@ -323,6 +426,7 @@ async function onMessage(env, msg) {
     if (!u || !plan) return say('شکل درست: /grant email@example.com شماره‌پلن  (شماره‌ها در /plans)');
     const { provision } = await import('./billing.js');
     try { await provision(env, u, plan); } catch (e) { return say('⚠️ ساخت اکانت روی پنل انجام نشد:\n' + e.message + '\n\nبرای عیب‌یابی /panel را بزن.'); }
+    await audit(env, chatId, 'user.grant', 'user', u.id, `پلن #${plan.id}`);
     return say(`✅ پلن ${plan.name} به ${email} داده شد.`);
   }
   if (cmd === '/plans') {

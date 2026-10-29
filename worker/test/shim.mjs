@@ -27,11 +27,11 @@ class Stmt {
   }
 }
 
-export function makeDB(schemaPath) {
+export function makeDB(schemaPath, { upto } = {}) {
   const db = new DatabaseSync(':memory:');
   // apply every migration in order, like `wrangler d1 migrations apply`
   const dir = dirname(schemaPath);
-  for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) db.exec(readFileSync(join(dir, f), 'utf8'));
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) { if (upto && f > upto) break; db.exec(readFileSync(join(dir, f), 'utf8')); }
   return {
     prepare: (sql) => new Stmt(db, sql),
     // like D1: the whole batch is one transaction, run without anything else in between, rolled back on error
@@ -52,18 +52,22 @@ export function makeDB(schemaPath) {
 
 // ---------------- fake PasarGuard + NOWPayments + Telegram over fetch ----------------
 export function installFakes({ panelBase }) {
-  const pg = { users: {}, tokens: new Set(), deletedHwids: [], seq: 0, lastSubHeaders: null, groupsSudoOnly: false, failCreate: null };
-  const tg = { messages: [], photos: [], lastButtons: null };
+  const newPanel = (host) => ({ users: {}, tokens: new Set(), deletedHwids: [], seq: 0, lastSubHeaders: null, groupsSudoOnly: false, failCreate: null,
+    down: false, puts: 0, putLog: [], host: host || 'example.com' });
+  const pg = newPanel();
+  const panels = { [panelBase]: pg };
+  const tg = { messages: [], photos: [], lastButtons: null, calls: [] };
   const np = { invoices: [] };
 
   const resJson = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
   const resText = (text, status = 200) => new Response(text, { status });
 
-  function subLinks() {
+  function subLinks(pg) {
+    const h = pg.host;
     return [
-      'vless://uuid@nl1.example.com:443?security=reality&type=tcp#%F0%9F%87%B3%F0%9F%87%B1%20Netherlands',
-      'vless://uuid@de1.example.com:443?security=tls&type=ws#%F0%9F%87%A9%F0%9F%87%AA%20Germany',
-      'trojan://pass@us1.example.com:443#%F0%9F%87%BA%F0%9F%87%B8%20United%20States',
+      `vless://uuid@nl1.${h}:443?security=reality&type=tcp#%F0%9F%87%B3%F0%9F%87%B1%20Netherlands`,
+      `vless://uuid@de1.${h}:443?security=tls&type=ws#%F0%9F%87%A9%F0%9F%87%AA%20Germany%20MyPanel`,
+      `trojan://pass@us1.${h}:443#%F0%9F%87%BA%F0%9F%87%B8%20United%20States`,
     ].join('\n');
   }
   function outUser(u) {
@@ -76,8 +80,18 @@ export function installFakes({ panelBase }) {
     const method = (init.method || 'GET').toUpperCase();
     const body = init.body;
 
-    if (url.startsWith(panelBase)) {
-      const path = url.slice(panelBase.length);
+    const base = Object.keys(panels).find((b) => url.startsWith(b + '/'));
+    if (base) {
+      const pg = panels[base];
+      if (pg.down) throw new TypeError('fetch failed');
+      const path = url.slice(base.length);
+      if (path.startsWith('/api/users?')) {
+        const q = new URL(url).searchParams;
+        const all = Object.values(pg.users);
+        const off = parseInt(q.get('offset') || '0', 10), lim = parseInt(q.get('limit') || '100', 10);
+        return resJson({ users: all.slice(off, off + lim).map(outUser), total: all.length });
+      }
+      if (path === '/api/system') return resJson({ version: '1.0.0-test' });
       if (path === '/api/admin/token') { const t = 'tok' + ++pg.seq; pg.tokens.add(t); return resJson({ access_token: t, token_type: 'bearer' }); }
       if (path === '/api/groups') return pg.groupsSudoOnly ? resText('{"detail":"You\'re not allowed"}', 403) : resJson({ groups: [{ id: 1, name: 'default' }] });
       if (path.startsWith('/api/groups/simple')) return resJson({ groups: [{ id: 1, name: 'default' }, { id: 2, name: 'reseller' }], total: 2 });
@@ -94,7 +108,7 @@ export function installFakes({ panelBase }) {
         const name = decodeURIComponent(mm[1]);
         const u = pg.users[name];
         if (method === 'GET') return u ? resJson(outUser(u)) : resText('not found', 404);
-        if (method === 'PUT') { Object.assign(u, JSON.parse(body)); return resJson(outUser(u)); }
+        if (method === 'PUT') { if (!u) return resText('not found', 404); pg.puts++; pg.putLog.push(name); Object.assign(u, JSON.parse(body)); return resJson(outUser(u)); }
         if (method === 'DELETE') { delete pg.users[name]; return resText('', 204); }
       }
       if ((mm = path.match(/^\/api\/user\/([^/]+)\/reset$/)) && method === 'POST') {
@@ -103,11 +117,11 @@ export function installFakes({ panelBase }) {
       if ((mm = path.match(/^\/api\/user\/(\d+)\/hwids\/(.+)$/)) && method === 'DELETE') {
         pg.deletedHwids.push([parseInt(mm[1], 10), decodeURIComponent(mm[2])]); return resText('', 204);
       }
-      if (path.match(/^\/sub\/[^/]+\/links$/)) return resText(subLinks());
+      if (path.match(/^\/sub\/[^/]+\/links$/)) return resText(subLinks(pg));
       if (path.match(/^\/sub\/[^/]+\/?$/)) {
         const hh = new Headers(init.headers || {});
         pg.lastSubHeaders = { ua: hh.get('user-agent'), hwid: hh.get('x-hwid') };
-        return new Response(btoa(subLinks()), { status: 200, headers: { 'subscription-userinfo': 'upload=0; download=0; total=0; expire=0' } });
+        return new Response(btoa(subLinks(pg)), { status: 200, headers: { 'subscription-userinfo': 'upload=0; download=0; total=0; expire=0' } });
       }
       return resText('panel: unhandled ' + method + ' ' + path, 500);
     }
@@ -142,6 +156,7 @@ export function installFakes({ panelBase }) {
 
     if (url.includes('api.telegram.org')) {
       const method2 = url.split('/').pop();
+      tg.calls.push({ method: method2, body: body && typeof body === 'string' ? JSON.parse(body) : null });
       if (method2 === 'sendMessage') { tg.messages.push(JSON.parse(body)); return resJson({ ok: true, result: { message_id: tg.messages.length } }); }
       if (method2 === 'sendPhoto') { tg.photos.push(true); return resJson({ ok: true, result: { message_id: 1, photo: [{ file_id: 'photo_' + tg.photos.length }] } }); }
       return resJson({ ok: true, result: {} });
@@ -149,5 +164,6 @@ export function installFakes({ panelBase }) {
     throw new Error('unexpected fetch to ' + url);
   };
 
-  return { pg, tg, np };
+  const addPanel = (b, host) => (panels[b] = newPanel(host));
+  return { pg, tg, np, panels, addPanel };
 }
