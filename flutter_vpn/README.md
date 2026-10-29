@@ -5,11 +5,14 @@ plans, trial, server list, usage and devices are the backend's; nothing on a
 primary screen is seeded. What each control calls, and what the backend does
 not offer, is in [docs/backend-map.md](docs/backend-map.md).
 
-This build has no tunnel engine: the tunnel lives in the Cloud Gold Android
-app's v2rayNG core. Connect checks the plan and the chosen exit with
-`GET /vpn`, then asks the platform channel `pleat/tunnel`; with no native side
-it stops and says so. Protected is only ever shown while that channel reports
-the tunnel up.
+The tunnel is native: `android/app/src/main/kotlin/app/pleat/pleat/`
+runs a VpnService that feeds hev-socks5-tunnel into the Xray core
+(`libv2ray.aar`), the same engine and versions as the Cloud Gold app. CI
+fetches the core and builds hev (`android/compile-hevtun.sh`). Connect checks
+the plan with `GET /vpn`, builds the Xray config for the chosen exit, and
+starts the service through `pleat/tunnel`. Protected shows only after a probe
+request has crossed the exit. A build without those libraries says the
+engine isn't there and never shows Protected.
 
 It keeps the reference's material (studio ground `#E7F1FA`, white radius-30
 surfaces, navy/blue/ice/mist diagonal shards, Plus Jakarta Sans, pill

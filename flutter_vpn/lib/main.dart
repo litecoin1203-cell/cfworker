@@ -23,6 +23,7 @@ Future<void> main() async {
   final state = AppState(prefs, ApiClient(tokens));
   // Fetched while the splash draws; screens show their loading states.
   state.signedIn ? state.refreshAccount() : state.loadPublic();
+  state.resumeTunnel();
   runApp(PleatApp(state: state));
 }
 

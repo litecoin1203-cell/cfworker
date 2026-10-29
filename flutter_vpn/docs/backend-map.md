@@ -49,21 +49,22 @@ Not added (needs a payment flow the brief rules out): card-to-card receipts
 (`/coupons/check`), order history (`/orders`), referral stats (`/referral`),
 wallet ledger (`/wallet`). Plans says these live in the Cloud Gold app.
 
-## 4. In the UI, absent from the backend → honest unavailable state
+## 4. In the UI, absent from the backend
 
-| UI capability | Why | What Pleat shows |
-| --- | --- | --- |
-| The tunnel itself (handshake, Protected, disconnect, traffic) | The Worker hands out configs; the tunnel runs only in the native v2rayNG core of the Cloud Gold app. Pleat has no core. | Connect does the real `/vpn` check, then asks the platform tunnel (`pleat/tunnel` channel). This build has none, so the control returns to idle with “Tunnel engine isn’t in this build”. Protected is never shown without a running tunnel. |
-| Kill switch | Android always-on + lockdown, needs the tunnel | Card with disabled toggle + reason |
-| Split tunnel | native only, needs the tunnel | Card with reason, no fake app list |
-| Private DNS | no backend field; native only | Card with reason |
-| Protocol choice | no backend switch; each config has one protocol | Real: the segmented control lists the protocols in your server list and picks the best server of that protocol |
-| Auto-connect, threat filter, local network | native only / not in backend | Cards with disabled toggles + reason |
-| Session history | no backend endpoint | Activity logs only sessions that really ran on this phone; empty state otherwise |
-| Bookmarks | no backend endpoint | Kept on this phone only (stated on screen) |
-| Email code / resend | backend login is email + password, no code | Confirm step is the password step; no resend |
-| Phone sign-in | no backend | “Use a phone number” explains it isn’t offered |
-| Country from IP | no geo-IP lookup in the backend | Country comes from the remark (flag, ISO code, or country name); host labels like `de1.` are a last internal hint, never shown |
+| UI capability | Where it comes from now |
+| --- | --- |
+| The tunnel itself | Native, not backend: `PleatVpnService` (Android VpnService) + the Xray core (`libv2ray.aar`, same tag as the Cloud Gold app) + hev-socks5-tunnel, behind the `pleat/tunnel` channel. Dart builds the Xray config from the chosen config's link (`lib/state/xray_config.dart`). Protected appears only after a probe request has crossed the exit; a revoked or failed tunnel turns Home red. |
+| Kill switch, auto-connect | Android's own Always-on VPN + "Block connections without VPN". The cards open that settings page; Pleat can't read or set it itself. |
+| Private DNS | Fixed: every lookup goes through the exit to 1.1.1.1. The backend offers no resolver to choose. |
+| Local network | Fixed: private ranges stay local (core routing rule). |
+| Split tunnel, threat filter | No backend and no engine support yet: shown unavailable. |
+| Protocol choice | Each config has one protocol; the control picks the best exit with that protocol. hy2/tuic links are refused with a message, not guessed. |
+| Session history | Logged on this phone only for sessions that really ran. |
+| Bookmarks | On this phone only. |
+| Email code / resend, phone sign-in | Not offered by the backend; not shown as working. |
+| Country from IP | No geo-IP lookup in the backend; country comes from the remark, host label only as a hidden hint. |
+
+Builds without the engine libraries (local `flutter run`) answer `available: false` and keep the honest "not in this build" state.
 
 ## Rules kept
 

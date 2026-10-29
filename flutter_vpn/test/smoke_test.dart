@@ -84,7 +84,8 @@ void main() {
     final chosen = app.exits[1];
     await app.connect(chosen.id);
     expect(app.phase, Phase.handshaking);
-    expect(tunnel.started, chosen.server.link);
+    expect(tunnel.started, contains('"protocol":"vless"'));
+    expect(tunnel.started, contains('de1.example.com'));
     tunnel.emit(TunnelState.up);
     await tester.pump(PMotion.seal);
     expect(app.phase, Phase.protected);

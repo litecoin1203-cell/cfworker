@@ -29,6 +29,20 @@ android {
         versionName = flutter.versionName
     }
 
+    // The tunnel engine, fetched by CI (see .github/workflows/flutter-vpn.yml):
+    // libs/libv2ray.aar (Xray core) and libs/<abi>/libhev-socks5-tunnel.so.
+    sourceSets {
+        getByName("main") {
+            jniLibs.srcDirs("libs")
+        }
+    }
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     buildTypes {
         release {
             // TODO: Add your own signing config for the release build.
@@ -46,4 +60,8 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
 }

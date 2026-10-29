@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -8,6 +9,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import 'exits.dart';
 import 'tunnel.dart';
+import 'xray_config.dart';
 
 enum Phase { idle, checking, handshaking, protected, dropped }
 
@@ -488,12 +490,28 @@ class AppState extends ChangeNotifier {
           'Plan and exit checked. The tunnel engine isn’t in this build, so Pleat can’t protect traffic yet.',
         );
       }
+      final String config;
+      try {
+        config = xrayConfig(target.server.link);
+      } on FormatException {
+        return _fail(
+          'This exit’s protocol (${target.protocol}) can’t run in Pleat yet. Pick another exit.',
+        );
+      }
       phase = Phase.handshaking;
       notifyListeners();
       tunnel.listen(_onTunnel);
-      await tunnel.start(target.server.link);
+      await tunnel.start(config);
     } on ApiError catch (e) {
       if (!stale()) _fail(e.message);
+    } on PlatformException catch (e) {
+      if (!stale()) {
+        _fail(
+          e.code == 'denied'
+              ? 'Pleat needs Android’s VPN permission to connect.'
+              : 'The tunnel didn’t start.',
+        );
+      }
     } catch (_) {
       if (!stale()) _fail('The tunnel didn’t start.');
     }
@@ -520,9 +538,20 @@ class AppState extends ChangeNotifier {
       tunnelMessage = 'The tunnel dropped.';
       _save();
       notifyListeners();
-    } else if (s == TunnelState.down && phase == Phase.handshaking) {
+    } else if ((s == TunnelState.down || s == TunnelState.failed) &&
+        phase == Phase.handshaking) {
       _fail('The exit didn’t answer. Try another one.');
     }
+  }
+
+  /// On launch: a tunnel started earlier may still be running.
+  Future<void> resumeTunnel() async {
+    tunnelAvailable = await tunnel.available();
+    notifyListeners();
+    if (await tunnel.current() != TunnelState.up) return;
+    tunnel.listen(_onTunnel);
+    phase = Phase.handshaking;
+    _onTunnel(TunnelState.up);
   }
 
   /// While a session is up, the plan can stop (quota, expiry). Then the
@@ -557,13 +586,13 @@ class AppState extends ChangeNotifier {
   Future<void> _endTunnel({required bool log}) async {
     _attempt++;
     _watch?.cancel();
-    if (phase == Phase.protected || phase == Phase.handshaking) {
-      await tunnel.stop();
-    }
+    final running = phase == Phase.protected || phase == Phase.handshaking;
     if (log && phase == Phase.protected) _logSession();
+    // Idle first, so the tunnel's own "down" is not read as a drop.
     phase = Phase.idle;
     connectedAt = null;
     _save();
+    if (running) await tunnel.stop();
   }
 
   /// The one control: idle → connect, busy → cancel, protected → off.

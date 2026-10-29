@@ -143,7 +143,9 @@ class FakeTunnel extends Tunnel {
   @override
   Future<bool> available() async => true;
   @override
-  Future<void> start(String link) async => started = link;
+  Future<void> start(String config) async => started = config;
+  @override
+  Future<TunnelState> current() async => TunnelState.down;
   @override
   Future<void> stop() async => stopped = true;
   @override

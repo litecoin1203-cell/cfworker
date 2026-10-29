@@ -18,6 +18,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # The same core and tun the Cloud Gold app ships (android.yml).
+  HEV_COMMIT: 67dfba56c0a9254f401447e0751432bd36617d70
+  XRAY_LIB_TAG: v26.7.5
+  NDK_VERSION: 29.0.14206865
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -48,6 +54,41 @@ jobs:
           node --experimental-sqlite ../worker/test/dev_server.mjs > /tmp/worker.log 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/health && break; sleep 1; done
           flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1:8787
+      - name: Check generated configs with the real Xray core
+        run: |
+          XRAY_DUMP=/tmp/xray-configs flutter test test/xray_config_test.dart
+          curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_LIB_TAG}/Xray-linux-64.zip" \
+            || curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
+          unzip -oq /tmp/xray.zip -d /tmp/xray
+          for f in /tmp/xray-configs/*.json; do
+            echo "== $(basename "$f")"
+            /tmp/xray/xray run -test -c "$f"
+          done
+      - name: Install NDK
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;$NDK_VERSION" > /dev/null
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> $GITHUB_ENV
+      - name: Restore libhev-socks5-tunnel
+        id: hev-cache
+        uses: actions/cache@v4
+        with:
+          path: flutter_vpn/android/app/libs
+          key: pleat-hev-${{ env.HEV_COMMIT }}-${{ env.NDK_VERSION }}-${{ hashFiles('flutter_vpn/android/compile-hevtun.sh') }}
+      - name: Build libhev-socks5-tunnel
+        if: steps.hev-cache.outputs.cache-hit != 'true'
+        working-directory: flutter_vpn/android
+        run: |
+          git clone https://github.com/heiher/hev-socks5-tunnel hev-socks5-tunnel
+          git -C hev-socks5-tunnel checkout "$HEV_COMMIT"
+          git -C hev-socks5-tunnel submodule update --init --recursive
+          bash compile-hevtun.sh
+      - name: Download Xray core (libv2ray.aar)
+        uses: robinraju/release-downloader@v1.11
+        with:
+          repository: 2dust/AndroidLibXrayLite
+          tag: ${{ env.XRAY_LIB_TAG }}
+          fileName: libv2ray.aar
+          out-file-path: flutter_vpn/android/app/libs/
       - name: Build APK
         env:
           API_INPUT: ${{ github.event.inputs.api_base }}

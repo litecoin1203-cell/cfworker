@@ -33,11 +33,11 @@ class ProtectScreen extends StatelessWidget {
             const SizedBox(height: 16),
             item(const _SplitTunnelCard()),
             const SizedBox(height: 16),
-            item(const _DnsCard()),
+            item(_DnsCard(engine: app.tunnelAvailable == true)),
             const SizedBox(height: 16),
             item(_ProtocolCard(app: app)),
             const SizedBox(height: 16),
-            item(const _AutoConnectCard()),
+            item(_AutoConnectCard(app: app)),
             const SizedBox(height: 16),
             item(
               Row(
@@ -54,10 +54,12 @@ class ProtectScreen extends StatelessWidget {
                   Expanded(
                     child: Transform.translate(
                       offset: const Offset(0, 22),
-                      child: const _MiniCard(
+                      child: _MiniCard(
                         icon: PIcon.lan,
                         title: 'Local network',
-                        body: 'Needs the tunnel engine. Not in this build.',
+                        body: app.tunnelAvailable == true
+                            ? 'Private addresses stay on your network. Fixed.'
+                            : 'Needs the tunnel engine. Not in this build.',
                       ),
                     ),
                   ),
@@ -72,7 +74,12 @@ class ProtectScreen extends StatelessWidget {
 
   String _summary(AppState app) {
     final p = app.exit?.protocol;
-    return ['Guards need the tunnel engine', ?p].join('  ·  ');
+    return [
+      app.tunnelAvailable == true
+          ? 'All traffic and DNS through the exit'
+          : 'Guards need the tunnel engine',
+      ?p,
+    ].join('  ·  ');
   }
 }
 
@@ -82,11 +89,14 @@ class _KillSwitchCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Android's kill switch is always-on VPN with lockdown, and it needs a
-    // running tunnel. This build has none, so the card can't arm it.
+    // Android's kill switch is always-on VPN with "Block connections
+    // without VPN". Only Android can set it, so the card opens that page.
+    final engine = app.tunnelAvailable == true;
     return Pressable(
-      onTap: null,
-      label: 'Kill switch, unavailable in this build',
+      onTap: engine ? app.tunnel.openSystemSettings : null,
+      label: engine
+          ? 'Kill switch, opens Android VPN settings'
+          : 'Kill switch, unavailable in this build',
       radius: PRadius.card,
       shadow: true,
       color: PColors.navy,
@@ -156,8 +166,10 @@ class _KillSwitchCard extends StatelessWidget {
                     const Spacer(),
                     Text('Kill switch', style: PType.h1(color: Colors.white)),
                     const SizedBox(height: 6),
-                    const UnavailableNote(
-                      'Not in this build. It is Android’s always-on VPN with lockdown, and it needs the tunnel engine.',
+                    UnavailableNote(
+                      engine
+                          ? 'Android runs it. Tap, then turn on Always-on VPN and Block connections without VPN for Pleat.'
+                          : 'Not in this build. It is Android’s always-on VPN with lockdown, and it needs the tunnel engine.',
                       onDark: true,
                     ),
                   ],
@@ -220,9 +232,11 @@ class _SplitTunnelCard extends StatelessWidget {
   }
 }
 
-/// DNS: the server sets no resolver, and Pleat has no engine to set one.
+/// DNS: the server sets no resolver to choose. With the engine, every
+/// lookup goes through the exit.
 class _DnsCard extends StatelessWidget {
-  const _DnsCard();
+  const _DnsCard({required this.engine});
+  final bool engine;
 
   @override
   Widget build(BuildContext context) {
@@ -238,8 +252,10 @@ class _DnsCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-          const UnavailableNote(
-            'The server doesn’t choose a resolver, and this build has no tunnel engine to set one.',
+          UnavailableNote(
+            engine
+                ? 'Every lookup goes through the exit to 1.1.1.1. The server offers no other resolver to pick.'
+                : 'The server doesn’t choose a resolver, and this build has no tunnel engine to set one.',
           ),
         ],
       ),
@@ -347,11 +363,15 @@ class _ProtocolCard extends StatelessWidget {
 }
 
 class _AutoConnectCard extends StatelessWidget {
-  const _AutoConnectCard();
+  const _AutoConnectCard({required this.app});
+  final AppState app;
 
   @override
   Widget build(BuildContext context) {
+    final engine = app.tunnelAvailable == true;
     return SurfaceCard(
+      onTap: engine ? app.tunnel.openSystemSettings : null,
+      label: engine ? 'Auto-connect, opens Android VPN settings' : null,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -368,8 +388,10 @@ class _AutoConnectCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 6),
-          const UnavailableNote(
-            'Starts the tunnel engine on boot. Not in this build.',
+          UnavailableNote(
+            engine
+                ? 'Android starts Pleat on boot and reconnects when Always-on VPN is on. Tap to open it.'
+                : 'Starts the tunnel engine on boot. Not in this build.',
           ),
         ],
       ),
