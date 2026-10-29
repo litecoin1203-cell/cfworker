@@ -1,290 +1,14 @@
-/* String resources for the Phase-2 screens (home, servers, usage, plans, settings).
- * Every visible text, accessibility label and error message of those screens comes from here: CG.t('key', {var}).
- * Persian is the default (RTL); English (LTR) is chosen in Settings. Numbers are written with the language's digits.
+/* Every visible text, accessibility label and error message of the app screens: CG.t('key', {var}).
+ * The app is English only (Ali, 2026-10-29): one string table, left to right, Western digits, Gregorian dates.
  * Must load before core.js. */
 (function () {
   'use strict';
 
-  const fa = {
-    'app.name': 'Cloud Gold',
-    'common.back': 'بازگشت',
-    'common.close': 'بستن',
-    'common.retry': 'تلاش دوباره',
-    'common.later': 'بعداً',
-    'common.cancel': 'انصراف',
-    'common.on': 'روشن',
-    'common.off': 'خاموش',
-    'common.loading': 'در حال بارگذاری',
-    'common.sep': '، ',
-
-    'tab.home': 'اتصال',
-    'tab.servers': 'سرورها',
-    'tab.usage': 'اشتراک',
-    'tab.settings': 'تنظیمات',
-    'tab.nav': 'بخش‌های اصلی',
-
-    // connection states (always icon + this word + color)
-    'conn.connected': 'متصل',
-    'conn.connecting': 'در حال اتصال',
-    'conn.disconnecting': 'در حال قطع',
-    'conn.disconnected': 'قطع',
-    'conn.error': 'خطا',
-    'conn.blocked': 'اتصال ممکن نیست',
-    'conn.sub.connected': 'ترافیک گوشی از تونل امن عبور می‌کند.',
-    'conn.sub.connecting': 'چند لحظه صبر کن.',
-    'conn.sub.finding': 'در حال پیدا کردن سریع‌ترین سرور برای اینترنت تو',
-    'conn.sub.disconnecting': 'در حال بستن تونل',
-    'conn.sub.disconnected': 'اتصال شما محافظت نمی‌شود.',
-    'conn.btn.connect': 'اتصال',
-    'conn.btn.disconnect': 'قطع اتصال',
-    'conn.btn.cancel': 'لغو اتصال',
-    'conn.btn.renew': 'تمدید اشتراک',
-    'conn.btn.buy': 'خرید اشتراک',
-    'conn.a11y.button': 'دکمه اتصال. وضعیت: {state}',
-    'conn.server': 'سرور',
-    'conn.latency': 'تأخیر',
-    'conn.duration': 'مدت اتصال',
-    'conn.session': 'مصرف این جلسه',
-    'conn.ms': '{n} میلی‌ثانیه',
-    'conn.ms.short': '{n} میلی‌ثانیه',
-    'conn.none': '—',
-    'conn.smart': 'اتصال هوشمند',
-    'conn.smart.on': 'سریع‌ترین سرور خودکار',
-    'conn.pick': 'انتخاب سرور',
-    'conn.change': 'تغییر سرور',
-    'conn.ks.label': 'Kill Switch',
-    'conn.ks.on': 'فعال',
-    'conn.ks.off': 'غیرفعال',
-    'conn.ks.unknown': 'نامشخص',
-    'conn.ks.a11y': 'Kill Switch: {state}. برای جزئیات بزن.',
-    'conn.quality': 'کیفیت',
-    'conn.q.great': 'عالی', 'conn.q.good': 'خوب', 'conn.q.fair': 'متوسط', 'conn.q.poor': 'ضعیف', 'conn.q.down': 'بدون پاسخ',
-    'conn.offline': 'اینترنت گوشی قطع است. اتصال وقتی اینترنت برگردد ادامه پیدا می‌کند.',
-    'conn.dropped': 'اتصال VPN قطع شد',
-    'conn.dropped.sub': 'اتصال بدون درخواست تو بسته شد؛ ممکن است اپ VPN دیگری روشن شده باشد یا سیستم آن را بسته باشد.',
-    'conn.weak': 'سرور فعلی جواب نمی‌دهد. سرور دیگری را امتحان کن.',
-
-    // stop reasons (subscription.status from /me)
-    'stop.limited': 'حجم اشتراک تمام شده است',
-    'stop.limited.sub': 'تمام حجم این اشتراک مصرف شده و اتصال تا تمدید متوقف است.',
-    'stop.expired': 'مدت اشتراک تمام شده است',
-    'stop.expired.sub': 'تاریخ انقضای اشتراک گذشته و اتصال تا تمدید متوقف است.',
-    'stop.disabled': 'اشتراک غیرفعال شده است',
-    'stop.disabled.sub': 'این اشتراک غیرفعال است. برای جزئیات با پشتیبانی تماس بگیر.',
-    'stop.missing': 'اشتراک روی سرور پیدا نشد',
-    'stop.missing.sub': 'با پشتیبانی تماس بگیر تا اشتراکت بررسی شود.',
-    'stop.none': 'اشتراک فعالی نداری',
-    'stop.none.sub': 'برای اتصال یک پلن بخر یا تست رایگان را فعال کن.',
-    'stop.on_hold': 'اشتراک هنوز شروع نشده',
-    'stop.on_hold.sub': 'اشتراک با اولین اتصال شروع می‌شود.',
-    'stop.support': 'پیام به پشتیبانی',
-
-    // errors (codes from the bridge / API; never raw server text)
-    'err.network': 'اتصال به سرور برقرار نشد. اینترنت را بررسی کن و دوباره امتحان کن.',
-    'err.server': 'سرور موقتاً در دسترس نیست. چند لحظه دیگر دوباره امتحان کن.',
-    'err.generic': 'کار انجام نشد. دوباره امتحان کن.',
-    'err.start_failed': 'اتصال به این سرور ممکن نشد. سرور دیگری را امتحان کن.',
-    'err.timeout': 'اتصال خیلی طول کشید. سرور دیگری را امتحان کن.',
-    'err.denied': 'اجازه‌ی VPN داده نشد. برای اتصال، درخواست VPN اندروید را تأیید کن.',
-    'err.device_limit': 'سقف تعداد گوشی‌های این اشتراک پر شده است. یک گوشی قدیمی را از «حساب و دستگاه‌ها» حذف کن.',
-    'err.no_servers': 'هنوز سروری برای اشتراکت تعریف نشده است. چند دقیقه دیگر دوباره امتحان کن.',
-    'err.no_subscription': 'برای استفاده از VPN یک پلن بخر یا تست رایگان را فعال کن.',
-    'err.sub_missing': 'اشتراکت روی سرور پیدا نشد. با پشتیبانی تماس بگیر.',
-    'err.panel_unavailable': 'سرورها الان در دسترس نیستند. چند دقیقه دیگر دوباره امتحان کن.',
-    'err.not_connected': 'اول به یک سرور وصل شو.',
-    'fo.next': 'این سرور جواب نداد؛ سرور بعدی را امتحان می‌کنیم.',
-    'fo.resync': 'سرورها جواب ندادند؛ لیست تازه را می‌گیریم.',
-
-    // servers
-    'sv.title': 'سرورها',
-    'sv.search': 'جستجوی کشور یا سرور',
-    'sv.search.a11y': 'جستجو در سرورها',
-    'sv.filter.all': 'همه',
-    'sv.filter.fav': 'منتخب‌ها',
-    'sv.filter.google': 'مناسب گوگل و Gemini',
-    'sv.filters.a11y': 'فیلترها',
-    'sv.sort.latency': 'مرتب‌سازی: کمترین تأخیر',
-    'sv.sort.default': 'مرتب‌سازی: پیش‌فرض',
-    'sv.test': 'تست تأخیر همه',
-    'sv.testing': 'در حال تست...',
-    'sv.refresh': 'به‌روزرسانی لیست',
-    'sv.smart.title': 'سریع‌ترین سرور، خودکار',
-    'sv.smart.sub': 'اگر سرور جواب ندهد، خودکار سرور بعدی انتخاب می‌شود.',
-    'sv.smart.active': 'انتخاب‌شده',
-    'sv.favs': 'منتخب‌ها',
-    'sv.all': 'همه‌ی سرورها',
-    'sv.empty.search': 'سروری با این نام پیدا نشد.',
-    'sv.empty.fav': 'هنوز سروری را منتخب نکرده‌ای. روی ستاره‌ی کنار هر سرور بزن.',
-    'sv.empty.google': 'هنوز سروری برای گوگل تأیید نشده است.',
-    'sv.empty.none': 'لیست سرورها خالی است.',
-    'sv.loading': 'در حال دریافت سرورها',
-    'sv.nosub': 'برای دیدن سرورها اشتراک بگیر یا تمدید کن.',
-    'sv.fav.add': 'افزودن {name} به منتخب‌ها',
-    'sv.fav.remove': 'حذف {name} از منتخب‌ها',
-    'sv.row.a11y': '{name}، {proto}، {latency}{state}',
-    'sv.row.current': '، سرور فعلی',
-    'sv.lat.unknown': 'تأخیر نامشخص',
-    'sv.lat.fail': 'بدون پاسخ',
-    'sv.lat.value': 'تأخیر {n} میلی‌ثانیه',
-    'sv.best': 'بهترین روی {isp}',
-    'sv.updated': 'لیست سرورها به‌روز شد.',
-    'sv.stale': 'به سرور دسترسی نبود؛ لیست قبلی حفظ شد.',
-    'sv.tested': 'تست تأخیر تمام شد.',
-    'sv.count': '{n} سرور',
-
-    // usage
-    'us.title': 'اشتراک من',
-    'us.used': 'مصرف‌شده',
-    'us.remaining': 'باقیمانده',
-    'us.total': 'سهمیه‌ی کل',
-    'us.unlimited': 'نامحدود',
-    'us.expiry': 'تاریخ انقضا',
-    'us.time': 'زمان باقیمانده',
-    'us.days_left': 'روز مانده',
-    'us.hours_left': 'ساعت مانده',
-    'us.no_expiry': 'بدون تاریخ انقضا',
-    'us.devices': 'تعداد گوشی',
-    'us.plan': 'پلن',
-    'us.ring.a11y': 'مصرف: {used} از {total}. باقیمانده: {left}.',
-    'us.days.a11y': '{n} روز تا پایان اشتراک',
-    'us.w80': 'بیش از ۸۰٪ حجم اشتراک مصرف شده است',
-    'us.w80.sub': 'هنوز {left} باقی مانده. برای اینکه وسط کار قطع نشوی، تمدید را در نظر بگیر.',
-    'us.w95': 'بیش از ۹۵٪ حجم مصرف شده است',
-    'us.w95.sub': 'فقط {left} باقی مانده و به‌زودی اتصال متوقف می‌شود.',
-    'us.w100': 'حجم اشتراک تمام شده است',
-    'us.w100.sub': 'اتصال تا تمدید یا خرید پلن جدید متوقف است.',
-    'us.wdays': 'فقط {n} روز تا پایان اشتراک مانده',
-    'us.stale': 'اطلاعات زنده از سرور در دسترس نبود؛ آخرین اطلاعات ذخیره‌شده نمایش داده شده.',
-    'us.updated': 'اطلاعات اشتراک به‌روز شد.',
-    'us.refresh': 'به‌روزرسانی',
-    'us.renew': 'تمدید یا تغییر پلن',
-    'us.account': 'حساب و دستگاه‌ها',
-    'us.status.active': 'فعال',
-    'us.status.limited': 'حجم تمام شده',
-    'us.status.expired': 'منقضی',
-    'us.status.disabled': 'غیرفعال',
-    'us.status.on_hold': 'در انتظار شروع',
-    'us.status.missing': 'پیدا نشد',
-    'us.status.unknown': 'فعال',
-
-    // plans
-    'pl.title': 'خرید و تمدید',
-    'pl.sub.renew': 'پلن جدید روی همین حساب فعال می‌شود؛ حساب یا UUID تازه‌ای ساخته نمی‌شود.',
-    'pl.sub.buy': 'یک پلن انتخاب کن.',
-    'pl.data': 'حجم',
-    'pl.duration': 'مدت',
-    'pl.price': 'قیمت',
-    'pl.devices': 'گوشی',
-    'pl.gb': '{n} گیگابایت',
-    'pl.days': '{n} روز',
-    'pl.toman': '{n} تومان',
-    'pl.devices.n': 'تا {n} گوشی',
-    'pl.unlimited': 'نامحدود',
-    'pl.off': '{n}٪ تخفیف',
-    'pl.trial': '{n} روز تست رایگان',
-    'pl.cta.buy': 'خرید این پلن',
-    'pl.cta.renew': 'تمدید با این پلن',
-    'pl.cta.trial': 'شروع تست رایگان {n} روزه',
-    'pl.after': 'بعد از پرداخت، مصرف و تاریخ انقضا از سرور تازه‌سازی می‌شود و همین‌جا می‌بینی.',
-    'pl.empty': 'فعلاً پلنی برای فروش نیست. کمی بعد دوباره سر بزن.',
-    'pl.select.a11y': 'پلن {name}، {data}، {days}، {price}',
-    'pl.selected': 'انتخاب‌شده',
-    'pl.orders': 'پرداخت‌های من',
-    'pl.support': 'سؤال داری؟ پیام به پشتیبانی',
-    'pl.done.title': 'اشتراک به‌روز شد',
-    'pl.done.sub': 'وضعیت جدید از سرور: {status}، {left} باقیمانده، {days}.',
-    'pl.trial.done': 'تست رایگان فعال شد. دکمه‌ی اتصال را بزن.',
-
-    // settings
-    'st.title': 'تنظیمات',
-    'st.protect': 'محافظت',
-    'st.ks': 'Kill Switch',
-    'st.ks.sub': 'اگر VPN قطع شود، اینترنت گوشی هم قطع می‌شود تا IP واقعی‌ات لو نرود.',
-    'st.aon': 'VPN همیشه روشن',
-    'st.aon.sub': 'اندروید بعد از روشن شدن گوشی یا قطع شدن، VPN را دوباره وصل می‌کند.',
-    'st.state.on': 'فعال در سیستم',
-    'st.state.off': 'غیرفعال در سیستم',
-    'st.state.unknown': 'نامشخص؛ فقط وقتی وصل هستی قابل بررسی است',
-    'st.state.old': 'نامشخص؛ اندروید این گوشی وضعیت را به اپ نمی‌گوید',
-    'st.sys.title': 'فعال کردن در تنظیمات اندروید',
-    'st.sys.why': 'این دو گزینه را فقط خود اندروید می‌تواند روشن کند؛ اپ نمی‌تواند آن‌ها را به‌جای تو فعال کند. وضعیت اینجا فقط وقتی «فعال» نشان داده می‌شود که اندروید آن را تأیید کند.',
-    'st.sys.s1': 'دکمه‌ی زیر را بزن تا صفحه‌ی VPN اندروید باز شود.',
-    'st.sys.s2': 'کنار Cloud Gold روی چرخ‌دنده بزن.',
-    'st.sys.s3': '«VPN همیشه روشن» را روشن کن.',
-    'st.sys.s4': '«مسدود کردن اتصال‌های بدون VPN» را روشن کن (این همان Kill Switch است).',
-    'st.sys.open': 'باز کردن تنظیمات VPN اندروید',
-    'st.sys.failed': 'تنظیمات VPN باز نشد؛ از تنظیمات گوشی ← شبکه ← VPN برو.',
-    'st.sys.back.on': 'اندروید تأیید کرد: {what} فعال است.',
-    'st.sys.back.off': '{what} هنوز در اندروید فعال نشده است.',
-    'st.sys.back.unknown': 'وضعیت را وقتی وصل هستی بررسی می‌کنیم.',
-    'st.conn': 'اتصال',
-    'st.auto': 'اتصال خودکار بعد از روشن شدن گوشی',
-    'st.auto.sub': 'آخرین سرور انتخاب‌شده خودکار وصل می‌شود.',
-    'st.auto.denied': 'اجازه‌ی VPN داده نشد، پس اتصال خودکار روشن نشد.',
-    'st.auto.noserver': 'اول یک بار به یک سرور وصل شو، بعد اتصال خودکار را روشن کن.',
-    'st.smart': 'اتصال هوشمند',
-    'st.smart.sub': 'سریع‌ترین سرور خودکار انتخاب می‌شود و اگر قطع شد سرور بعدی.',
-    'st.google': 'حالت گوگل و Gemini',
-    'st.google.sub': 'اتصال هوشمند فقط سرورهایی را انتخاب می‌کند که گوگل آن‌ها را ایران نمی‌بیند.',
-    'st.iran': 'سایت‌های ایرانی بدون VPN',
-    'st.iran.sub': 'بانک‌ها و سایت‌های داخلی مستقیم باز می‌شوند و از حجم کم نمی‌شوند.',
-    'st.notif': 'اعلان‌ها',
-    'st.notif.sub': 'اعلان وضعیت اتصال و سرعت.',
-    'st.notif.denied': 'اجازه‌ی اعلان داده نشد. می‌توانی از تنظیمات اندروید روشنش کنی.',
-    'st.notif.open': 'باز کردن تنظیمات اعلان',
-    'st.notif.off': 'خاموش کردن اعلان‌ها از تنظیمات اندروید انجام می‌شود.',
-    'st.look': 'ظاهر',
-    'st.theme': 'تم',
-    'st.theme.system': 'مثل گوشی',
-    'st.theme.dark': 'تیره',
-    'st.theme.light': 'روشن',
-    'st.lang': 'زبان',
-    'st.account': 'حساب',
-    'st.acc.devices': 'حساب و دستگاه‌ها',
-    'st.acc.wallet': 'کیف پول',
-    'st.acc.invite': 'دعوت دوستان',
-    'st.acc.orders': 'پرداخت‌های من',
-    'st.acc.support': 'پشتیبانی',
-    'st.acc.logout': 'خروج از حساب',
-    'st.logout.title': 'از حساب خارج می‌شوی؟',
-    'st.logout.sub': 'VPN روی این گوشی قطع می‌شود. هر وقت خواستی دوباره وارد شو.',
-    'st.servers': 'سرورها',
-    'st.about': 'درباره',
-    'st.version': 'نسخه‌ی اپ',
-    'st.core': 'هسته‌ی اتصال',
-    'st.saved': 'ذخیره شد.',
-    'st.recheck': 'بررسی دوباره',
-    'st.short.on': 'فعال',
-    'st.short.off': 'غیرفعال',
-    'st.short.unknown': 'نامشخص',
-    'st.gtest': 'تست گوگل و Gemini روی همین اتصال',
-    'st.gtest.ok': 'این اتصال برای گوگل و Gemini سالم است',
-    'st.gtest.bad': 'این اتصال برای گوگل مناسب نیست',
-    'st.gtest.sees': 'کشور از دید گوگل',
-    'st.gtest.gemini': 'Gemini',
-    'st.gtest.open': 'باز است',
-    'st.gtest.closed': 'بسته است',
-    'st.gtest.search': 'جست‌وجوی گوگل',
-    'st.gtest.normal': 'عادی',
-    'st.gtest.captcha': 'کپچا / مشکوک',
-    'st.gtest.fail': 'تست انجام نشد؛ دوباره امتحان کن.',
-    'st.gtest.fix': 'وصل شدن به یک سرور سالم برای گوگل',
-    'st.gtest.needconn': 'این تست فقط وقتی وصل هستی کار می‌کند.',
-    'st.pass': 'تغییر رمز',
-    'st.notif.on': 'روشن در سیستم',
-    'st.notif.offstate': 'خاموش در سیستم',
-    'pl.badge': 'پیشنهاد ما',
-    'pl.monthly': 'ماهی {n}',
-    'pl.trial.cta.sub': 'اگر راضی بودی بخر.',
-    'pl.err.load': 'لیست پلن‌ها دریافت نشد.',
-    'pl.now': 'وضعیت فعلی: {status}',
-  };
-
   const en = {
     'app.name': 'Cloud Gold',
     'common.back': 'Back', 'common.close': 'Close', 'common.retry': 'Try again', 'common.later': 'Later', 'common.cancel': 'Cancel',
-    'common.on': 'On', 'common.off': 'Off', 'common.loading': 'Loading', 'common.sep': ', ',
-    'tab.home': 'Connect', 'tab.servers': 'Servers', 'tab.usage': 'Plan', 'tab.settings': 'Settings', 'tab.nav': 'Main sections',
+    'common.on': 'On', 'common.off': 'Off', 'common.loading': 'Loading…', 'common.sep': ', ',
+    'tab.home': 'Connect', 'tab.servers': 'Servers', 'tab.usage': 'Usage', 'tab.settings': 'Settings', 'tab.nav': 'Main sections',
     'conn.connected': 'Connected', 'conn.connecting': 'Connecting', 'conn.disconnecting': 'Disconnecting', 'conn.disconnected': 'Disconnected',
     'conn.error': 'Error', 'conn.blocked': 'Cannot connect',
     'conn.sub.connected': 'Your phone’s traffic goes through the secure tunnel.',
@@ -296,7 +20,7 @@
     'conn.btn.renew': 'Renew plan', 'conn.btn.buy': 'Buy a plan',
     'conn.a11y.button': 'Connect button. State: {state}',
     'conn.server': 'Server', 'conn.latency': 'Latency', 'conn.duration': 'Connected for', 'conn.session': 'This session',
-    'conn.ms': '{n} milliseconds', 'conn.ms.short': '{n} ms', 'conn.none': '—',
+    'conn.ms': '{n} milliseconds', 'conn.ms.short': '{n}\u00A0ms', 'conn.none': '—',
     'conn.smart': 'Smart connect', 'conn.smart.on': 'Fastest server, automatically', 'conn.pick': 'Choose a server', 'conn.change': 'Change server',
     'conn.ks.label': 'Kill Switch', 'conn.ks.on': 'On', 'conn.ks.off': 'Off', 'conn.ks.unknown': 'Unknown', 'conn.ks.a11y': 'Kill Switch: {state}. Tap for details.',
     'conn.quality': 'Quality', 'conn.q.great': 'Great', 'conn.q.good': 'Good', 'conn.q.fair': 'Fair', 'conn.q.poor': 'Poor', 'conn.q.down': 'No response',
@@ -325,7 +49,7 @@
     'err.not_connected': 'Connect to a server first.',
     'fo.next': 'This server did not answer; trying the next one.',
     'fo.resync': 'No server answered; fetching a fresh list.',
-    'sv.title': 'Servers', 'sv.search': 'Search country or server', 'sv.search.a11y': 'Search servers',
+    'sv.title': 'Servers', 'sv.search': 'Search servers…', 'sv.search.a11y': 'Search servers',
     'sv.filter.all': 'All', 'sv.filter.fav': 'Favorites', 'sv.filter.google': 'Works with Google & Gemini', 'sv.filters.a11y': 'Filters',
     'sv.sort.latency': 'Sort: lowest latency', 'sv.sort.default': 'Sort: default',
     'sv.test': 'Test all latencies', 'sv.testing': 'Testing…', 'sv.refresh': 'Refresh list',
@@ -333,16 +57,16 @@
     'sv.favs': 'Favorites', 'sv.all': 'All servers',
     'sv.empty.search': 'No server matches that name.', 'sv.empty.fav': 'No favorites yet. Tap the star next to a server.',
     'sv.empty.google': 'No server is confirmed for Google yet.', 'sv.empty.none': 'The server list is empty.',
-    'sv.loading': 'Loading servers', 'sv.nosub': 'Buy or renew a plan to see the servers.',
+    'sv.loading': 'Loading servers…', 'sv.nosub': 'Buy or renew a plan to see the servers.',
     'sv.fav.add': 'Add {name} to favorites', 'sv.fav.remove': 'Remove {name} from favorites',
     'sv.row.a11y': '{name}, {proto}, {latency}{state}', 'sv.row.current': ', current server',
     'sv.lat.unknown': 'latency unknown', 'sv.lat.fail': 'no response', 'sv.lat.value': 'latency {n} milliseconds',
     'sv.best': 'Best on {isp}', 'sv.updated': 'Server list updated.', 'sv.stale': 'Could not reach the server; kept the previous list.',
     'sv.tested': 'Latency test finished.', 'sv.count': '{n} servers',
-    'us.title': 'My plan', 'us.time': 'Time left', 'us.used': 'Used', 'us.remaining': 'Remaining', 'us.total': 'Total data', 'us.unlimited': 'Unlimited',
+    'us.title': 'Usage', 'us.time': 'Time left', 'us.used': 'Used', 'us.remaining': 'Remaining', 'us.total': 'Total data', 'us.unlimited': 'Unlimited',
     'us.expiry': 'Expires on', 'us.days_left': 'days left', 'us.hours_left': 'hours left', 'us.no_expiry': 'No expiry date',
     'us.devices': 'Phones', 'us.plan': 'Plan',
-    'us.ring.a11y': 'Used {used} of {total}. {left} remaining.', 'us.days.a11y': '{n} days until the plan ends',
+    'us.ring.a11y': 'Used {used} of {total}. {left} remaining.', 'us.of': 'used of {total}', 'us.days.a11y': '{n} days until the plan ends',
     'us.w80': 'Over 80% of your data is used', 'us.w80.sub': '{left} left. Consider renewing so you are not cut off.',
     'us.w95': 'Over 95% of your data is used', 'us.w95.sub': 'Only {left} left; connecting will stop soon.',
     'us.w100': 'Your data is used up', 'us.w100.sub': 'Connecting is paused until you renew or buy a new plan.',
@@ -353,7 +77,7 @@
     'us.status.on_hold': 'Not started', 'us.status.missing': 'Not found', 'us.status.unknown': 'Active',
     'pl.title': 'Buy & renew', 'pl.sub.renew': 'The new plan is applied to this same account; no new account or UUID is created.', 'pl.sub.buy': 'Choose a plan.',
     'pl.data': 'Data', 'pl.duration': 'Duration', 'pl.price': 'Price', 'pl.devices': 'Phones',
-    'pl.gb': '{n} GB', 'pl.days': '{n} days', 'pl.toman': '{n} toman', 'pl.devices.n': 'Up to {n} phones', 'pl.unlimited': 'Unlimited',
+    'pl.gb': '{n}\u00A0GB', 'pl.days': '{n}\u00A0days', 'pl.toman': '{n}\u00A0Toman', 'pl.currency': 'Toman', 'pl.left': 'left', 'pl.devices.n': 'Up to {n} phones', 'pl.unlimited': 'Unlimited',
     'pl.off': '{n}% off', 'pl.trial': '{n}-day free trial',
     'pl.cta.buy': 'Buy this plan', 'pl.cta.renew': 'Renew with this plan', 'pl.cta.trial': 'Start the {n}-day free trial',
     'pl.after': 'After payment, your usage and expiry are refreshed from the server and shown here.',
@@ -381,7 +105,7 @@
     'st.notif': 'Notifications', 'st.notif.sub': 'Connection status and speed notification.',
     'st.notif.denied': 'Notification permission was not given. You can turn it on in Android settings.', 'st.notif.open': 'Open notification settings',
     'st.notif.off': 'Notifications are turned off in Android settings.',
-    'st.look': 'Appearance', 'st.theme': 'Theme', 'st.theme.system': 'Same as phone', 'st.theme.dark': 'Dark', 'st.theme.light': 'Light', 'st.lang': 'Language',
+    'st.look': 'Appearance', 'st.theme': 'Theme', 'st.theme.system': 'Same as phone', 'st.theme.dark': 'Dark', 'st.theme.light': 'Light',
     'st.account': 'Account', 'st.acc.devices': 'Account & devices', 'st.acc.wallet': 'Wallet', 'st.acc.invite': 'Invite friends',
     'st.acc.orders': 'My payments', 'st.acc.support': 'Support', 'st.acc.logout': 'Sign out',
     'st.logout.title': 'Sign out?', 'st.logout.sub': 'The VPN on this phone disconnects. Sign in again any time.',
@@ -397,51 +121,39 @@
     'pl.err.load': 'Could not load the plans.', 'pl.now': 'Current status: {status}',
   };
 
-  const dict = { fa, en };
-  let lang = 'fa';
-  try { const v = localStorage.getItem('cg_lang'); if (v && dict[v]) lang = v; } catch (e) {}
+  const lang = 'en';
 
   function t(key, vars) {
-    let s = dict[lang][key];
-    if (s == null) s = fa[key];
+    let s = en[key];
     if (s == null) return key;
     if (vars) s = s.replace(/\{(\w+)\}/g, (m, k) => (vars[k] == null ? '' : String(vars[k])));
     return s;
   }
-  // numbers in the language's own digits; digits after the decimal point kept as given
+  // digits after the decimal point kept as given
   function n(v, digits) {
     const num = Number(v || 0);
-    return num.toLocaleString(lang === 'fa' ? 'fa-IR' : 'en-US', digits == null ? undefined : { minimumFractionDigits: 0, maximumFractionDigits: digits });
+    return num.toLocaleString('en-US', digits == null ? undefined : { minimumFractionDigits: 0, maximumFractionDigits: digits });
   }
-  // two-digit number for clocks (05, ۰۵)
-  const n2 = (v) => Number(v || 0).toLocaleString(lang === 'fa' ? 'fa-IR' : 'en-US', { minimumIntegerDigits: 2, useGrouping: false });
-  const UNITS = { fa: ['کیلوبایت', 'مگابایت', 'گیگابایت', 'ترابایت'], en: ['KB', 'MB', 'GB', 'TB'] };
+  // two-digit number for clocks (05)
+  const n2 = (v) => Number(v || 0).toLocaleString('en-US', { minimumIntegerDigits: 2, useGrouping: false });
+  const UNITS = ['KB', 'MB', 'GB', 'TB'];
   // bytes from the API shown in binary units (1 GB = 1024³ bytes, as the panel counts them)
   function size(b) {
     b = Math.max(0, Number(b || 0));
-    const u = UNITS[lang];
-    if (b >= 1024 ** 4) return n(b / 1024 ** 4, 2) + ' ' + u[3];
-    if (b >= 1024 ** 3) return n(b / 1024 ** 3, b >= 100 * 1024 ** 3 ? 0 : 2) + ' ' + u[2];
-    if (b >= 1024 ** 2) return n(b / 1024 ** 2, 0) + ' ' + u[1];
-    return n(b / 1024, 0) + ' ' + u[0];
+    if (b >= 1024 ** 4) return n(b / 1024 ** 4, 2) + '\u00A0' + UNITS[3];
+    if (b >= 1024 ** 3) return n(b / 1024 ** 3, b >= 100 * 1024 ** 3 ? 0 : 2) + '\u00A0' + UNITS[2];
+    if (b >= 1024 ** 2) return n(b / 1024 ** 2, 0) + '\u00A0' + UNITS[1];
+    return n(b / 1024, 0) + '\u00A0' + UNITS[0];
   }
   function date(iso) {
     if (!iso) return '';
-    try {
-      return new Date(iso).toLocaleDateString(lang === 'fa' ? 'fa-IR-u-ca-persian' : 'en-GB', { year: 'numeric', month: 'long', day: 'numeric' });
-    } catch (e) { return new Date(iso).toDateString(); }
+    try { return new Date(iso).toLocaleDateString('en-GB', { year: 'numeric', month: 'long', day: 'numeric' }); } catch (e) { return new Date(iso).toDateString(); }
   }
   function country(cc) {
     if (!cc) return '';
-    try { const d = new Intl.DisplayNames([lang], { type: 'region' }); const x = d.of(cc); if (x && x !== cc) return x; } catch (e) {}
+    try { const d = new Intl.DisplayNames(['en'], { type: 'region' }); const x = d.of(cc); if (x && x !== cc) return x; } catch (e) {}
     return cc;
   }
 
-  window.CGI18n = {
-    t, n, n2, size, date, country,
-    get lang() { return lang; },
-    get dir() { return lang === 'fa' ? 'rtl' : 'ltr'; },
-    setLang(v) { if (!dict[v]) return; lang = v; try { localStorage.setItem('cg_lang', v); } catch (e) {} },
-    langs: [['fa', 'فارسی'], ['en', 'English']],
-  };
+  window.CGI18n = { t, n, n2, size, date, country, lang, dir: 'ltr' };
 })();

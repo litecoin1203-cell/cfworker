@@ -87,7 +87,7 @@
     async share(a) { console.log('[mock] share', a.text); return {}; },
     async getTune() { return { iranDirect: LS.get('iran') !== false, ipv6Tunnel: false }; },
     async probeGoogle() {
-      if (!vpn.running) throw { message: 'اول به یک سرور وصل شو.' };
+      if (!vpn.running) throw { message: 'Connect to a server first.' };
       await new Promise((r) => setTimeout(r, 1200));
       const s = vpn.servers.find((x) => x.guid === vpn.selected) || {};
       const iran = /amsterdam/i.test(s.remarks || '');   // preview: pretend Google sees the Netherlands node as Iran

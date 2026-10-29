@@ -39,10 +39,9 @@
         <div class="js-body">
           <button type="button" class="smartcard js-smart" aria-pressed="false">
             ${CG.ui.ic('bolt')}
-            <span class="rb"><b>${esc(t('sv.smart.title'))}</b><span>${esc(t('sv.smart.sub'))}</span></span>
-            <span class="smartcard-tag js-smart-tag"></span>
+            <span class="rb"><b>${esc(t('sv.smart.title'))}</b><span>${esc(t('sv.smart.sub'))}</span><em class="smartcard-tag js-smart-tag"></em></span>
           </button>
-          <label class="search">${CG.ui.ic('search')}<input type="search" class="js-q" enterkeyhint="search" autocomplete="off" spellcheck="false" placeholder="${esc(t('sv.search'))}" aria-label="${esc(t('sv.search.a11y'))}"></label>
+          <label class="search">${CG.ui.ic('search')}<input type="search" name="q" class="js-q" enterkeyhint="search" autocomplete="off" spellcheck="false" placeholder="${esc(t('sv.search'))}" aria-label="${esc(t('sv.search.a11y'))}"></label>
           <div class="chips js-scope" role="radiogroup" aria-label="${esc(t('sv.filters.a11y'))}"></div>
           <div class="chips js-facets" aria-label="${esc(t('sv.filters.a11y'))}"></div>
           <div class="sv-tools">
@@ -67,8 +66,7 @@
         el.className = 'srow';
         el.dataset.guid = s.guid;
         el.innerHTML = `<button type="button" class="srow-main">
-            <span class="flag-c" aria-hidden="true">${s.cc ? CG.ccToFlag(s.cc) : ui.ic('globe')}</span>
-            <span class="rb"><b class="js-n"></b><span class="js-sub"></span></span>
+            <span class="rb"><b class="js-n" translate="no"></b><span class="js-sub"></span></span>
             <span class="lat js-lat" aria-hidden="true"><i class="bars"><i></i><i></i><i></i><i></i></i><span></span></span>
           </button>
           <button type="button" class="star js-star">${ui.ic('star')}</button>`;
@@ -78,8 +76,9 @@
         return el;
       }
       function fillRow(el, s) {
+        // the name exactly as the API sends it; the line under it is only the protocol, never an address
         const name = CG.serverName(s);
-        const sub = [s.name !== name ? s.name : '', proto(s)].filter(Boolean).join(t('common.sep'));
+        const sub = proto(s);
         el.querySelector('.js-n').textContent = name;
         el.querySelector('.js-sub').textContent = sub;
         paintLatency(el, s);
@@ -109,7 +108,7 @@
         const isCur = !S.auto && s.guid === S.selected;
         const ph = CG.phase();
         const state = isCur ? t('sv.row.current') + (ph === 'connected' || ph === 'connecting' ? t('common.sep') + t(ui.PHASE[ph].word) : '') : '';
-        el.querySelector('.srow-main').setAttribute('aria-label', t('sv.row.a11y', { name: CG.serverName(s) + (s.name !== CG.serverName(s) ? ' ' + s.name : ''), proto: proto(s), latency: latencyA11y(s), state }));
+        el.querySelector('.srow-main').setAttribute('aria-label', t('sv.row.a11y', { name: CG.serverName(s), proto: proto(s), latency: latencyA11y(s), state }));
       }
 
       // ---- what to show ----
@@ -121,7 +120,7 @@
         if (st.proto) list = list.filter((s) => proto(s) === st.proto);
         if (st.q) {
           const q = norm(st.q);
-          list = list.filter((s) => norm(CG.serverName(s)).includes(q) || norm(s.name).includes(q) || norm(s.cc) === q || norm(I18.country(s.cc)).includes(q));
+          list = list.filter((s) => norm(CG.serverName(s)).includes(q) || norm(s.cc) === q || norm(I18.country(s.cc)).includes(q));
         }
         if (st.sort === 'latency') {
           const key = (s) => { const v = ms(s); return v > 0 ? v : v < 0 ? 1e9 : 1e8; };
@@ -161,7 +160,7 @@
         // country / protocol filters only when the subscription itself has more than one
         const ccs = Array.from(new Set(S.servers.map((s) => s.cc).filter(Boolean)));
         const protos = Array.from(new Set(S.servers.map(proto).filter(Boolean)));
-        const facets = (ccs.length > 1 ? ccs.map((cc) => `<button type="button" class="chip" data-cc="${esc(cc)}" aria-pressed="${st.cc === cc}"><span aria-hidden="true">${CG.ccToFlag(cc)}</span><span>${esc(I18.country(cc))}</span></button>`) : [])
+        const facets = (ccs.length > 1 ? ccs.map((cc) => `<button type="button" class="chip" data-cc="${esc(cc)}" aria-pressed="${st.cc === cc}"><span>${esc(I18.country(cc))}</span></button>`) : [])
           .concat(protos.length > 1 ? protos.map((p) => `<button type="button" class="chip" data-proto="${esc(p)}" aria-pressed="${st.proto === p}"><span>${esc(p)}</span></button>`) : []);
         $('.js-facets').innerHTML = facets.join('');
         $('.js-facets').hidden = !facets.length;
@@ -195,7 +194,7 @@
           g.innerHTML = ui.notice('bad', ui.errText(S.syncError), '', `<button type="button" class="btn quiet js-retry">${esc(t('common.retry'))}</button>`);
           g.querySelector('.js-retry').onclick = () => resync(false);
         } else if (!S.servers.length) {
-          g.innerHTML = `<div class="list" aria-label="${esc(t('sv.loading'))}">${'<div class="row"><span class="skel" style="width:2.5rem;height:2.5rem;border-radius:50%"></span><span class="skel" style="flex:1;height:1rem"></span></div>'.repeat(4)}</div>`;
+          g.innerHTML = `<div role="status" aria-label="${esc(t('sv.loading'))}">${'<span class="skel h-row"></span>'.repeat(4)}</div>`;
         } else g.innerHTML = '';
         return true;
       }

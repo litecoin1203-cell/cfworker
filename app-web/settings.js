@@ -65,8 +65,8 @@
         ${ui.appBar(t('st.title'))}
         <h2 class="section">${esc(t('st.protect'))}</h2>
         <div class="list">
-          <button type="button" class="row" id="st-ks">${ui.ic('lock', 'ri')}<span class="rb"><b>${esc(t('st.ks'))}</b><span>${esc(t('st.ks.sub'))}</span><em class="status js-ksv"></em></span>${ui.ic('chevron', 'ri flip-rtl')}</button>
-          <button type="button" class="row" id="st-aon">${ui.ic('shieldOk', 'ri')}<span class="rb"><b>${esc(t('st.aon'))}</b><span>${esc(t('st.aon.sub'))}</span><em class="status js-aonv"></em></span>${ui.ic('chevron', 'ri flip-rtl')}</button>
+          <button type="button" class="row" id="st-ks">${ui.ic('lock', 'ri lead-ic')}<span class="rb"><b>${esc(t('st.ks'))}</b><span>${esc(t('st.ks.sub'))}</span><em class="status sm js-ksv"></em></span>${ui.ic('chevron', 'ri')}</button>
+          <button type="button" class="row" id="st-aon">${ui.ic('shieldOk', 'ri lead-ic')}<span class="rb"><b>${esc(t('st.aon'))}</b><span>${esc(t('st.aon.sub'))}</span><em class="status sm js-aonv"></em></span>${ui.ic('chevron', 'ri')}</button>
         </div>
         <p class="t-small c-2 st-why js-polwhy" hidden></p>
         <div class="js-sysnote"></div>
@@ -79,7 +79,7 @@
           ${ui.switchRow('st-iran', t('st.iran'), t('st.iran.sub'), false, ' aria-disabled="true"')}
         </div>
         <div class="js-bootnote"></div>
-        <div class="list" style="margin-top:var(--s-3)">
+        <div class="list gap-top">
           ${ui.linkRow('st-gtest', 'globe', t('st.gtest'), '', '')}
           ${ui.linkRow('st-sync', 'refresh', t('sv.refresh'), '', '')}
           ${ui.linkRow('st-test', 'signal', t('sv.test'), '', '')}
@@ -90,11 +90,9 @@
         <div class="js-notifnote"></div>
 
         <h2 class="section">${esc(t('st.look'))}</h2>
-        <div class="card">
-          <p class="t-small c-2" style="margin:0 0 var(--s-2)">${esc(t('st.theme'))}</p>
+        <div class="st-look">
+          <p class="t-small c-2 lead" id="st-theme-l">${esc(t('st.theme'))}</p>
           ${choice('st-theme', t('st.theme'), [['system', t('st.theme.system')], ['dark', t('st.theme.dark')], ['light', t('st.theme.light')]], CG.themeSetting())}
-          <p class="t-small c-2" style="margin:var(--s-3) 0 var(--s-2)">${esc(t('st.lang'))}</p>
-          ${choice('st-lang', t('st.lang'), I18.langs, I18.lang)}
         </div>
 
         <h2 class="section">${esc(t('st.account'))}</h2>
@@ -109,8 +107,8 @@
 
         <h2 class="section">${esc(t('st.about'))}</h2>
         <div class="card">
-          <div class="kv"><span>${esc(t('st.version'))}</span><b class="js-ver" dir="ltr"></b></div>
-          <div class="kv"><span>${esc(t('st.core'))}</span><b class="js-core" dir="ltr"></b></div>
+          <div class="kv"><span>${esc(t('st.version'))}</span><b class="js-ver"></b></div>
+          <div class="kv"><span>${esc(t('st.core'))}</span><b class="js-core"></b></div>
         </div>
       </div></div>
       ${ui.tabs('settings')}`;
@@ -228,7 +226,6 @@
         };
       });
       pickIn('st-theme', (v) => { CG.setTheme(v); ui.announce(t('st.saved')); });
-      pickIn('st-lang', (v) => { if (v === I18.lang) return; I18.setLang(v); CG.tab('settings'); });
 
       // ---- account ----
       $('#st-acc').onclick = () => CG.go('account');

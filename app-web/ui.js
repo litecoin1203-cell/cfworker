@@ -1,11 +1,11 @@
-/* Shared components of the Phase-2 screens. Each returns markup built from tokens.css classes; every text comes
- * from CG.t (i18n.js). Icons are decorative (aria-hidden) and always sit next to a word. */
+/* Shared components of the app screens (design-system/MASTER.md §6). Each returns markup built from tokens.css
+ * classes; every text comes from CG.t (i18n.js). Icons are decorative (aria-hidden) and always sit next to a word. */
 (function () {
   'use strict';
   const CG = window.CG;
   const { t, esc } = CG;
 
-  // 24px line icons, stroke = currentColor so they take the state color
+  // one outline set: 24px grid, 1.75 stroke, round caps; stroke = currentColor so they take the state color
   const P = {
     shieldOk: 'M12 2.8l7.5 2.8v5.6c0 4.8-3.2 8.3-7.5 10-4.3-1.7-7.5-5.2-7.5-10V5.6zM8.6 12.1l2.4 2.4 4.6-4.9',
     shieldOff: 'M12 2.8l7.5 2.8v5.6c0 4.8-3.2 8.3-7.5 10-4.3-1.7-7.5-5.2-7.5-10V5.6zM12 8v4.6M12 15.8v.2',
@@ -37,12 +37,12 @@
     user: 'M12 4a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4.5 20a7.5 7.5 0 0 1 15 0',
     bell: 'M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15zM10 20.5h4',
     moon: 'M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z',
-    lang: 'M4 5h9M8.5 3v2M6 5c.5 3 3 6 6 7.5M11 5c-.8 3.5-3.3 6.4-7 8M13 21l4-10 4 10M14.5 17.5h5',
     refresh: 'M20 12a8 8 0 1 1-2.3-5.7L20 8.5M20 4v4.5h-4.5',
     tag: 'M3 12V4h8l10 10-8 8z M7.5 7.5h.01',
+    ingot: 'M3.5 9.5h17v5h-17zM8 9.5v5',
   };
   function ic(name, cls) {
-    return `<svg aria-hidden="true" class="${cls || ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${P[name]}"/></svg>`;
+    return `<svg aria-hidden="true" class="${cls || ''}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="${P[name]}"/></svg>`;
   }
 
   // connection phase -> chip kind, icon and word. Color is never the only signal.
@@ -66,11 +66,11 @@
 
   function appBar(title, opts) {
     opts = opts || {};
-    const back = opts.back ? `<button type="button" class="iconbtn js-back" aria-label="${esc(t('common.back'))}">${ic('back', 'flip-rtl')}</button>` : '';
+    const back = opts.back ? `<button type="button" class="iconbtn js-back" aria-label="${esc(t('common.back'))}">${ic('back')}</button>` : '';
     return `<header class="appbar">${back}<h1 class="t-h1">${esc(title)}</h1>${opts.trailing || ''}</header>`;
   }
 
-  const TABS = [['home', 'power', 'tab.home'], ['servers', 'servers', 'tab.servers'], ['usage', 'gauge', 'tab.usage'], ['settings', 'gear', 'tab.settings']];
+  const TABS = [['home', 'power', 'tab.home'], ['servers', 'servers', 'tab.servers'], ['usage', 'ingot', 'tab.usage'], ['settings', 'gear', 'tab.settings']];
   function tabs(active) {
     return `<nav class="tabs" aria-label="${esc(t('tab.nav'))}">${TABS.map(([id, icon, label]) =>
       `<button type="button" class="tab" data-tab="${id}" ${id === active ? 'aria-current="page"' : ''}><span class="tab-ic">${ic(icon)}</span><span>${esc(t(label))}</span></button>`).join('')}</nav>`;
@@ -92,7 +92,7 @@
       <span class="rb"><b>${esc(title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}</span><span class="sw" aria-hidden="true"></span></button>`;
   }
   function linkRow(id, icon, title, sub, value) {
-    return `<button type="button" class="row" id="${id}">${icon ? ic(icon, 'ri') : ''}<span class="rb"><b>${esc(title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}</span>${value ? `<span class="rv">${value}</span>` : ''}${ic('chevron', 'ri flip-rtl')}</button>`;
+    return `<button type="button" class="row" id="${id}">${icon ? ic(icon, 'ri lead-ic') : ''}<span class="rb"><b>${esc(title)}</b>${sub ? `<span>${esc(sub)}</span>` : ''}</span>${value ? `<span class="rv">${value}</span>` : ''}${ic('chevron', 'ri')}</button>`;
   }
 
   // a themed bottom sheet for flow screens; returns close()
@@ -117,9 +117,21 @@
     if (code && CG.i18n.t('err.' + code) !== 'err.' + code) return t('err.' + code);
     if (e && e.status === 0) return t('err.network');
     if (e && e.status >= 500) return t('err.server');
-    // the API's own Persian messages (validation etc.) are written for people; show them only in Persian
-    if (e && e.status >= 400 && e.message && CG.i18n.lang === 'fa') return e.message;
+    // the API's own messages are Persian (written for the admin bot era); the app is English, so never show them
     return t('err.generic');
+  }
+
+  // the Hallmark connect control (MASTER §6): outer rim, a guilloché rosette, a face, the power glyph,
+  // a drawing arc for "connecting" and a strike arc for the moment the tunnel comes up. Colours come from tokens.
+  let rose = '';
+  for (let i = 0; i < 36; i++) rose += `<ellipse cx="100" cy="100" rx="84" ry="30" transform="rotate(${i * 5} 100 100)"/>`;
+  function hallmark() {
+    return `<svg viewBox="0 0 200 200" aria-hidden="true" focusable="false">
+      <circle class="hm-rim" cx="100" cy="100" r="97"/><g class="hm-rose">${rose}</g>
+      <circle class="hm-face" cx="100" cy="100" r="50"/><circle class="hm-inner" cx="100" cy="100" r="50"/>
+      <circle class="hm-draw" cx="100" cy="100" r="97" pathLength="300"/>
+      <circle class="hm-strike" cx="100" cy="100" r="97" pathLength="100"/>
+      <g class="hm-glyph"><path d="M113.5 83.5a21 21 0 1 1-27 0"/><path d="M100 74v24"/></g></svg>`;
   }
 
   // one live-region per screen for announcements that are not on screen as text (TalkBack)
@@ -130,5 +142,5 @@
     setTimeout(() => { el.textContent = text; }, 50);
   }
 
-  CG.ui = { ic, statusChip, notice, appBar, tabs, bindTabs, switchRow, linkRow, fsheet, errText, announce, PHASE };
+  CG.ui = { ic, hallmark, statusChip, notice, appBar, tabs, bindTabs, switchRow, linkRow, fsheet, errText, announce, PHASE };
 })();

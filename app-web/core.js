@@ -4,13 +4,13 @@
 
   // ---------------- helpers ----------------
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-  const toman = (n) => Number(n || 0).toLocaleString('fa-IR');
-  const faNum = (n) => Number(n || 0).toLocaleString('fa-IR');
+  const toman = (n) => Number(n || 0).toLocaleString('en-US');
+  const faNum = (n) => Number(n || 0).toLocaleString('en-US');
   // Persian/Arabic digits typed on a Persian keyboard -> ASCII
   const num = (s) => +String(s || '').replace(/[۰-۹]/g, (d) => '۰۱۲۳۴۵۶۷۸۹'.indexOf(d)).replace(/[٠-٩]/g, (d) => '٠١٢٣٤٥٦٧٨٩'.indexOf(d)).replace(/\D/g, '') || 0;
   function faDate(iso, opts) {
     if (!iso) return '';
-    try { return new Date(iso).toLocaleDateString('fa-IR-u-ca-persian', opts || { year: 'numeric', month: 'long', day: 'numeric' }); } catch (e) { return new Date(iso).toLocaleDateString(); }
+    try { return new Date(iso).toLocaleDateString('en-GB', opts || { year: 'numeric', month: 'long', day: 'numeric' }); } catch (e) { return new Date(iso).toLocaleDateString(); }
   }
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
@@ -25,7 +25,7 @@
     const m = (remark || '').match(FLAG_RE);
     let cc = '';
     if (m) cc = Array.from(m[0]).map((ch) => String.fromCharCode(ch.codePointAt(0) - 0x1f1e6 + 65)).join('');
-    const name = (remark || '').replace(FLAG_RE, '').replace(/^[\s\-|·]+|[\s\-|·]+$/g, '') || 'سرور';
+    const name = (remark || '').replace(FLAG_RE, '').replace(/^[\s\-|·]+|[\s\-|·]+$/g, '') || 'Server';
     return { cc, name };
   }
   function flag(cc, size) {
@@ -33,10 +33,10 @@
   }
   function bytes(n) {
     n = Number(n || 0);
-    const f = (v, d) => Number(v.toFixed(d)).toLocaleString('fa-IR');
-    if (n >= 1024 ** 3) return f(n / 1024 ** 3, n >= 100 * 1024 ** 3 ? 0 : 1) + ' گیگ';
-    if (n >= 1024 ** 2) return f(n / 1024 ** 2, 0) + ' مگ';
-    return f(n / 1024, 0) + ' کیلوبایت';
+    const f = (v, d) => Number(v.toFixed(d)).toLocaleString('en-US');
+    if (n >= 1024 ** 3) return f(n / 1024 ** 3, n >= 100 * 1024 ** 3 ? 0 : 1) + ' GB';
+    if (n >= 1024 ** 2) return f(n / 1024 ** 2, 0) + ' MB';
+    return f(n / 1024, 0) + ' KB';
   }
 
   // ---------------- bridge ----------------
@@ -49,7 +49,7 @@
     if (!p) return;
     let v = null;
     try { v = payload ? JSON.parse(payload) : null; } catch (e) { v = payload; }
-    ok ? p.res(v) : p.rej(v || { message: 'مشکلی پیش آمد.' });
+    ok ? p.res(v) : p.rej(v || { message: 'Something went wrong.' });
   };
   window.__cgEvent = function (name, payload) {
     let v = null;
@@ -70,13 +70,13 @@
 
   class ApiError extends Error {
     constructor(status, detail) {
-      super((detail && detail.message) || 'مشکلی پیش آمد.');
+      super((detail && detail.message) || 'Something went wrong.');
       this.status = status;
       this.code = (detail && detail.code) || 'error';
       this.detail = detail;
     }
   }
-  const NET_MSG = 'اتصال به سرور برقرار نشد. اینترنت را بررسی کن و دوباره امتحان کن.';
+  const NET_MSG = 'Could not reach the server. Check your internet and try again.';
   async function api(method, path, body) {
     let r;
     try {
@@ -87,7 +87,7 @@
     if (r.status === 0) throw new ApiError(0, { code: 'network', message: NET_MSG });
     if (r.status >= 400) {
       const d = r.data && r.data.detail;
-      const detail = typeof d === 'object' && d ? d : { code: 'error', message: typeof d === 'string' ? d : (r.status >= 500 ? 'سرور موقتاً در دسترس نیست. چند لحظه دیگر دوباره امتحان کن.' : 'مشکلی پیش آمد.') };
+      const detail = typeof d === 'object' && d ? d : { code: 'error', message: typeof d === 'string' ? d : (r.status >= 500 ? 'The server is busy. Try again in a moment.' : 'Something went wrong.') };
       if (r.status === 401 && ['token_invalid', 'token_expired', 'not_authenticated'].includes(detail.code)) {
         await call('logout', {});
         go('auth', { mode: 'login' });
@@ -241,10 +241,9 @@
     if (!def) throw new Error('Unknown screen ' + name);
     const app = $('#app');
     current = { name, params: params || {} };
-    // flow screens (Phase 2) are laid out in normal document flow, follow the app's language direction and theme
-    // the document's direction follows the screen: flow screens use the app language, older screens are Persian
-    document.documentElement.setAttribute('dir', def.flow ? CGI18n.dir : 'rtl');
-    document.documentElement.setAttribute('lang', def.flow ? CGI18n.lang : 'fa');
+    // flow screens are laid out in normal document flow and follow the theme; the app is English, left to right
+    document.documentElement.setAttribute('dir', 'ltr');
+    document.documentElement.setAttribute('lang', 'en');
     app.innerHTML = def.flow
       ? `<div class="screen flow" data-screen="${name}"><div class="stage">${def.html(current.params)}</div></div>`
       : `<div class="screen" data-screen="${name}" style="background:${def.bg || 'var(--bg)'}"><div class="stage">${def.html(current.params)}</div></div>`;
@@ -280,7 +279,7 @@
   // ---------------- icons ----------------
   const I = {
     close: '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="#F2EADB" stroke-width="2" stroke-linecap="round"><path d="M1.5 1.5l13 13M14.5 1.5l-13 13"/></svg>',
-    back: '<svg aria-hidden="true" width="20" height="16" viewBox="0 0 20 16" fill="none" stroke="#F2EADB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 8h17.5M12 1.5L18.5 8 12 14.5"/></svg>',
+    back: '<svg aria-hidden="true" width="20" height="16" viewBox="0 0 20 16" fill="none" stroke="#F2EADB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 8H1.5M8 1.5L1.5 8 8 14.5"/></svg>',
     chevL: '<svg aria-hidden="true" width="11" height="18" viewBox="0 0 11 18" fill="none" stroke="#F2EADB" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 1.5L9.2 9 2 16.5"/></svg>',
     check: '<svg aria-hidden="true" width="13" height="13" viewBox="0 0 14 14" fill="none" stroke="#F2EADB" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 7.4l3 3 6-6.6"/></svg>',
     gem: '<svg aria-hidden="true" width="18" height="16" viewBox="0 0 18 16"><defs><linearGradient id="cgGem" x1="0" y1="0" x2="18" y2="16" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#F6E3AA"/><stop offset=".5" stop-color="#D6AE5C"/><stop offset="1" stop-color="#8E6A2C"/></linearGradient></defs><path d="M4.2.8h9.6l3.4 4.6L9 15.2.8 5.4z" fill="url(#cgGem)"/><path d="M.8 5.4h16.4M4.2.8l2.2 4.6L9 15.2l2.6-9.8L13.8.8M6.4 5.4L9 .8l2.6 4.6" fill="none" stroke="#3A2A0E" stroke-opacity=".45" stroke-width=".7" stroke-linejoin="round"/></svg>',

@@ -20,13 +20,13 @@
   }
   CG.enterApp = enterApp;
 
-  const backBtn = (cls) => `<button type="button" aria-label="بازگشت" class="${cls || 'js-back'}" style="position:absolute;right:14px;top:56px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;z-index:5">${I.back}</button>`;
-  const closeBtn = (cls) => `<button type="button" aria-label="بستن" class="${cls || 'js-close'}" style="position:absolute;left:20px;top:56px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;z-index:5">${I.close}</button>`;
+  const backBtn = (cls) => `<button type="button" aria-label="Back" class="${cls || 'js-back'}" style="position:absolute;left:14px;top:56px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;z-index:5">${I.back}</button>`;
+  const closeBtn = (cls) => `<button type="button" aria-label="Close" class="${cls || 'js-close'}" style="position:absolute;left:20px;top:56px;width:30px;height:30px;display:flex;align-items:center;justify-content:center;z-index:5">${I.close}</button>`;
   function wireBack(root, fallback) {
     root.querySelectorAll('.js-back,.js-close').forEach((b) => { b.onclick = () => back(fallback || 'home'); });
   }
 
-  const openSupport = () => (S.config && S.config.support_url ? call('openUrl', { url: S.config.support_url }) : toast('لینک پشتیبانی هنوز تنظیم نشده است.'));
+  const openSupport = () => (S.config && S.config.support_url ? call('openUrl', { url: S.config.support_url }) : toast('Support link is not set up yet.'));
   CG.openSupport = openSupport;
 
   // ---------------- SPLASH ----------------
@@ -37,7 +37,7 @@
       <div style="position:absolute;left:0;right:0;top:calc(var(--sh) * .5 - 150px);display:flex;flex-direction:column;align-items:center">
         <div aria-hidden="true" class="sp-core" style="width:150px;height:150px;position:relative"><div class="pb on" style="position:absolute;left:0;top:0;display:block;transform:scale(${150 / 196});transform-origin:0 0;cursor:default">${halo({ icon: 'power' })}</div></div>
         <div class="serif sp-word" style="margin-top:26px;font-size:46px;font-weight:600;line-height:52px;color:var(--ivory)">Cloud Gold</div>
-        <div class="sp-word2" style="margin-top:6px;font-size:13px;color:var(--ash)">اینترنت آزاد، با امنیت طلایی</div>
+        <div class="sp-word2" style="margin-top:6px;font-size:13px;color:var(--ash)">Open internet, gold-grade security</div>
       </div>
       <div class="sp-msg" style="position:absolute;left:0;right:0;bottom:60px;text-align:center;color:var(--ash);font-size:13px"></div>`,
     mount(root) {
@@ -54,7 +54,7 @@
           await enterApp();
         } catch (e) {
           if (e.status === 401) return settle(() => reset('auth', { mode: 'login' }));
-          root.querySelector('.sp-msg').innerHTML = `${esc(e.message)}<div style="height:12px"></div><button class="pill-btn dark" style="width:180px;margin:0 auto;height:42px">تلاش دوباره</button>`;
+          root.querySelector('.sp-msg').innerHTML = `${esc(e.message)}<div style="height:12px"></div><button class="pill-btn dark" style="width:180px;margin:0 auto;height:42px">Try again</button>`;
           root.querySelector('.sp-msg button').onclick = () => reset('splash');
         }
       })();
@@ -64,9 +64,9 @@
 
   // ---------------- ONBOARDING ----------------
   const OB = [
-    { img: 'img/tiles.webp', top: 140, h: 380, title: 'دسترسی آزاد به همه‌ی سایت‌ها', text: 'هر اپ و سایتی که دوست داری را از هر جا، بدون محدودیت و بدون کندی باز کن.' },
-    { img: 'img/servers.webp', top: 130, h: 410, title: 'سرورهای پرسرعت در کشورهای مختلف', text: 'سریع‌ترین سرور خودکار انتخاب می‌شود؛ با یک لمس هم می‌توانی لوکیشن را عوض کنی.' },
-    { img: 'img/coins.webp', top: 110, h: 450, title: 'دوستانت را دعوت کن و پاداش بگیر', text: 'کد دعوتت را بفرست و از هر خرید دوستانت پاداش به کیف پولت اضافه می‌شود.' },
+    { img: 'img/tiles.webp', top: 140, h: 380, title: 'Open access to every site', text: 'Open any app or site you like, from anywhere, with no limits and no slowdown.' },
+    { img: 'img/servers.webp', top: 130, h: 410, title: 'Fast servers in many countries', text: 'The fastest server is picked for you; one tap changes the location.' },
+    { img: 'img/coins.webp', top: 110, h: 450, title: 'Invite friends and earn rewards', text: 'Send your invite code; every purchase your friends make adds a reward to your wallet.' },
   ];
   screens.onboarding = {
     fit: 'both',
@@ -76,16 +76,16 @@
       <div aria-hidden="true" style="position:absolute;left:15px;top:calc(120px + (var(--sh) - 844px) * .45);width:360px;height:380px;border-radius:50%;background:radial-gradient(closest-side,rgba(160,118,44,.30),rgba(90,64,22,.10) 55%,rgba(11,10,8,0) 100%)"></div>
       <div aria-hidden="true" class="ob-art float" style="top:calc(${o.top}px + (var(--sh) - 844px) * .45);height:${o.h}px"><img src="${o.img}" alt="" style="width:390px;height:${o.h}px"></div>
       <div style="position:absolute;top:57px;left:0;width:390px;height:30px">
-        <button type="button" aria-label="رد کردن" class="ob-skip" style="position:absolute;right:14px;top:0;width:30px;height:30px;display:flex;align-items:center;justify-content:center">${I.close}</button>
-        <div role="progressbar" aria-label="مرحله ${i + 1} از ۳" aria-valuemin="1" aria-valuemax="3" aria-valuenow="${i + 1}" class="ob-progress" style="position:absolute;left:82px;top:13.5px">
+        <button type="button" aria-label="Skip" class="ob-skip" style="position:absolute;right:14px;top:0;width:30px;height:30px;display:flex;align-items:center;justify-content:center">${I.close}</button>
+        <div role="progressbar" aria-label="Step ${i + 1} of 3" aria-valuemin="1" aria-valuemax="3" aria-valuenow="${i + 1}" class="ob-progress" style="position:absolute;left:82px;top:13.5px">
           ${[0, 1, 2].map((j) => `<div class="${j < i ? 'done' : j === i ? 'now' : ''}">${j === i ? '<i></i>' : ''}</div>`).join('')}
         </div>
-        <button type="button" class="ob-next" style="position:absolute;left:18px;top:0;height:30px;font-size:15px;font-weight:600;color:var(--gilt)">${i < 2 ? 'بعدی' : 'شروع'}</button>
+        <button type="button" class="ob-next" style="position:absolute;left:18px;top:0;height:30px;font-size:15px;font-weight:600;color:var(--gilt)">${i < 2 ? 'Next' : 'Start'}</button>
       </div>
       <div class="ob-copy enter" style="bottom:173px"><h1 class="title-grad">${o.title}</h1><p>${o.text}</p></div>
       <div class="ob-actions">
-        <button type="button" class="pill-btn white ob-up">ساخت حساب</button>
-        <button type="button" class="pill-btn dark ob-in" style="height:49px">ورود</button>
+        <button type="button" class="pill-btn white ob-up">Create account</button>
+        <button type="button" class="pill-btn dark ob-in" style="height:49px">Sign in</button>
       </div>`;
     },
     mount(root, p) {
@@ -110,9 +110,9 @@
 
   // ---------------- AUTH (email + password, no verification code) ----------------
   const AUTH = {
-    login: ['خوش برگشتی', 'با حساب Cloud Gold خودت وارد شو.'],
-    register: ['ساخت حساب', 'با یک حساب روی همه‌ی گوشی‌هایت وصل شو. بعد از ثبت‌نام می‌توانی تست رایگان را فعال کنی.'],
-    forgot: ['فراموشی رمز', ''],
+    login: ['Welcome back', 'Sign in with your Cloud Gold account.'],
+    register: ['Create account', 'One account connects all your phones. After signing up you can start the free trial.'],
+    forgot: ['Forgot password', ''],
   };
   screens.auth = {
     fit: 'width',
@@ -120,18 +120,18 @@
       const m = p.mode || 'login', [title, sub] = AUTH[m];
       let form = '';
       if (m === 'forgot') {
-        form = `<p class="sub">برای امنیت حسابت، رمز را پشتیبانی عوض می‌کند. به ما پیام بده تا سریع کمکت کنیم.</p>
-          <button type="button" class="pill-btn white js-support">پیام به پشتیبانی</button>
-          <div class="swap"><button type="button" class="js-swap">بازگشت به ورود</button></div>`;
+        form = `<p class="sub">To keep your account safe, support changes the password. Message us and we will help quickly.</p>
+          <button type="button" class="pill-btn white js-support">Message support</button>
+          <div class="swap"><button type="button" class="js-swap">Back to sign in</button></div>`;
       } else {
         form = `<p class="sub">${sub}</p>
-          <label class="field"><span>ایمیل</span><input class="input" dir="ltr" name="email" type="email" autocomplete="email" inputmode="email" autocapitalize="off" placeholder="you@example.com" value="${esc(p.email || '')}"></label>
-          <label class="field"><span>رمز عبور</span><input class="input" dir="ltr" name="password" type="password" autocomplete="${m === 'login' ? 'current-password' : 'new-password'}" placeholder="${m === 'login' ? 'رمز حساب' : 'حداقل ۸ کاراکتر'}"></label>
-          ${m === 'register' ? `<label class="field"><span>کد دعوت (اختیاری)</span><input class="input" dir="ltr" name="ref" autocapitalize="characters" autocomplete="off" placeholder="GOLD7XQ" value="${esc(recall('cg_ref') || '')}"></label>` : ''}
+          <label class="field"><span>Email</span><input class="input" dir="ltr" name="email" type="email" autocomplete="email" inputmode="email" autocapitalize="off" placeholder="you@example.com" value="${esc(p.email || '')}"></label>
+          <label class="field"><span>Password</span><input class="input" dir="ltr" name="password" type="password" autocomplete="${m === 'login' ? 'current-password' : 'new-password'}" placeholder="${m === 'login' ? 'Account password' : 'At least 8 characters'}"></label>
+          ${m === 'register' ? `<label class="field"><span>Invite code (optional)</span><input class="input" dir="ltr" name="ref" autocapitalize="characters" autocomplete="off" placeholder="GOLD7XQ" value="${esc(recall('cg_ref') || '')}"></label>` : ''}
           <div class="err" role="alert"></div>
-          <button class="pill-btn white js-go" type="submit">${m === 'login' ? 'ورود' : 'ساخت حساب'}</button>
-          ${m === 'login' ? '<div style="text-align:center;margin-top:10px"><button type="button" class="link-btn js-forgot">رمز را فراموش کرده‌ای؟</button></div>' : ''}
-          <div class="swap">${m === 'login' ? 'حساب نداری؟ <button type="button" class="js-swap">ثبت‌نام کن</button>' : 'قبلاً حساب ساخته‌ای؟ <button type="button" class="js-swap">وارد شو</button>'}</div>`;
+          <button class="pill-btn white js-go" type="submit">${m === 'login' ? 'Sign in' : 'Create account'}</button>
+          ${m === 'login' ? '<div style="text-align:center;margin-top:10px"><button type="button" class="link-btn js-forgot">Forgot your password?</button></div>' : ''}
+          <div class="swap">${m === 'login' ? 'No account? <button type="button" class="js-swap">Sign up</button>' : 'Already have an account? <button type="button" class="js-swap">Sign in</button>'}</div>`;
       }
       return `<div class="scroll"><div class="auth-glow"></div>
         <form class="auth-wrap enter" novalidate>
@@ -144,7 +144,7 @@
       const form = root.querySelector('form'), err = root.querySelector('.err'), go_ = root.querySelector('.js-go');
       const val = (n) => { const el = form.querySelector(`[name="${n}"]`); return el ? el.value.trim() : ''; };
       const fail = (e) => {
-        if (err) err.textContent = e.message || 'مشکلی پیش آمد.';
+        if (err) err.textContent = e.message || 'Something went wrong.';
         if (e.detail && e.detail.field) { const el = form.querySelector(`[name="${e.detail.field}"]`); if (el) el.focus(); }
       };
       const dev = () => call('device', {}).catch(() => ({}));
@@ -160,9 +160,9 @@
           busyButton(go_, true);
           try {
             const d = await dev();
-            if (!val('email') || !val('password')) throw { message: m === 'login' ? 'ایمیل و رمز را وارد کن.' : 'ایمیل را وارد کن و یک رمز انتخاب کن.' };
+            if (!val('email') || !val('password')) throw { message: m === 'login' ? 'Enter your email and password.' : 'Enter your email and choose a password.' };
             if (m === 'register') {
-              if (val('password').length < 8) throw { message: 'رمز باید حداقل ۸ کاراکتر باشد.', detail: { field: 'password' } };
+              if (val('password').length < 8) throw { message: 'The password must be at least 8 characters.', detail: { field: 'password' } };
               const t = await api('POST', '/auth/register', { email: val('email'), password: val('password'), referral_code: val('ref') || null, device_id: d.id, device_model: d.model });
               await call('setSession', Object.assign({ email: val('email') }, t));
               remember('cg_ref', null);
@@ -180,9 +180,9 @@
   };
 
   const planFacts = (pl) => [
-    `${faNum(pl.duration_days)} روز`,
-    pl.data_limit_gb ? `${faNum(pl.data_limit_gb)} گیگ` : 'حجم نامحدود',
-    pl.device_limit ? `${faNum(pl.device_limit)} کاربره` : 'بدون محدودیت دستگاه',
+    `${faNum(pl.duration_days)} days`,
+    pl.data_limit_gb ? `${faNum(pl.data_limit_gb)} GB` : 'Unlimited data',
+    pl.device_limit ? `${faNum(pl.device_limit)} devices` : 'Unlimited devices',
   ].join(' · ');
   CG.planFacts = planFacts;
 
@@ -198,17 +198,17 @@
     let coupon = null; // {code, final_toman, percent}
     const price = () => (plan ? (coupon ? coupon.final_toman : plan.price_toman) : what.topup);
     const online = [];
-    if (cfg.card_enabled) online.push({ id: 'card', icon: I.card, name: 'کارت‌به‌کارت', note: 'واریز کن و عکس رسید را بفرست' });
+    if (cfg.card_enabled) online.push({ id: 'card', icon: I.card, name: 'Card to card', note: 'Transfer, then send a photo of the receipt' });
     const coins = cfg.coins || [];
-    if (coins.length) online.push({ id: 'coin', icon: I.crypto, name: 'ارز دیجیتال', note: coins.slice(0, 3).map((c) => c.fa).join('، ') + (coins.length > 3 ? ' و ...' : '') });
-    if (cfg.crypto_enabled) online.push({ id: 'crypto', icon: I.crypto, name: 'درگاه کریپتو', note: 'بعد از پرداخت خودکار فعال می‌شود' });
-    if (!plan && !online.length) { toast('الان هیچ روش پرداختی فعال نیست. با پشتیبانی تماس بگیر.', true); return; }
+    if (coins.length) online.push({ id: 'coin', icon: I.crypto, name: 'Cryptocurrency', note: coins.slice(0, 3).map((c) => c.fa).join(', ') + (coins.length > 3 ? ' and more' : '') });
+    if (cfg.crypto_enabled) online.push({ id: 'crypto', icon: I.crypto, name: 'Crypto gateway', note: 'Activates automatically after payment' });
+    if (!plan && !online.length) { toast('No payment method is available right now. Contact support.', true); return; }
     function methods() {
       const amount = price(), out = [];
       if (plan) {
-        if (bal >= amount) out.push({ id: 'wallet', icon: I.wallet, name: 'کیف پول', note: `موجودی ${toman(bal)} تومان` });
-        else if (bal > 0 && online.length) out.push({ id: 'mix', icon: I.wallet, name: 'کیف پول + پرداخت مابقی', note: `${toman(bal)} از کیف پول، ${toman(amount - bal)} تومان را بپرداز` });
-        else out.push({ id: 'wallet', icon: I.wallet, name: 'کیف پول', note: `موجودی ${toman(bal)} تومان · کافی نیست`, off: true });
+        if (bal >= amount) out.push({ id: 'wallet', icon: I.wallet, name: 'Wallet', note: `Balance ${toman(bal)} Toman` });
+        else if (bal > 0 && online.length) out.push({ id: 'mix', icon: I.wallet, name: 'Wallet + pay the rest', note: `${toman(bal)} from wallet, ${toman(amount - bal)} Toman to pay` });
+        else out.push({ id: 'wallet', icon: I.wallet, name: 'Wallet', note: `Balance ${toman(bal)} Toman, not enough`, off: true });
       }
       return out.concat(online);
     }
@@ -218,23 +218,23 @@
       if (!ms.find((m) => m.id === pick && !m.off)) pick = (ms.find((m) => !m.off) || {}).id;
       const showVia = pick === 'mix' && online.length > 1;
       el.querySelector('.pm-price').innerHTML = plan
-        ? `${coupon ? `<s style="color:var(--dim)">${toman(plan.price_toman)}</s> ` : ''}<b style="color:var(--gilt)">${toman(amount)} تومان</b> · ${planFacts(plan)}`
-        : `<b style="color:var(--gilt)">${toman(amount)} تومان</b>`;
+        ? `${coupon ? `<s style="color:var(--dim)">${toman(plan.price_toman)}</s> ` : ''}<b style="color:var(--gilt)">${toman(amount)} Toman</b> · ${planFacts(plan)}`
+        : `<b style="color:var(--gilt)">${toman(amount)} Toman</b>`;
       el.querySelector('.pm-list').innerHTML = ms.map((m) => `<button type="button" class="method${m.id === pick ? ' on' : ''}" data-m="${m.id}" ${m.off ? 'disabled style="opacity:.45"' : ''}><span class="mi">${m.icon}</span><span style="min-width:0"><b>${m.name}</b><span>${m.note}</span></span></button>`).join('')
         + (showVia ? `<div style="display:flex;gap:8px;margin:-2px 0 10px">${online.map((o) => `<button type="button" class="method${o.id === mixVia ? ' on' : ''}" data-via="${o.id}" style="margin:0;padding:10px;justify-content:center;font-size:13px">${o.name.split(' ')[0]}</button>`).join('')}</div>` : '')
-        + (pick === 'coin' || (pick === 'mix' && mixVia === 'coin') ? `<div class="coin-grid">${coins.map((c) => `<button type="button" class="coin-chip${c.id === coinPick ? ' on' : ''}" data-coin="${c.id}">${coinBadge(c, 30)}<b>${c.symbol}${c.auto ? ' <em class="auto-dot" title="تأیید خودکار">⚡</em>' : ''}</b><span>${esc(c.fa)}</span></button>`).join('')}</div><p class="muted" style="font-size:11.5px;margin:-4px 0 12px;text-align:center;line-height:18px">همه کارمزد انتقال خیلی کمی دارند${coins.some((c) => c.auto) ? ' · ⚡ یعنی بعد از واریز، خودکار و در حد یک دقیقه فعال می‌شود' : ''}</p>` : '');
+        + (pick === 'coin' || (pick === 'mix' && mixVia === 'coin') ? `<div class="coin-grid">${coins.map((c) => `<button type="button" class="coin-chip${c.id === coinPick ? ' on' : ''}" data-coin="${c.id}">${coinBadge(c, 30)}<b>${c.symbol}${c.auto ? ' <em class="auto-dot" title="Automatic confirmation">⚡</em>' : ''}</b><span>${esc(c.fa)}</span></button>`).join('')}</div><p class="muted" style="font-size:11.5px;margin:-4px 0 12px;text-align:center;line-height:18px">All have very low transfer fees${coins.some((c) => c.auto) ? ', ⚡ means it activates automatically about a minute after you pay' : ''}</p>` : '');
       const due = pick === 'mix' ? amount - bal : pick === 'wallet' || amount === 0 ? 0 : amount;
-      el.querySelector('.pm-go').textContent = !pick ? 'روش پرداخت را انتخاب کن' : due === 0 ? (amount === 0 ? 'فعال‌سازی رایگان' : `پرداخت ${toman(amount)} تومان از کیف پول`) : `پرداخت ${toman(due)} تومان`;
+      el.querySelector('.pm-go').textContent = !pick ? 'Choose a payment method' : due === 0 ? (amount === 0 ? 'Activate for free' : `Pay ${toman(amount)} Toman from wallet`) : `Pay ${toman(due)} Toman`;
       el.querySelector('.pm-go').disabled = !pick;
       el.querySelectorAll('[data-m]').forEach((b) => { b.onclick = () => { pick = b.dataset.m; body(el); }; });
       el.querySelectorAll('[data-via]').forEach((b) => { b.onclick = () => { mixVia = b.dataset.via; body(el); }; });
       el.querySelectorAll('[data-coin]').forEach((b) => { b.onclick = () => { coinPick = b.dataset.coin; body(el); }; });
     };
-    sheet(`<h3>${plan ? 'خرید پلن ' + esc(plan.name) : 'شارژ کیف پول'}</h3>
+    sheet(`<h3>${plan ? 'Buy plan ' + esc(plan.name) : 'Top up wallet'}</h3>
       <p class="pm-price"></p>
-      ${plan ? `<div class="coupon-row"><input class="input pm-code" dir="ltr" autocapitalize="characters" autocomplete="off" placeholder="کد تخفیف (اختیاری)"><button type="button" class="pm-apply">اعمال</button></div><div class="err pm-cerr" style="margin-top:-6px"></div>` : ''}
+      ${plan ? `<div class="coupon-row"><input class="input pm-code" dir="ltr" autocapitalize="characters" autocomplete="off" placeholder="Discount code (optional)"><button type="button" class="pm-apply">Apply</button></div><div class="err pm-cerr" style="margin-top:-6px"></div>` : ''}
       <div class="pm-list"></div>
-      <div style="height:6px"></div><button type="button" class="pill-btn white pm-go">پرداخت</button>`, (el, close) => {
+      <div style="height:6px"></div><button type="button" class="pill-btn white pm-go">Pay</button>`, (el, close) => {
       body(el);
       const apply = el.querySelector('.pm-apply');
       if (apply) apply.onclick = async () => {
@@ -243,7 +243,7 @@
         cerr.textContent = '';
         if (!code) { coupon = null; body(el); return; }
         busyButton(apply, true, true);
-        try { coupon = await api('POST', '/coupons/check', { code, plan_id: plan.id }); cerr.style.color = '#8FCFA4'; cerr.textContent = `${faNum(coupon.percent)}٪ تخفیف اعمال شد.`; }
+        try { coupon = await api('POST', '/coupons/check', { code, plan_id: plan.id }); cerr.style.color = '#8FCFA4'; cerr.textContent = `${faNum(coupon.percent)}% discount applied.`; }
         catch (e) { coupon = null; cerr.style.color = ''; cerr.textContent = e.message; }
         finally { busyButton(apply, false); body(el); }
       };
@@ -275,11 +275,11 @@
     if (order.kind === 'plan' || order.plan_activated) {
       try { await syncVpn(); } catch (e) { /* home retries */ }
       // the new status as the server now reports it (plans.js); same account, no new UUID
-      go('success', { title: 'اشتراکت فعال شد', text: `${esc(planName || 'پلن')} فعال است. ${esc(CG.planDoneText ? CG.planDoneText() : '')}` });
+      go('success', { title: 'Your plan is active', text: `${esc(planName || 'Plan')} is active. ${esc(CG.planDoneText ? CG.planDoneText() : '')}` });
     } else if (order.activate_plan_id) {
-      go('success', { title: 'کیف پول شارژ شد', text: `${toman(order.amount_toman)} تومان به کیف پولت اضافه شد ولی فعال‌سازی خودکار پلن انجام نشد. از صفحه‌ی خرید، پلن را با کیف پول بخر یا با پشتیبانی تماس بگیر.`, to: 'wallet' });
+      go('success', { title: 'Wallet topped up', text: `${toman(order.amount_toman)} Toman was added to your wallet, but the plan was not activated automatically. Buy the plan with your wallet from the plans page, or contact support.`, to: 'wallet' });
     } else {
-      go('success', { title: 'کیف پول شارژ شد', text: `${toman(order.amount_toman)} تومان به کیف پولت اضافه شد.`, to: 'wallet' });
+      go('success', { title: 'Wallet topped up', text: `${toman(order.amount_toman)} Toman was added to your wallet.`, to: 'wallet' });
     }
   }
 
@@ -292,7 +292,7 @@
         <h1 class="title-grad" style="margin:30px 0 10px;font-size:34px;line-height:42px">${esc(p.title)}</h1>
         <p style="margin:0;color:var(--body);font-size:15px;line-height:24px;max-width:300px">${p.text}</p>
       </div>
-      <button type="button" class="pill-btn white js-done" style="position:absolute;left:20px;width:350px;top:calc(var(--sh) - 110px)">${p.to === 'wallet' ? 'بازگشت به کیف پول' : 'برو به صفحه‌ی اصلی'}</button>`,
+      <button type="button" class="pill-btn white js-done" style="position:absolute;left:20px;width:350px;top:calc(var(--sh) - 110px)">${p.to === 'wallet' ? 'Back to wallet' : 'Go to home'}</button>`,
     mount(root, p) { root.querySelector('.js-done').onclick = () => (p.to === 'wallet' ? (reset('home'), go('wallet')) : reset('home')); },
   };
 
@@ -309,44 +309,44 @@
       // highlight the last three digits (the unique part) in gold
       const amtHtml = odd ? `${esc(amt.slice(0, -3))}<em>${esc(amt.slice(-3))}</em>` : esc(amt);
       return `${backBtn()}<div class="scroll"><div class="page enter" style="padding-top:96px">
-        <div class="pay-brand"><span class="pay-logo">${I.card}</span><span><b>Cloud Gold Pay</b><span>کارت‌به‌کارت امن</span></span>
-          <span class="pay-lock"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8FCFA4" stroke-width="2.4" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>امن</span></div>
-        <div class="pay-steps">${['واریز', c.auto ? 'شناسایی خودکار' : 'ارسال رسید', 'بررسی', 'فعال‌سازی'].map((t, i) => `<div class="pay-step${i === 0 ? ' now' : ''}"><i>${faNum(i + 1)}</i><span>${t}</span></div>`).join('<b></b>')}</div>
+        <div class="pay-brand"><span class="pay-logo">${I.card}</span><span><b>Cloud Gold Pay</b><span>Secure card to card</span></span>
+          <span class="pay-lock"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8FCFA4" stroke-width="2.4" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Secure</span></div>
+        <div class="pay-steps">${['Transfer', c.auto ? 'Automatic match' : 'Send receipt', 'Review', 'Activation'].map((t, i) => `<div class="pay-step${i === 0 ? ' now' : ''}"><i>${faNum(i + 1)}</i><span>${t}</span></div>`).join('<b></b>')}</div>
 
         <div class="bank-card" style="background:linear-gradient(135deg,${esc(c.color1 || '#3A3020')} 0%,${esc(c.color2 || '#14110C')} 100%)">
           <span class="bank-glare"></span>
-          <div class="bank-top"><b>${c.bank ? 'بانک ' + esc(c.bank.replace(/^بانک\s*/, '')) : 'کارت مقصد'}</b><span class="bank-shetab">شتاب</span></div>
+          <div class="bank-top"><b>${c.bank ? 'Bank ' + esc(c.bank.replace(/^بانک\s*/, '')) : 'Destination card'}</b><span class="bank-shetab">Shetab</span></div>
           <div class="bank-chip">${CHIP}</div>
           <div class="bank-num ltr">${esc(fmtCard(c.number))}</div>
-          <div class="bank-bottom"><span>${esc(c.holder || '')}</span><button type="button" class="bank-copy js-copy" aria-label="کپی شماره کارت">${I.copy}<span>کپی</span></button></div>
+          <div class="bank-bottom"><span>${esc(c.holder || '')}</span><button type="button" class="bank-copy js-copy" aria-label="Copy card number">${I.copy}<span>Copy</span></button></div>
         </div>
 
         <div class="pay-card" style="margin-top:16px">
-          <span class="muted" style="font-size:12.5px">مبلغ دقیق واریز</span>
-          <div class="card-amount">${amtHtml} <small>تومان</small></div>
-          <div class="card-rial"><span>= <b class="ltr">${esc((c.amount_rial || o.amount_toman * 10).toLocaleString('fa-IR'))}</b> ریال</span>
-            <button type="button" class="icon-btn glass js-copy-rial" aria-label="کپی مبلغ به ریال">${I.copy}</button></div>
-          ${odd ? `<div class="pay-warn" style="margin:14px 0 0"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F3DDA0" stroke-width="2" stroke-linecap="round"><path d="M12 3l10 18H2zM12 10v5M12 18h.01"/></svg><span><b>دقیقاً همین مبلغ</b> را بفرست، حتی <b>${esc(amt.slice(-3))}</b> تومان آخرش. این‌طوری پرداختت بدون معطلی شناسایی می‌شود. (بیشتر اپ‌های بانکی مبلغ را به <b>ریال</b> می‌خواهند.)</span></div>` : ''}
-          ${c.auto ? `<div class="pay-auto" style="margin:14px 0 0"><span class="pay-auto-pulse"></span><span><b>تأیید خودکار روشن است</b>بعد از واریز، معمولاً در کمتر از یک دقیقه فعال می‌شوی. فرستادن رسید اختیاری است.</span></div>` : ''}
+          <span class="muted" style="font-size:12.5px">Exact amount to transfer</span>
+          <div class="card-amount">${amtHtml} <small>Toman</small></div>
+          <div class="card-rial"><span>= <b class="ltr">${esc((c.amount_rial || o.amount_toman * 10).toLocaleString('en-US'))}</b> Rial</span>
+            <button type="button" class="icon-btn glass js-copy-rial" aria-label="Copy amount in Rial">${I.copy}</button></div>
+          ${odd ? `<div class="pay-warn" style="margin:14px 0 0"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F3DDA0" stroke-width="2" stroke-linecap="round"><path d="M12 3l10 18H2zM12 10v5M12 18h.01"/></svg><span><b>Send exactly this amount</b>, including the last <b>${esc(amt.slice(-3))}</b> Toman. That way your payment is matched without delay. (Most banking apps ask for the amount in <b>Rial</b>.)</span></div>` : ''}
+          ${c.auto ? `<div class="pay-auto" style="margin:14px 0 0"><span class="pay-auto-pulse"></span><span><b>Automatic confirmation is on</b>After you transfer, you are usually active in under a minute. Sending the receipt is optional.</span></div>` : ''}
         </div>
 
-        <label class="field" style="margin-top:16px"><span>شماره پیگیری (اختیاری)</span><input class="input js-ref" dir="ltr" inputmode="numeric" placeholder="123456"></label>
-        <button type="button" class="pill-btn ${c.auto ? 'ghost' : 'white'} js-up">${c.auto ? 'ارسال عکس رسید (اختیاری)' : 'ارسال عکس رسید'}</button>
+        <label class="field" style="margin-top:16px"><span>Reference number (optional)</span><input class="input js-ref" dir="ltr" inputmode="numeric" placeholder="123456"></label>
+        <button type="button" class="pill-btn ${c.auto ? 'ghost' : 'white'} js-up">${c.auto ? 'Send receipt photo (optional)' : 'Send receipt photo'}</button>
         <div style="height:10px"></div>
-        <button type="button" class="pill-btn dark js-cancel">لغو سفارش</button>
-        <p class="muted" style="font-size:12px;line-height:19px;margin-top:14px;text-align:center">سفارش #${faNum(o.id)} · ${o.activate_plan_id ? `بعد از تأیید، پلن ${esc(o.activate_plan_name || '')} خودکار فعال می‌شود.` : o.kind === 'plan' ? 'بعد از تأیید پرداخت، اشتراکت خودکار فعال می‌شود.' : 'بعد از تأیید، مبلغ به کیف پولت اضافه می‌شود.'}</p>
+        <button type="button" class="pill-btn dark js-cancel">Cancel order</button>
+        <p class="muted" style="font-size:12px;line-height:19px;margin-top:14px;text-align:center">Order #${faNum(o.id)} · ${o.activate_plan_id ? `After confirmation, the plan ${esc(o.activate_plan_name || '')} activates automatically.` : o.kind === 'plan' ? 'After the payment is confirmed, your plan activates automatically.' : 'After confirmation, the amount is added to your wallet.'}</p>
       </div></div>`;
     },
     mount(root, p) {
       wireBack(root);
       const o = p.order, c = o.card || {};
       let alive = true, timer = 0;
-      root.querySelector('.js-copy').onclick = () => { call('copy', { text: String(c.number || '').replace(/\D/g, '') }); toast('شماره کارت کپی شد'); };
-      root.querySelector('.js-copy-rial').onclick = () => { call('copy', { text: String(c.amount_rial || o.amount_toman * 10) }); toast('مبلغ به ریال کپی شد'); };
-      root.querySelector('.js-cancel').onclick = () => sheet(`<h3>سفارش لغو شود؟</h3><p>اگر واریز کرده‌ای لغو نکن؛ صبر کن تا تأیید شود یا رسید را بفرست.</p>
-        <button class="pill-btn white" data-yes>لغو سفارش</button><div style="height:10px"></div><button class="pill-btn dark" data-no>بازگشت</button>`, (el, close) => {
+      root.querySelector('.js-copy').onclick = () => { call('copy', { text: String(c.number || '').replace(/\D/g, '') }); toast('Card number copied'); };
+      root.querySelector('.js-copy-rial').onclick = () => { call('copy', { text: String(c.amount_rial || o.amount_toman * 10) }); toast('Amount in Rial copied'); };
+      root.querySelector('.js-cancel').onclick = () => sheet(`<h3>Cancel this order?</h3><p>If you have already transferred, do not cancel; wait for confirmation or send the receipt.</p>
+        <button class="pill-btn white" data-yes>Cancel order</button><div style="height:10px"></div><button class="pill-btn dark" data-no>Back</button>`, (el, close) => {
         el.querySelector('[data-no]').onclick = close;
-        el.querySelector('[data-yes]').onclick = async () => { close(); try { await api('POST', `/orders/${o.id}/cancel`); toast('سفارش لغو شد'); back('premium'); } catch (e) { toast(e.message, true); } };
+        el.querySelector('[data-yes]').onclick = async () => { close(); try { await api('POST', `/orders/${o.id}/cancel`); toast('Order cancelled'); back('premium'); } catch (e) { toast(e.message, true); } };
       });
       root.querySelector('.js-up').onclick = async (ev) => {
         const btn = ev.currentTarget;
@@ -357,7 +357,7 @@
           if (r.status >= 400) throw new CG.ApiError(r.status, r.data && r.data.detail);
           alive = false;
           go('order', { id: o.id });
-        } catch (e) { toast(e.message || 'ارسال ناموفق بود.', true); } finally { if (document.body.contains(btn)) busyButton(btn, false); }
+        } catch (e) { toast(e.message || 'Sending failed.', true); } finally { if (document.body.contains(btn)) busyButton(btn, false); }
       };
       // the bank SMS can confirm this order while the user is still here
       const poll = async () => {
@@ -390,22 +390,22 @@
         if (o.status === 'paid') { alive = false; afterPaid(o); return; }
         let h = '';
         if (o.status === 'pending' && o.method === 'crypto') {
-          h = `${icon('#F3DDA0', 'M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z')}<h1 class="title-grad" style="margin-top:28px">در انتظار پرداخت</h1>
-            <p style="color:var(--body);font-size:15px;line-height:25px">پرداخت را در صفحه‌ی کریپتو تمام کن. وقتی شبکه تأیید کند (معمولاً چند دقیقه) این صفحه خودش به‌روز می‌شود.</p>
-            <div style="height:14px"></div><button class="pill-btn white js-open">باز کردن صفحه‌ی پرداخت</button><div style="height:10px"></div><button class="pill-btn dark js-cancel">لغو سفارش</button>`;
+          h = `${icon('#F3DDA0', 'M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z')}<h1 class="title-grad" style="margin-top:28px">Waiting for payment</h1>
+            <p style="color:var(--body);font-size:15px;line-height:25px">Finish the payment on the crypto page. When the network confirms it (usually a few minutes), this page updates by itself.</p>
+            <div style="height:14px"></div><button class="pill-btn white js-open">Open payment page</button><div style="height:10px"></div><button class="pill-btn dark js-cancel">Cancel order</button>`;
         } else if (o.status === 'pending') {
-          h = `<h1 class="title-grad">رسید لازم است</h1><p style="color:var(--body)">برای ادامه، عکس رسید واریز را بفرست.</p><button class="pill-btn white js-card">ادامه</button>`;
+          h = `<h1 class="title-grad">Receipt needed</h1><p style="color:var(--body)">To continue, send a photo of the transfer receipt.</p><button class="pill-btn white js-card">Continue</button>`;
         } else if (o.status === 'review') {
-          h = `${icon('#E8C77A', 'M9 12l2 2 4-4M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z')}<h1 class="title-grad" style="margin-top:28px">رسید دریافت شد</h1>
-            <p style="color:var(--body);font-size:15px;line-height:25px">در حال بررسی واریز هستیم. بعد از تأیید، ${o.kind === 'topup' && !o.activate_plan_id ? 'کیف پولت شارژ می‌شود' : 'اشتراکت خودکار فعال می‌شود'}. می‌توانی اپ را ببندی؛ وقتی برگردی همه‌چیز آماده است.</p>
-            <div style="height:14px"></div><button class="pill-btn dark js-home">بازگشت به صفحه‌ی اصلی</button>`;
+          h = `${icon('#E8C77A', 'M9 12l2 2 4-4M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z')}<h1 class="title-grad" style="margin-top:28px">Receipt received</h1>
+            <p style="color:var(--body);font-size:15px;line-height:25px">We are checking the transfer. After confirmation, ${o.kind === 'topup' && !o.activate_plan_id ? 'your wallet is topped up' : 'your plan activates automatically'}. You can close the app; everything will be ready when you come back.</p>
+            <div style="height:14px"></div><button class="pill-btn dark js-home">Back to home</button>`;
         } else if (o.status === 'rejected') {
-          h = `${icon('#E2715C', 'M15 9l-6 6M9 9l6 6M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z')}<h1 class="title-grad" style="margin-top:28px">رسید تأیید نشد</h1>
-            <p style="color:var(--body);font-size:15px;line-height:25px">${esc(o.admin_note || 'این رسید با واریزی مطابقت نداشت.')}</p>
-            <div style="height:14px"></div><button class="pill-btn white js-card">ارسال رسید دیگر</button><div style="height:10px"></div><button class="pill-btn dark js-support">پیام به پشتیبانی</button>`;
+          h = `${icon('#E2715C', 'M15 9l-6 6M9 9l6 6M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z')}<h1 class="title-grad" style="margin-top:28px">Receipt not accepted</h1>
+            <p style="color:var(--body);font-size:15px;line-height:25px">${esc(o.admin_note || 'This receipt did not match a transfer.')}</p>
+            <div style="height:14px"></div><button class="pill-btn white js-card">Send another receipt</button><div style="height:10px"></div><button class="pill-btn dark js-support">Message support</button>`;
         } else {
-          h = `${icon('#A39783', 'M12 8v4M12 16h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z')}<h1 class="title-grad" style="margin-top:28px">${{ cancelled: 'سفارش لغو شد', expired: 'مهلت سفارش تمام شد' }[o.status] || 'سفارش بسته شد'}</h1>
-            <p style="color:var(--body)">این سفارش بسته شده. هر وقت خواستی سفارش جدید ثبت کن.</p><div style="height:14px"></div><button class="pill-btn white js-plans">دیدن پلن‌ها</button>`;
+          h = `${icon('#A39783', 'M12 8v4M12 16h.01M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0z')}<h1 class="title-grad" style="margin-top:28px">${{ cancelled: 'Order cancelled', expired: 'Order time ran out' }[o.status] || 'Order closed'}</h1>
+            <p style="color:var(--body)">This order is closed. Place a new order any time.</p><div style="height:14px"></div><button class="pill-btn white js-plans">See plans</button>`;
         }
         body.innerHTML = h;
         const b = (c, fn) => { const el = body.querySelector(c); if (el) el.onclick = fn; };
@@ -431,18 +431,18 @@
 
   screens.orders = {
     fit: 'width',
-    html: () => `${backBtn()}<div class="scroll"><div class="page enter"><h1 class="title-grad">پرداخت‌های من</h1><div class="panel js-list"><div class="skeleton" style="height:48px"></div></div></div></div>`,
+    html: () => `${backBtn()}<div class="scroll"><div class="page enter"><h1 class="title-grad">My payments</h1><div class="panel js-list"><div class="skeleton" style="height:48px"></div></div></div></div>`,
     mount(root) {
       wireBack(root, 'premium');
-      const label = { pending: 'در انتظار پرداخت', review: 'در حال بررسی', paid: 'پرداخت شده', rejected: 'رد شده', cancelled: 'لغو شده', expired: 'منقضی' };
-      const mlabel = { card: 'کارت‌به‌کارت', wallet: 'کیف پول', crypto: 'کریپتو', coin: 'ارز دیجیتال' };
+      const label = { pending: 'Waiting for payment', review: 'Under review', paid: 'Paid', rejected: 'Rejected', cancelled: 'Cancelled', expired: 'Expired' };
+      const mlabel = { card: 'Card to card', wallet: 'Wallet', crypto: 'Crypto', coin: 'Cryptocurrency' };
       const color = { paid: '#8FCFA4', review: '#E8C77A', rejected: '#E2715C', pending: '#F3DDA0' };
       api('GET', '/orders').then((rows) => {
         const el = root.querySelector('.js-list');
-        if (!rows.length) { el.innerHTML = '<p class="muted" style="margin:0 0 14px;text-align:center;line-height:22px">هنوز پرداختی نداشته‌ای. با خرید اولین پلن، رسیدش اینجا می‌ماند.</p><button type="button" class="pill-btn dark js-buy" style="height:44px;font-size:14px">دیدن پلن‌ها</button>'; el.querySelector('.js-buy').onclick = () => go('premium', { from: 'orders' }); return; }
+        if (!rows.length) { el.innerHTML = '<p class="muted" style="margin:0 0 14px;text-align:center;line-height:22px">No payments yet. After your first plan, its receipt stays here.</p><button type="button" class="pill-btn dark js-buy" style="height:44px;font-size:14px">See plans</button>'; el.querySelector('.js-buy').onclick = () => go('premium', { from: 'orders' }); return; }
         el.innerHTML = rows.map((o) => `<button type="button" class="row-line" data-id="${o.id}" style="width:100%">
-          <span><b style="font-weight:500">${o.kind === 'plan' ? esc(o.plan_name || 'پلن') : o.activate_plan_id ? 'شارژ و خرید ' + esc(o.activate_plan_name || '') : 'شارژ کیف پول'}</b><br><span class="muted" style="font-size:12px">#${faNum(o.id)} · ${mlabel[o.method] || o.method} · ${faDate(o.created_at)}</span></span>
-          <span style="text-align:left"><span class="serif" style="font-size:18px;color:var(--ivory)">${toman(o.amount_toman)}</span> <span class="muted" style="font-size:12px">تومان</span><br><span style="font-size:12px;color:${color[o.status] || '#8F8676'}">${label[o.status] || o.status}</span></span></button>`).join('');
+          <span><b style="font-weight:500">${o.kind === 'plan' ? esc(o.plan_name || 'Plan') : o.activate_plan_id ? 'Top up and buy ' + esc(o.activate_plan_name || '') : 'Top up wallet'}</b><br><span class="muted" style="font-size:12px">#${faNum(o.id)} · ${mlabel[o.method] || o.method} · ${faDate(o.created_at)}</span></span>
+          <span style="text-align:left"><span class="serif" style="font-size:18px;color:var(--ivory)">${toman(o.amount_toman)}</span> <span class="muted" style="font-size:12px">Toman</span><br><span style="font-size:12px;color:${color[o.status] || '#8F8676'}">${label[o.status] || o.status}</span></span></button>`).join('');
         el.querySelectorAll('[data-id]').forEach((b) => {
           const o = rows.find((x) => x.id === +b.dataset.id);
           b.onclick = () => (o.method === 'coin' && ['pending', 'review', 'rejected', 'expired'].includes(o.status) ? go('coin', { order: o }) : o.status === 'pending' && o.method === 'card' ? go('card', { order: o }) : ['pending', 'review', 'rejected'].includes(o.status) ? go('order', { id: o.id }) : null);
@@ -455,17 +455,17 @@
   screens.wallet = {
     fit: 'width',
     html: () => `${backBtn()}<div class="scroll"><div class="page enter">
-      <h1 class="title-grad">کیف پول</h1>
+      <h1 class="title-grad">Wallet</h1>
       <div class="panel" style="text-align:center;padding:26px 20px">
-        <div class="muted" style="font-size:13px">موجودی</div>
-        <div class="js-bal serif" style="font-size:48px;font-weight:600;line-height:58px;margin-top:4px;color:var(--gilt)">${toman(S.me ? S.me.wallet_balance : 0)} <span style="font-size:20px;font-weight:500;color:var(--body)">تومان</span></div>
-        <div class="muted" style="font-size:12.5px;margin-top:6px">با کیف پول پلن را فوری بخر. پاداش دعوت دوستان هم اینجا می‌آید.</div>
+        <div class="muted" style="font-size:13px">Balance</div>
+        <div class="js-bal serif" style="font-size:48px;font-weight:600;line-height:58px;margin-top:4px;color:var(--gilt)">${toman(S.me ? S.me.wallet_balance : 0)} <span style="font-size:20px;font-weight:500;color:var(--body)">Toman</span></div>
+        <div class="muted" style="font-size:12.5px;margin-top:6px">Buy a plan instantly with your wallet. Invite rewards also arrive here.</div>
       </div>
-      <h2 style="font-size:17px;font-weight:500;margin:26px 0 12px">شارژ کیف پول</h2>
+      <h2 style="font-size:17px;font-weight:500;margin:26px 0 12px">Top up wallet</h2>
       <div class="js-chips" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px"></div>
-      <label class="field" style="margin-top:12px"><span>یا مبلغ دلخواه (تومان)</span><input class="input js-amt" inputmode="numeric" placeholder="۳۰۰٬۰۰۰"></label>
-      <button type="button" class="pill-btn white js-top">شارژ</button>
-      <h2 style="font-size:17px;font-weight:500;margin:28px 0 8px">تراکنش‌ها</h2>
+      <label class="field" style="margin-top:12px"><span>Or a custom amount (Toman)</span><input class="input js-amt" inputmode="numeric" placeholder="300,000"></label>
+      <button type="button" class="pill-btn white js-top">Top up</button>
+      <h2 style="font-size:17px;font-weight:500;margin:28px 0 8px">Transactions</h2>
       <div class="panel js-tx" style="padding:4px 18px"><div class="skeleton" style="height:44px;margin:12px 0"></div></div>
     </div></div>`,
     mount(root) {
@@ -478,17 +478,17 @@
       amt.oninput = () => { const d = num(amt.value); amt.value = d ? toman(d) : ''; root.querySelectorAll('[data-v]').forEach((x) => x.classList.remove('on')); };
       root.querySelector('.js-top').onclick = () => {
         const v = num(amt.value);
-        if (!v) return toast('یک مبلغ انتخاب یا وارد کن.', true);
-        if (v < min) return toast(`حداقل مبلغ شارژ ${toman(min)} تومان است.`, true);
+        if (!v) return toast('Choose or enter an amount.', true);
+        if (v < min) return toast(`The minimum top-up is ${toman(min)} Toman.`, true);
         payFor({ topup: v });
       };
-      const reasons = { topup: 'شارژ', purchase: 'خرید پلن', referral: 'پاداش دعوت', refund: 'بازگشت وجه', admin: 'اصلاح توسط پشتیبانی' };
+      const reasons = { topup: 'Top up', purchase: 'Plan purchase', referral: 'Invite reward', refund: 'Refund', admin: 'Correction by support' };
       api('GET', '/wallet').then((w) => {
-        root.querySelector('.js-bal').innerHTML = `${toman(w.balance)} <span style="font-size:20px;font-weight:500;color:var(--body)">تومان</span>`;
+        root.querySelector('.js-bal').innerHTML = `${toman(w.balance)} <span style="font-size:20px;font-weight:500;color:var(--body)">Toman</span>`;
         if (S.me) S.me.wallet_balance = w.balance;
         const el = root.querySelector('.js-tx');
         el.innerHTML = w.transactions.length ? w.transactions.map((t) => `<div class="row-line"><span>${esc(reasons[t.reason] || t.reason)}<br><span class="muted" style="font-size:12px">${faDate(t.created_at)}${t.note ? ' · ' + esc(t.note) : ''}</span></span>
-          <span class="ltr" style="color:${t.amount >= 0 ? '#8FCFA4' : '#F2EADB'};font-size:15px;font-weight:600">${t.amount >= 0 ? '+' : '−'}${toman(Math.abs(t.amount))}</span></div>`).join('') : '<p class="muted" style="margin:14px 0;text-align:center">هنوز تراکنشی نداری.</p>';
+          <span class="ltr" style="color:${t.amount >= 0 ? '#8FCFA4' : '#F2EADB'};font-size:15px;font-weight:600">${t.amount >= 0 ? '+' : '−'}${toman(Math.abs(t.amount))}</span></div>`).join('') : '<p class="muted" style="margin:14px 0;text-align:center">No transactions yet.</p>';
       }).catch((e) => toast(e.message, true));
     },
   };
@@ -505,17 +505,17 @@
       </div>
       ${backBtn()}${closeBtn()}
       <div style="position:absolute;left:0;top:118px;width:390px;display:flex;flex-direction:column;align-items:center;text-align:center">
-        <h1 class="title-grad" style="margin:0;font-size:44px;line-height:54px">دعوت دوستان<br>و کسب پاداش</h1>
-        <p class="js-pct" style="margin:16px 26px 0;font-size:14.5px;line-height:23px;color:var(--body)">از هر خرید دوستانت پاداش بگیر</p>
+        <h1 class="title-grad" style="margin:0;font-size:44px;line-height:54px">Invite friends<br>and earn rewards</h1>
+        <p class="js-pct" style="margin:16px 26px 0;font-size:14.5px;line-height:23px;color:var(--body)">Earn a reward from every purchase your friends make</p>
         <p class="js-stats" style="margin:8px 0 0;font-size:13px;color:var(--gilt)"></p>
       </div>
       <div style="position:absolute;left:20px;top:calc(var(--sh) - 198px);width:350px;display:flex;flex-direction:column;gap:12px">
         <div style="height:58px;border-radius:18px;border:1px dashed rgba(214,174,92,.45);background:#13110D;display:flex;align-items:center;justify-content:space-between;padding:0 8px 0 18px">
-          <span style="font-size:13px;color:var(--ash)">کد تو</span>
+          <span style="font-size:13px;color:var(--ash)">Your code</span>
           <span class="js-code ltr" style="font-size:19px;font-weight:700;letter-spacing:3px;color:var(--gilt)">·······</span>
-          <button type="button" class="js-copy" style="height:40px;padding:0 16px;border-radius:13px;background:rgba(214,174,92,.12);color:var(--gilt);font-size:14px;font-weight:600">کپی</button>
+          <button type="button" class="js-copy" style="height:40px;padding:0 16px;border-radius:13px;background:rgba(214,174,92,.12);color:var(--gilt);font-size:14px;font-weight:600">Copy</button>
         </div>
-        <button type="button" class="pill-btn white js-share" style="font-size:16px">ارسال دعوت</button>
+        <button type="button" class="pill-btn white js-share" style="font-size:16px">Send invite</button>
       </div>`,
     mount(root) {
       wireBack(root);
@@ -523,12 +523,12 @@
       api('GET', '/referral').then((r) => {
         ref = r;
         root.querySelector('.js-code').textContent = r.code;
-        if (r.percent) root.querySelector('.js-pct').textContent = `${faNum(r.percent)}٪ از مبلغ هر خرید دوستانت به کیف پولت اضافه می‌شود`;
-        root.querySelector('.js-stats').textContent = `${faNum(r.invited)} دوست عضو شده · ${toman(r.earned_toman)} تومان پاداش`;
+        if (r.percent) root.querySelector('.js-pct').textContent = `${faNum(r.percent)}% of every purchase your friends make is added to your wallet`;
+        root.querySelector('.js-stats').textContent = `${faNum(r.invited)} friends joined, ${toman(r.earned_toman)} Toman earned`;
       }).catch((e) => toast(e.message, true));
       const copy = root.querySelector('.js-copy');
-      copy.onclick = () => { if (!ref) return; call('copy', { text: ref.code }); copy.textContent = 'کپی شد'; setTimeout(() => { copy.textContent = 'کپی'; }, 1600); };
-      root.querySelector('.js-share').onclick = () => { if (ref) call('share', { text: `${ref.share_text}. موقع ثبت‌نام کد را وارد کن.` }); };
+      copy.onclick = () => { if (!ref) return; call('copy', { text: ref.code }); copy.textContent = 'Copied'; setTimeout(() => { copy.textContent = 'Copy'; }, 1600); };
+      root.querySelector('.js-share').onclick = () => { if (ref) call('share', { text: `${ref.share_text}. Enter the code when you sign up.` }); };
     },
   };
 
@@ -558,11 +558,11 @@
       return `<rect x="${(x + cell * 0.5).toFixed(2)}" y="${(y + cell * 0.5).toFixed(2)}" width="${(cell * 6).toFixed(2)}" height="${(cell * 6).toFixed(2)}" rx="${(cell * 1.8).toFixed(2)}" fill="none" stroke="url(#qrG)" stroke-width="${cell.toFixed(2)}"/>`
         + `<rect x="${(x + cell * 2).toFixed(2)}" y="${(y + cell * 2).toFixed(2)}" width="${(cell * 3).toFixed(2)}" height="${(cell * 3).toFixed(2)}" rx="${(cell * 0.9).toFixed(2)}" fill="url(#qrG)"/>`;
     };
-    return `<svg width="${px}" height="${px}" viewBox="0 0 ${px} ${px}" role="img" aria-label="QR آدرس ولت"><defs><linearGradient id="qrG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFE7A3"/><stop offset=".55" stop-color="#E9B949"/><stop offset="1" stop-color="#B9832A"/></linearGradient></defs>
+    return `<svg width="${px}" height="${px}" viewBox="0 0 ${px} ${px}" role="img" aria-label="Wallet address QR"><defs><linearGradient id="qrG" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#FFE7A3"/><stop offset=".55" stop-color="#E9B949"/><stop offset="1" stop-color="#B9832A"/></linearGradient></defs>
       <rect width="${px}" height="${px}" rx="22" fill="#0E0C09"/><g fill="url(#qrG)">${dots}</g>${eye(0, 0)}${eye(0, n - 7)}${eye(n - 7, 0)}</svg>`;
   }
 
-  const COIN_STEPS = ['ارسال ارز', 'ثبت پرداخت', 'تأیید شبکه', 'فعال‌سازی'];
+  const COIN_STEPS = ['Send coins', 'Report payment', 'Network confirmation', 'Activation'];
   const shortTx = (t) => (t && t.length > 18 ? t.slice(0, 8) + '…' + t.slice(-8) : t || '');
   const mmss = (sec) => { sec = Math.max(0, sec | 0); return `${String(Math.floor(sec / 60)).padStart(2, '0')}:${String(sec % 60).padStart(2, '0')}`; };
 
@@ -577,8 +577,8 @@
       const step = (st) => (st === 'paid' ? 4 : st === 'review' ? 2 : 0);
 
       function head(c) {
-        return `<div class="pay-brand"><span class="pay-logo">${I.gem}</span><span><b>Cloud Gold Pay</b><span>پرداخت امن با ارز دیجیتال</span></span>
-          <span class="pay-lock"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8FCFA4" stroke-width="2.4" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>امن</span></div>`;
+        return `<div class="pay-brand"><span class="pay-logo">${I.gem}</span><span><b>Cloud Gold Pay</b><span>Secure cryptocurrency payment</span></span>
+          <span class="pay-lock"><svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#8FCFA4" stroke-width="2.4" stroke-linecap="round"><rect x="5" y="11" width="14" height="10" rx="2.5"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>Secure</span></div>`;
       }
       function steps(cur) {
         return `<div class="pay-steps">${COIN_STEPS.map((t, i) => `<div class="pay-step${i < cur ? ' done' : i === cur ? ' now' : ''}"><i>${i < cur ? I.check : faNum(i + 1)}</i><span>${t}</span></div>`).join('<b></b>')}</div>`;
@@ -589,7 +589,7 @@
 
       function render() {
         const c = o.coin;
-        if (!c) { body.innerHTML = '<p class="muted" style="text-align:center">این سفارش پرداخت ارز دیجیتال نیست.</p>'; return; }
+        if (!c) { body.innerHTML = '<p class="muted" style="text-align:center">This order is not a cryptocurrency payment.</p>'; return; }
         const key = o.status + '|' + (o.txid || '') + '|' + (o.admin_note || '');
         if (key === lastKey) return;
         lastKey = key;
@@ -598,47 +598,47 @@
         if (o.status === 'pending') {
           h += steps(0) + `
             <div class="pay-card">
-              <div class="pay-amount-row">${coinBadge(c, 44)}<div style="flex:1;min-width:0"><span class="muted" style="font-size:12.5px">مبلغ قابل پرداخت</span>
-                <div class="pay-amount ltr"><b>${esc(c.amount)}</b> ${esc(c.symbol)}</div><span class="muted" style="font-size:12px">≈ ${toman(o.amount_toman)} تومان</span></div>
-                <button type="button" class="icon-btn glass js-copy-amt" aria-label="کپی مبلغ">${I.copy}</button></div>
-              <div class="pay-warn"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F3DDA0" stroke-width="2" stroke-linecap="round"><path d="M12 3l10 18H2zM12 10v5M12 18h.01"/></svg><span>فقط روی شبکه‌ی <b>${esc(c.network)}</b> و <b>دقیقاً همین مبلغ</b> را بفرست${c.memo ? `، و <b>${esc(c.memo_label)}</b> را حتماً وارد کن` : ''}.</span></div>
-              <div class="pay-fee"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8FCFA4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>کارمزد شبکه: <b>${esc(c.fee || 'کم')}</b></div>
-              ${c.auto ? `<div class="pay-auto"><span class="pay-auto-pulse"></span><span><b>تأیید خودکار روشن است</b>بعد از واریز، شبکه خودکار بررسی می‌شود و معمولاً در کمتر از یک دقیقه فعال می‌شوی. لازم نیست کاری بکنی.</span></div>` : ''}
+              <div class="pay-amount-row">${coinBadge(c, 44)}<div style="flex:1;min-width:0"><span class="muted" style="font-size:12.5px">Amount to pay</span>
+                <div class="pay-amount ltr"><b>${esc(c.amount)}</b> ${esc(c.symbol)}</div><span class="muted" style="font-size:12px">≈ ${toman(o.amount_toman)} Toman</span></div>
+                <button type="button" class="icon-btn glass js-copy-amt" aria-label="Copy amount">${I.copy}</button></div>
+              <div class="pay-warn"><svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#F3DDA0" stroke-width="2" stroke-linecap="round"><path d="M12 3l10 18H2zM12 10v5M12 18h.01"/></svg><span>Send <b>exactly this amount</b>, only on the <b>${esc(c.network)}</b> network${c.memo ? `, and be sure to enter the <b>${esc(c.memo_label)}</b>` : ''}.</span></div>
+              <div class="pay-fee"><svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#8FCFA4" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>Network fee: <b>${esc(c.fee || 'Low')}</b></div>
+              ${c.auto ? `<div class="pay-auto"><span class="pay-auto-pulse"></span><span><b>Automatic confirmation is on</b>After you send, the network is checked automatically and you are usually active in under a minute. You do not need to do anything.</span></div>` : ''}
               <div class="pay-qr">${qrSvg(c.address, 208)}<span class="pay-qr-logo">${coinBadge(c, 40)}</span></div>
-              <span class="muted" style="font-size:12.5px;display:block;margin-top:14px">آدرس ولت ${esc(c.fa)}</span>
-              <div class="pay-addr"><span class="ltr">${esc(c.address)}</span><button type="button" class="icon-btn glass js-copy-addr" aria-label="کپی آدرس">${I.copy}</button></div>
-              ${c.memo ? `<span style="font-size:12.5px;display:block;margin-top:14px;color:#EE9A86"><b>${esc(c.memo_label)}</b> · بدون آن واریز به حساب نمی‌نشیند</span>
-              <div class="pay-addr pay-memo"><span class="ltr">${esc(c.memo)}</span><button type="button" class="icon-btn glass js-copy-memo" aria-label="کپی ${esc(c.memo_label)}">${I.copy}</button></div>` : ''}
+              <span class="muted" style="font-size:12.5px;display:block;margin-top:14px">Wallet address ${esc(c.fa)}</span>
+              <div class="pay-addr"><span class="ltr">${esc(c.address)}</span><button type="button" class="icon-btn glass js-copy-addr" aria-label="Copy address">${I.copy}</button></div>
+              ${c.memo ? `<span style="font-size:12.5px;display:block;margin-top:14px;color:#EE9A86"><b>${esc(c.memo_label)}</b>, without it the deposit cannot be credited</span>
+              <div class="pay-addr pay-memo"><span class="ltr">${esc(c.memo)}</span><button type="button" class="icon-btn glass js-copy-memo" aria-label="Copy ${esc(c.memo_label)}">${I.copy}</button></div>` : ''}
               <div class="pay-timer"><svg width="38" height="38" viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="17" fill="none" stroke="rgba(214,174,92,.14)" stroke-width="3"/><circle class="js-ring" cx="20" cy="20" r="17" fill="none" stroke="url(#tmG)" stroke-width="3" stroke-linecap="round" stroke-dasharray="106.8" transform="rotate(-90 20 20)"/><defs><linearGradient id="tmG"><stop offset="0" stop-color="#FFE7A3"/><stop offset="1" stop-color="#E9B949"/></linearGradient></defs></svg>
-                <span><b class="js-left ltr">--:--</b><span class="muted" style="font-size:12px;display:block">قیمت تا این زمان برایت قفل است</span></span></div>
+                <span><b class="js-left ltr">--:--</b><span class="muted" style="font-size:12px;display:block">Your price is locked until this time</span></span></div>
             </div>
-            ${c.auto ? '' : txBox('هش تراکنش (اختیاری؛ تأیید را سریع‌تر می‌کند)')}
-            <button type="button" class="pill-btn gold js-paid">${c.auto ? 'پرداخت کردم (اختیاری)' : 'پرداخت کردم'}</button>
-            <div style="height:10px"></div><button type="button" class="pill-btn dark js-cancel">لغو سفارش</button>
-            <p class="muted" style="font-size:12px;line-height:19px;text-align:center;margin-top:14px">سفارش #${faNum(o.id)} · بعد از تأیید شبکه، ${o.kind === 'topup' && !o.activate_plan_id ? 'کیف پولت خودکار شارژ می‌شود' : 'اشتراکت خودکار فعال می‌شود'}.</p>`;
+            ${c.auto ? '' : txBox('Transaction hash (optional; makes confirmation faster)')}
+            <button type="button" class="pill-btn gold js-paid">${c.auto ? 'I have paid (optional)' : 'I have paid'}</button>
+            <div style="height:10px"></div><button type="button" class="pill-btn dark js-cancel">Cancel order</button>
+            <p class="muted" style="font-size:12px;line-height:19px;text-align:center;margin-top:14px">Order #${faNum(o.id)}, after network confirmation, ${o.kind === 'topup' && !o.activate_plan_id ? 'your wallet is topped up automatically' : 'your plan activates automatically'}.</p>`;
         } else if (o.status === 'review') {
           h += steps(2) + `
             <div class="pay-card" style="text-align:center;padding:30px 20px">
               <div class="pay-verify">${coinBadge(c, 64)}<span></span><span></span></div>
-              <h2 style="margin:22px 0 8px;font-size:20px;font-weight:600">در حال تأیید تراکنش</h2>
-              <p style="color:var(--body);font-size:14px;line-height:24px;margin:0">پرداخت <b class="ltr" style="color:var(--gilt)">${esc(c.amount)} ${esc(c.symbol)}</b> روی شبکه‌ی ${esc(c.network)} در حال بررسی است. بعد از تأیید، ${o.kind === 'topup' && !o.activate_plan_id ? 'کیف پولت شارژ می‌شود' : 'اشتراکت خودکار فعال می‌شود'}؛ این صفحه خودش به‌روز می‌شود.</p>
+              <h2 style="margin:22px 0 8px;font-size:20px;font-weight:600">Confirming the transaction</h2>
+              <p style="color:var(--body);font-size:14px;line-height:24px;margin:0">Pay <b class="ltr" style="color:var(--gilt)">${esc(c.amount)} ${esc(c.symbol)}</b> on the ${esc(c.network)} network is being checked. After confirmation, ${o.kind === 'topup' && !o.activate_plan_id ? 'your wallet is topped up' : 'your plan activates automatically'}; this page updates by itself.</p>
               ${o.txid ? `<div class="pay-tx ltr">${esc(shortTx(o.txid))}</div>` : ''}
             </div>
-            ${o.txid ? '' : txBox('اگر هش تراکنش را داری، اینجا بفرست تا سریع‌تر تأیید شود') + '<button type="button" class="pill-btn dark js-paid">ارسال هش تراکنش</button>'}
-            <div style="height:10px"></div><button type="button" class="pill-btn ghost js-home">بازگشت به صفحه‌ی اصلی</button>`;
+            ${o.txid ? '' : txBox('If you have the transaction hash, send it here for faster confirmation') + '<button type="button" class="pill-btn dark js-paid">Send transaction hash</button>'}
+            <div style="height:10px"></div><button type="button" class="pill-btn ghost js-home">Back to home</button>`;
         } else if (o.status === 'expired' || o.status === 'rejected') {
           const exp = o.status === 'expired';
           h += `<div class="pay-card" style="text-align:center;padding:28px 20px">
               <div class="pay-verify off">${coinBadge(c, 56)}</div>
-              <h2 style="margin:20px 0 8px;font-size:20px;font-weight:600">${exp ? 'زمان قیمت قفل‌شده تمام شد' : 'واریز تأیید نشد'}</h2>
-              <p style="color:var(--body);font-size:14px;line-height:24px;margin:0">${exp ? 'اگر هنوز چیزی نفرستاده‌ای، یک سفارش تازه با قیمت جدید بساز. اگر فرستاده‌ای، هش تراکنش را بفرست تا بررسی کنیم.' : esc(o.admin_note || 'واریزی با این مشخصات پیدا نشد.')}</p>
+              <h2 style="margin:20px 0 8px;font-size:20px;font-weight:600">${exp ? 'The locked price has expired' : 'Deposit not confirmed'}</h2>
+              <p style="color:var(--body);font-size:14px;line-height:24px;margin:0">${exp ? 'If you have not sent anything yet, create a new order at the new price. If you have, send the transaction hash so we can check.' : esc(o.admin_note || 'No deposit with these details was found.')}</p>
             </div>
-            ${txBox('هش تراکنش')}
-            <button type="button" class="pill-btn white js-paid">${exp ? 'پرداخت کرده‌ام، بررسی کنید' : 'ارسال دوباره‌ی هش'}</button>
-            <div style="height:10px"></div><button type="button" class="pill-btn dark js-new">سفارش جدید</button>
-            <div style="height:10px"></div><button type="button" class="pill-btn ghost js-support">پیام به پشتیبانی</button>`;
+            ${txBox('Transaction hash')}
+            <button type="button" class="pill-btn white js-paid">${exp ? 'I have paid, please check' : 'Send the hash again'}</button>
+            <div style="height:10px"></div><button type="button" class="pill-btn dark js-new">New order</button>
+            <div style="height:10px"></div><button type="button" class="pill-btn ghost js-support">Message support</button>`;
         } else {
-          h += `<p class="muted" style="text-align:center">این سفارش بسته شده است.</p><button type="button" class="pill-btn white js-new">سفارش جدید</button>`;
+          h += `<p class="muted" style="text-align:center">This order is closed.</p><button type="button" class="pill-btn white js-new">New order</button>`;
         }
         body.innerHTML = h;
         bind();
@@ -648,16 +648,16 @@
       function bind() {
         const b = (sel, fn) => { const el = body.querySelector(sel); if (el) el.onclick = fn; };
         const c = o.coin;
-        b('.js-copy-amt', () => { call('copy', { text: c.amount }); toast('مبلغ کپی شد'); });
-        b('.js-copy-addr', () => { call('copy', { text: c.address }); toast('آدرس ولت کپی شد'); });
-        b('.js-copy-memo', () => { call('copy', { text: c.memo }); toast(`${c.memo_label} کپی شد`); });
+        b('.js-copy-amt', () => { call('copy', { text: c.amount }); toast('Amount copied'); });
+        b('.js-copy-addr', () => { call('copy', { text: c.address }); toast('Wallet address copied'); });
+        b('.js-copy-memo', () => { call('copy', { text: c.memo }); toast(`${c.memo_label} copied`); });
         b('.js-home', () => reset('home'));
         b('.js-support', openSupport);
         b('.js-new', () => { reset('home'); go('premium', { from: 'home' }); });
-        b('.js-cancel', () => sheet(`<h3>سفارش لغو شود؟</h3><p>اگر ارز را فرستاده‌ای، لغو نکن؛ «پرداخت کردم» را بزن.</p>
-          <button class="pill-btn white" data-yes>لغو سفارش</button><div style="height:10px"></div><button class="pill-btn dark" data-no>بازگشت</button>`, (el, close) => {
+        b('.js-cancel', () => sheet(`<h3>Cancel this order?</h3><p>If you have sent the coins, do not cancel; tap “I have paid”.</p>
+          <button class="pill-btn white" data-yes>Cancel order</button><div style="height:10px"></div><button class="pill-btn dark" data-no>Back</button>`, (el, close) => {
           el.querySelector('[data-no]').onclick = close;
-          el.querySelector('[data-yes]').onclick = async () => { close(); try { await api('POST', `/orders/${o.id}/cancel`); toast('سفارش لغو شد'); back('premium'); } catch (e) { toast(e.message, true); } };
+          el.querySelector('[data-yes]').onclick = async () => { close(); try { await api('POST', `/orders/${o.id}/cancel`); toast('Order cancelled'); back('premium'); } catch (e) { toast(e.message, true); } };
         }));
         b('.js-paid', async (ev) => {
           const btn = ev.currentTarget, inp = body.querySelector('.js-tx'), errEl = body.querySelector('.js-txerr');
@@ -708,9 +708,9 @@
   // ---------------- ACCOUNT / MY SUBSCRIPTION ----------------
   // the plan card lives on the usage tab now; here only a short line that leads there, from /me's own fields
   function subCard(sub) {
-    if (!sub) return `<button type="button" class="row-line js-usage" style="width:100%">${esc(CG.t('stop.none'))}<span>‹</span></button>`;
+    if (!sub) return `<button type="button" class="row-line js-usage" style="width:100%">${esc(CG.t('stop.none'))}<span>›</span></button>`;
     const left = sub.unlimited_time ? CG.t('us.no_expiry') : CG.i18n.n(sub.days_left) + ' ' + CG.t('us.days_left');
-    return `<button type="button" class="row-line js-usage" style="width:100%"><span>${esc(sub.plan_name || CG.t('app.name'))} · ${esc(CG.t('us.status.' + (sub.status || 'unknown')))}<br><span class="muted" style="font-size:12px">${esc(left)}</span></span><span>‹</span></button>`;
+    return `<button type="button" class="row-line js-usage" style="width:100%"><span>${esc(sub.plan_name || CG.t('app.name'))} · ${esc(CG.t('us.status.' + (sub.status || 'unknown')))}<br><span class="muted" style="font-size:12px">${esc(left)}</span></span><span>›</span></button>`;
   }
   screens.account = {
     fit: 'width',
@@ -719,23 +719,23 @@
       const me = S.me || {};
       const ann = S.config && S.config.announcement;
       return `${backBtn()}<div class="scroll"><div class="page enter" style="padding-top:110px">
-        <h1 class="title-grad" style="margin-top:0">اشتراک من</h1>
+        <h1 class="title-grad" style="margin-top:0">My plan</h1>
         ${ann ? `<div class="ann">${esc(ann)}</div>` : ''}
         <div style="position:relative;border-radius:26px;overflow:hidden;background:linear-gradient(155deg,#2A2216 0%,#16130E 38%,#100E0A 100%);box-shadow:inset 0 1px 0 rgba(243,221,160,.25),inset 0 0 0 1px rgba(214,174,92,.28),0 30px 60px -24px rgba(0,0,0,.9)">
           <svg aria-hidden="true" width="260" height="260" viewBox="0 0 260 260" fill="none" stroke="#D6AE5C" style="position:absolute;left:-90px;top:-90px;opacity:.13;pointer-events:none"><circle cx="130" cy="130" r="94" stroke-width="1.2"/><circle cx="130" cy="130" r="124" stroke-width="1"/></svg>
           <div class="js-card" style="position:relative;padding:6px 18px">${subCard(me.subscription)}</div>
         </div>
-        <h2 style="font-size:17px;font-weight:500;margin:28px 0 8px">دستگاه‌ها</h2>
+        <h2 style="font-size:17px;font-weight:500;margin:28px 0 8px">Devices</h2>
         <div class="panel js-devs" style="padding:4px 18px"><div class="skeleton" style="height:44px;margin:12px 0"></div></div>
-        <h2 style="font-size:17px;font-weight:500;margin:28px 0 8px">حساب کاربری</h2>
+        <h2 style="font-size:17px;font-weight:500;margin:28px 0 8px">Account</h2>
         <div class="panel" style="padding:4px 18px">
-          <div class="row-line"><span class="muted">ایمیل</span><span class="ltr" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(me.email || '')}</span></div>
-          <div class="row-line"><span class="muted">موجودی کیف پول</span><span>${toman(me.wallet_balance || 0)} تومان</span></div>
-          <button type="button" class="row-line js-conn" style="width:100%">تنظیمات اتصال<span>‹</span></button>
-          <button type="button" class="row-line js-pass" style="width:100%">تغییر رمز<span>‹</span></button>
-          <button type="button" class="row-line js-orders" style="width:100%">پرداخت‌های من<span>‹</span></button>
-          <button type="button" class="row-line js-sup" style="width:100%">پشتیبانی<span>‹</span></button>
-          <button type="button" class="row-line js-all" style="width:100%;color:#EE9A86">خروج از همه‌ی گوشی‌ها<span>‹</span></button>
+          <div class="row-line"><span class="muted">Email</span><span class="ltr" style="max-width:220px;overflow:hidden;text-overflow:ellipsis">${esc(me.email || '')}</span></div>
+          <div class="row-line"><span class="muted">Wallet balance</span><span>${toman(me.wallet_balance || 0)} Toman</span></div>
+          <button type="button" class="row-line js-conn" style="width:100%">Connection settings<span>›</span></button>
+          <button type="button" class="row-line js-pass" style="width:100%">Change password<span>›</span></button>
+          <button type="button" class="row-line js-orders" style="width:100%">My payments<span>›</span></button>
+          <button type="button" class="row-line js-sup" style="width:100%">Support<span>›</span></button>
+          <button type="button" class="row-line js-all" style="width:100%;color:#EE9A86">Sign out of all phones<span>›</span></button>
         </div>
         <p class="muted js-ver ltr" style="text-align:center;font-size:12px;margin-top:22px"></p>
       </div></div>`;
@@ -749,23 +749,23 @@
       b('.js-orders', () => go('orders'));
       b('.js-conn', () => CG.connSettings());
       b('.js-sup', openSupport);
-      call('session', {}).then((x) => { if (x && x.version) root.querySelector('.js-ver').textContent = `Cloud Gold VPN ${x.version} · core v2rayNG ${x.core || ''}`; }).catch(() => {});
-      b('.js-pass', () => sheet(`<h3>تغییر رمز</h3><p>گوشی‌های دیگر وارد حساب می‌مانند.</p>
-        <label class="field"><span>رمز فعلی</span><input class="input" dir="ltr" name="cur" type="password" autocomplete="current-password"></label>
-        <label class="field"><span>رمز جدید</span><input class="input" dir="ltr" name="new" type="password" autocomplete="new-password" placeholder="حداقل ۸ کاراکتر"></label>
-        <div class="err"></div><button class="pill-btn white js-save">ذخیره</button>`, (el, close) => {
+      call('session', {}).then((x) => { if (x && x.version) root.querySelector('.js-ver').textContent = `Cloud Gold ${x.version} · core v2rayNG ${x.core || ''}`; }).catch(() => {});
+      b('.js-pass', () => sheet(`<h3>Change password</h3><p>Other phones stay signed in.</p>
+        <label class="field"><span>Current password</span><input class="input" dir="ltr" name="cur" type="password" autocomplete="current-password"></label>
+        <label class="field"><span>New password</span><input class="input" dir="ltr" name="new" type="password" autocomplete="new-password" placeholder="At least 8 characters"></label>
+        <div class="err"></div><button class="pill-btn white js-save">Save</button>`, (el, close) => {
         el.querySelector('.js-save').onclick = async (ev) => {
           const btn = ev.currentTarget;
           busyButton(btn, true);
           try {
             const t = await api('POST', '/auth/change-password', { current_password: el.querySelector('[name=cur]').value, new_password: el.querySelector('[name=new]').value });
             await call('setSession', Object.assign({ email: S.me.email }, t));
-            close(); toast('رمز عوض شد');
+            close(); toast('Password changed');
           } catch (e) { busyButton(btn, false); el.querySelector('.err').textContent = e.message; }
         };
       }));
-      b('.js-all', () => sheet(`<h3>از همه‌ی گوشی‌ها خارج می‌شوی؟</h3><p>همه‌ی گوشی‌هایی که با این حساب وارد شده‌اند، از جمله همین گوشی، باید دوباره وارد شوند.</p>
-        <button class="pill-btn white js-yes">خروج از همه</button><div style="height:10px"></div><button class="pill-btn dark js-no">انصراف</button>`, (el, close) => {
+      b('.js-all', () => sheet(`<h3>Sign out of all phones?</h3><p>Every phone signed in with this account, including this one, has to sign in again.</p>
+        <button class="pill-btn white js-yes">Sign out of all</button><div style="height:10px"></div><button class="pill-btn dark js-no">Cancel</button>`, (el, close) => {
         el.querySelector('.js-no').onclick = close;
         el.querySelector('.js-yes').onclick = async () => {
           try { await api('POST', '/auth/logout-all'); } catch (e) {}
@@ -774,10 +774,10 @@
       }));
       const loadDevs = () => Promise.all([api('GET', '/devices'), call('device', {}).catch(() => ({}))]).then(([rows, mine]) => {
         const el = root.querySelector('.js-devs');
-        el.innerHTML = rows.length ? rows.map((d) => `<div class="row-line"><span><span class="ltr">${esc(d.model || 'Phone')}</span>${d.device_id === mine.id ? ' <span style="color:var(--gilt);font-size:12px">· همین گوشی</span>' : ''}<br><span class="muted" style="font-size:12px">آخرین استفاده ${faDate(d.last_seen)}</span></span>
-          ${d.device_id === mine.id ? '' : `<button type="button" class="link-btn" data-del="${d.id}" style="color:#EE9A86">حذف</button>`}</div>`).join('') : '<p class="muted" style="margin:14px 0;text-align:center">هنوز دستگاهی ثبت نشده.</p>';
+        el.innerHTML = rows.length ? rows.map((d) => `<div class="row-line"><span><span class="ltr">${esc(d.model || 'Phone')}</span>${d.device_id === mine.id ? ' <span style="color:var(--gilt);font-size:12px">, this phone</span>' : ''}<br><span class="muted" style="font-size:12px">Last used ${faDate(d.last_seen)}</span></span>
+          ${d.device_id === mine.id ? '' : `<button type="button" class="link-btn" data-del="${d.id}" style="color:#EE9A86">Remove</button>`}</div>`).join('') : '<p class="muted" style="margin:14px 0;text-align:center">No devices yet.</p>';
         el.querySelectorAll('[data-del]').forEach((x) => {
-          x.onclick = async () => { try { await api('DELETE', `/devices/${x.dataset.del}`); toast('دستگاه حذف شد'); loadDevs(); } catch (e) { toast(e.message, true); } };
+          x.onclick = async () => { try { await api('DELETE', `/devices/${x.dataset.del}`); toast('Device removed'); loadDevs(); } catch (e) { toast(e.message, true); } };
         });
       }).catch((e) => toast(e.message, true));
       loadDevs();

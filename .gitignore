@@ -4,3 +4,8 @@ worker/.wrangler/
 *.log
 __pycache__/
 worker/coverage/
+
+# agent skills installed locally (npx skills add), not part of the app
+.agents/
+.claude/skills/
+skills-lock.json
