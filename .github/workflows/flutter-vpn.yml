@@ -1,0 +1,42 @@
+# Pleat (Flutter VPN demo): analyze, test, and build a debug-signed APK.
+# Runs only when the Flutter app changes; the Worker and the CloudGold
+# Android app have their own workflows.
+name: Pleat Flutter app
+
+on:
+  push:
+    paths: ['flutter_vpn/**', '.github/workflows/flutter-vpn.yml']
+  pull_request:
+    paths: ['flutter_vpn/**', '.github/workflows/flutter-vpn.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flutter_vpn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.8'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed lib test
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build apk --release
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pleat-apk
+          path: flutter_vpn/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14
