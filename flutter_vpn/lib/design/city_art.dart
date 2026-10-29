@@ -2,7 +2,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
-import '../state/seed.dart';
+import '../state/exits.dart';
 import 'geometry.dart';
 import 'icons.dart';
 import 'tokens.dart';
@@ -12,12 +12,17 @@ import 'widgets.dart';
 /// one landmark, water with reflections. Painted on device, original, and
 /// tuned to sit inside the brand blues.
 class CityArt extends StatelessWidget {
-  const CityArt({super.key, required this.exit});
-  final Exit exit;
+  CityArt({super.key, required Exit exit}) : seed = exit.seed, tone = exit.tone;
+
+  /// A scene that belongs to no exit, for onboarding.
+  const CityArt.scene({super.key, required this.seed, required this.tone});
+
+  final int seed;
+  final SceneTone tone;
 
   @override
   Widget build(BuildContext context) => RepaintBoundary(
-    child: CustomPaint(painter: _CityPainter(exit), size: Size.infinite),
+    child: CustomPaint(painter: _CityPainter(seed, tone), size: Size.infinite),
   );
 }
 
@@ -55,14 +60,15 @@ const _tones = {
 };
 
 class _CityPainter extends CustomPainter {
-  _CityPainter(this.exit);
-  final Exit exit;
+  _CityPainter(this.seed, this.toneId);
+  final int seed;
+  final SceneTone toneId;
 
   @override
   void paint(Canvas canvas, Size size) {
     final w = size.width, h = size.height;
-    final tone = _tones[exit.tone]!;
-    final rnd = math.Random(exit.seed);
+    final tone = _tones[toneId]!;
+    final rnd = math.Random(seed);
     final horizon = h * 0.70;
 
     canvas.drawRect(
@@ -93,7 +99,7 @@ class _CityPainter extends CustomPainter {
       Paint()..color = tone.sun.withValues(alpha: 0.95),
     );
 
-    if (exit.tone == SceneTone.night) {
+    if (toneId == SceneTone.night) {
       final star = Paint()..color = Colors.white.withValues(alpha: 0.6);
       for (var i = 0; i < 26; i++) {
         canvas.drawCircle(
@@ -105,7 +111,7 @@ class _CityPainter extends CustomPainter {
     }
 
     // Landmark sits behind the nearest layer.
-    final landmark = exit.seed % 4;
+    final landmark = seed % 4;
     if (landmark == 2) _mountains(canvas, size, horizon, tone, rnd);
 
     for (var layer = 0; layer < 3; layer++) {
@@ -269,7 +275,8 @@ class _CityPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_CityPainter old) => old.exit.id != exit.id;
+  bool shouldRepaint(_CityPainter old) =>
+      old.seed != seed || old.toneId != toneId;
 }
 
 /// Media card with the reference's corner tab. The photo is painted; the
@@ -298,7 +305,7 @@ class MediaCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Pressable(
       onTap: onOpen,
-      label: 'Open ${exit.city}',
+      label: 'Open ${exit.title}, ${exit.label}',
       radius: PRadius.media,
       shadow: true,
       child: ClipRRect(
@@ -332,13 +339,25 @@ class MediaCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      exit.city,
-                      style: (big ? PType.h1 : PType.h2)(color: Colors.white),
+                    Row(
+                      children: [
+                        RegionBadge(exit, size: big ? 40 : 32),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            exit.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: (big ? PType.h1 : PType.h2)(
+                              color: Colors.white,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 6),
                     Text(
-                      '${exit.ping} ms  ·  ${exit.load}% load',
+                      exit.meta,
                       style: PType.meta(
                         color: Colors.white.withValues(alpha: 0.85),
                       ),
@@ -441,7 +460,9 @@ class _ShardChipPainter extends CustomPainter {
   bool shouldRepaint(_ShardChipPainter old) => old.color != color;
 }
 
-/// Two-letter region badge drawn as a tiny shard, not a flag.
+/// The exit's flag as a coin: the remark's country flag fills a circle,
+/// a translucent fold crosses it like the mark's planes, and a white ring
+/// sets it on photos and cards alike. No country: a mist coin with a globe.
 class RegionBadge extends StatelessWidget {
   const RegionBadge(this.exit, {super.key, this.size = 44});
   final Exit exit;
@@ -449,26 +470,74 @@ class RegionBadge extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final c = PColors.planes[exit.seed % 3];
-    final ink = c == PColors.ice ? PColors.navy : Colors.white;
-    return SizedBox(
-      width: size,
-      height: size,
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          CustomPaint(
-            size: Size.square(size),
-            painter: _ShardChipPainter(c, size * 0.58),
+    final flag = exit.flag;
+    return Semantics(
+      label: exit.code.isEmpty ? 'Unknown country' : '${exit.title} flag',
+      child: ExcludeSemantics(
+        child: Container(
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: PColors.mist,
+            border: Border.all(color: Colors.white, width: size * 0.07),
+            boxShadow: [
+              BoxShadow(
+                color: PColors.navy.withValues(alpha: 0.16),
+                blurRadius: size * 0.3,
+                offset: Offset(0, size * 0.08),
+              ),
+            ],
           ),
-          Text(
-            exit.code,
-            style: PType.meta(color: ink).copyWith(fontWeight: FontWeight.w800),
+          child: ClipOval(
+            child: flag.isEmpty
+                ? Center(
+                    child: PIconView(
+                      PIcon.globe,
+                      size: size * 0.5,
+                      color: PColors.blue,
+                    ),
+                  )
+                : Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      // A flag glyph is about 4:3; set it tall enough to
+                      // cover the coin, then crop.
+                      OverflowBox(
+                        maxWidth: size * 2,
+                        maxHeight: size * 2,
+                        child: Text(
+                          flag,
+                          textScaler: TextScaler.noScaling,
+                          style: TextStyle(
+                            fontSize: size * 1.08,
+                            height: 1,
+                            fontFamilyFallback: PType.emojiFallback,
+                          ),
+                        ),
+                      ),
+                      CustomPaint(painter: _FoldPainter()),
+                    ],
+                  ),
           ),
-        ],
+        ),
       ),
     );
   }
+}
+
+class _FoldPainter extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    canvas.drawPath(
+      shardPath(Offset(w * 0.78, w * 0.5), w * 0.22, w * 1.3, 0.56),
+      Paint()..color = Colors.white.withValues(alpha: 0.22),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_FoldPainter old) => false;
 }
 
 /// The trial / offer card from the reference's discount anatomy.

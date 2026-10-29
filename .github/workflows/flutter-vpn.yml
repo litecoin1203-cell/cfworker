@@ -1,14 +1,19 @@
-# Pleat (Flutter VPN demo): analyze, test, and build a debug-signed APK.
-# Runs only when the Flutter app changes; the Worker and the CloudGold
-# Android app have their own workflows.
+# Pleat (Flutter client of the Cloud Gold Worker): analyze, test, run the
+# client against the real Worker locally, and build an APK. The server
+# address comes from the run input or the CG_API_BASE repository variable,
+# the same one the Cloud Gold Android build uses.
 name: Pleat Flutter app
 
 on:
   push:
-    paths: ['flutter_vpn/**', '.github/workflows/flutter-vpn.yml']
+    paths: ['flutter_vpn/**', 'worker/**', '.github/workflows/flutter-vpn.yml']
   pull_request:
-    paths: ['flutter_vpn/**', '.github/workflows/flutter-vpn.yml']
+    paths: ['flutter_vpn/**', 'worker/**', '.github/workflows/flutter-vpn.yml']
   workflow_dispatch:
+    inputs:
+      api_base:
+        description: "API address(es), comma-separated (empty = repository variable CG_API_BASE)"
+        required: false
 
 permissions:
   contents: read
@@ -34,7 +39,23 @@ jobs:
       - run: dart format --output=none --set-exit-if-changed lib test
       - run: flutter analyze
       - run: flutter test
-      - run: flutter build apk --release
+      # The real Worker over Node's SQLite with a fake panel (worker/test/dev_server.mjs).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Client against the local Worker
+        run: |
+          node --experimental-sqlite ../worker/test/dev_server.mjs > /tmp/worker.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/health && break; sleep 1; done
+          flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1:8787
+      - name: Build APK
+        env:
+          API_INPUT: ${{ github.event.inputs.api_base }}
+          API_VAR: ${{ vars.CG_API_BASE }}
+        run: |
+          API="${API_INPUT:-$API_VAR}"
+          [ -z "$API" ] && echo "::warning::No CG_API_BASE set; the APK will say it has no server address."
+          flutter build apk --release --dart-define=PLEAT_API="$API"
       - uses: actions/upload-artifact@v4
         with:
           name: pleat-apk

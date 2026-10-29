@@ -1,8 +1,15 @@
-# Pleat — Flutter VPN demo
+# Pleat — Flutter client for Cloud Gold
 
-A private tunnel for this phone. Pleat is a standalone Flutter demo: local
-seeded state, no real tunnel, no real payment. Every control works and its
-state persists with `shared_preferences`.
+Pleat is a Flutter client of the Cloud Gold Worker (`worker/`). Account,
+plans, trial, server list, usage and devices are the backend's; nothing on a
+primary screen is seeded. What each control calls, and what the backend does
+not offer, is in [docs/backend-map.md](docs/backend-map.md).
+
+This build has no tunnel engine: the tunnel lives in the Cloud Gold Android
+app's v2rayNG core. Connect checks the plan and the chosen exit with
+`GET /vpn`, then asks the platform channel `pleat/tunnel`; with no native side
+it stops and says so. Protected is only ever shown while that channel reports
+the tunnel up.
 
 It keeps the reference's material (studio ground `#E7F1FA`, white radius-30
 surfaces, navy/blue/ice/mist diagonal shards, Plus Jakarta Sans, pill
@@ -14,13 +21,22 @@ layouts. The name and the mark (two offset folded planes) are original.
 ```sh
 cd flutter_vpn
 flutter pub get
-flutter run          # first route is Splash
+flutter run --dart-define=PLEAT_API=https://api.yourdomain.com   # comma list allowed
 flutter analyze      # clean
 flutter test
+
+# the client against the real Worker, locally
+node --experimental-sqlite ../worker/test/dev_server.mjs &
+flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1:8787
 ```
 
-CI: `.github/workflows/flutter-vpn.yml` formats, analyzes, tests and builds
-an APK artifact (`pleat-apk`) whenever `flutter_vpn/` changes.
+CI: `.github/workflows/flutter-vpn.yml` formats, analyzes, tests, runs the
+client against the local Worker, and builds an APK (`pleat-apk`) with
+`PLEAT_API` from the run input or the `CG_API_BASE` repository variable.
+
+Countries: each config's flag comes from its remark (flag emoji, a code
+like `DE 2`, or a country name). The host is only a last internal hint and is
+never shown.
 
 ## Where things live
 
@@ -39,32 +55,37 @@ an APK artifact (`pleat-apk`) whenever `flutter_vpn/` changes.
 | `widgets.dart` | Press feedback (0.985), pill button, pill search, frosted slab, toggle, 40ms stagger |
 | `icons.dart` | Outline icon set at a 1.75 stroke |
 
-`lib/screens/` has Splash, Onboarding, Login, Confirm, the tab shell (Home,
-Protect, Locations, Activity), Location detail, Plans and Profile.
-`lib/state/` holds the seeded data and the app state.
+`lib/api/` is the one client (`client.dart`), the parsers (`models.dart`)
+and the country lookup (`countries.dart`). `lib/state/` holds the app state,
+the exit model and the tunnel channel. `lib/screens/` has Splash,
+Onboarding, Login, the password step, the tab shell (Home, Protect,
+Locations, Activity), Location detail, Plans and Profile.
 
 ## The ten moves, in the running app
 
 1. Shard field always on stage, drifting; leans toward the selected exit,
    pulls in during the handshake, rests when protected, parallaxes on scroll.
 2. Connect lives in the field on Home: idle pill, circular handshake with the
-   mark split and turning, then the sealed mark with the green ring. About
-   1.6s, tap again to cancel.
-3. Opening a city flies through the shards (500ms) and lands on the photo.
+   mark split and turning, then the sealed mark with the green ring once the
+   tunnel reports up. Tap again to cancel.
+3. Opening an exit flies through the shards (500ms) and lands on its photo.
 4. Onboarding keeps one circular scene; orbit bubbles swap icons every 900ms,
-   the metric disk trades "28 ms" and "AES-256", beats change by shard shift
+   the disk trades "Exits / Flags" and "Usage / Live", beats change by shard shift
    and headline wipe.
-5. Home's display-size number (ping, session timer, hops, GB) is cut by a
+5. Home's display-size number (reported ping or days left, protocol, GB used,
+   session timer) is cut by a
    navy shard that re-sets the figure in white.
-6. Locations: the first city is oversized, bleeds past the gutter and the
+6. Locations: the first exit is oversized, bleeds past the gutter and the
    second card rides 16px over it; the rest is a dense list. Categories
    reshape the shard colour mix.
-7. Protect: the kill switch is the big card and flips the shard mood; split
-   tunnel and DNS are spatial cards.
-8. Activity is a log: city headline, then duration, data and protocol.
+7. Protect: the kill switch is the big card; split tunnel and DNS are
+   spatial cards. Each says it needs the tunnel engine; protocol is live.
+8. Activity: plan usage from `/me`, then a log of real sessions (country
+   headline, duration, protocol).
    Reconnect re-runs the handshake.
 9. Press scale 0.985 with a tightening shadow; spring nav; 40ms stagger.
 10. Reduced motion (system setting or Profile → Reduce motion): no travel,
     no orbit, no drift; every state still changes.
 
-Profile → "Simulate a dropped tunnel" shows the red dropped state on demand.
+The red dropped state appears only when the tunnel reports down or the plan
+stops while a session is up (checked every 60 s with `GET /me`).

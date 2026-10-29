@@ -5,10 +5,9 @@ import '../design/icons.dart';
 import '../design/tokens.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
-import '../state/seed.dart';
 
-/// Where the tunnel flight lands: the city photo, a frosted slab of ping,
-/// load and protocol, a bookmark, and Connect here.
+/// Where the tunnel flight lands: the painted photo, a frosted slab of
+/// reported ping, protocol and network score, a bookmark, and Connect here.
 class LocationDetail extends StatelessWidget {
   const LocationDetail({super.key, required this.exitId});
   final String exitId;
@@ -16,8 +15,36 @@ class LocationDetail extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
-    final exit = exitById(exitId);
-    final here = app.exitId == exit.id;
+    final exit = app.exitById(exitId);
+    if (exit == null) {
+      // The list was refreshed and this config is gone.
+      return Scaffold(
+        backgroundColor: PColors.ground,
+        body: SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                RoundIcon(
+                  PIcon.back,
+                  onTap: () => Navigator.of(context).pop(),
+                  label: 'Back',
+                ),
+                const SizedBox(height: 18),
+                SurfaceCard(
+                  child: Text(
+                    'This exit is no longer on your plan.',
+                    style: PType.h3(),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+    }
+    final here = app.exit?.id == exit.id;
     final live = here && app.phase == Phase.protected;
     final saved = app.saved.contains(exit.id);
     final top = MediaQuery.paddingOf(context).top;
@@ -52,7 +79,9 @@ class LocationDetail extends StatelessWidget {
                 RoundIcon(
                   PIcon.bookmark,
                   onTap: () => app.toggleSaved(exit.id),
-                  label: saved ? 'Remove from saved' : 'Save ${exit.city}',
+                  label: saved
+                      ? 'Remove from saved'
+                      : 'Save ${exit.title} ${exit.label}',
                   filled: saved,
                   color: saved ? PColors.blue : PColors.ink,
                   background: Colors.white,
@@ -72,7 +101,7 @@ class LocationDetail extends StatelessWidget {
                     RegionBadge(exit, size: 40),
                     const SizedBox(width: 10),
                     Text(
-                      exit.country,
+                      exit.label,
                       style: PType.small(color: Colors.white)
                           .copyWith(fontWeight: FontWeight.w700),
                     ),
@@ -80,7 +109,7 @@ class LocationDetail extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  exit.city,
+                  exit.title,
                   style: PType.h1(color: Colors.white).copyWith(fontSize: 40),
                 ),
               ],
@@ -93,11 +122,19 @@ class LocationDetail extends StatelessWidget {
             child: FrostedSlab(
               child: Row(
                 children: [
-                  _Metric(label: 'Ping', value: '${exit.ping}', unit: 'ms'),
+                  _Metric(
+                    label: 'Ping',
+                    value: exit.ping == null ? '—' : '${exit.ping}',
+                    unit: exit.ping == null ? '' : 'ms',
+                  ),
                   const _Divider(),
-                  _Metric(label: 'Load', value: '${exit.load}', unit: '%'),
+                  _Metric(label: 'Protocol', value: exit.protocol, unit: ''),
                   const _Divider(),
-                  _Metric(label: 'Protocol', value: app.protocol, unit: ''),
+                  _Metric(
+                    label: 'Score',
+                    value: exit.score == null ? '—' : '${exit.score}',
+                    unit: exit.score == null ? '' : '/100',
+                  ),
                 ],
               ),
             ),
@@ -123,7 +160,12 @@ class LocationDetail extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(exit.blurb, style: PType.body()),
+                  Text(
+                    exit.rank == null
+                        ? 'No reports from your network for this exit yet. Ping and score fill in as people on your network use it.'
+                        : 'People on your network reported ${exit.ping ?? '—'} ms through this exit, from ${exit.rank!.reports} recent tries.',
+                    style: PType.body(),
+                  ),
                   const SizedBox(height: 10),
                   Text(
                     live

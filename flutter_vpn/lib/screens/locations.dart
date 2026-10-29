@@ -6,16 +6,15 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
-import '../state/seed.dart';
+import '../state/exits.dart';
 import 'location_detail.dart';
 import 'shell.dart';
+import 'states.dart';
 
 const _categories = [
   (Category.all, PIcon.grid, 'All'),
-  (Category.nearby, PIcon.near, 'Nearby'),
-  (Category.streaming, PIcon.play, 'Streaming'),
-  (Category.gaming, PIcon.game, 'Gaming'),
   (Category.fastest, PIcon.bolt, 'Fastest'),
+  (Category.saved, PIcon.bookmark, 'Saved'),
   (Category.recent, PIcon.clock, 'Recent'),
 ];
 
@@ -32,32 +31,44 @@ class LocationsScreen extends StatefulWidget {
 class _LocationsScreenState extends State<LocationsScreen> {
   String _query = '';
 
+  /// Every list is the backend's: All in the Worker's order, Fastest by
+  /// what this network reported, Saved and Recent from this phone.
   List<Exit> _filtered(AppState app) {
-    Iterable<Exit> list = exits;
+    Iterable<Exit> list = app.exits;
     switch (app.category) {
       case Category.all:
         break;
       case Category.fastest:
-        list = [...exits]..sort((a, b) => a.ping.compareTo(b.ping));
+        list = app.ranked.where((e) => e.score != null);
+      case Category.saved:
+        list = list.where((e) => app.saved.contains(e.id));
       case Category.recent:
         final seen = <String>{};
         list = [
           for (final s in app.sessions)
-            if (seen.add(s.exitId)) exitById(s.exitId),
+            if (seen.add(s.exitId)) ?app.exitById(s.exitId),
         ];
-      default:
-        list = exits.where((e) => e.tags.contains(app.category));
     }
     final q = _query.trim().toLowerCase();
     if (q.isNotEmpty) {
       list = list.where(
         (e) =>
-            e.city.toLowerCase().contains(q) ||
-            e.country.toLowerCase().contains(q) ||
+            e.title.toLowerCase().contains(q) ||
+            e.label.toLowerCase().contains(q) ||
             e.code.toLowerCase() == q,
       );
     }
     return list.toList();
+  }
+
+  String _emptyLine(AppState app) {
+    if (_query.trim().isNotEmpty) return 'No exit matches “$_query”';
+    return switch (app.category) {
+      Category.fastest => 'No speed reports from your network yet',
+      Category.saved => 'Nothing saved yet',
+      Category.recent => 'No sessions on this phone yet',
+      Category.all => 'No exits',
+    };
   }
 
   void _open(Exit e) =>
@@ -82,22 +93,20 @@ class _LocationsScreenState extends State<LocationsScreen> {
                     Row(
                       children: [
                         Expanded(child: Text('Locations', style: PType.h1())),
-                        Text(
-                          app.exit.city,
-                          style: PType.small(color: PColors.blue)
-                              .copyWith(fontWeight: FontWeight.w700),
-                        ),
-                        const SizedBox(width: 4),
-                        const PIconView(
-                          PIcon.pin,
-                          size: 18,
-                          color: PColors.blue,
-                        ),
+                        if (app.exit != null) ...[
+                          Text(
+                            app.exit!.label,
+                            style: PType.small(color: PColors.blue)
+                                .copyWith(fontWeight: FontWeight.w700),
+                          ),
+                          const SizedBox(width: 6),
+                          RegionBadge(app.exit!, size: 22),
+                        ],
                       ],
                     ),
                     const SizedBox(height: 18),
                     PillSearch(
-                      hint: 'Search cities or countries',
+                      hint: 'Search countries or codes',
                       onChanged: (v) => setState(() => _query = v),
                     ),
                   ],
@@ -123,7 +132,14 @@ class _LocationsScreenState extends State<LocationsScreen> {
                 ),
               ),
             ),
-            if (list.isEmpty)
+            if (app.exits.isEmpty)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 30, 20, 0),
+                  child: ServersState(app: app),
+                ),
+              )
+            else if (list.isEmpty)
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(20, 40, 20, 0),
@@ -131,10 +147,12 @@ class _LocationsScreenState extends State<LocationsScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text('No exit called “$_query”', style: PType.h3()),
+                        Text(_emptyLine(app), style: PType.h3()),
                         const SizedBox(height: 6),
                         Text(
-                          'Try a country name or a two-letter code like DE.',
+                          app.category == Category.saved
+                              ? 'Open an exit and tap the bookmark. Saved exits stay on this phone.'
+                              : 'Try a country name or a two-letter code like DE.',
                           style: PType.small(),
                         ),
                       ],
@@ -157,10 +175,10 @@ class _LocationsScreenState extends State<LocationsScreen> {
                         height: 248,
                         big: true,
                         onOpen: () => _open(list[0]),
-                        tabLabel: app.exitId == list[0].id
+                        tabLabel: app.exit?.id == list[0].id
                             ? 'Selected'
                             : 'Select',
-                        tabActive: app.exitId == list[0].id,
+                        tabActive: app.exit?.id == list[0].id,
                         onTab: () => app.select(list[0].id),
                       ),
                     ),
@@ -181,10 +199,10 @@ class _LocationsScreenState extends State<LocationsScreen> {
                           exit: list[1],
                           height: 150,
                           onOpen: () => _open(list[1]),
-                          tabLabel: app.exitId == list[1].id
+                          tabLabel: app.exit?.id == list[1].id
                               ? 'Selected'
                               : 'Select',
-                          tabActive: app.exitId == list[1].id,
+                          tabActive: app.exit?.id == list[1].id,
                           onTab: () => app.select(list[1].id),
                         ),
                       ),
@@ -207,7 +225,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
                               index: i,
                               child: _ExitRow(
                                 exit: list[i],
-                                selected: app.exitId == list[i].id,
+                                selected: app.exit?.id == list[i].id,
                                 onOpen: () => _open(list[i]),
                                 onSelect: () => app.select(list[i].id),
                               ),
@@ -292,7 +310,7 @@ class _ExitRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Pressable(
       onTap: onOpen,
-      label: 'Open ${exit.city}',
+      label: 'Open ${exit.title}, ${exit.label}',
       radius: 20,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
@@ -304,26 +322,27 @@ class _ExitRow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(exit.city, style: PType.h3().copyWith(fontSize: 16)),
+                  Text(
+                    exit.title,
+                    style: PType.h3().copyWith(fontSize: 16),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                   const SizedBox(height: 4),
-                  Row(
-                    children: [
-                      Text(
-                        '${exit.ping} ms',
-                        style: PType.meta(color: PColors.ink),
-                      ),
-                      const SizedBox(width: 10),
-                      _LoadBar(load: exit.load),
-                      const SizedBox(width: 6),
-                      Text('${exit.load}%', style: PType.meta()),
-                    ],
+                  Text(
+                    exit.meta,
+                    style: PType.meta(color: PColors.ink),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
             ),
             Pressable(
               onTap: onSelect,
-              label: selected ? '${exit.city} selected' : 'Select ${exit.city}',
+              label: selected
+                  ? '${exit.title} ${exit.label} selected'
+                  : 'Select ${exit.title} ${exit.label}',
               selected: selected,
               radius: PRadius.pill,
               color: selected ? PColors.blue : PColors.field,
@@ -348,33 +367,6 @@ class _ExitRow extends StatelessWidget {
               ),
             ),
           ],
-        ),
-      ),
-    );
-  }
-}
-
-class _LoadBar extends StatelessWidget {
-  const _LoadBar({required this.load});
-  final int load;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 44,
-      height: 5,
-      decoration: BoxDecoration(
-        color: PColors.mist,
-        borderRadius: BorderRadius.circular(3),
-      ),
-      alignment: Alignment.centerLeft,
-      child: FractionallySizedBox(
-        widthFactor: load / 100,
-        child: Container(
-          decoration: BoxDecoration(
-            color: load > 60 ? PColors.navy : PColors.blue,
-            borderRadius: BorderRadius.circular(3),
-          ),
         ),
       ),
     );

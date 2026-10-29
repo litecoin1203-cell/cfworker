@@ -62,7 +62,7 @@ abstract final class PMotion {
   static const orbitTick = Duration(milliseconds: 900);
   static const stagger = Duration(milliseconds: 40);
 
-  /// Connect demo: Checking → Handshaking → Protected ≈ 1.6s.
+  /// Connect stages; Protected waits for the tunnel, not a timer.
   static const checking = Duration(milliseconds: 450);
   static const handshake = Duration(milliseconds: 750);
   static const seal = Duration(milliseconds: 400);
@@ -77,6 +77,10 @@ abstract final class PMotion {
 /// locally registered family so they never touch the network.
 abstract final class PType {
   static String? familyOverride;
+
+  /// Fallback families for flag glyphs. Android finds its emoji font on
+  /// its own; tests that render flags point this at a loaded one.
+  static List<String>? emojiFallback;
 
   static TextStyle _base(
     double size,

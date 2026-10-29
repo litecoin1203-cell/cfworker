@@ -10,10 +10,11 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
-import '../state/seed.dart';
+import '../state/exits.dart';
 import 'location_detail.dart';
 import 'profile.dart';
 import 'shell.dart';
+import 'states.dart';
 
 enum _HomeTab { now, route, stats }
 
@@ -49,8 +50,10 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
-    final picks = [...exits]..sort((a, b) => a.ping.compareTo(b.ping));
-    final recommended = picks.where((e) => e.id != app.exitId).take(4).toList();
+    final recommended = app.ranked
+        .where((e) => e.id != app.exit?.id)
+        .take(4)
+        .toList();
 
     return SafeArea(
       bottom: false,
@@ -104,7 +107,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             exit: app.exit,
                             live: app.phase == Phase.protected,
                           )
-                        : _WeekBars(app: app),
+                        : _Usage(app: app),
                   ),
                 ),
               ),
@@ -116,35 +119,41 @@ class _HomeScreenState extends State<HomeScreen> {
                 onTrailing: () => app.setTab(2),
               ),
             ),
-            SizedBox(
-              height: 168,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
+            if (recommended.isEmpty)
+              Padding(
                 padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
-                itemCount: recommended.length,
-                separatorBuilder: (_, _) => const SizedBox(width: 14),
-                itemBuilder: (context, i) {
-                  final e = recommended[i];
-                  return StaggerIn(
-                    index: i,
-                    child: SizedBox(
-                      width: 210,
-                      child: MediaCard(
-                        exit: e,
-                        height: 150,
-                        onOpen: () => Navigator.of(context).push(
-                          TunnelRoute(
-                            builder: (_) => LocationDetail(exitId: e.id),
+                child: ServersState(app: app),
+              )
+            else
+              SizedBox(
+                height: 168,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+                  itemCount: recommended.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 14),
+                  itemBuilder: (context, i) {
+                    final e = recommended[i];
+                    return StaggerIn(
+                      index: i,
+                      child: SizedBox(
+                        width: 210,
+                        child: MediaCard(
+                          exit: e,
+                          height: 150,
+                          onOpen: () => Navigator.of(context).push(
+                            TunnelRoute(
+                              builder: (_) => LocationDetail(exitId: e.id),
+                            ),
                           ),
+                          tabLabel: 'Go',
+                          onTab: () => app.connect(e.id),
                         ),
-                        tabLabel: 'Go',
-                        onTab: () => app.connect(e.id),
                       ),
-                    ),
-                  );
-                },
+                    );
+                  },
+                ),
               ),
-            ),
           ],
         ),
       ),
@@ -200,9 +209,25 @@ class _Header extends StatelessWidget {
               const SizedBox(height: 3),
               Row(
                 children: [
-                  const PIconView(PIcon.pin, size: 14, color: PColors.muted),
-                  const SizedBox(width: 4),
-                  Text('${app.exit.city} exit', style: PType.small()),
+                  if (app.exit != null) ...[
+                    RegionBadge(app.exit!, size: 18),
+                    const SizedBox(width: 6),
+                    Flexible(
+                      child: Text(
+                        '${app.exit!.title} exit  ·  ${app.exit!.label}',
+                        style: PType.small(),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ] else ...[
+                    const PIconView(PIcon.pin, size: 14, color: PColors.muted),
+                    const SizedBox(width: 4),
+                    Text(
+                      app.servers.loading ? 'Loading exits…' : 'No exit yet',
+                      style: PType.small(),
+                    ),
+                  ],
                 ],
               ),
             ],
@@ -212,7 +237,7 @@ class _Header extends StatelessWidget {
           PIcon.bell,
           onTap: () => showNotices(context),
           label: 'Notices',
-          badge: !app.noticesSeen,
+          badge: app.hasUnseenNotices,
         ),
       ],
     );
@@ -315,28 +340,48 @@ class _Instrument extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final protected = app.phase == Phase.protected;
+    final e = app.exit;
+    final sub = app.subscription;
     final (value, unit, caption) = switch (tab) {
-      _HomeTab.now =>
-        protected
-            ? (
-                _clock(app.elapsed),
-                app.elapsed.inHours > 0 ? 'h:m' : 'min:s',
-                'Session through ${app.exit.city}',
-              )
-            : (
-                '${app.exit.ping}',
-                'ms',
-                'Ping to ${app.exit.city}, ${app.exit.country}',
-              ),
-      _HomeTab.route => (
-        '3',
-        'hops',
-        'Phone, Pleat edge, ${app.exit.city} exit',
+      _HomeTab.now when protected => (
+        _clock(app.elapsed),
+        app.elapsed.inHours > 0 ? 'h:m' : 'min:s',
+        'Session through ${e?.title ?? 'your exit'}',
       ),
+      _HomeTab.now when e?.ping != null => (
+        '${e!.ping}',
+        'ms',
+        'Ping to ${e.title} reported on your network',
+      ),
+      _HomeTab.now when sub != null && !sub.unlimitedTime => (
+        '${sub.daysLeft ?? 0}',
+        'days',
+        sub.active ? 'Left on your plan' : sub.statusLine,
+      ),
+      _HomeTab.now when sub != null => (
+        '${app.exits.length}',
+        'exits',
+        'On your plan, no end date',
+      ),
+      _HomeTab.now => (
+        app.me.loading ? '…' : '0',
+        'exits',
+        app.me.loading ? 'Loading your plan' : 'No plan yet. Open Plans.',
+      ),
+      _HomeTab.route when e != null => (
+        e.protocol,
+        '',
+        'Protocol to ${e.title}, ${e.label}',
+      ),
+      _HomeTab.route => ('0', 'exits', 'No exit to route through yet'),
       _HomeTab.stats => (
-        (app.weekMegabytes / 1024).toStringAsFixed(1),
+        ((sub?.usedBytes ?? 0) / 1e9).toStringAsFixed(1),
         'GB',
-        'Through the tunnel this week',
+        sub == null
+            ? 'No plan yet'
+            : (sub.unlimitedData
+                  ? 'Used on your plan, no data cap'
+                  : 'Used of ${(sub.dataLimitBytes / 1e9).toStringAsFixed(0)} GB on your plan'),
       ),
     };
 
@@ -459,20 +504,24 @@ class _StageLine extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final (text, color) = switch (app.phase) {
-      Phase.idle => ('Not protected. Tap to connect.', PColors.muted),
-      Phase.checking => ('Checking the network. Tap to cancel.', PColors.blue),
+      Phase.idle => (
+        app.tunnelMessage ?? 'Not protected. Tap to connect.',
+        PColors.muted,
+      ),
+      Phase.checking => (
+        'Checking your plan and exit. Tap to cancel.',
+        PColors.blue,
+      ),
       Phase.handshaking => (
-        'Handshaking with ${app.exit.city}. Tap to cancel.',
+        'Handshaking with ${app.exit?.title}. Tap to cancel.',
         PColors.blue,
       ),
       Phase.protected => (
-        'Protected. ${app.protocol} to ${app.exit.city}.',
+        'Protected. ${app.exit?.protocol} to ${app.exit?.title}.',
         PColors.safe,
       ),
       Phase.dropped => (
-        app.killSwitch
-            ? 'Tunnel dropped. Kill switch is holding traffic.'
-            : 'Tunnel dropped. Apps are on the open network.',
+        '${app.tunnelMessage ?? 'Tunnel dropped.'} Not protected.',
         PColors.alert,
       ),
     };
@@ -512,7 +561,7 @@ class _StageLine extends StatelessWidget {
 
 class _RouteLine extends StatelessWidget {
   const _RouteLine({required this.exit, required this.live});
-  final Exit exit;
+  final Exit? exit;
   final bool live;
 
   @override
@@ -540,64 +589,62 @@ class _RouteLine extends StatelessWidget {
       children: [
         node('Phone', PColors.navy),
         link(),
-        node('Edge', PColors.blue),
+        node(exit?.protocol ?? '—', PColors.blue),
         link(),
-        node(exit.code, live ? PColors.safe : PColors.ice),
+        node(
+          exit == null || exit!.code.isEmpty ? 'Exit' : exit!.code,
+          live ? PColors.safe : PColors.ice,
+        ),
       ],
     );
   }
 }
 
-class _WeekBars extends StatelessWidget {
-  const _WeekBars({required this.app});
+/// Plan usage from `/me`: a bar of used data and the days left.
+class _Usage extends StatelessWidget {
+  const _Usage({required this.app});
   final AppState app;
 
   @override
   Widget build(BuildContext context) {
-    final now = DateTime.now();
-    final days = List.generate(7, (i) {
-      final day = DateTime(
-        now.year,
-        now.month,
-        now.day,
-      ).subtract(Duration(days: 6 - i));
-      final mb = app.sessions
-          .where(
-            (s) =>
-                s.start.year == day.year &&
-                s.start.month == day.month &&
-                s.start.day == day.day,
-          )
-          .fold<int>(0, (a, s) => a + s.megabytes);
-      return (day, i == 6 ? mb + app.liveMegabytes.round() : mb);
-    });
-    final peak = days.fold<int>(1, (a, d) => d.$2 > a ? d.$2 : a);
-    const letters = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
-    return SizedBox(
-      height: 64,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.end,
-        children: [
-          for (final (day, mb) in days)
+    final s = app.subscription;
+    if (s == null) {
+      return Text(
+        app.me.error ??
+            (app.me.loading ? 'Loading your plan…' : 'No plan yet.'),
+        style: PType.small(color: PColors.ink),
+      );
+    }
+    final pct = s.usedPercent;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
             Expanded(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.end,
-                children: [
-                  Container(
-                    height: 4 + 36 * mb / peak,
-                    margin: const EdgeInsets.symmetric(horizontal: 6),
-                    decoration: BoxDecoration(
-                      color: mb == 0 ? PColors.mist : PColors.blue,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(letters[day.weekday - 1], style: PType.meta()),
-                ],
+              child: Text(
+                s.planName,
+                style: PType.h3().copyWith(fontSize: 15),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
-        ],
-      ),
+            Text(
+              s.active ? (pct == null ? 'No cap' : '$pct%') : s.statusLine,
+              style: PType.meta(color: PColors.ink),
+            ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        UsageBar(percent: pct ?? 0, height: 8),
+        const SizedBox(height: 8),
+        Text(
+          s.unlimitedTime
+              ? 'No end date  ·  ${s.deviceLimit} devices'
+              : '${s.daysLeft ?? 0} days left  ·  ${s.deviceLimit} devices',
+          style: PType.meta(),
+        ),
+      ],
     );
   }
 }

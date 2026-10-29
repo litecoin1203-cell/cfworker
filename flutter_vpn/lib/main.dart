@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'api/client.dart';
 import 'design/tokens.dart';
 import 'screens/splash.dart';
 import 'state/app_state.dart';
@@ -17,7 +18,12 @@ Future<void> main() async {
     ),
   );
   final prefs = await SharedPreferences.getInstance();
-  runApp(PleatApp(state: AppState(prefs)));
+  final tokens = TokenStore();
+  await tokens.load();
+  final state = AppState(prefs, ApiClient(tokens));
+  // Fetched while the splash draws; screens show their loading states.
+  state.signedIn ? state.refreshAccount() : state.loadPublic();
+  runApp(PleatApp(state: state));
 }
 
 class PleatApp extends StatelessWidget {

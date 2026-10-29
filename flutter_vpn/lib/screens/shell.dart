@@ -7,7 +7,6 @@ import '../design/shard_field.dart';
 import '../design/tokens.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
-import '../state/seed.dart';
 import 'activity.dart';
 import 'home.dart';
 import 'locations.dart';
@@ -113,10 +112,12 @@ class _ShellState extends State<Shell> {
   }
 }
 
-/// Bell sheet: recent notices from the demo tunnel.
+/// Bell sheet: the store's announcement and what `/me` says about the
+/// plan (usage, end date, a stopped plan).
 Future<void> showNotices(BuildContext context) {
   final app = AppScope.read(context);
-  app.update((s) => s.noticesSeen = true);
+  final notices = app.notices;
+  app.markNoticesSeen();
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: Colors.transparent,
@@ -161,6 +162,14 @@ Future<void> showNotices(BuildContext context) {
             ],
           ),
           const SizedBox(height: 8),
+          if (notices.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Text(
+                'Nothing new. Plan and usage notices show up here.',
+                style: PType.small(),
+              ),
+            ),
           for (var i = 0; i < notices.length; i++)
             StaggerIn(
               index: i,
@@ -178,9 +187,9 @@ Future<void> showNotices(BuildContext context) {
                       ),
                       alignment: Alignment.center,
                       child: PIconView(
-                        const [PIcon.shield, PIcon.bolt, PIcon.ticket][i % 3],
+                        notices[i].alert ? PIcon.bolt : PIcon.info,
                         size: 20,
-                        color: PColors.blue,
+                        color: notices[i].alert ? PColors.navy : PColors.blue,
                       ),
                     ),
                     const SizedBox(width: 14),
@@ -197,7 +206,6 @@ Future<void> showNotices(BuildContext context) {
                         ],
                       ),
                     ),
-                    Text(notices[i].when, style: PType.meta()),
                   ],
                 ),
               ),

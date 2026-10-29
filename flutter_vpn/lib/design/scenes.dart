@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../state/app_state.dart';
-import '../state/seed.dart';
+import '../state/exits.dart';
 import 'shard_field.dart';
 import 'tokens.dart';
 
@@ -84,29 +84,17 @@ abstract final class Layouts {
 /// The selected category reshapes the colour mix, never the palette.
 List<Color> mixFor(Category c) => switch (c) {
   Category.all => const [PColors.mist, PColors.navy, PColors.blue, PColors.ice],
-  Category.nearby => const [
-    PColors.mist,
-    PColors.ice,
-    PColors.blue,
-    PColors.mist,
-  ],
-  Category.streaming => [
-    PColors.ice,
-    PColors.navy,
-    Color.lerp(PColors.navy, PColors.blue, 0.5)!,
-    PColors.navy,
-  ],
-  Category.gaming => const [
-    PColors.mist,
-    PColors.blue,
-    PColors.navy,
-    PColors.blue,
-  ],
   Category.fastest => const [
     PColors.ice,
     PColors.blue,
     PColors.blue,
     PColors.ice,
+  ],
+  Category.saved => const [
+    PColors.mist,
+    PColors.ice,
+    PColors.blue,
+    PColors.mist,
   ],
   Category.recent => const [
     PColors.ice,
@@ -117,7 +105,7 @@ List<Color> mixFor(Category c) => switch (c) {
 };
 
 /// The live scene for the signed-in app: tab layout, category mix, lean
-/// toward the selected exit, handshake pull, protected rest, kill switch.
+/// toward the selected exit, handshake pull, protected rest, dropped alert.
 ShardScene sceneFor(AppState s) {
   final pull = switch (s.phase) {
     Phase.checking => 0.45,
@@ -128,10 +116,11 @@ ShardScene sceneFor(AppState s) {
     layout: Layouts.tabs[s.tab],
     mix: s.tab == 2 ? mixFor(s.category) : mixFor(Category.all),
     focus: const Offset(0.62, 0.50),
-    lean: s.exit.bearing,
+    lean: s.exit?.bearing ?? 0,
     pull: pull,
     rest: s.phase == Phase.protected ? 1 : 0,
-    armed: s.killSwitch ? 1 : 0,
-    alert: s.phase == Phase.dropped ? 1 : (s.killSwitch ? 0 : 0.7),
+    // The kill switch is the platform's; with no tunnel engine it is
+    // neither armed nor off, so only a real drop turns the field red.
+    alert: s.phase == Phase.dropped ? 1 : 0,
   );
 }

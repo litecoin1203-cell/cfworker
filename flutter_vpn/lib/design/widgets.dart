@@ -269,7 +269,10 @@ class PToggle extends StatelessWidget {
   });
 
   final bool value;
-  final ValueChanged<bool> onChanged;
+
+  /// Null: the switch can't work in this build. It shows off, greyed, and
+  /// never red.
+  final ValueChanged<bool>? onChanged;
   final String label;
   final bool offIsAlert;
   final bool onDark;
@@ -277,47 +280,54 @@ class PToggle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final d = PMotion.reduced(context) ? Duration.zero : PMotion.quick;
-    final track = value
+    final enabled = onChanged != null;
+    final track = value && enabled
         ? PColors.blue
-        : offIsAlert
+        : offIsAlert && enabled
         ? PColors.alert
         : (onDark ? Colors.white.withValues(alpha: 0.22) : PColors.mist);
     return Semantics(
-      toggled: value,
-      label: label,
+      toggled: value && enabled,
+      enabled: enabled,
+      label: enabled ? label : '$label, unavailable',
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: () => onChanged(!value),
-        child: SizedBox(
-          width: 60,
-          height: 48,
-          child: Center(
-            child: AnimatedContainer(
-              duration: d,
-              width: 52,
-              height: 32,
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                color: track,
-                borderRadius: BorderRadius.circular(PRadius.pill),
-              ),
-              child: AnimatedAlign(
+        onTap: enabled ? () => onChanged!(!value) : null,
+        child: Opacity(
+          opacity: enabled ? 1 : 0.45,
+          child: SizedBox(
+            width: 60,
+            height: 48,
+            child: Center(
+              child: AnimatedContainer(
                 duration: d,
-                curve: Curves.easeOutBack,
-                alignment: value ? Alignment.centerRight : Alignment.centerLeft,
-                child: Container(
-                  width: 24,
-                  height: 24,
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
-                    boxShadow: [
-                      BoxShadow(
-                        color: PColors.navy.withValues(alpha: 0.18),
-                        blurRadius: 6,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
+                width: 52,
+                height: 32,
+                padding: const EdgeInsets.all(4),
+                decoration: BoxDecoration(
+                  color: track,
+                  borderRadius: BorderRadius.circular(PRadius.pill),
+                ),
+                child: AnimatedAlign(
+                  duration: d,
+                  curve: Curves.easeOutBack,
+                  alignment: value && enabled
+                      ? Alignment.centerRight
+                      : Alignment.centerLeft,
+                  child: Container(
+                    width: 24,
+                    height: 24,
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                      boxShadow: [
+                        BoxShadow(
+                          color: PColors.navy.withValues(alpha: 0.18),
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -461,6 +471,65 @@ class SectionLabel extends StatelessWidget {
               child: Text(trailing!, style: PType.small()),
             ),
           ),
+      ],
+    );
+  }
+}
+
+/// Horizontal fill for plan usage, 0 … 100. Navy past 80 %; red stays
+/// reserved for a dropped tunnel.
+class UsageBar extends StatelessWidget {
+  const UsageBar({super.key, required this.percent, this.height = 6});
+  final int percent;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) {
+    final p = percent.clamp(0, 100);
+    return Container(
+      height: height,
+      decoration: BoxDecoration(
+        color: PColors.mist,
+        borderRadius: BorderRadius.circular(height),
+      ),
+      alignment: Alignment.centerLeft,
+      child: FractionallySizedBox(
+        widthFactor: p / 100,
+        child: Container(
+          decoration: BoxDecoration(
+            color: p >= 80 ? PColors.navy : PColors.blue,
+            borderRadius: BorderRadius.circular(height),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A line that says plainly why a control can't work in this build.
+class UnavailableNote extends StatelessWidget {
+  const UnavailableNote(this.text, {super.key, this.onDark = false});
+  final String text;
+  final bool onDark;
+
+  @override
+  Widget build(BuildContext context) {
+    final ink = onDark ? PColors.ice : PColors.muted;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(top: 1),
+          child: PIconView(PIcon.info, size: 16, color: ink),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            text,
+            style: PType.small(color: ink)
+                .copyWith(fontWeight: FontWeight.w600),
+          ),
+        ),
       ],
     );
   }

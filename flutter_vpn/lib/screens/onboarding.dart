@@ -11,18 +11,20 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
-import '../state/seed.dart';
+import '../state/exits.dart';
 import 'login.dart';
 
 class _Beat {
-  const _Beat(this.light, this.bold, this.exitId);
-  final String light, bold, exitId;
+  const _Beat(this.light, this.bold, this.seed, this.tone);
+  final String light, bold;
+  final int seed;
+  final SceneTone tone;
 }
 
 const _beats = [
-  _Beat('A private tunnel', 'for this phone', 'fra'),
-  _Beat('Exits that stay', 'close and quick', 'zrh'),
-  _Beat('It stops the leak', 'before it starts', 'tyo'),
+  _Beat('Your Cloud Gold', 'account, on Pleat', 11, SceneTone.dusk),
+  _Beat('Every exit', 'flagged by country', 37, SceneTone.dawn),
+  _Beat('Your plan and usage', 'always in view', 83, SceneTone.night),
 ];
 
 /// Three beats around one circular scene that never leaves. Orbit bubbles
@@ -156,7 +158,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
                     Expanded(
                       child: Center(
                         child: _OrbitScene(
-                          exit: exitById(beat.exitId),
+                          art: beat,
                           tick: _tick,
                           orbit: _orbit,
                           beat: _beat,
@@ -234,12 +236,12 @@ const _bubbleIcons = [
 
 class _OrbitScene extends StatelessWidget {
   const _OrbitScene({
-    required this.exit,
+    required this.art,
     required this.tick,
     required this.orbit,
     required this.beat,
   });
-  final Exit exit;
+  final _Beat art;
   final int tick;
   final Animation<double> orbit;
   final int beat;
@@ -280,7 +282,11 @@ class _OrbitScene extends StatelessWidget {
                   dimension: d,
                   child: AnimatedSwitcher(
                     duration: const Duration(milliseconds: 450),
-                    child: CityArt(key: ValueKey(exit.id), exit: exit),
+                    child: CityArt.scene(
+                      key: ValueKey(art.seed),
+                      seed: art.seed,
+                      tone: art.tone,
+                    ),
                   ),
                 ),
               ),
@@ -310,7 +316,8 @@ class _OrbitScene extends StatelessWidget {
                     ),
                   ),
                 ),
-              // Metric disk, swapped like the reference's weather reading.
+              // Disk, swapped like the reference's weather reading. It names
+              // what Pleat shows, not a measured figure.
               Transform.translate(
                 offset: const Offset(-d / 2 + 24, -d / 2 + 26),
                 child: Container(
@@ -344,15 +351,15 @@ class _OrbitScene extends StatelessWidget {
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          metricA ? 'Ping' : 'Cipher',
+                          metricA ? 'Exits' : 'Usage',
                           style: PType.meta(
                             color: Colors.white.withValues(alpha: 0.8),
                           ),
                         ),
                         Text(
-                          metricA ? '28 ms' : 'AES-256',
+                          metricA ? 'Flags' : 'Live',
                           style: PType.h3(color: Colors.white)
-                              .copyWith(fontSize: metricA ? 19 : 15),
+                              .copyWith(fontSize: 19),
                         ),
                       ],
                     ),

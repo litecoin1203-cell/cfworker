@@ -6,12 +6,12 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
-import '../state/seed.dart';
 import 'location_detail.dart';
 import 'shell.dart';
 
-/// Activity reads as a log: editorial city headlines, and a meta line of
-/// duration, data and protocol. Reconnect re-runs the handshake.
+/// Activity reads as a log: the plan's real usage first, then editorial
+/// headlines for sessions that really ran on this phone (the backend keeps
+/// no history), and a meta line of duration and protocol.
 class ActivityScreen extends StatefulWidget {
   const ActivityScreen({super.key});
 
@@ -51,19 +51,36 @@ class _ActivityScreenState extends State<ActivityScreen> {
   }
 
   List<Widget> _sessions(AppState app) {
-    final out = <Widget>[];
+    final out = <Widget>[_UsageCard(app: app), const SizedBox(height: 12)];
     var i = 0;
-    if (app.phase == Phase.protected) {
+    if (app.phase == Phase.protected && app.exit != null) {
       out.add(
         StaggerIn(
           index: i++,
           child: _LogEntry(
-            city: app.exit.city,
+            city: app.exit!.title,
             time: 'Live',
             meta:
-                '${app.elapsed.inMinutes} min  ·  ${app.liveMegabytes.round()} MB  ·  ${app.protocol}',
+                '${app.elapsed.inMinutes} min  ·  ${app.exit!.label}  ·  ${app.exit!.protocol}',
             live: true,
             onTap: () => app.setTab(0),
+          ),
+        ),
+      );
+    }
+    if (app.sessions.isEmpty && app.phase != Phase.protected) {
+      out.add(
+        SurfaceCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('No sessions yet', style: PType.h3()),
+              const SizedBox(height: 6),
+              Text(
+                'Sessions are logged here, on this phone, once a tunnel really runs. The server keeps no session history.',
+                style: PType.small(),
+              ),
+            ],
           ),
         ),
       );
@@ -93,19 +110,20 @@ class _ActivityScreenState extends State<ActivityScreen> {
         );
         lastDay = day;
       }
-      final e = exitById(s.exitId);
+      final e = app.exitById(s.exitId);
       out.add(
         StaggerIn(
           index: i++,
           child: _LogEntry(
-            city: e.city,
+            city: s.title,
             time: _time(s.start),
-            meta:
-                '${s.minutes} min  ·  ${_data(s.megabytes)}  ·  ${s.protocol}',
-            onTap: () => Navigator.of(
-              context,
-            ).push(TunnelRoute(builder: (_) => LocationDetail(exitId: e.id))),
-            onReconnect: () => _reconnect(app, e.id),
+            meta: '${s.minutes} min  ·  ${s.protocol}',
+            onTap: e == null
+                ? () {}
+                : () => Navigator.of(context).push(
+                    TunnelRoute(builder: (_) => LocationDetail(exitId: e.id)),
+                  ),
+            onReconnect: e == null ? null : () => _reconnect(app, e.id),
           ),
         ),
       );
@@ -114,7 +132,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
   }
 
   List<Widget> _savedList(AppState app) {
-    final saved = exits.where((e) => app.saved.contains(e.id)).toList();
+    final saved = app.exits.where((e) => app.saved.contains(e.id)).toList();
     if (saved.isEmpty) {
       return [
         SurfaceCard(
@@ -124,7 +142,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
               Text('Nothing saved yet', style: PType.h3()),
               const SizedBox(height: 6),
               Text(
-                'Open a city and tap the bookmark to keep it here.',
+                'Open an exit and tap the bookmark. Saved exits stay on this phone.',
                 style: PType.small(),
               ),
               const SizedBox(height: 14),
@@ -189,9 +207,86 @@ class _ActivityScreenState extends State<ActivityScreen> {
 
   String _time(DateTime d) =>
       '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
+}
 
-  String _data(int mb) =>
-      mb >= 1024 ? '${(mb / 1024).toStringAsFixed(1)} GB' : '$mb MB';
+/// The signed-in account's plan and usage, straight from `/me`.
+class _UsageCard extends StatelessWidget {
+  const _UsageCard({required this.app});
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) {
+    final s = app.subscription;
+    final gb = (s?.usedBytes ?? 0) / 1e9;
+    return SurfaceCard(
+      padding: const EdgeInsets.fromLTRB(20, 18, 10, 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  s == null ? 'Usage' : s.planName,
+                  style: PType.h3(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              RoundIcon(
+                PIcon.refresh,
+                onTap: app.me.loading ? () {} : app.loadMe,
+                label: 'Refresh usage',
+                color: PColors.blue,
+                background: PColors.mist,
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          if (s == null)
+            Text(
+              app.me.error ??
+                  (app.me.loading ? 'Loading your plan…' : 'No plan yet.'),
+              style: PType.small(),
+            )
+          else ...[
+            Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(
+                    text: gb.toStringAsFixed(gb < 10 ? 2 : 1),
+                    style: PType.h1().copyWith(fontSize: 34),
+                  ),
+                  TextSpan(
+                    text: s.unlimitedData
+                        ? '  GB used, no cap'
+                        : '  of ${(s.dataLimitBytes / 1e9).toStringAsFixed(0)} GB',
+                    style: PType.small(),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+            Padding(
+              padding: const EdgeInsets.only(right: 10),
+              child: UsageBar(percent: s.usedPercent ?? 0, height: 8),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              [
+                s.statusLine,
+                s.unlimitedTime
+                    ? 'no end date'
+                    : '${s.daysLeft ?? 0} days left',
+                '${s.deviceLimit} devices',
+              ].join('  ·  '),
+              style: PType.meta(),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
 }
 
 class _Switch extends StatelessWidget {

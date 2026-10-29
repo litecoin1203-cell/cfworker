@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../design/geometry.dart';
 import '../design/icons.dart';
@@ -7,11 +6,12 @@ import '../design/mark.dart';
 import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
+import '../state/app_state.dart';
 import 'confirm.dart';
 
 /// Login: a navy cut header built from the brand planes, the mark on the
-/// blue plane, one field and Continue. "Use a phone number" swaps the
-/// field with an animated height change.
+/// blue plane, one field and Continue. The backend signs in by email and
+/// password only, so "Use a phone number" says so instead of faking it.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -20,43 +20,25 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  bool _phone = false;
   final _email = TextEditingController();
-  final _number = TextEditingController();
-  String _code = '+49';
   String? _error;
 
   @override
   void dispose() {
     _email.dispose();
-    _number.dispose();
     super.dispose();
   }
 
   void _continue() {
-    final String address;
-    if (_phone) {
-      final digits = _number.text.replaceAll(RegExp(r'\D'), '');
-      if (digits.length < 7) {
-        setState(() => _error = 'Enter at least 7 digits.');
-        return;
-      }
-      address = '$_code $digits';
-    } else {
-      final v = _email.text.trim();
-      if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(v)) {
-        setState(() => _error = 'That email address looks incomplete.');
-        return;
-      }
-      address = v;
+    final v = _email.text.trim();
+    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(v)) {
+      setState(() => _error = 'That email address looks incomplete.');
+      return;
     }
     setState(() => _error = null);
     FocusScope.of(context).unfocus();
-    Navigator.of(context).push(
-      FadeRoute(
-        builder: (_) => ConfirmScreen(address: address, byPhone: _phone),
-      ),
-    );
+    Navigator.of(context)
+        .push(FadeRoute(builder: (_) => ConfirmScreen(address: v)));
   }
 
   @override
@@ -99,15 +81,7 @@ class _LoginScreenState extends State<LoginScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  AnimatedSize(
-                    duration: reduced ? Duration.zero : PMotion.state,
-                    curve: Curves.easeInOutCubic,
-                    alignment: Alignment.topCenter,
-                    child: AnimatedSwitcher(
-                      duration: reduced ? Duration.zero : PMotion.quick,
-                      child: _phone ? _phoneField() : _emailField(),
-                    ),
-                  ),
+                  _emailField(),
                   AnimatedSize(
                     duration: reduced ? Duration.zero : PMotion.quick,
                     child: _error == null
@@ -125,13 +99,11 @@ class _LoginScreenState extends State<LoginScreen> {
                   const SizedBox(height: 8),
                   Center(
                     child: Pressable(
-                      onTap: () => setState(() {
-                        _phone = !_phone;
-                        _error = null;
-                      }),
-                      label: _phone
-                          ? 'Use an email address'
-                          : 'Use a phone number',
+                      onTap: () => setState(
+                        () => _error =
+                            'Phone sign-in isn’t offered. Use your email.',
+                      ),
+                      label: 'Use a phone number',
                       radius: 20,
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
@@ -141,16 +113,14 @@ class _LoginScreenState extends State<LoginScreen> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            PIconView(
-                              _phone ? PIcon.mail : PIcon.phone,
+                            const PIconView(
+                              PIcon.phone,
                               size: 18,
                               color: PColors.blue,
                             ),
                             const SizedBox(width: 8),
                             Text(
-                              _phone
-                                  ? 'Use an email address'
-                                  : 'Use a phone number',
+                              'Use a phone number',
                               style: PType.small(color: PColors.blue)
                                   .copyWith(fontWeight: FontWeight.w700),
                             ),
@@ -161,7 +131,9 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                   const SizedBox(height: 18),
                   Text(
-                    'Demo app. No account is created and nothing leaves this phone.',
+                    AppScope.of(context).api.configured
+                        ? 'Sign in with your Cloud Gold account, or create one on the next step.'
+                        : 'This build has no server address, so sign-in can’t reach anyone.',
                     style: PType.small(),
                   ),
                 ],
@@ -210,70 +182,6 @@ class _LoginScreenState extends State<LoginScreen> {
           onSubmitted: (_) => _continue(),
           style: PType.body().copyWith(fontWeight: FontWeight.w700),
           decoration: _dec('you@example.com'),
-        ),
-      ),
-    ],
-  );
-
-  Widget _phoneField() => Column(
-    key: const ValueKey('phone'),
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      _label('Country'),
-      SizedBox(
-        height: 48,
-        child: ListView(
-          scrollDirection: Axis.horizontal,
-          children: [
-            for (final c in const ['+49', '+31', '+41', '+44', '+1'])
-              Padding(
-                padding: const EdgeInsets.only(right: 8),
-                child: Pressable(
-                  onTap: () => setState(() => _code = c),
-                  label: 'Country code $c',
-                  selected: c == _code,
-                  radius: PRadius.pill,
-                  color: c == _code ? PColors.navy : PColors.field,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 18),
-                    alignment: Alignment.center,
-                    child: Text(
-                      c,
-                      style: PType.small(
-                        color: c == _code ? Colors.white : PColors.ink,
-                      ).copyWith(fontWeight: FontWeight.w700),
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-      const SizedBox(height: 16),
-      _label('Phone number'),
-      _fieldShell(
-        Row(
-          children: [
-            Text(
-              _code,
-              style: PType.body().copyWith(fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(width: 12),
-            Expanded(
-              child: TextField(
-                controller: _number,
-                keyboardType: TextInputType.phone,
-                autofillHints: const [AutofillHints.telephoneNumberNational],
-                inputFormatters: [
-                  FilteringTextInputFormatter.allow(RegExp(r'[0-9 ]')),
-                ],
-                textInputAction: TextInputAction.go,
-                onSubmitted: (_) => _continue(),
-                style: PType.body().copyWith(fontWeight: FontWeight.w700),
-                decoration: _dec('151 2345 678'),
-              ),
-            ),
-          ],
         ),
       ),
     ],

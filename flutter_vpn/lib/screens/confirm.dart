@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../design/city_art.dart';
@@ -10,55 +8,54 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
-import '../state/seed.dart';
+import '../api/models.dart';
 import 'shell.dart';
 
-/// Confirm: where the link went, a resend cooldown, and the trial slab in
-/// the reference's discount-card anatomy.
+/// Confirm: the password step for the email from Login, in the same card,
+/// and the backend's free trial in the reference's discount-card anatomy.
+/// The Worker signs in by email + password; there is no code to resend.
 class ConfirmScreen extends StatefulWidget {
-  const ConfirmScreen({
-    super.key,
-    required this.address,
-    required this.byPhone,
-  });
+  const ConfirmScreen({super.key, required this.address});
   final String address;
-  final bool byPhone;
 
   @override
   State<ConfirmScreen> createState() => _ConfirmScreenState();
 }
 
 class _ConfirmScreenState extends State<ConfirmScreen> {
-  static const _cooldown = 30;
-  int _left = _cooldown;
-  int _sent = 1;
-  Timer? _timer;
-
-  @override
-  void initState() {
-    super.initState();
-    _start();
-  }
-
-  void _start() {
-    _timer?.cancel();
-    setState(() => _left = _cooldown);
-    _timer = Timer.periodic(const Duration(seconds: 1), (t) {
-      if (_left <= 1) t.cancel();
-      setState(() => _left--);
-    });
-  }
+  final _password = TextEditingController();
+  bool _create = false;
+  bool _busy = false;
+  String? _error;
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _password.dispose();
     super.dispose();
   }
 
-  void _confirm() {
+  Future<void> _submit() async {
+    if (_busy) return;
+    final pw = _password.text;
+    if (pw.length < 8) {
+      setState(() => _error = 'Passwords have at least 8 characters.');
+      return;
+    }
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
     final app = AppScope.read(context);
-    app.signIn(widget.byPhone ? 'guest@pleat.demo' : widget.address);
-    if (app.planId == null) app.startTrial(plans.first);
+    final err = await app.signIn(widget.address, pw, create: _create);
+    if (!mounted) return;
+    if (err != null) {
+      setState(() {
+        _busy = false;
+        _error = err;
+      });
+      return;
+    }
     Navigator.of(context).pushAndRemoveUntil(
       FadeRoute(builder: (_) => const Shell()),
       (_) => false,
@@ -67,7 +64,10 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final ends = DateTime.now().add(const Duration(days: 7));
+    final app = AppScope.of(context);
+    final trial = (app.plans.value ?? const <PlanInfo>[])
+        .where((p) => p.trialDays > 0)
+        .firstOrNull;
     return Scaffold(
       backgroundColor: PColors.ground,
       body: ShardBackdrop(
@@ -100,17 +100,15 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                             shape: BoxShape.circle,
                           ),
                           alignment: Alignment.center,
-                          child: PIconView(
-                            widget.byPhone ? PIcon.phone : PIcon.mail,
+                          child: const PIconView(
+                            PIcon.lock,
                             color: PColors.blue,
                           ),
                         ),
                         const SizedBox(width: 14),
                         Expanded(
                           child: Text(
-                            widget.byPhone
-                                ? 'Check your messages'
-                                : 'Check your inbox',
+                            _create ? 'Create your account' : 'Your password',
                             style: PType.h2(),
                           ),
                         ),
@@ -122,9 +120,9 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                         style: PType.body(color: PColors.muted),
                         children: [
                           TextSpan(
-                            text: widget.byPhone
-                                ? 'We sent a sign-in code to '
-                                : 'We sent a sign-in link to ',
+                            text: _create
+                                ? 'New account for '
+                                : 'Signing in as ',
                           ),
                           TextSpan(
                             text: widget.address,
@@ -132,39 +130,79 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                               fontWeight: FontWeight.w700,
                             ),
                           ),
-                          const TextSpan(
-                            text: '. Open it on this phone to finish.',
-                          ),
+                          const TextSpan(text: '.'),
                         ],
                       ),
                     ),
-                    const SizedBox(height: 18),
+                    const SizedBox(height: 16),
+                    Container(
+                      height: 56,
+                      padding: const EdgeInsets.symmetric(horizontal: 22),
+                      decoration: BoxDecoration(
+                        color: PColors.field,
+                        borderRadius: BorderRadius.circular(PRadius.pill),
+                      ),
+                      alignment: Alignment.centerLeft,
+                      child: TextField(
+                        controller: _password,
+                        obscureText: true,
+                        autofillHints: [
+                          _create
+                              ? AutofillHints.newPassword
+                              : AutofillHints.password,
+                        ],
+                        textInputAction: TextInputAction.go,
+                        onSubmitted: (_) => _submit(),
+                        style: PType.body().copyWith(
+                          fontWeight: FontWeight.w700,
+                        ),
+                        decoration: InputDecoration(
+                          isCollapsed: true,
+                          border: InputBorder.none,
+                          hintText: _create
+                              ? 'At least 8 characters'
+                              : 'Password',
+                          hintStyle: PType.body(color: PColors.muted),
+                        ),
+                      ),
+                    ),
+                    AnimatedSize(
+                      duration: PMotion.reduced(context)
+                          ? Duration.zero
+                          : PMotion.quick,
+                      child: _error == null
+                          ? const SizedBox(width: double.infinity)
+                          : Padding(
+                              padding: const EdgeInsets.only(top: 10, left: 18),
+                              child: Text(
+                                _error!,
+                                style: PType.small(color: PColors.ink),
+                              ),
+                            ),
+                    ),
+                    const SizedBox(height: 10),
                     Row(
                       children: [
-                        PIconView(
-                          PIcon.clock,
+                        const PIconView(
+                          PIcon.user,
                           size: 18,
-                          color: _left > 0 ? PColors.muted : PColors.blue,
+                          color: PColors.muted,
                         ),
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            _left > 0
-                                ? 'Resend in 0:${_left.toString().padLeft(2, '0')}'
-                                : (_sent > 1
-                                      ? 'Sent again. You can resend once more.'
-                                      : 'Didn’t arrive?'),
+                            _create ? 'Have an account?' : 'New to Cloud Gold?',
                             style: PType.small(),
                           ),
                         ),
                         Pressable(
-                          onTap: _left > 0
+                          onTap: _busy
                               ? null
-                              : () {
-                                  setState(() => _sent++);
-                                  _start();
-                                },
-                          label: 'Resend',
+                              : () => setState(() {
+                                  _create = !_create;
+                                  _error = null;
+                                }),
+                          label: _create ? 'Sign in instead' : 'Create account',
                           radius: 20,
                           child: Padding(
                             padding: const EdgeInsets.symmetric(
@@ -172,10 +210,9 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                               vertical: 14,
                             ),
                             child: Text(
-                              'Resend',
-                              style: PType.small(
-                                color: _left > 0 ? PColors.ice : PColors.blue,
-                              ).copyWith(fontWeight: FontWeight.w700),
+                              _create ? 'Sign in' : 'Create account',
+                              style: PType.small(color: PColors.blue)
+                                  .copyWith(fontWeight: FontWeight.w700),
                             ),
                           ),
                         ),
@@ -186,63 +223,27 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
               ),
               // The trial slab overlaps the card and leaves the column, like the
               // reference's discount card riding over the confirm sheet.
-              Transform.translate(
-                offset: const Offset(12, -10),
-                child: OfferCard(
-                  title: 'Your trial',
-                  big: '7',
-                  unit: 'days of every exit,\nno card needed',
-                  footer: 'Solo trial  ·  ends ${_fmt(ends)}',
+              if (trial != null)
+                Transform.translate(
+                  offset: const Offset(12, -10),
+                  child: OfferCard(
+                    title: 'Free trial',
+                    big: '${trial.trialDays}',
+                    unit: 'days of every exit,\nno card needed',
+                    footer:
+                        '${trial.name}  ·  start it in Plans after you sign in',
+                  ),
                 ),
-              ),
               const SizedBox(height: 18),
               PillButton(
-                label: widget.byPhone ? 'Use demo code' : 'I opened the link',
-                onTap: _confirm,
+                label: _busy
+                    ? (_create ? 'Creating…' : 'Signing in…')
+                    : (_create ? 'Create account' : 'Sign in'),
+                onTap: _busy ? null : _submit,
               ),
             ],
           ),
         ),
-      ),
-    );
-  }
-
-  static String _fmt(DateTime d) {
-    const m = [
-      'Jan',
-      'Feb',
-      'Mar',
-      'Apr',
-      'May',
-      'Jun',
-      'Jul',
-      'Aug',
-      'Sep',
-      'Oct',
-      'Nov',
-      'Dec',
-    ];
-    return '${d.day} ${m[d.month - 1]} ${d.year}';
-  }
-}
-
-/// Three overlapping exit badges: "every exit" made visible.
-class RegionBadgeStack extends StatelessWidget {
-  const RegionBadgeStack({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return SizedBox(
-      width: 74,
-      height: 44,
-      child: Stack(
-        children: [
-          for (var i = 0; i < 3; i++)
-            Positioned(
-              left: i * 15.0,
-              child: RegionBadge(exits[i * 3], size: 44),
-            ),
-        ],
       ),
     );
   }

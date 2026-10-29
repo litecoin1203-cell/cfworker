@@ -41,6 +41,9 @@ enum PIcon {
   globe,
   route,
   chart,
+  info,
+  copy,
+  device,
 }
 
 class PIconView extends StatelessWidget {
@@ -447,6 +450,28 @@ class _IconPainter extends CustomPainter {
           ..lineTo(15, 11)
           ..moveTo(20, 20)
           ..lineTo(20, 4.5);
+      case PIcon.info:
+        canvas.drawCircle(const Offset(12, 12), 8.5, p);
+        canvas.drawCircle(const Offset(12, 8), 1.1, fill);
+        path
+          ..moveTo(12, 11)
+          ..lineTo(12, 16.5);
+      case PIcon.copy:
+        canvas.drawRRect(
+          RRect.fromLTRBR(8.5, 8.5, 19.5, 19.5, const Radius.circular(3)),
+          p,
+        );
+        path
+          ..moveTo(4.5, 15.5)
+          ..lineTo(4.5, 6.5)
+          ..quadraticBezierTo(4.5, 4.5, 6.5, 4.5)
+          ..lineTo(15.5, 4.5);
+      case PIcon.device:
+        canvas.drawRRect(
+          RRect.fromLTRBR(6.5, 3, 17.5, 21, const Radius.circular(3)),
+          p,
+        );
+        canvas.drawCircle(const Offset(12, 17.5), 1, fill);
     }
     canvas.drawPath(path, p);
   }
