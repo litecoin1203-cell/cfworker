@@ -73,6 +73,46 @@ void main() {
     step('wallet purchase with no balance is refused');
     expect(await app.buyWithWallet(app.plans.value!.first), isNotNull);
 
+    step('store: wallet, invite, coupon');
+    final w = await app.wallet();
+    expect(w.balance, 0);
+    expect((await app.referral()).code, isNotEmpty);
+    final plan = app.plans.value!.first;
+    await expectLater(
+      app.checkCoupon(plan, 'NOPE123'),
+      throwsA(
+        isA<ApiError>().having((e) => e.code, 'code', startsWith('coupon')),
+      ),
+    );
+
+    step('store: card order, receipt, status');
+    await app.loadPublic();
+    expect(app.config.cardEnabled, isTrue);
+    final card = await app.placeOrder(plan: plan, method: 'card');
+    expect(card.status, 'pending');
+    expect(card.card!.number, hasLength(16));
+    expect(card.card!.bank, 'Bank Melli');
+    expect(card.amountToman, greaterThanOrEqualTo(plan.priceToman));
+    final png = [
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A,
+      ...List.filled(64, 0),
+    ];
+    final sent = await app.sendReceipt(card, png, '123456');
+    expect(sent.status, 'review');
+    expect((await app.orders()).map((o) => o.id), contains(card.id));
+
+    step('store: top-up order, then cancel');
+    final top = await app.placeOrder(topup: 100000, method: 'card');
+    expect(top.kind, 'topup');
+    expect((await app.cancelOrder(top)).status, 'cancelled');
+
     step('sign out');
     await app.signOut();
     expect(app.signedIn, isFalse);

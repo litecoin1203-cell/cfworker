@@ -8,21 +8,12 @@ import '../design/scenes.dart';
 import '../design/tokens.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
+import 'checkout.dart';
 import 'states.dart';
-
-String toman(int v) {
-  final s = v.toString();
-  final b = StringBuffer();
-  for (var i = 0; i < s.length; i++) {
-    if (i > 0 && (s.length - i) % 3 == 0) b.write(',');
-    b.write(s[i]);
-  }
-  return '$b toman';
-}
+import 'store_kit.dart';
 
 /// The store's plans from `/plans`, in the offer-card pattern. Start trial
-/// calls `/trial`; Buy pays from the wallet with `/orders`. Card and crypto
-/// payments stay in the Cloud Gold app.
+/// calls `/trial`; Buy opens checkout (wallet, card or crypto).
 class PlansScreen extends StatefulWidget {
   const PlansScreen({super.key});
 
@@ -76,7 +67,7 @@ class _PlansScreenState extends State<PlansScreen> {
                 child: Text(
                   me == null
                       ? 'Prices from the Cloud Gold store.'
-                      : 'Wallet ${toman(me.wallet)}. Card and crypto payments are in the Cloud Gold app.',
+                      : 'Wallet ${toman(me.wallet)}. Pay with the wallet, card or crypto.',
                   style: PType.small(),
                 ),
               ),
@@ -131,11 +122,7 @@ class _PlansScreenState extends State<PlansScreen> {
                         () => app.startTrial(list[i]),
                         'Trial started: ${list[i].trialDays} days.',
                       ),
-                      onBuy: () => _run(
-                        list[i],
-                        () => app.buyWithWallet(list[i]),
-                        '${list[i].name} is active.',
-                      ),
+                      onBuy: () => openCheckout(context, plan: list[i]),
                     ),
                   ),
                 ),
@@ -179,7 +166,7 @@ class _PlanCard extends StatelessWidget {
         ? ('Sign in', null)
         : trial
         ? ('Start trial', onTrial)
-        : ('Buy with wallet', onBuy);
+        : ('Buy', onBuy);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [

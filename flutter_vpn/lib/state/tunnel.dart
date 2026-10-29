@@ -55,6 +55,101 @@ class Tunnel {
     if (await available()) await _method.invokeMethod<void>('systemSettings');
   }
 
+  /// "Maker Model" of this phone, or null off Android.
+  Future<String?> deviceModel() async {
+    try {
+      return await _method.invokeMethod<String>('device');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// Round trip in ms through a throw-away core running [config], the way
+  /// v2rayNG tests a server; null when the server didn't answer.
+  Future<int?> ping(String config) async {
+    if (!await available()) return null;
+    try {
+      final ms = await _method.invokeMethod<int>('ping', {'config': config});
+      return ms != null && ms > 0 ? ms : null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// Round trip in ms through the running tunnel; null when it didn't
+  /// answer or no tunnel runs.
+  Future<int?> delay() async {
+    if (!await available()) return null;
+    try {
+      final ms = await _method.invokeMethod<int>('delay');
+      return ms != null && ms > 0 ? ms : null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// True when this build ships geoip.dat and geosite.dat, which the
+  /// "local sites go direct" rules need.
+  Future<bool> hasGeo() async {
+    if (!await available()) return false;
+    try {
+      return await _method.invokeMethod<bool>('geo') ?? false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Android's always-on and "block connections without VPN" flags for
+  /// Pleat. Android reports them only while the tunnel runs (Android 10+);
+  /// null when unknown.
+  Future<({bool alwaysOn, bool lockdown})?> policy() async {
+    if (!await available()) return null;
+    try {
+      final m = await _method.invokeMapMethod<String, Object?>('policy');
+      if (m == null || m['known'] != true) return null;
+      return (alwaysOn: m['alwaysOn'] == true, lockdown: m['lockdown'] == true);
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  // The same channel also carries the few phone actions the store needs.
+
+  /// Opens a web or Telegram link in its app; false when nothing opened.
+  Future<bool> openUrl(String url) async {
+    try {
+      return await _method.invokeMethod<bool>('openUrl', {'url': url}) ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<void> share(String text) async {
+    try {
+      await _method.invokeMethod<void>('share', {'text': text});
+    } on MissingPluginException {
+      // Nothing to share with off Android.
+    } on PlatformException {
+      // Same.
+    }
+  }
+
+  /// A photo from the gallery or files, as bytes; null when none was
+  /// picked.
+  Future<Uint8List?> pickImage() async {
+    try {
+      return await _method.invokeMethod<Uint8List>('pickImage');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   void listen(void Function(TunnelState) onState) {
     _sub?.cancel();
     _sub = _events.receiveBroadcastStream().listen(

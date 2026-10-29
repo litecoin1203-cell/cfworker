@@ -24,6 +24,7 @@ class ConfirmScreen extends StatefulWidget {
 
 class _ConfirmScreenState extends State<ConfirmScreen> {
   final _password = TextEditingController();
+  final _invite = TextEditingController();
   bool _create = false;
   bool _busy = false;
   String? _error;
@@ -31,6 +32,7 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
   @override
   void dispose() {
     _password.dispose();
+    _invite.dispose();
     super.dispose();
   }
 
@@ -47,7 +49,12 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
       _error = null;
     });
     final app = AppScope.read(context);
-    final err = await app.signIn(widget.address, pw, create: _create);
+    final err = await app.signIn(
+      widget.address,
+      pw,
+      create: _create,
+      invite: _create ? _invite.text.trim() : '',
+    );
     if (!mounted) return;
     if (err != null) {
       setState(() {
@@ -170,6 +177,42 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                       duration: PMotion.reduced(context)
                           ? Duration.zero
                           : PMotion.quick,
+                      child: !_create
+                          ? const SizedBox(width: double.infinity)
+                          : Container(
+                              height: 56,
+                              margin: const EdgeInsets.only(top: 12),
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 22,
+                              ),
+                              decoration: BoxDecoration(
+                                color: PColors.field,
+                                borderRadius: BorderRadius.circular(
+                                  PRadius.pill,
+                                ),
+                              ),
+                              alignment: Alignment.centerLeft,
+                              child: TextField(
+                                controller: _invite,
+                                textCapitalization:
+                                    TextCapitalization.characters,
+                                autocorrect: false,
+                                style: PType.body().copyWith(
+                                  fontWeight: FontWeight.w700,
+                                ),
+                                decoration: InputDecoration(
+                                  isCollapsed: true,
+                                  border: InputBorder.none,
+                                  hintText: 'Invite code (optional)',
+                                  hintStyle: PType.body(color: PColors.muted),
+                                ),
+                              ),
+                            ),
+                    ),
+                    AnimatedSize(
+                      duration: PMotion.reduced(context)
+                          ? Duration.zero
+                          : PMotion.quick,
                       child: _error == null
                           ? const SizedBox(width: double.infinity)
                           : Padding(
@@ -191,7 +234,7 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                         const SizedBox(width: 8),
                         Expanded(
                           child: Text(
-                            _create ? 'Have an account?' : 'New to Cloud Gold?',
+                            _create ? 'Have an account?' : 'New to Pleat?',
                             style: PType.small(),
                           ),
                         ),

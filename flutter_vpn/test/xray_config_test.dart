@@ -117,6 +117,32 @@ void main() {
     samples.forEach(
       (k, v) => File('$out/$k.json').writeAsStringSync(xrayConfig(v)),
     );
+    // The Iran-direct rules need geoip:ir and geosite:category-ir.
+    File('$out/local_direct.json')
+        .writeAsStringSync(xrayConfig(samples['trojan']!, localDirect: true));
+    File(
+      '$out/ping_test.json',
+    ).writeAsStringSync(xrayConfig(samples['vless_reality']!, forTest: true));
+  });
+
+  test('local direct: QUIC blocked, Iranian sites and IPs direct', () {
+    final c = jsonDecode(
+      xrayConfig('trojan://p@us1.example.com:443#x', localDirect: true),
+    );
+    final rules = c['routing']['rules'] as List;
+    expect(rules[1], containsPair('network', 'udp'));
+    expect(rules[1]['outboundTag'], 'block');
+    expect(rules[2]['domain'], contains('geosite:category-ir'));
+    expect(rules[3]['ip'], ['geoip:ir']);
+    final plain = jsonDecode(xrayConfig('trojan://p@us1.example.com:443#x'));
+    expect(plain['routing']['rules'], hasLength(1));
+  });
+
+  test('test config has no inbound, so it never takes the tunnel port', () {
+    final c = jsonDecode(
+      xrayConfig('trojan://p@us1.example.com:443#x', forTest: true),
+    );
+    expect(c['inbounds'], isEmpty);
   });
 
   test('full config: local socks in, private ranges direct', () {

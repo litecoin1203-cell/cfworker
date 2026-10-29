@@ -22,7 +22,17 @@ const _privateCidrs = [
   'fe80::/10',
 ];
 
-String xrayConfig(String link) {
+/// [localDirect]: Iranian sites and IPs leave directly (faster, often
+/// blocked from abroad, and they don't spend plan data), and QUIC is
+/// refused so apps fall back to TCP, which runs steadier through the exit.
+/// The same rules as the Cloud Gold app's default; they need the geo files.
+///
+/// [forTest]: no inbound, for a throw-away core that only measures delay.
+String xrayConfig(
+  String link, {
+  bool localDirect = false,
+  bool forTest = false,
+}) {
   final proxy = outboundOf(link);
   return jsonEncode({
     'log': {'loglevel': 'warning'},
@@ -31,18 +41,19 @@ String xrayConfig(String link) {
       'queryStrategy': 'UseIP',
     },
     'inbounds': [
-      {
-        'tag': 'socks',
-        'listen': '127.0.0.1',
-        'port': socksPort,
-        'protocol': 'socks',
-        'settings': {'auth': 'noauth', 'udp': true},
-        'sniffing': {
-          'enabled': true,
-          'destOverride': ['http', 'tls', 'quic'],
-          'routeOnly': true,
+      if (!forTest)
+        {
+          'tag': 'socks',
+          'listen': '127.0.0.1',
+          'port': socksPort,
+          'protocol': 'socks',
+          'settings': {'auth': 'noauth', 'udp': true},
+          'sniffing': {
+            'enabled': true,
+            'destOverride': ['http', 'tls', 'quic'],
+            'routeOnly': true,
+          },
         },
-      },
     ],
     'outbounds': [
       proxy,
@@ -53,6 +64,24 @@ String xrayConfig(String link) {
       'domainStrategy': 'AsIs',
       'rules': [
         {'type': 'field', 'ip': _privateCidrs, 'outboundTag': 'direct'},
+        if (localDirect) ...[
+          {
+            'type': 'field',
+            'network': 'udp',
+            'port': '443',
+            'outboundTag': 'block',
+          },
+          {
+            'type': 'field',
+            'domain': ['domain:ir', 'geosite:category-ir'],
+            'outboundTag': 'direct',
+          },
+          {
+            'type': 'field',
+            'ip': ['geoip:ir'],
+            'outboundTag': 'direct',
+          },
+        ],
       ],
     },
   });

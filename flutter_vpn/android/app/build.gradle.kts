@@ -37,17 +37,35 @@ android {
         }
     }
 
+    // Stored uncompressed so Engine can size-check and copy them by descriptor.
+    androidResources {
+        noCompress += listOf("dat")
+    }
+
     packaging {
         jniLibs {
             useLegacyPackaging = true
         }
     }
 
+    // CI passes the Cloud Gold release key (APP_KEYSTORE_* secrets) through
+    // PLEAT_KEYSTORE*, so every build carries the same signature and installs
+    // over the last one. Without it the release falls back to the debug key.
+    val keystore = System.getenv("PLEAT_KEYSTORE")?.let { file(it) }?.takeIf { it.exists() }
+    signingConfigs {
+        if (keystore != null) {
+            create("release") {
+                storeFile = keystore
+                storePassword = System.getenv("PLEAT_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("PLEAT_KEY_ALIAS")
+                keyPassword = System.getenv("PLEAT_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (keystore != null) "release" else "debug")
         }
     }
 }

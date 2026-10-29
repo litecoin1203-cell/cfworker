@@ -8,9 +8,10 @@ import '../state/app_state.dart';
 import 'shell.dart';
 
 /// Protect is a control surface. The kill switch is the big favourite
-/// card; split tunnel and DNS are spatial cards. Those guards live in the
-/// platform tunnel, not the backend, so each says plainly when this build
-/// can't run it. Protocol is real: it comes from the server list.
+/// card; split tunnel and DNS are spatial cards. Every switch here does
+/// what it shows: kill switch and auto-connect mirror Android's own
+/// always-on flags (only Android can set them, so they open its page);
+/// split tunnel and smart connect change how Pleat connects.
 class ProtectScreen extends StatelessWidget {
   const ProtectScreen({super.key});
 
@@ -31,7 +32,7 @@ class ProtectScreen extends StatelessWidget {
             const SizedBox(height: 20),
             item(_KillSwitchCard(app: app)),
             const SizedBox(height: 16),
-            item(const _SplitTunnelCard()),
+            item(_SplitTunnelCard(app: app)),
             const SizedBox(height: 16),
             item(_DnsCard(engine: app.tunnelAvailable == true)),
             const SizedBox(height: 16),
@@ -44,10 +45,16 @@ class ProtectScreen extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Expanded(
-                    child: const _MiniCard(
-                      icon: PIcon.filter,
-                      title: 'Threat filter',
-                      body: 'No filter on the server. Not in this build.',
+                    child: _MiniCard(
+                      icon: PIcon.bolt,
+                      title: 'Smart connect',
+                      body: app.smartConnect
+                          ? 'Tests every exit, takes the fastest, moves on if it stops.'
+                          : 'Uses the exit you pick, and stays on it.',
+                      value: app.smartConnect,
+                      onChanged: app.tunnelAvailable == true
+                          ? app.setSmartConnect
+                          : null,
                     ),
                   ),
                   const SizedBox(width: 14),
@@ -58,8 +65,9 @@ class ProtectScreen extends StatelessWidget {
                         icon: PIcon.lan,
                         title: 'Local network',
                         body: app.tunnelAvailable == true
-                            ? 'Private addresses stay on your network. Fixed.'
+                            ? 'Printers and routers stay reachable. Always on.'
                             : 'Needs the tunnel engine. Not in this build.',
+                        fixed: app.tunnelAvailable == true,
                       ),
                     ),
                   ),
@@ -155,9 +163,11 @@ class _KillSwitchCard extends StatelessWidget {
                           ),
                         ),
                         const Spacer(),
-                        const PToggle(
-                          value: false,
-                          onChanged: null,
+                        PToggle(
+                          value: app.guard?.lockdown ?? false,
+                          onChanged: engine
+                              ? (_) => app.tunnel.openSystemSettings()
+                              : null,
                           label: 'Kill switch',
                           onDark: true,
                         ),
@@ -167,9 +177,14 @@ class _KillSwitchCard extends StatelessWidget {
                     Text('Kill switch', style: PType.h1(color: Colors.white)),
                     const SizedBox(height: 6),
                     UnavailableNote(
-                      engine
-                          ? 'Android runs it. Tap, then turn on Always-on VPN and Block connections without VPN for Pleat.'
-                          : 'Not in this build. It is Android’s always-on VPN with lockdown, and it needs the tunnel engine.',
+                      !engine
+                          ? 'Not in this build. It is Android’s always-on VPN with lockdown, and it needs the tunnel engine.'
+                          : switch (app.guard) {
+                              (lockdown: true, alwaysOn: _) => 'On. Android blocks every connection that skips the tunnel.',
+                              (alwaysOn: true, lockdown: false) => 'Always-on is set, lockdown is off. Tap to block traffic without the tunnel.',
+                              _ when app.phase == Phase.protected => 'Off. Tap, then turn on Always-on VPN and Block connections without VPN.',
+                              _ => 'Android runs it and shows its state while connected. Tap to open it.',
+                            },
                       onDark: true,
                     ),
                   ],
@@ -183,48 +198,95 @@ class _KillSwitchCard extends StatelessWidget {
   }
 }
 
-/// Split tunnel: the card keeps its place, but there is no app list to
-/// move until a tunnel engine can route apps.
+/// Split tunnel by place: Iranian sites and IPs leave directly, the rest
+/// goes through the exit, and QUIC is refused so apps use steadier TCP.
+/// The same rules the Cloud Gold app applies by default.
 class _SplitTunnelCard extends StatelessWidget {
-  const _SplitTunnelCard();
+  const _SplitTunnelCard({required this.app});
+  final AppState app;
 
   @override
   Widget build(BuildContext context) {
+    final can = app.tunnelAvailable == true && app.geoAvailable;
+    final on = app.localDirect && can;
+    final d = PMotion.reduced(context) ? Duration.zero : PMotion.state;
     return SurfaceCard(
-      padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+      padding: const EdgeInsets.fromLTRB(20, 20, 12, 20),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              const PIconView(PIcon.split, color: PColors.muted),
+              PIconView(PIcon.split, color: on ? PColors.blue : PColors.muted),
               const SizedBox(width: 10),
               Expanded(child: Text('Split tunnel', style: PType.h3())),
+              PToggle(
+                value: app.localDirect,
+                onChanged: can ? app.setLocalDirect : null,
+                label: 'Local sites direct',
+              ),
             ],
           ),
           const SizedBox(height: 14),
-          Row(
-            children: [
-              for (final (title, color, ink) in const [
-                ('Through tunnel', PColors.mist, PColors.navy),
-                ('Direct', PColors.field, PColors.muted),
-              ])
-                Expanded(
-                  child: Container(
-                    margin: EdgeInsets.only(right: title == 'Direct' ? 0 : 10),
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: color,
-                      borderRadius: BorderRadius.circular(22),
-                    ),
-                    child: Text(title, style: PType.meta(color: ink)),
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: Row(
+              children: [
+                for (final (title, sub, lit) in [
+                  (
+                    'Through tunnel',
+                    on ? 'Everything else' : 'Everything',
+                    true,
                   ),
-                ),
-            ],
+                  ('Direct', on ? 'Iranian sites' : 'Nothing', on),
+                ])
+                  Expanded(
+                    child: AnimatedContainer(
+                      duration: d,
+                      curve: Curves.easeOutCubic,
+                      margin: EdgeInsets.only(
+                        right: title == 'Direct' ? 0 : 10,
+                      ),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: lit ? PColors.mist : PColors.field,
+                        borderRadius: BorderRadius.circular(22),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: PType.meta(
+                              color: lit ? PColors.navy : PColors.muted,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          AnimatedSwitcher(
+                            duration: d,
+                            child: Text(
+                              sub,
+                              key: ValueKey(sub),
+                              style: PType.small(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
           ),
           const SizedBox(height: 12),
-          const UnavailableNote(
-            'Needs the tunnel engine to route apps. Not in this build.',
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: UnavailableNote(
+              !can
+                  ? 'Needs the tunnel engine and its place lists. Not in this build.'
+                  : on
+                  ? 'Iranian sites open fast and spend no plan data. QUIC is off, so apps use steadier TCP.'
+                  : 'Every site goes through the exit.',
+            ),
           ),
         ],
       ),
@@ -380,18 +442,22 @@ class _AutoConnectCard extends StatelessWidget {
               const PIconView(PIcon.wifi, color: PColors.muted),
               const SizedBox(width: 10),
               Expanded(child: Text('Auto-connect', style: PType.h3())),
-              const PToggle(
-                value: false,
-                onChanged: null,
+              PToggle(
+                value: app.guard?.alwaysOn ?? false,
+                onChanged: engine
+                    ? (_) => app.tunnel.openSystemSettings()
+                    : null,
                 label: 'Auto-connect',
               ),
             ],
           ),
           const SizedBox(height: 6),
           UnavailableNote(
-            engine
-                ? 'Android starts Pleat on boot and reconnects when Always-on VPN is on. Tap to open it.'
-                : 'Starts the tunnel engine on boot. Not in this build.',
+            !engine
+                ? 'Starts the tunnel engine on boot. Not in this build.'
+                : app.guard?.alwaysOn == true
+                ? 'On. Android starts Pleat on boot and reconnects to your last exit.'
+                : 'Android starts Pleat on boot when Always-on VPN is on. Tap to open it.',
           ),
         ],
       ),
@@ -404,24 +470,39 @@ class _MiniCard extends StatelessWidget {
     required this.icon,
     required this.title,
     required this.body,
+    this.value = false,
+    this.onChanged,
+    this.fixed = false,
   });
 
   final PIcon icon;
   final String title, body;
+  final bool value;
+  final ValueChanged<bool>? onChanged;
+
+  /// Always on and not a choice: a check instead of a switch.
+  final bool fixed;
 
   @override
   Widget build(BuildContext context) {
+    final live = fixed || (value && onChanged != null);
     return SurfaceCard(
-      label: '$title, unavailable',
+      label: fixed ? '$title, always on' : null,
       padding: const EdgeInsets.fromLTRB(18, 16, 10, 18),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              PIconView(icon, color: PColors.muted),
+              PIconView(icon, color: live ? PColors.blue : PColors.muted),
               const Spacer(),
-              PToggle(value: false, onChanged: null, label: title),
+              if (fixed)
+                const Padding(
+                  padding: EdgeInsets.all(12),
+                  child: PIconView(PIcon.check, color: PColors.safe),
+                )
+              else
+                PToggle(value: value, onChanged: onChanged, label: title),
             ],
           ),
           const SizedBox(height: 10),

@@ -2,8 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+
+import 'models.dart';
 
 /// Comma-separated Worker addresses, e.g.
 /// `--dart-define=PLEAT_API=https://api.example.com,https://b.example.com`.
@@ -60,7 +63,15 @@ class TokenStore {
     refresh = null;
     await _s.delete(key: 'access');
     await _s.delete(key: 'refresh');
+    await _s.delete(key: 'servers');
   }
+
+  /// The last server list, kept in the Keystore too because its configs
+  /// carry the account's credentials. Lets Pleat connect while the Worker
+  /// can't be reached, as the Cloud Gold app does.
+  Future<String?> cachedServers() => _s.read(key: 'servers');
+  Future<void> cacheServers(String json) =>
+      _s.write(key: 'servers', value: json);
 
   bool get signedIn => access != null && refresh != null;
 }
@@ -73,18 +84,25 @@ class ApiClient {
           .map((b) => b.trim().replaceAll(RegExp(r'/+$'), ''))
           .where((b) => b.startsWith('https://') || b.startsWith('http://'))
           .toList(),
-      _http = http ?? (HttpClient()..connectionTimeout = _timeout);
+      _http = http ?? (HttpClient()..connectionTimeout = _connect);
 
-  static const _timeout = Duration(seconds: 12);
+  /// Connecting must be quick so the next address is tried soon; an answer
+  /// may take longer, because a trial or a purchase builds the account on
+  /// the panel first (the Cloud Gold app waits 30 s as well).
+  static const _connect = Duration(seconds: 12);
+  static const _timeout = Duration(seconds: 30);
 
   /// Contract version, not Pleat's own: 1.9 tells the Worker this client
   /// never wants a raw subscription address (see `centralApp`).
-  static const appVersion = '1.9.0 (Pleat 1.1.0)';
+  static const appVersion = '1.9.0 (Pleat 1.2.0)';
 
   final TokenStore tokens;
   final List<String> _bases;
   final HttpClient _http;
   int _base = 0;
+
+  /// "Maker Model" of this phone, for the device list; set once at launch.
+  String deviceModel = 'Pleat';
 
   /// Called when the server rejects the session for good.
   void Function()? onSignedOut;
@@ -97,7 +115,10 @@ class ApiClient {
 
   Map<String, String> get _deviceHeaders => {
     'x-device-id': tokens.deviceId ?? '',
-    'x-device-model': 'Pleat ${Platform.operatingSystem}',
+    'x-device-model': deviceModel,
+    // The panel limits phones by HWID, as it does for the Cloud Gold app;
+    // without it a plan with a device limit gets no configs.
+    'x-hwid': tokens.deviceId ?? '',
     'x-device-os': Platform.operatingSystem,
     'x-ver-os': Platform.operatingSystemVersion,
     'x-app-version': appVersion,
@@ -108,10 +129,41 @@ class ApiClient {
       _send('POST', path, body: body ?? const {});
   Future<dynamic> delete(String path) => _send('DELETE', path);
 
+  /// Multipart form upload (the card receipt): text [fields] and one file.
+  Future<dynamic> upload(
+    String path,
+    Map<String, String> fields, {
+    required List<int> file,
+    required String filename,
+  }) {
+    final boundary = 'pleat${DateTime.now().microsecondsSinceEpoch}';
+    final out = BytesBuilder();
+    void line(String s) => out.add(utf8.encode('$s\r\n'));
+    fields.forEach((k, v) {
+      line('--$boundary');
+      line('Content-Disposition: form-data; name="$k"');
+      line('');
+      line(v);
+    });
+    line('--$boundary');
+    line('Content-Disposition: form-data; name="file"; filename="$filename"');
+    line('Content-Type: application/octet-stream');
+    line('');
+    out.add(file);
+    line('');
+    line('--$boundary--');
+    return _send(
+      'POST',
+      path,
+      raw: (out.takeBytes(), 'multipart/form-data; boundary=$boundary'),
+    );
+  }
+
   Future<dynamic> _send(
     String method,
     String path, {
     Map<String, Object?>? body,
+    (List<int>, String)? raw,
     bool retried = false,
   }) async {
     if (!configured) {
@@ -122,9 +174,9 @@ class ApiClient {
       );
     }
     final authed = !path.startsWith('/auth/') && tokens.access != null;
-    final (status, data) = await _roundTrip(method, path, body, authed);
+    final (status, data) = await _roundTrip(method, path, body, authed, raw);
     if (status == 401 && authed && !retried && await _refresh()) {
-      return _send(method, path, body: body, retried: true);
+      return _send(method, path, body: body, raw: raw, retried: true);
     }
     if (status >= 400) {
       final err = _error(status, data);
@@ -159,20 +211,25 @@ class ApiClient {
     String method,
     String path,
     Map<String, Object?>? body,
-    bool authed,
-  ) async {
+    bool authed, [
+    (List<int>, String)? raw,
+  ]) async {
     Object? lastError;
     for (var tries = 0; tries < _bases.length; tries++) {
       final base = _bases[(_base + tries) % _bases.length];
       try {
         final req = await _http
             .openUrl(method, Uri.parse('$base/api/v1$path'))
-            .timeout(_timeout);
+            .timeout(_connect);
         _deviceHeaders.forEach(req.headers.set);
         if (authed) {
           req.headers.set('authorization', 'Bearer ${tokens.access}');
         }
-        if (body != null) {
+        if (raw != null) {
+          req.headers.set('content-type', raw.$2);
+          req.contentLength = raw.$1.length;
+          req.add(raw.$1);
+        } else if (body != null) {
           req.headers.contentType = ContentType.json;
           req.add(utf8.encode(jsonEncode(body)));
         }
@@ -215,7 +272,16 @@ class ApiClient {
       code = (d['code'] as String?) ?? code;
       message = (d['message'] as String?) ?? '';
     }
-    return ApiError(status, code, _english[code] ?? message);
+    return ApiError(status, code, _english[code] ?? _englishOnly(message));
+  }
+
+  /// The app is English-only. The Worker writes its messages in Persian, so
+  /// an unknown code gets a plain English line instead of that text.
+  static String _englishOnly(String message) {
+    if (message.isNotEmpty && !isPersian(message)) {
+      return message;
+    }
+    return 'Something went wrong on the server. Try again.';
   }
 
   /// English copy for the Worker's error codes. Unknown codes keep the
@@ -243,5 +309,24 @@ class ApiClient {
     'insufficient_balance': 'Your wallet balance isn’t enough for this plan.',
     'wrong_password': 'The current password is wrong.',
     'not_found': 'Not found.',
+    'amount_too_large': 'That amount is above the limit.',
+    'amount_too_small': 'That amount is below the minimum.',
+    'bad_file': 'That file can’t be used as a receipt. Send a photo.',
+    'too_large': 'The receipt photo is too large.',
+    'bad_method': 'Top up the wallet with card or crypto.',
+    'bad_state': 'This order can’t be changed now.',
+    'bad_request': 'Check the fields and try again.',
+    'method_unavailable': 'This payment method is off right now.',
+    'coin_unavailable': 'This coin isn’t available right now.',
+    'crypto_error': 'Crypto payment couldn’t start. Try again soon.',
+    'price_unavailable': 'The price isn’t available right now. Try again soon.',
+    'txid_used': 'This transaction was already used.',
+    'coupon_invalid': 'This code isn’t valid.',
+    'coupon_expired': 'This code has expired.',
+    'coupon_used': 'You already used this code.',
+    'coupon_used_up': 'This code is used up.',
+    'coupon_in_use': 'This code is being used on another order.',
+    'coupon_wrong_plan': 'This code isn’t for this plan.',
+    'panel_unconfigured': 'Servers aren’t set up yet. Contact support.',
   };
 }

@@ -15,6 +15,13 @@ class Exit {
   final Server server;
   final Rank? rank;
 
+  /// What this phone measured through the core: ms, or -1 for no answer;
+  /// null until tested.
+  int? measured;
+  DateTime? measuredAt;
+
+  bool get unreachable => measured == -1;
+
   String get id => server.key;
 
   /// Headline: the country the remark names.
@@ -26,8 +33,23 @@ class Exit {
   String get flag => server.flag;
   String get protocol => server.protocolLabel;
 
-  /// Median ping other people on this network reported, if any.
-  int? get ping => (rank?.ms ?? 0) > 0 ? rank!.ms : null;
+  /// This phone's own measurement first, then the median other people on
+  /// this network reported.
+  int? get ping =>
+      (measured ?? 0) > 0 ? measured : ((rank?.ms ?? 0) > 0 ? rank!.ms : null);
+
+  /// The network ranking counts once at least three phones reported.
+  double? get ispScore =>
+      rank != null && rank!.reports >= 3 ? rank!.score : null;
+
+  /// Smart-connect order: fast here, weighted by how well it works on this
+  /// operator for everyone (the Cloud Gold app's formula).
+  double get smartScore {
+    final ms = measured ?? 0;
+    final local = ms > 0 ? 1 - (ms.clamp(0, 1500) / 1500) : 0.0;
+    final isp = ispScore;
+    return isp == null ? local : local * 0.45 + isp * 0.55;
+  }
 
   /// 0 … 100, from the network ranking.
   int? get score => rank == null ? null : (rank!.score * 100).round();
@@ -47,6 +69,9 @@ class Exit {
       (((countries[code]?.lon ?? 10) - 10) / 120).clamp(-1.0, 1.0);
 
   /// One-line facts for cards: label, protocol and ping when known.
-  String get meta =>
-      [label, protocol, if (ping != null) '$ping ms'].join('  ·  ');
+  String get meta => [
+    label,
+    protocol,
+    if (unreachable) 'no answer' else if (ping != null) '$ping ms',
+  ].join('  ·  ');
 }

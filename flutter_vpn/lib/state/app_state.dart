@@ -63,11 +63,21 @@ class Notice {
 /// App state. Account, plans, servers, usage and devices come from the
 /// Cloud Gold Worker through [api]; only display preferences, bookmarks
 /// and the local session log live on the phone.
-class AppState extends ChangeNotifier {
+class AppState extends ChangeNotifier with WidgetsBindingObserver {
   AppState(this._prefs, this.api, {Tunnel? tunnel})
     : tunnel = tunnel ?? Tunnel() {
     _load();
     api.onSignedOut = _forgetAccount;
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  /// Back from Android's VPN page or from the background: read what may
+  /// have changed there (always-on, lockdown) and on the server (plan).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s != AppLifecycleState.resumed) return;
+    if (phase == Phase.protected) readGuard();
+    if (signedIn && !me.loading) loadMe();
   }
 
   final SharedPreferences _prefs;
@@ -77,6 +87,17 @@ class AppState extends ChangeNotifier {
   // ---- on this phone --------------------------------------------------
   bool onboarded = false;
   bool reduceMotion = false;
+
+  /// Test the exits and take the best one; move on when one stops
+  /// answering. On by default, as in the Cloud Gold app.
+  bool smartConnect = true;
+
+  /// Iranian sites and IPs go direct, QUIC is refused (see `xrayConfig`).
+  bool localDirect = true;
+
+  /// The person picked an exit by hand; the big button then uses it
+  /// instead of the smart choice.
+  bool pinned = false;
   String? exitId;
   Set<String> saved = {};
   List<Session> sessions = [];
@@ -98,9 +119,28 @@ class AppState extends ChangeNotifier {
 
   /// Why the last connect attempt or session ended; shown in the stage line.
   String? tunnelMessage;
+
+  /// What a connect attempt is doing right now, for the stage line.
+  String? progressNote;
   bool? tunnelAvailable;
+
+  /// The build ships the geo files the local-direct rules need.
+  bool geoAvailable = false;
+
+  /// The list shown came from this phone's cache, not from the Worker.
+  bool serversStale = false;
+
+  /// Android's always-on / lockdown flags, read while the tunnel runs.
+  ({bool alwaysOn, bool lockdown})? guard;
+  bool testing = false;
+  DateTime? testedAt;
   int _attempt = 0;
-  Timer? _watch;
+  Timer? _watch, _pulse;
+  final List<String> _tried = [];
+  bool _resynced = false;
+  int _misses = 0;
+  bool _reported = false;
+  Future<void>? _testRun;
 
   bool get signedIn => api.tokens.signedIn;
   bool get busy => phase == Phase.checking || phase == Phase.handshaking;
@@ -121,9 +161,16 @@ class AppState extends ChangeNotifier {
     return null;
   }
 
-  /// Best first: network score, then reported ping, then the Worker's order.
+  /// Best first: answering exits before silent ones, then what this phone
+  /// measured (weighted by the network score), then the network score and
+  /// reported ping, then the Worker's order.
   List<Exit> get ranked => [...exits]
     ..sort((a, b) {
+      if (a.unreachable != b.unreachable) return a.unreachable ? 1 : -1;
+      if ((a.measured ?? 0) > 0 || (b.measured ?? 0) > 0) {
+        final m = b.smartScore.compareTo(a.smartScore);
+        if (m != 0) return m;
+      }
       final s = (b.score ?? -1).compareTo(a.score ?? -1);
       if (s != 0) return s;
       return (a.ping ?? 99999).compareTo(b.ping ?? 99999);
@@ -148,6 +195,9 @@ class AppState extends ChangeNotifier {
     final p = _prefs;
     onboarded = p.getBool('onboarded') ?? false;
     reduceMotion = p.getBool('reduceMotion') ?? false;
+    smartConnect = p.getBool('smartConnect') ?? true;
+    localDirect = p.getBool('localDirect') ?? true;
+    pinned = p.getBool('pinned') ?? false;
     exitId = p.getString('exit');
     saved = (p.getStringList('saved') ?? const []).toSet();
     noticesSeen = p.getString('noticesSeen') ?? '';
@@ -160,6 +210,9 @@ class AppState extends ChangeNotifier {
     final p = _prefs;
     p.setBool('onboarded', onboarded);
     p.setBool('reduceMotion', reduceMotion);
+    p.setBool('smartConnect', smartConnect);
+    p.setBool('localDirect', localDirect);
+    p.setBool('pinned', pinned);
     exitId == null ? p.remove('exit') : p.setString('exit', exitId!);
     p.setStringList('saved', saved.toList());
     p.setString('noticesSeen', noticesSeen);
@@ -215,19 +268,47 @@ class AppState extends ChangeNotifier {
   });
 
   Future<void> loadServers() async {
+    final before = {for (final e in exits) e.id: e};
     await _fetch(servers, () async {
-      final data = await api.get('/vpn/servers');
+      dynamic data;
+      try {
+        data = await api.get('/vpn/servers');
+        serversStale = false;
+        await api.tokens.cacheServers(jsonEncode(data));
+      } on ApiError catch (e) {
+        // Offline: the last list still connects, as in the Cloud Gold app.
+        final cached = e.code == 'offline'
+            ? await api.tokens.cachedServers()
+            : null;
+        if (cached == null) rethrow;
+        data = jsonDecode(cached);
+        serversStale = true;
+      }
       try {
         _ranks = ranksFrom(await api.get('/net/rank'));
       } on ApiError {
-        _ranks = const {};
+        // Keep the last ranking.
       }
       return [
         for (final s in data as List)
-          Exit(Server.fromJson((s as Map).cast<String, dynamic>()), null),
-      ].map((e) => Exit(e.server, _ranks[e.id])).toList();
+          _carry(
+            Exit(Server.fromJson((s as Map).cast<String, dynamic>()), null),
+            before,
+          ),
+      ];
     });
     if (servers.error != null) servers.value = null;
+  }
+
+  /// Same exit with this list's ranking and the earlier measurement.
+  Exit _carry(Exit fresh, Map<String, Exit> before) {
+    final e = Exit(fresh.server, _ranks[fresh.id]);
+    final old = before[fresh.id];
+    if (old != null) {
+      e.measured = old.measured;
+      e.measuredAt = old.measuredAt;
+    }
+    return e;
   }
 
   Future<void> loadDevices() => _fetch(devices, () async {
@@ -256,13 +337,15 @@ class AppState extends ChangeNotifier {
     String address,
     String password, {
     bool create = false,
+    String invite = '',
   }) async {
     try {
       final data = await api.post(create ? '/auth/register' : '/auth/login', {
         'email': address,
         'password': password,
         'device_id': api.tokens.deviceId,
-        'device_model': 'Pleat',
+        'device_model': api.deviceModel,
+        if (create && invite.isNotEmpty) 'referral_code': invite,
       });
       await api.tokens.save(
         data['access_token'] as String,
@@ -296,7 +379,7 @@ class AppState extends ChangeNotifier {
   }
 
   void _forgetAccount() {
-    _watch?.cancel();
+    _stopTimers();
     me.value = null;
     servers.value = null;
     devices.value = null;
@@ -323,18 +406,38 @@ class AppState extends ChangeNotifier {
   }
 
   Future<String?> startTrial(PlanInfo p) async {
+    final before = subscription;
     try {
-      await api.post('/trial', {'plan_id': p.id});
+      final data = await api.post('/trial', {'plan_id': p.id});
+      if (data is Map) {
+        me.value = Me.fromJson(data.cast<String, dynamic>());
+        notifyListeners();
+      }
     } on ApiError catch (e) {
-      return e.message;
+      // The trial may be built although the answer was lost on the way.
+      if (!await _activeAfter(e, before)) return e.message;
     }
-    await loadMe();
+    await Future.wait([loadMe(), loadDevices()]);
     await loadServers();
     return null;
   }
 
-  /// Buys [p] from the wallet. Card and crypto stay in the Cloud Gold app.
+  /// After a lost answer (timeout, network): true when the server now shows
+  /// an active plan that ends later than [before] did, so the action went
+  /// through.
+  Future<bool> _activeAfter(ApiError e, Subscription? before) async {
+    if (e.status != 0) return false;
+    await loadMe();
+    final s = subscription;
+    if (s == null || !s.active) return false;
+    if (before == null) return true;
+    final was = before.expiresAt, now = s.expiresAt;
+    return was != null && now != null && now.isAfter(was);
+  }
+
+  /// Buys [p] from the wallet.
   Future<String?> buyWithWallet(PlanInfo p) async {
+    final before = subscription;
     try {
       final order = await api.post('/orders', {
         'plan_id': p.id,
@@ -344,14 +447,96 @@ class AppState extends ChangeNotifier {
       final status = order is Map ? order['status'] : null;
       if (status != 'paid') {
         await loadMe();
-        return 'The order is $status. Finish it in the Cloud Gold app.';
+        return 'The order is $status.';
       }
     } on ApiError catch (e) {
-      return e.message;
+      if (!await _activeAfter(e, before)) return e.message;
     }
     await loadMe();
     await loadServers();
     return null;
+  }
+
+  // ---- store ----------------------------------------------------------
+  // Same Worker calls as the Cloud Gold app. The Worker decides prices,
+  // matches payments and activates plans; Pleat only shows and asks.
+
+  Future<Coupon> checkCoupon(PlanInfo p, String code) async => Coupon.fromJson(
+    ((await api.post('/coupons/check', {'code': code, 'plan_id': p.id})) as Map)
+        .cast<String, dynamic>(),
+  );
+
+  /// Places an order for [plan] or a wallet [topup]. [method] is wallet,
+  /// card, crypto or coin; [useWallet] spends the balance first.
+  Future<Order> placeOrder({
+    PlanInfo? plan,
+    int? topup,
+    required String method,
+    bool useWallet = false,
+    String? coupon,
+    String? coin,
+  }) async {
+    final body = <String, Object?>{
+      'method': method,
+      if (plan != null) ...{
+        'plan_id': plan.id,
+        'use_wallet': useWallet,
+        'coupon_code': ?coupon,
+      } else
+        'topup_toman': topup,
+      'coin': ?coin,
+    };
+    final o = Order.fromJson(
+      ((await api.post('/orders', body)) as Map).cast<String, dynamic>(),
+    );
+    if (o.status == 'paid') await afterPaid(o);
+    return o;
+  }
+
+  Future<Order> order(int id) async => Order.fromJson(
+    ((await api.get('/orders/$id')) as Map).cast<String, dynamic>(),
+  );
+
+  Future<List<Order>> orders() async => [
+    for (final o in (await api.get('/orders')) as List)
+      Order.fromJson((o as Map).cast<String, dynamic>()),
+  ];
+
+  Future<Order> cancelOrder(Order o) async => Order.fromJson(
+    ((await api.post('/orders/${o.id}/cancel')) as Map).cast<String, dynamic>(),
+  );
+
+  Future<Order> sendReceipt(Order o, List<int> photo, String ref) async =>
+      Order.fromJson(
+        ((await api.upload(
+          '/orders/${o.id}/receipt',
+          {'ref': ref},
+          file: photo,
+          filename: 'receipt.jpg',
+        )) as Map).cast<String, dynamic>(),
+      );
+
+  /// "I have paid" for a coin order, with the transaction hash if given.
+  Future<Order> coinPaid(Order o, String txid) async => Order.fromJson(
+    ((await api.post('/orders/${o.id}/paid', {'txid': txid})) as Map)
+        .cast<String, dynamic>(),
+  );
+
+  Future<WalletInfo> wallet() async {
+    final w = WalletInfo.fromJson(
+      ((await api.get('/wallet')) as Map).cast<String, dynamic>(),
+    );
+    return w;
+  }
+
+  Future<Referral> referral() async => Referral.fromJson(
+    ((await api.get('/referral')) as Map).cast<String, dynamic>(),
+  );
+
+  /// After a paid order: the plan and exits as the server now has them.
+  Future<void> afterPaid(Order o) async {
+    await loadMe();
+    if (o.kind == 'plan' || o.planActivated == true) await loadServers();
   }
 
   Future<String?> removeDevice(Device d) async {
@@ -425,7 +610,15 @@ class AppState extends ChangeNotifier {
 
   // ---- places ---------------------------------------------------------
 
-  void select(String id) => update((s) => s.exitId = id);
+  void select(String id) => update((s) {
+    s.exitId = id;
+    s.pinned = true;
+  });
+
+  void setSmartConnect(bool on) => update((s) {
+    s.smartConnect = on;
+    if (on) s.pinned = false;
+  });
 
   /// Bookmarks are stored on this phone; the backend has none.
   void toggleSaved(String id) => update(
@@ -451,38 +644,117 @@ class AppState extends ChangeNotifier {
 
   // ---- tunnel ---------------------------------------------------------
 
+  /// Measures every exit through a throw-away core (a few at a time on the
+  /// native side), then tells the Worker what worked on this network so
+  /// other phones on the same operator rank better.
+  Future<void> testAll() => _testRun ??= _testAll().whenComplete(() {
+    _testRun = null;
+  });
+
+  Future<void> _testAll() async {
+    final list = exits;
+    if (list.isEmpty || !await tunnel.available()) return;
+    testing = true;
+    notifyListeners();
+    final results = <Map<String, Object>>[];
+    await Future.wait(
+      list.map((e) async {
+        String config;
+        try {
+          config = xrayConfig(e.server.link, forTest: true);
+        } on FormatException {
+          return;
+        }
+        final ms = await tunnel
+            .ping(config)
+            .timeout(const Duration(seconds: 12), onTimeout: () => null);
+        e.measured = ms ?? -1;
+        e.measuredAt = DateTime.now();
+        results.add({'k': e.id, 'ok': ms != null, 'ms': ms ?? 0});
+        notifyListeners();
+      }),
+    );
+    testing = false;
+    testedAt = DateTime.now();
+    notifyListeners();
+    _report(results);
+  }
+
+  void _report(List<Map<String, Object>> results) {
+    final valid = results.where((r) => serverKeyPattern.hasMatch('${r['k']}'));
+    if (valid.isEmpty) return;
+    api
+        .post('/net/report', {'results': valid.take(60).toList()})
+        .then((_) {}, onError: (_) {});
+  }
+
+  bool get _pingsFresh =>
+      testedAt != null &&
+      DateTime.now().difference(testedAt!) < const Duration(minutes: 10) &&
+      exits.any((e) => (e.measured ?? 0) > 0);
+
+  /// Best exit not yet tried: one that works for nearly everyone on this
+  /// operator, else the best measured here (the Cloud Gold app's rule).
+  Future<Exit?> _best() async {
+    if (_tried.isEmpty) {
+      final strong =
+          exits
+              .where(
+                (e) =>
+                    (e.rank?.reports ?? 0) >= 8 && (e.rank?.score ?? 0) >= 0.8,
+              )
+              .toList()
+            ..sort((a, b) => b.rank!.score.compareTo(a.rank!.score));
+      if (strong.isNotEmpty) return strong.first;
+    }
+    if (!_pingsFresh) await testAll();
+    final ok =
+        exits
+            .where((e) => (e.measured ?? 0) > 0 && !_tried.contains(e.id))
+            .toList()
+          ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
+    return ok.isEmpty ? null : ok.first;
+  }
+
   /// Real connect: re-checks the plan and registers this phone with
-  /// `GET /vpn`, refreshes the list, then asks the platform tunnel for the
-  /// chosen config. Protected is shown only once the tunnel reports up.
-  Future<void> connect([String? id]) async {
+  /// `GET /vpn`, then asks the platform tunnel for the exit. With smart
+  /// connect and no exit picked, the exits are tested first and the best
+  /// one is used. Protected is shown only once the tunnel reports up.
+  Future<void> connect([String? id]) => _connect(id, failover: false);
+
+  Future<void> _connect(String? id, {required bool failover}) async {
+    if (id != null && !failover) pinned = true;
     if (id != null && id != exitId) {
       if (phase == Phase.protected) await _endTunnel(log: true);
       exitId = id;
       _save();
     }
+    if (!failover) {
+      _tried.clear();
+      _resynced = false;
+    }
     final attempt = ++_attempt;
     phase = Phase.checking;
     tunnelMessage = null;
+    progressNote = null;
     connectedAt = null;
     notifyListeners();
     bool stale() => attempt != _attempt;
     try {
-      final v = await api.get('/vpn');
-      if (stale()) return;
-      final sub = v is Map && v['subscription'] is Map
-          ? Subscription.fromJson(
-              (v['subscription'] as Map).cast<String, dynamic>(),
-            )
-          : null;
-      if (sub == null || !sub.active) {
-        return _fail(sub == null ? 'No active plan.' : '${sub.statusLine}.');
+      if (!failover) {
+        final v = await api.get('/vpn');
+        if (stale()) return;
+        final sub = v is Map && v['subscription'] is Map
+            ? Subscription.fromJson(
+                (v['subscription'] as Map).cast<String, dynamic>(),
+              )
+            : null;
+        if (sub == null || !sub.active) {
+          return _fail(sub == null ? 'No active plan.' : '${sub.statusLine}.');
+        }
       }
       if (!servers.ready) await loadServers();
       if (stale()) return;
-      final target = exit;
-      if (target == null) {
-        return _fail(servers.error ?? 'No exits on your plan yet.');
-      }
       tunnelAvailable = await tunnel.available();
       if (stale()) return;
       if (!tunnelAvailable!) {
@@ -490,10 +762,33 @@ class AppState extends ChangeNotifier {
           'Plan and exit checked. The tunnel engine isn’t in this build, so Pleat can’t protect traffic yet.',
         );
       }
+      if (id == null && smartConnect && !pinned && exits.length > 1) {
+        progressNote = _pingsFresh ? null : 'Testing exits for the fastest.';
+        notifyListeners();
+        final best = await _best();
+        if (stale()) return;
+        progressNote = null;
+        if (best != null) {
+          exitId = best.id;
+          _save();
+        } else if (exits.every((e) => e.unreachable)) {
+          return _fail('No exit answered. Check the connection and try again.');
+        }
+      }
+      final target = exit;
+      if (target == null) {
+        return _fail(servers.error ?? 'No exits on your plan yet.');
+      }
+      _tried.add(target.id);
+      geoAvailable = await tunnel.hasGeo();
       final String config;
       try {
-        config = xrayConfig(target.server.link);
+        config = xrayConfig(
+          target.server.link,
+          localDirect: localDirect && geoAvailable,
+        );
       } on FormatException {
+        if (smartConnect && _failover()) return;
         return _fail(
           'This exit’s protocol (${target.protocol}) can’t run in Pleat yet. Pick another exit.',
         );
@@ -517,9 +812,43 @@ class AppState extends ChangeNotifier {
     }
   }
 
+  /// Smart connect: the exit that failed is reported, the next best is
+  /// tried (three in all), then the list is fetched again once.
+  bool _failover() {
+    final cur = exit;
+    if (cur != null) {
+      cur.measured = -1;
+      _report([
+        {'k': cur.id, 'ok': false, 'ms': 0},
+      ]);
+    }
+    if (!smartConnect) return false;
+    if (_tried.length < 3) {
+      final next =
+          exits.where((e) => !_tried.contains(e.id) && !e.unreachable).toList()
+            ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
+      if (next.isNotEmpty) {
+        tunnelMessage = null;
+        _connect(next.first.id, failover: true);
+        return true;
+      }
+    }
+    if (!_resynced) {
+      _resynced = true;
+      testedAt = null;
+      loadServers().then((_) {
+        _tried.clear();
+        _connect(null, failover: true);
+      });
+      return true;
+    }
+    return false;
+  }
+
   void _fail(String message) {
     phase = Phase.idle;
     tunnelMessage = message;
+    progressNote = null;
     notifyListeners();
   }
 
@@ -527,12 +856,18 @@ class AppState extends ChangeNotifier {
     if (s == TunnelState.up && phase == Phase.handshaking) {
       phase = Phase.protected;
       connectedAt = DateTime.now();
+      _misses = 0;
+      _reported = false;
       _watch?.cancel();
       _watch = Timer.periodic(const Duration(seconds: 60), (_) => _check());
+      _pulse?.cancel();
+      _pulse = Timer.periodic(const Duration(seconds: 20), (_) => _beat());
+      _beat();
+      readGuard();
       notifyListeners();
     } else if (s == TunnelState.down && phase == Phase.protected) {
       _logSession();
-      _watch?.cancel();
+      _stopTimers();
       phase = Phase.dropped;
       connectedAt = null;
       tunnelMessage = 'The tunnel dropped.';
@@ -540,13 +875,77 @@ class AppState extends ChangeNotifier {
       notifyListeners();
     } else if ((s == TunnelState.down || s == TunnelState.failed) &&
         phase == Phase.handshaking) {
+      if (_failover()) return;
       _fail('The exit didn’t answer. Try another one.');
     }
+  }
+
+  /// Live ping through the running tunnel. Two misses in a row with smart
+  /// connect on move the session to the next best exit.
+  Future<void> _beat() async {
+    if (phase != Phase.protected) return;
+    final ms = await tunnel.delay();
+    final e = exit;
+    if (phase != Phase.protected || e == null) return;
+    if (ms != null) {
+      _misses = 0;
+      e.measured = ms;
+      e.measuredAt = DateTime.now();
+      if (!_reported) {
+        _reported = true;
+        _report([
+          {'k': e.id, 'ok': true, 'ms': ms},
+        ]);
+      }
+      notifyListeners();
+      return;
+    }
+    if (++_misses < 2 || !smartConnect) return;
+    _misses = 0;
+    _logSession();
+    _stopTimers();
+    phase = Phase.handshaking;
+    connectedAt = null;
+    tunnelMessage = null;
+    notifyListeners();
+    if (!_failover()) {
+      await tunnel.stop();
+      phase = Phase.dropped;
+      tunnelMessage = '${e.title} stopped answering.';
+      _save();
+      notifyListeners();
+    }
+  }
+
+  Future<void> readGuard() async {
+    guard = await tunnel.policy();
+    notifyListeners();
+  }
+
+  /// Applies a routing change to a running session by reconnecting to the
+  /// same exit.
+  Future<void> setLocalDirect(bool on) async {
+    update((s) => s.localDirect = on);
+    if (phase != Phase.protected || exitId == null) return;
+    // The service swaps cores in place, so traffic never leaves bare.
+    _logSession();
+    final wasPinned = pinned;
+    await connect(exitId);
+    pinned = wasPinned;
+    _save();
+  }
+
+  void _stopTimers() {
+    _watch?.cancel();
+    _pulse?.cancel();
   }
 
   /// On launch: a tunnel started earlier may still be running.
   Future<void> resumeTunnel() async {
     tunnelAvailable = await tunnel.available();
+    if (tunnelAvailable!) geoAvailable = await tunnel.hasGeo();
+    final model = await tunnel.deviceModel();
+    if (model != null && model.isNotEmpty) api.deviceModel = model;
     notifyListeners();
     if (await tunnel.current() != TunnelState.up) return;
     tunnel.listen(_onTunnel);
@@ -562,7 +961,7 @@ class AppState extends ChangeNotifier {
     if (phase == Phase.protected && (s == null || !s.active)) {
       await tunnel.stop();
       _logSession();
-      _watch?.cancel();
+      _stopTimers();
       phase = Phase.dropped;
       connectedAt = null;
       tunnelMessage = s == null ? 'Your plan ended.' : '${s.statusLine}.';
@@ -573,6 +972,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> cancel() async {
     _attempt++;
+    progressNote = null;
     await tunnel.stop();
     phase = Phase.idle;
     notifyListeners();
@@ -585,7 +985,7 @@ class AppState extends ChangeNotifier {
 
   Future<void> _endTunnel({required bool log}) async {
     _attempt++;
-    _watch?.cancel();
+    _stopTimers();
     final running = phase == Phase.protected || phase == Phase.handshaking;
     if (log && phase == Phase.protected) _logSession();
     // Idle first, so the tunnel's own "down" is not read as a drop.
@@ -627,7 +1027,8 @@ class AppState extends ChangeNotifier {
 
   @override
   void dispose() {
-    _watch?.cancel();
+    WidgetsBinding.instance.removeObserver(this);
+    _stopTimers();
     tunnel.dispose();
     super.dispose();
   }
