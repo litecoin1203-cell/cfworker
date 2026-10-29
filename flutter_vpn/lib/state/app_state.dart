@@ -277,9 +277,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         await api.tokens.cacheServers(jsonEncode(data));
       } on ApiError catch (e) {
         // Offline: the last list still connects, as in the Cloud Gold app.
-        final cached = e.code == 'offline'
-            ? await api.tokens.cachedServers()
-            : null;
+        final cached = e.status == 0 ? await api.tokens.cachedServers() : null;
         if (cached == null) rethrow;
         data = jsonDecode(cached);
         serversStale = true;
@@ -324,8 +322,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Everything a signed-in screen shows.
   Future<void> refreshAccount() async {
-    await Future.wait([loadPublic(), loadMe(), loadDevices()]);
-    await loadServers();
+    // In parallel: the Worker may take a while on each, waiting on panels.
+    await Future.wait([loadPublic(), loadMe(), loadDevices(), loadServers()]);
   }
 
   // ---- account --------------------------------------------------------
@@ -741,19 +739,31 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     bool stale() => attempt != _attempt;
     try {
+      // The list loads alongside the plan check, not after it.
+      final list = servers.ready ? null : loadServers();
       if (!failover) {
-        final v = await api.get('/vpn');
-        if (stale()) return;
-        final sub = v is Map && v['subscription'] is Map
-            ? Subscription.fromJson(
-                (v['subscription'] as Map).cast<String, dynamic>(),
-              )
-            : null;
-        if (sub == null || !sub.active) {
-          return _fail(sub == null ? 'No active plan.' : '${sub.statusLine}.');
+        try {
+          final v = await api.get('/vpn');
+          if (stale()) return;
+          final sub = v is Map && v['subscription'] is Map
+              ? Subscription.fromJson(
+                  (v['subscription'] as Map).cast<String, dynamic>(),
+                )
+              : null;
+          if (sub == null || !sub.active) {
+            return _fail(
+              sub == null ? 'No active plan.' : '${sub.statusLine}.',
+            );
+          }
+        } on ApiError catch (e) {
+          // Like the Cloud Gold app: when the server can't be reached but
+          // exits are known, connect anyway. The panels still enforce the
+          // plan, so a stopped plan simply won't connect.
+          await list;
+          if (e.status != 0 || exits.isEmpty) rethrow;
         }
       }
-      if (!servers.ready) await loadServers();
+      await list;
       if (stale()) return;
       tunnelAvailable = await tunnel.available();
       if (stale()) return;

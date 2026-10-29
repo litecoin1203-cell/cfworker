@@ -52,4 +52,40 @@ void main() {
       expect(e.message, isNot(matches(RegExp(r'[؀-ۿ]'))));
     }
   });
+
+  test(
+    'a dropped connection is tried once more for a GET, never a POST',
+    () async {
+      final raw = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      var hits = 0;
+      raw.listen((sock) async {
+        hits++;
+        if (hits.isOdd) {
+          // Drop it before any answer, as a cut mobile connection does.
+          await sock.close();
+          sock.destroy();
+          return;
+        }
+        sock.listen((_) {
+          sock.write(
+            'HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n'
+            'content-length: 2\r\nconnection: close\r\n\r\n{}',
+          );
+          sock.close();
+        });
+      });
+      addTearDown(raw.close);
+      final c = ApiClient(
+        MemoryTokens(),
+        bases: 'http://127.0.0.1:${raw.port}',
+      );
+      expect(await c.get('/plans'), isA<Map>());
+      expect(hits, 2);
+      await expectLater(
+        c.post('/orders', {}),
+        throwsA(isA<ApiError>().having((e) => e.status, 'status', 0)),
+      );
+      expect(hits, 3);
+    },
+  );
 }

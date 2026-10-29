@@ -6,6 +6,10 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
@@ -53,6 +57,28 @@ class PleatVpnService : VpnService() {
     }
 
     private var tun: ParcelFileDescriptor? = null
+
+    /**
+     * As v2rayNG 2.2.6's CoreVpnService: follow THE default network (not
+     * the VPN itself) and hand it to Android as the tunnel's underlying
+     * network, so Wi-Fi / mobile switches keep working and Android shows
+     * the right network type.
+     */
+    private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
+    private var watching = false
+    private val underlying = object : ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: Network) {
+            setUnderlyingNetworks(arrayOf(network))
+        }
+
+        override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+            setUnderlyingNetworks(arrayOf(network))
+        }
+
+        override fun onLost(network: Network) {
+            setUnderlyingNetworks(null)
+        }
+    }
     private var core: CoreController? = null
     private var hevRunning = false
     private var worker: Thread? = null
@@ -123,6 +149,20 @@ class PleatVpnService : VpnService() {
             .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) setMetered(false) }
             .establish() ?: error("VPN permission revoked")
         tun = iface
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && !watching) {
+            try {
+                connectivity.requestNetwork(
+                    NetworkRequest.Builder()
+                        .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                        .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+                        .build(),
+                    underlying
+                )
+                watching = true
+            } catch (e: Exception) {
+                // Without it Android picks the underlying network itself.
+            }
+        }
 
         Engine.init(this)
         val c = Libv2ray.newCoreController(object : CoreCallbackHandler {
@@ -175,6 +215,10 @@ class PleatVpnService : VpnService() {
     }
 
     private fun teardown() {
+        if (watching) {
+            try { connectivity.unregisterNetworkCallback(underlying) } catch (e: Exception) {}
+            watching = false
+        }
         if (hevRunning) {
             try { TProxyService.TProxyStopService() } catch (e: Exception) {}
             hevRunning = false

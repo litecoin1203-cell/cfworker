@@ -10,6 +10,7 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
+import 'check.dart';
 import 'login.dart';
 import 'plans.dart';
 import 'store_kit.dart';
@@ -178,6 +179,17 @@ class ProfileScreen extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(20, 8, 10, 8),
                 child: Column(
                   children: [
+                    _Row(
+                      icon: PIcon.route,
+                      title: 'Connection check',
+                      body: 'Test each step, for support.',
+                      trailing: _RowAction(
+                        'RUN',
+                        onTap: () => Navigator.of(
+                          context,
+                        ).push(FadeRoute(builder: (_) => const CheckScreen())),
+                      ),
+                    ),
                     _Row(
                       icon: PIcon.pulse,
                       title: 'Reduce motion',
