@@ -1,0 +1,104 @@
+# Pleat (Flutter client of the Cloud Gold Worker): analyze, test, run the
+# client against the real Worker locally, and build an APK. The server
+# address comes from the run input or the CG_API_BASE repository variable,
+# the same one the Cloud Gold Android build uses.
+name: Pleat Flutter app
+
+on:
+  push:
+    paths: ['flutter_vpn/**', 'worker/**', '.github/workflows/flutter-vpn.yml']
+  pull_request:
+    paths: ['flutter_vpn/**', 'worker/**', '.github/workflows/flutter-vpn.yml']
+  workflow_dispatch:
+    inputs:
+      api_base:
+        description: "API address(es), comma-separated (empty = repository variable CG_API_BASE)"
+        required: false
+
+permissions:
+  contents: read
+
+env:
+  # The same core and tun the Cloud Gold app ships (android.yml).
+  HEV_COMMIT: 67dfba56c0a9254f401447e0751432bd36617d70
+  XRAY_LIB_TAG: v26.7.5
+  NDK_VERSION: 29.0.14206865
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: flutter_vpn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.8'
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed lib test
+      - run: flutter analyze
+      - run: flutter test
+      # The real Worker over Node's SQLite with a fake panel (worker/test/dev_server.mjs).
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Client against the local Worker
+        run: |
+          node --experimental-sqlite ../worker/test/dev_server.mjs > /tmp/worker.log 2>&1 &
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/health && break; sleep 1; done
+          flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1:8787
+      - name: Check generated configs with the real Xray core
+        run: |
+          XRAY_DUMP=/tmp/xray-configs flutter test test/xray_config_test.dart
+          curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_LIB_TAG}/Xray-linux-64.zip" \
+            || curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
+          unzip -oq /tmp/xray.zip -d /tmp/xray
+          for f in /tmp/xray-configs/*.json; do
+            echo "== $(basename "$f")"
+            /tmp/xray/xray run -test -c "$f"
+          done
+      - name: Install NDK
+        run: |
+          echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;$NDK_VERSION" > /dev/null
+          echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> $GITHUB_ENV
+      - name: Restore libhev-socks5-tunnel
+        id: hev-cache
+        uses: actions/cache@v4
+        with:
+          path: flutter_vpn/android/app/libs
+          key: pleat-hev-${{ env.HEV_COMMIT }}-${{ env.NDK_VERSION }}-${{ hashFiles('flutter_vpn/android/compile-hevtun.sh') }}
+      - name: Build libhev-socks5-tunnel
+        if: steps.hev-cache.outputs.cache-hit != 'true'
+        working-directory: flutter_vpn/android
+        run: |
+          git clone https://github.com/heiher/hev-socks5-tunnel hev-socks5-tunnel
+          git -C hev-socks5-tunnel checkout "$HEV_COMMIT"
+          git -C hev-socks5-tunnel submodule update --init --recursive
+          bash compile-hevtun.sh
+      - name: Download Xray core (libv2ray.aar)
+        uses: robinraju/release-downloader@v1.11
+        with:
+          repository: 2dust/AndroidLibXrayLite
+          tag: ${{ env.XRAY_LIB_TAG }}
+          fileName: libv2ray.aar
+          out-file-path: flutter_vpn/android/app/libs/
+      - name: Build APK
+        env:
+          API_INPUT: ${{ github.event.inputs.api_base }}
+          API_VAR: ${{ vars.CG_API_BASE }}
+        run: |
+          API="${API_INPUT:-$API_VAR}"
+          [ -z "$API" ] && echo "::warning::No CG_API_BASE set; the APK will say it has no server address."
+          flutter build apk --release --dart-define=PLEAT_API="$API"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pleat-apk
+          path: flutter_vpn/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 14
