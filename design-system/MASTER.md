@@ -137,14 +137,30 @@ skill names "big number + small label" as the default treatment, and the person'
 
 ## 2. Product facts the design must respect
 
-- English UI by default (`lang="en"`, LTR). The existing Persian string table stays available in Settings →
-  Language; RTL keeps working through logical properties (`inset-inline-*`, `margin-inline-*`).
+- **English only, no exception** (Ali, 2026-10-29). `lang="en"`, `dir="ltr"`. The Persian string table in
+  `i18n.js` is removed and the redesigned app has **no language picker**; Persian cannot be selected. Dates
+  use the Gregorian calendar and Western digits. (The Telegram admin bot stays Persian; it is separate from
+  the app.)
 - No panel name, address, count, host, port or exit IP on any screen, label, log or accessibility text.
 - Server names are shown **exactly** as the API sends them (e.g. `🇩🇪 DE 2`) — no translation, no rewrite.
 - Every number on Usage comes from `GET /me` (`subscription.*`); warnings use the server's `used_percent`.
 - Plans come only from `GET /plans`; the payment flow (`CG.payFor`) is unchanged.
 - Connect / disconnect / switch server keep calling the same functions in `vpn.js`.
 - Kill Switch and Always-On show only what Android reports (`vpnPolicy`); "unknown" is a real state.
+- Web-design-guidelines review runs last, on every changed file.
+
+### 2a. Differences from Ali's original brief — each needs Ali's yes before it is built
+
+| # | Brief says | This plan / current code | Proposal |
+|---|---|---|---|
+| D1 | Settings: "… theme, **language**, account, version" | English only, no picker | remove the Language row entirely (no read-only "English" row) |
+| D2 | App is English | screens outside the five (`screens.js`: splash, onboarding, sign-in, payment card/crypto, order, orders, wallet, invite, account, success) and error texts in `core.js` are Persian-only today | option A: translate their **text only** to English (no layout, no logic, payment flow untouched); option B: leave them Persian until a later task |
+| D3 | Home: button, status, server, latency, duration, session usage | current home also has a plan "days left" chip, plan/stop notices and a Kill Switch row | keep them (existing behaviour, restyled) |
+| D4 | Servers: search, favorites, sort by latency | current list also has "Fastest server automatically", country/protocol filter chips, "Test all" and refresh | keep them (existing behaviour, restyled) |
+| D5 | Settings: KS, Always-On, auto-connect after boot, theme, language, account, version | current settings also has smart connect, Google mode, Iranian sites direct, Google test, refresh/test servers, notifications, wallet, invite, orders, support, log out | keep them (existing behaviour, restyled); wallet/invite/orders open the existing old screens, which are not redesigned |
+| D6 | Usage: numbers from `/me`, warnings, stop reason | also shows device limit and an Account link (both already from `/me` / existing) | keep |
+| D7 | Plans from `/plans`, payment flow unchanged | also has trial button, Orders and Support links (existing) | keep |
+| D8 | Server name exactly as API | old code replaced the name with a translated country name | show the API name exactly (fixes the old code) |
 
 ---
 
@@ -244,8 +260,7 @@ Every text pair ≥ 4.5. `--c-line` (≈1.4) is decorative only and never the so
 - Both fonts are already bundled in `app-web/fonts/` (OFL), so no download, no network font, no APK growth.
   Michroma is a wide, engraved-looking face — the "stamped number" of the hallmark; it is used **only** for the
   wordmark and numeric readouts, never for sentences. Outfit is a round geometric sans that matches the coin
-  and stays very legible at 1.6× scale. Persian text falls back to Vazirmatn through the existing
-  `unicode-range` faces.
+  and stays very legible at 1.6× scale.
 - Why not the generated DM Sans: it would mean a new font file and adds no character the bundled pair lacks.
 - Body is 15px at 1.0 scale, never below 12px. All sizes are `rem`; `html { font-size: calc(16px * var(--fs)) }`
   where `--fs` is Android's font scale (clamped 0.85–2.0), so 1.6 is honoured.
