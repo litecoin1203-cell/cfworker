@@ -90,7 +90,10 @@ class ApiClient {
   /// may take longer, because a trial or a purchase builds the account on
   /// the panel first (the Cloud Gold app waits 30 s as well).
   static const _connect = Duration(seconds: 12);
-  static const _timeout = Duration(seconds: 30);
+
+  /// The Worker reads every panel before it answers `/me` and `/vpn`, and
+  /// a panel may take up to 15 s per call, so the answer gets 45 s.
+  static const _timeout = Duration(seconds: 45);
 
   /// Contract version, not Pleat's own: 1.9 tells the Worker this client
   /// never wants a raw subscription address (see `centralApp`).
@@ -110,6 +113,9 @@ class ApiClient {
   /// Method, path and status of each exchange. Never bodies or headers, so
   /// no token or config can reach a log through it.
   void Function(String method, String path, int status)? trace;
+
+  /// Same, with how long the exchange took; status 0 when it failed.
+  void Function(String method, String path, int status, Duration took)? timing;
 
   bool get configured => _bases.isNotEmpty;
 
@@ -215,54 +221,104 @@ class ApiClient {
     (List<int>, String)? raw,
   ]) async {
     Object? lastError;
+    // A GET is safe to send twice: a dropped or reset connection gets one
+    // fresh try per address, as OkHttp does for the Cloud Gold app. A POST is never repeated, so an order or a
+    // trial can't happen twice.
+    final attempts = method == 'GET' ? 2 : 1;
     for (var tries = 0; tries < _bases.length; tries++) {
       final base = _bases[(_base + tries) % _bases.length];
-      try {
-        final req = await _http
-            .openUrl(method, Uri.parse('$base/api/v1$path'))
-            .timeout(_connect);
-        _deviceHeaders.forEach(req.headers.set);
-        if (authed) {
-          req.headers.set('authorization', 'Bearer ${tokens.access}');
-        }
-        if (raw != null) {
-          req.headers.set('content-type', raw.$2);
-          req.contentLength = raw.$1.length;
-          req.add(raw.$1);
-        } else if (body != null) {
-          req.headers.contentType = ContentType.json;
-          req.add(utf8.encode(jsonEncode(body)));
-        }
-        final res = await req.close().timeout(_timeout);
-        final text = await res.transform(utf8.decoder).join().timeout(_timeout);
-        _base = (_base + tries) % _bases.length;
-        trace?.call(method, path, res.statusCode);
-        dynamic data;
-        if (text.isNotEmpty) {
-          try {
-            data = jsonDecode(text);
-          } on FormatException {
-            data = null;
+      for (var a = 0; a < attempts; a++) {
+        final started = DateTime.now();
+        try {
+          final (status, text) = await _exchange(
+            method,
+            Uri.parse('$base/api/v1$path'),
+            body,
+            authed,
+            raw,
+          );
+          _base = (_base + tries) % _bases.length;
+          trace?.call(method, path, status);
+          timing?.call(
+            method,
+            path,
+            status,
+            DateTime.now().difference(started),
+          );
+          dynamic data;
+          if (text.isNotEmpty) {
+            try {
+              data = jsonDecode(text);
+            } on FormatException {
+              data = null;
+            }
           }
+          return (status, data);
+        } on SocketException catch (e) {
+          lastError = e;
+        } on TimeoutException catch (e) {
+          lastError = e;
+          // Already waited the full deadline; a second wait helps nobody.
+          timing?.call(method, path, 0, DateTime.now().difference(started));
+          break;
+        } on HttpException catch (e) {
+          lastError = e;
+        } on HandshakeException catch (e) {
+          lastError = e;
+          break; // A certificate problem doesn't fix itself on a retry.
         }
-        return (res.statusCode, data);
-      } on SocketException catch (e) {
-        lastError = e;
-      } on TimeoutException catch (e) {
-        lastError = e;
-      } on HttpException catch (e) {
-        lastError = e;
-      } on HandshakeException catch (e) {
-        lastError = e;
+        timing?.call(method, path, 0, DateTime.now().difference(started));
       }
     }
     throw ApiError(
       0,
-      'offline',
-      lastError is HandshakeException
-          ? 'The server’s certificate was not trusted.'
-          : 'Can’t reach the server. Check the connection and try again.',
+      switch (lastError) {
+        TimeoutException() => 'timeout',
+        HandshakeException() => 'tls',
+        _ => 'offline',
+      },
+      switch (lastError) {
+        TimeoutException() =>
+          'The server didn’t answer in time. Try again in a moment.',
+        HandshakeException() => 'The server’s certificate was not trusted.',
+        _ => 'Can’t reach the server. Check the connection and try again.',
+      },
     );
+  }
+
+  /// One request on its own connection, with one deadline for all of it.
+  /// On the deadline the request is aborted, so no half-dead connection is
+  /// left behind or reused.
+  Future<(int, String)> _exchange(
+    String method,
+    Uri url,
+    Map<String, Object?>? body,
+    bool authed,
+    (List<int>, String)? raw,
+  ) async {
+    HttpClientRequest? req;
+    try {
+      return await () async {
+        req = await _http.openUrl(method, url);
+        final r = req!;
+        r.persistentConnection = false;
+        _deviceHeaders.forEach(r.headers.set);
+        if (authed) r.headers.set('authorization', 'Bearer ${tokens.access}');
+        if (raw != null) {
+          r.headers.set('content-type', raw.$2);
+          r.contentLength = raw.$1.length;
+          r.add(raw.$1);
+        } else if (body != null) {
+          r.headers.contentType = ContentType.json;
+          r.add(utf8.encode(jsonEncode(body)));
+        }
+        final res = await r.close();
+        return (res.statusCode, await res.transform(utf8.decoder).join());
+      }().timeout(_timeout);
+    } on TimeoutException {
+      req?.abort();
+      rethrow;
+    }
   }
 
   static ApiError _error(int status, dynamic data) {
