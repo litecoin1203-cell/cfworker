@@ -198,6 +198,9 @@ Endpoint? endpointOf(String link) {
   return Endpoint(type, host, port);
 }
 
+/// Keys the Worker accepts in `/net/report` (its KEY_RE).
+final serverKeyPattern = RegExp(r'^[a-z0-9]{6,16}$');
+
 /// FNV-1a of "type|host|port", identical to `CgVpn.serverKey`.
 String serverKey(Endpoint e) {
   var h = 0x811c9dc5;

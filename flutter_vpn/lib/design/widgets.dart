@@ -1,6 +1,8 @@
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/physics.dart';
+import 'package:flutter/services.dart';
 
 import 'icons.dart';
 import 'tokens.dart';
@@ -258,7 +260,7 @@ class FrostedSlab extends StatelessWidget {
 }
 
 /// Pill toggle. Off-red is reserved for the kill switch.
-class PToggle extends StatelessWidget {
+class PToggle extends StatefulWidget {
   const PToggle({
     super.key,
     required this.value,
@@ -278,57 +280,130 @@ class PToggle extends StatelessWidget {
   final bool onDark;
 
   @override
+  State<PToggle> createState() => _PToggleState();
+}
+
+/// The thumb runs on a spring (it overshoots a little and settles), it
+/// stretches toward its next side while pressed, and the phone ticks once
+/// when the value really changes.
+class _PToggleState extends State<PToggle> with SingleTickerProviderStateMixin {
+  static const _spring = SpringDescription(
+    mass: 1,
+    stiffness: 520,
+    damping: 26,
+  );
+
+  late final AnimationController _pos = AnimationController.unbounded(
+    vsync: this,
+    value: _target,
+  );
+  bool _pressed = false;
+
+  bool get _enabled => widget.onChanged != null;
+  double get _target => widget.value && widget.onChanged != null ? 1 : 0;
+
+  @override
+  void didUpdateWidget(PToggle old) {
+    super.didUpdateWidget(old);
+    if (_target == _pos.value && !_pos.isAnimating) return;
+    if (PMotion.reduced(context)) {
+      _pos.value = _target;
+      return;
+    }
+    _pos.animateWith(
+      SpringSimulation(_spring, _pos.value, _target, _pos.velocity),
+    );
+  }
+
+  @override
+  void dispose() {
+    _pos.dispose();
+    super.dispose();
+  }
+
+  void _tap() {
+    HapticFeedback.selectionClick();
+    widget.onChanged!(!widget.value);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final d = PMotion.reduced(context) ? Duration.zero : PMotion.quick;
-    final enabled = onChanged != null;
-    final track = value && enabled
-        ? PColors.blue
-        : offIsAlert && enabled
+    final enabled = _enabled;
+    final on = widget.value && enabled;
+    final offTrack = widget.offIsAlert && enabled
         ? PColors.alert
-        : (onDark ? Colors.white.withValues(alpha: 0.22) : PColors.mist);
+        : (widget.onDark ? Colors.white.withValues(alpha: 0.22) : PColors.mist);
     return Semantics(
-      toggled: value && enabled,
+      toggled: on,
       enabled: enabled,
-      label: enabled ? label : '$label, unavailable',
+      label: enabled ? widget.label : '${widget.label}, unavailable',
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: enabled ? () => onChanged!(!value) : null,
+        onTapDown: enabled ? (_) => setState(() => _pressed = true) : null,
+        onTapCancel: enabled ? () => setState(() => _pressed = false) : null,
+        onTapUp: enabled ? (_) => setState(() => _pressed = false) : null,
+        onTap: enabled ? _tap : null,
         child: Opacity(
           opacity: enabled ? 1 : 0.45,
           child: SizedBox(
             width: 60,
             height: 48,
             child: Center(
-              child: AnimatedContainer(
-                duration: d,
-                width: 52,
-                height: 32,
-                padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  color: track,
-                  borderRadius: BorderRadius.circular(PRadius.pill),
-                ),
-                child: AnimatedAlign(
-                  duration: d,
-                  curve: Curves.easeOutBack,
-                  alignment: value && enabled
-                      ? Alignment.centerRight
-                      : Alignment.centerLeft,
-                  child: Container(
-                    width: 24,
-                    height: 24,
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      shape: BoxShape.circle,
-                      boxShadow: [
-                        BoxShadow(
-                          color: PColors.navy.withValues(alpha: 0.18),
-                          blurRadius: 6,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
-                    ),
-                  ),
+              child: AnimatedScale(
+                scale: _pressed ? 0.94 : 1,
+                duration: PMotion.press,
+                curve: Curves.easeOut,
+                child: AnimatedBuilder(
+                  animation: _pos,
+                  builder: (context, _) {
+                    final t = _pos.value;
+                    final c = t.clamp(0.0, 1.0);
+                    // Pressed, the thumb reaches toward the side it will go to.
+                    final thumb = _pressed ? 30.0 : 24.0;
+                    final travel = 52 - 8 - thumb;
+                    return Container(
+                      width: 52,
+                      height: 32,
+                      padding: const EdgeInsets.all(4),
+                      decoration: BoxDecoration(
+                        color: Color.lerp(offTrack, PColors.blue, c),
+                        borderRadius: BorderRadius.circular(PRadius.pill),
+                      ),
+                      child: Stack(
+                        children: [
+                          Positioned(
+                            left: travel * t,
+                            top: 0,
+                            child: AnimatedContainer(
+                              duration: PMotion.press,
+                              width: thumb,
+                              height: 24,
+                              decoration: BoxDecoration(
+                                color: Colors.white,
+                                borderRadius: BorderRadius.circular(12),
+                                boxShadow: [
+                                  BoxShadow(
+                                    color: PColors.navy.withValues(alpha: 0.18),
+                                    blurRadius: 6,
+                                    offset: const Offset(0, 2),
+                                  ),
+                                ],
+                              ),
+                              alignment: Alignment.center,
+                              child: Opacity(
+                                opacity: c,
+                                child: PIconView(
+                                  PIcon.check,
+                                  size: 14,
+                                  color: PColors.blue,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ),
             ),

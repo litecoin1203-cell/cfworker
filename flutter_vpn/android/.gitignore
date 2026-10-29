@@ -15,3 +15,4 @@ key.properties
 
 # Tunnel engine, fetched by CI
 /app/libs/
+/app/src/main/assets/geo/

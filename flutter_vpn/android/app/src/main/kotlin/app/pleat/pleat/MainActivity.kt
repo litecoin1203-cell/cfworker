@@ -2,7 +2,11 @@ package app.pleat.pleat
 
 import android.content.Intent
 import android.net.VpnService
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
+import java.util.concurrent.Executors
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -17,6 +21,10 @@ class MainActivity : FlutterActivity() {
     private companion object {
         const val ASK_VPN = 41
     }
+
+    /** Server tests run a few at a time, off the main thread. */
+    private val tests = Executors.newFixedThreadPool(4)
+    private val main = Handler(Looper.getMainLooper())
 
     private var pendingConfig: String? = null
     private var pendingResult: MethodChannel.Result? = null
@@ -51,6 +59,37 @@ class MainActivity : FlutterActivity() {
                         startService(Intent(this, PleatVpnService::class.java).setAction(PleatVpnService.ACTION_STOP))
                         result.success(null)
                     }
+                    "device" -> {
+                        val maker = Build.MANUFACTURER.orEmpty().replaceFirstChar { it.uppercase() }
+                        val model = Build.MODEL.orEmpty()
+                        result.success(if (model.startsWith(maker, true)) model else "$maker $model".trim())
+                    }
+                    "geo" -> background(result, false) { Engine.init(this); Engine.hasGeo(this) }
+                    "ping" -> {
+                        val config = call.argument<String>("config")
+                        if (config == null) {
+                            result.success(-1)
+                            return@setMethodCallHandler
+                        }
+                        background(result) {
+                            Engine.init(this)
+                            libv2ray.Libv2ray.measureOutboundDelay(config, Engine.TEST_URL).toInt()
+                        }
+                    }
+                    "delay" -> background(result) {
+                        PleatVpnService.running?.measureDelay(Engine.TEST_URL)?.toInt() ?: -1
+                    }
+                    "policy" -> {
+                        // Android tells only the running service (10 and newer).
+                        val svc = PleatVpnService.instance
+                        result.success(
+                            if (svc != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                mapOf("known" to true, "alwaysOn" to svc.isAlwaysOn, "lockdown" to svc.isLockdownEnabled)
+                            } else {
+                                mapOf("known" to false)
+                            }
+                        )
+                    }
                     "systemSettings" -> {
                         startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
                         result.success(null)
@@ -58,6 +97,18 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    /** Runs [work] on the test pool and answers on the main thread; a failure answers [fallback]. */
+    private fun background(result: MethodChannel.Result, fallback: Any = -1, work: () -> Any) {
+        tests.execute {
+            val value: Any = try {
+                work()
+            } catch (e: Throwable) {
+                fallback
+            }
+            main.post { result.success(value) }
+        }
     }
 
     @Deprecated("Activity result API is not used by FlutterActivity")

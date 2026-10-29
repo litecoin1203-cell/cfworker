@@ -107,6 +107,99 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
   });
 
+  testWidgets('a trial whose answer was lost still shows as started', (
+    tester,
+  ) async {
+    final (app, api) = await _boot(tester, {'onboarded': true});
+    api.hasPlan = false;
+    await app.loadMe();
+    expect(app.subscription, isNull);
+    api.loseTrialAnswer = true;
+    final err = await app.startTrial(app.plans.value!.first);
+    expect(err, isNull);
+    expect(app.subscription!.active, isTrue);
+    expect(app.exits, isNotEmpty);
+  });
+
+  testWidgets('smart connect takes the fastest exit and moves on when it '
+      'fails', (tester) async {
+    final tunnel = FakeTunnel()
+      ..pings = {'nl1.example.com': 240, 'de1.example.com': 60};
+    final (app, api) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    // Too few reports for a sure pick, so the exits are tested.
+    api.rankReports = 4;
+    await app.loadServers();
+    await app.connect();
+    expect(app.phase, Phase.handshaking);
+    expect(tunnel.started, contains('de1.example.com'));
+    // Every exit was measured; the silent one is marked, and the network
+    // stats got what worked here.
+    expect(
+      app.exits.firstWhere((e) => e.label == 'Server 3').unreachable,
+      isTrue,
+    );
+    await tester.pump(const Duration(seconds: 2));
+    expect(api.reports.where((r) => r['ok'] == true), hasLength(2));
+
+    // The fastest exit doesn't answer the handshake: the next best runs.
+    tunnel.emit(TunnelState.failed);
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(app.phase, Phase.handshaking);
+    expect(tunnel.started, contains('nl1.example.com'));
+    tunnel.emit(TunnelState.up);
+    await tester.pump(PMotion.seal);
+    expect(app.phase, Phase.protected);
+    await app.disconnect();
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('a picked exit is kept; smart connect does not override it', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel()
+      ..pings = {'nl1.example.com': 240, 'de1.example.com': 60};
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    app.select(app.exits.first.id);
+    await app.connect();
+    expect(tunnel.started, contains('nl1.example.com'));
+    expect(tunnel.pinged, isEmpty);
+    await app.cancel();
+  });
+
+  testWidgets('local sites go direct only when the build has the geo files', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel()..geo = false;
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    await app.connect(app.exits.first.id);
+    expect(tunnel.started, isNot(contains('geoip:ir')));
+    await app.cancel();
+    tunnel.geo = true;
+    await app.connect(app.exits.first.id);
+    expect(tunnel.started, contains('geoip:ir'));
+    await app.cancel();
+  });
+
+  testWidgets('an exit that works for nearly everyone here is taken '
+      'without a test', (tester) async {
+    final tunnel = FakeTunnel();
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    final sure = app.exits.firstWhere((e) => e.id == 'k53ca1f60');
+    await app.connect();
+    expect(tunnel.pinged, isEmpty);
+    expect(app.exit!.id, sure.id);
+    await app.cancel();
+  });
+
+  testWidgets('offline, the last server list still connects', (tester) async {
+    final (app, api) = await _boot(tester, {'onboarded': true});
+    final count = app.exits.length;
+    api.serversOffline = true;
+    await app.loadServers();
+    expect(app.exits, hasLength(count));
+    expect(app.serversStale, isTrue);
+  });
+
   testWidgets('a rejected trial does not stay on', (tester) async {
     final (app, api) = await _boot(tester, {'onboarded': true});
     api.trialError = 'The free trial was already used.';

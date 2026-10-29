@@ -9,7 +9,6 @@ import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import go.Seq
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.InetSocketAddress
@@ -36,6 +35,21 @@ class PleatVpnService : VpnService() {
         private const val SOCKS_PORT = 10808
         private const val NOTE_ID = 7
         private const val CHANNEL = "tunnel"
+
+        /** The running core, for live delay checks from the app. */
+        @Volatile
+        var running: CoreController? = null
+            private set
+
+        /** The live service, for Android's always-on and lockdown flags. */
+        @Volatile
+        var instance: PleatVpnService? = null
+            private set
+    }
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -110,8 +124,7 @@ class PleatVpnService : VpnService() {
             .establish() ?: error("VPN permission revoked")
         tun = iface
 
-        Seq.setContext(applicationContext)
-        Libv2ray.initCoreEnv(filesDir.absolutePath, "")
+        Engine.init(this)
         val c = Libv2ray.newCoreController(object : CoreCallbackHandler {
             override fun startup(): Long = 0
             override fun shutdown(): Long = 0
@@ -120,6 +133,7 @@ class PleatVpnService : VpnService() {
         core = c
         c.startLoop(config, 0)
         if (!c.isRunning) error("core did not start")
+        running = c
 
         val yaml = File(filesDir, "hev.yaml")
         yaml.writeText(
@@ -147,7 +161,7 @@ class PleatVpnService : VpnService() {
         val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", SOCKS_PORT))
         repeat(3) {
             try {
-                val conn = URL("https://www.gstatic.com/generate_204").openConnection(proxy) as HttpURLConnection
+                val conn = URL(Engine.TEST_URL).openConnection(proxy) as HttpURLConnection
                 conn.connectTimeout = 8000
                 conn.readTimeout = 8000
                 val code = conn.responseCode
@@ -165,6 +179,7 @@ class PleatVpnService : VpnService() {
             try { TProxyService.TProxyStopService() } catch (e: Exception) {}
             hevRunning = false
         }
+        running = null
         try { core?.stopLoop() } catch (e: Exception) {}
         core = null
         try { tun?.close() } catch (e: Exception) {}
@@ -185,6 +200,7 @@ class PleatVpnService : VpnService() {
     }
 
     override fun onDestroy() {
+        instance = null
         teardown()
         if (TunnelHub.state != "failed") TunnelHub.set("down")
         super.onDestroy()

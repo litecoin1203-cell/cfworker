@@ -37,6 +37,11 @@ android {
         }
     }
 
+    // Stored uncompressed so Engine can size-check and copy them by descriptor.
+    androidResources {
+        noCompress += listOf("dat")
+    }
+
     packaging {
         jniLibs {
             useLegacyPackaging = true

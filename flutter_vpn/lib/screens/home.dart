@@ -351,7 +351,9 @@ class _Instrument extends StatelessWidget {
       _HomeTab.now when e?.ping != null => (
         '${e!.ping}',
         'ms',
-        'Ping to ${e.title} reported on your network',
+        (e.measured ?? 0) > 0
+            ? 'Ping to ${e.title} from this phone'
+            : 'Ping to ${e.title} reported on your network',
       ),
       _HomeTab.now when sub != null && !sub.unlimitedTime => (
         '${sub.daysLeft ?? 0}',
@@ -509,7 +511,7 @@ class _StageLine extends StatelessWidget {
         PColors.muted,
       ),
       Phase.checking => (
-        'Checking your plan and exit. Tap to cancel.',
+        '${app.progressNote ?? 'Checking your plan and exit.'} Tap to cancel.',
         PColors.blue,
       ),
       Phase.handshaking => (
