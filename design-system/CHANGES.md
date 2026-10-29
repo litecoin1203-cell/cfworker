@@ -30,3 +30,21 @@ see `REVIEW.md`).
 ## Not done because the API has no field (reported, not guessed)
 - Plan names and badges arrive in Persian from the Worker's name mapping; rename plans in the bot.
 - `admin_note`, bank name, coin label and memo label arrive in Persian from the API in the old payment screens.
+
+## D2 = A — translated files (text only)
+| File | What was translated |
+|------|---------------------|
+| `app-web/screens.js` | All text of the screens outside the five (sign-in, sign-up, onboarding, payment choice, card, crypto, orders, wallet, invite, account, success). No layout, logic or payment-flow change. |
+| `app-web/core.js` | Error and fallback messages (`NET_MSG`, "server busy", "Something went wrong.", default server name), number/date formatting to English. |
+| `app-web/i18n.js` | Persian table removed; English table is the only one. |
+| `app-web/ui.js` | `errText` never shows the API's Persian message; English text per error code. |
+| `app-web/mock.js` | One message in the browser-only test stand-in (not loaded inside the app). |
+
+### Strings left untranslated because logic depends on them
+| Where | String | Why |
+|-------|--------|-----|
+| `app-web/core.js:10` | `۰۱۲۳۴۵۶۷۸۹` / `٠١٢٣٤٥٦٧٨٩` | Turns Persian/Arabic digits typed by the user into numbers (card, amount, code fields). |
+| `app-web/screens.js:318` | `/^بانک\s*/` | Strips the word "Bank" in Persian from the bank name the API sends, so it is not shown twice. |
+| `app-web/servers.js:18` | `ي`→`ی`, `ك`→`ک`, ZWNJ | Search normalisation so Arabic and Persian letters match the same server name. |
+
+Data that arrives in Persian from the API (plan names/badges, `admin_note`, bank name, coin label, memo label) is shown as sent; it is fixed in the bot/Worker, not in the UI.
