@@ -444,6 +444,16 @@ section('subscription proxy through the Worker forwards HWID');
   ok(fakes.pg.lastSubHeaders.hwid === 'rt-phone' && fakes.pg.lastSubHeaders.ua.startsWith('v2rayNG'), 'hwid + core UA forwarded');
 }
 
+section('panel that answers v2rayNG with Xray JSON');
+{
+  const tok = (await call('POST', '/api/v1/auth/login', { json: { email: 'retry@example.com', password: 'password123' } })).data.access_token;
+  fakes.pg.subJson = true;
+  const r = await call('GET', '/api/v1/vpn/servers', { token: tok, headers: { 'x-device-id': 'rt-phone', 'x-hwid': 'rt-phone' } });
+  fakes.pg.subJson = false;
+  ok(r.status === 200 && r.data.length === 3, 'falls back to the /links format');
+  ok(fakes.pg.lastLinksHwid === 'rt-phone', 'hwid forwarded on the fallback too');
+}
+
 section('discount codes');
 {
   await tgWebhook({ message: { chat: { id: 12345 }, text: '/coupon GOLD50 50 1' } });

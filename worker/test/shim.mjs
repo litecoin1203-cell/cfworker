@@ -117,10 +117,15 @@ export function installFakes({ panelBase }) {
       if ((mm = path.match(/^\/api\/user\/(\d+)\/hwids\/(.+)$/)) && method === 'DELETE') {
         pg.deletedHwids.push([parseInt(mm[1], 10), decodeURIComponent(mm[2])]); return resText('', 204);
       }
-      if (path.match(/^\/sub\/[^/]+\/links$/)) return resText(subLinks(pg));
+      if (path.match(/^\/sub\/[^/]+\/links$/)) {
+        pg.lastLinksHwid = new Headers(init.headers || {}).get('x-hwid');
+        return resText(subLinks(pg));
+      }
       if (path.match(/^\/sub\/[^/]+\/?$/)) {
         const hh = new Headers(init.headers || {});
         pg.lastSubHeaders = { ua: hh.get('user-agent'), hwid: hh.get('x-hwid') };
+        // a panel with "custom JSON for v2rayNG" answers the core's agent with an Xray JSON config
+        if (pg.subJson) return resJson([{ remarks: 'x', outbounds: [] }]);
         return new Response(btoa(subLinks(pg)), { status: 200, headers: { 'subscription-userinfo': 'upload=0; download=0; total=0; expire=0' } });
       }
       return resText('panel: unhandled ' + method + ' ' + path, 500);

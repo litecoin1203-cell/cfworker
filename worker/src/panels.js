@@ -128,13 +128,25 @@ export async function collectLinks(env, userId, fwd = {}) {
   let reached = 0, deviceLimit = false, missing = 0;
   for (const a of accounts) {
     let raw;
-    try { raw = await adapterFor(env, panelOfAccount(a)).subscriptionRaw(a.sub_path, fwd); }
+    const pg = (() => { try { return adapterFor(env, panelOfAccount(a)); } catch (e) { return null; } })();
+    if (!pg) continue;
+    try { raw = await pg.subscriptionRaw(a.sub_path, fwd); }
     catch (e) { continue; } // an unreachable panel only removes its own configs
+    let found = raw.status >= 200 && raw.status < 300 ? decodeSub(raw.text) : [];
+    // A panel whose rules answer the v2rayNG agent with Xray JSON (or refuse it, 406) gives no share links
+    // here; its explicit /links format does, with the same device check.
+    if (!found.length && ![403, 404, 429].includes(raw.status)) {
+      try {
+        const alt = await pg.subscriptionRaw(a.sub_path.replace(/\/+$/, '') + '/links', fwd);
+        if (alt.status === 403 || alt.status === 429 || (alt.status >= 200 && alt.status < 300)) raw = alt;
+        found = raw.status >= 200 && raw.status < 300 ? decodeSub(raw.text) : [];
+      } catch (e) { /* keep the first answer */ }
+    }
     if (raw.status === 403 || raw.status === 429) { deviceLimit = true; continue; }
     if (raw.status === 404) { missing++; continue; }
     if (raw.status < 200 || raw.status >= 300) continue;
     reached++;
-    links.push(...decodeSub(raw.text));
+    links.push(...found);
   }
   return { links: unify(links), reached, deviceLimit, missing, accounts: accounts.length };
 }
