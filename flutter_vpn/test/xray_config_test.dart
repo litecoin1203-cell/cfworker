@@ -84,6 +84,38 @@ void main() {
     expect((bad['xhttpSettings'] as Map).containsKey('extra'), isFalse);
   });
 
+  test('as v2rayNG reads links: empty values, +, pinned certs, masks', () {
+    final st = _out(
+      'vless://u@151.101.0.1:443?security=tls&type=xhttp&path=&host=edge.example.net'
+      '&sni=&fp=firefox&alpn=h2&pcs=AB12&vcn=&ech=AB%2Bc+d%3D'
+      '&extra=%7B%22a%22%3A%22x+y%22%7D&fm=%7B%22tcp%22%3A%5B%5D%7D#x',
+    )['streamSettings'];
+    final tls = st['tlsSettings'];
+    // No sni: the host header's name, never the bare IP address.
+    expect(tls['serverName'], 'edge.example.net');
+    expect(tls['pinnedPeerCertSha256'], 'AB12');
+    expect(tls.containsKey('verifyPeerCertByName'), isFalse);
+    expect(tls.containsKey('allowInsecure'), isFalse);
+    expect(tls['echConfigList'], 'AB+c+d=');
+    expect(st['xhttpSettings']['path'], '/');
+    expect(st['xhttpSettings'].containsKey('mode'), isFalse);
+    expect(st['xhttpSettings']['extra'], {'a': 'x+y'});
+    expect(st['finalmask'], {'tcp': []});
+
+    final named = _out(
+      'vless://u@151.101.0.1:443?security=tls&type=xhttp&sni=www.example.com'
+      '&host=edge.example.net&mode=auto#x',
+    )['streamSettings'];
+    expect(named['tlsSettings']['serverName'], 'www.example.com');
+    expect(named['xhttpSettings']['mode'], 'auto');
+
+    final insecure = _out(
+      'trojan://p@1.2.3.4:443?allow_insecure=1#x',
+    )['streamSettings']['tlsSettings'];
+    expect(insecure['allowInsecure'], true);
+    expect(insecure.containsKey('serverName'), isFalse);
+  });
+
   test('shadowsocks, both link forms', () {
     final a = _out('ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#x');
     final b = _out(
@@ -134,6 +166,13 @@ void main() {
           'vless://$uuid@de1.example.com:443?security=tls&type=xhttp&path=%2Fx&mode=packet-up&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%2C%22noGRPCHeader%22%3Afalse%7D#x',
       'vless_grpc_authority':
           'vless://$uuid@de1.example.com:443?security=tls&type=grpc&serviceName=g&authority=cdn.example.com#x',
+      // An exit behind a CDN: IP address, another site's SNI, pinned cert.
+      'vless_xhttp_fronted':
+          'vless://$uuid@151.101.0.1:443?security=tls&type=xhttp&path=%2F&host=edge.example.net&mode=auto&sni=www.example.com&fp=firefox&alpn=h2&pcs=0000000000000000000000000000000000000000000000000000000000000000&vcn=&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%7D#x',
+      'vless_tls_fm':
+          'vless://$uuid@de1.example.com:443?security=tls&type=tcp&sni=de1.example.com&fm=%7B%22tcp%22%3A%5B%7B%22type%22%3A%22fragment%22%2C%22settings%22%3A%7B%22packets%22%3A%22tlshello%22%2C%22length%22%3A%22100-200%22%2C%22delay%22%3A%2210-20%22%7D%7D%5D%7D#x',
+      'ss2022':
+          'ss://2022-blake3-aes-256-gcm:${Uri.encodeComponent('AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=')}@de1.example.com:443#x',
       'trojan': 'trojan://pass@us1.example.com:443#x',
       'vmess_ws': 'vmess://$vmess',
       'ss': 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#x',

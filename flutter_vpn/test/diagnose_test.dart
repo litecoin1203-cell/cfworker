@@ -46,6 +46,11 @@ void main() {
       Cause.account,
     );
     expect(diagnose('unsupported: bad port').cause, Cause.config);
+    final xhttp = diagnose(
+      'Get "https://…/generate_204": io: read/write on closed pipe',
+    );
+    expect(xhttp.cause, Cause.path);
+    expect(xhttp.fixer, Fixer.service);
     expect(diagnose('something new').cause, Cause.unknown);
     expect(diagnose('something new').fix, 'something new');
   });

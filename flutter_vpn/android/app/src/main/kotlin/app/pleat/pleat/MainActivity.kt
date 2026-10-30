@@ -26,8 +26,8 @@ class MainActivity : FlutterActivity() {
 
     private var pendingImage: MethodChannel.Result? = null
 
-    /** Server tests run a few at a time, off the main thread. */
-    private val tests = Executors.newFixedThreadPool(4)
+    /** Server tests run a few at a time, off the main thread (as many as AppState's lanes). */
+    private val tests = Executors.newFixedThreadPool(6)
     private val main = Handler(Looper.getMainLooper())
 
     private var pendingConfig: String? = null

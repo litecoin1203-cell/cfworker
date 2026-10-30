@@ -92,8 +92,8 @@ Map<String, Object?> outboundOf(String link) {
   if (i <= 0) throw const FormatException('not a share link');
   final scheme = link.substring(0, i).toLowerCase();
   return switch (scheme) {
-    'vless' => _vless(Uri.parse(link)),
-    'trojan' => _trojan(Uri.parse(link)),
+    'vless' => _vless(Uri.parse(link), _query(link)),
+    'trojan' => _trojan(Uri.parse(link), _query(link)),
     'vmess' => _vmess(link.substring(i + 3)),
     'ss' => _shadowsocks(link),
     _ => throw FormatException('unsupported protocol $scheme'),
@@ -113,8 +113,34 @@ String _host(Uri u) {
   return u.host;
 }
 
-Map<String, Object?> _vless(Uri u) {
-  final q = u.queryParameters;
+/// The link's query the way v2rayNG reads it: a '+' stays a '+' (Dart's
+/// own parser turns it into a space, which breaks base64 and JSON values),
+/// and an empty value counts as absent, since the panel sends `sni=`,
+/// `host=` and the like even when they aren't set.
+Map<String, String> _query(String link) {
+  var raw = link.split('#').first;
+  final i = raw.indexOf('?');
+  if (i < 0) return const {};
+  raw = raw.substring(i + 1);
+  final out = <String, String>{};
+  for (final pair in raw.split('&')) {
+    final eq = pair.indexOf('=');
+    if (eq <= 0) continue;
+    String dec(String v) {
+      try {
+        return Uri.decodeComponent(v.replaceAll('+', '%2B'));
+      } on ArgumentError {
+        return v;
+      }
+    }
+
+    final v = dec(pair.substring(eq + 1)).trim();
+    if (v.isNotEmpty) out[dec(pair.substring(0, eq))] = v;
+  }
+  return out;
+}
+
+Map<String, Object?> _vless(Uri u, Map<String, String> q) {
   return {
     'tag': 'proxy',
     'protocol': 'vless',
@@ -137,8 +163,7 @@ Map<String, Object?> _vless(Uri u) {
   };
 }
 
-Map<String, Object?> _trojan(Uri u) {
-  final q = u.queryParameters;
+Map<String, Object?> _trojan(Uri u, Map<String, String> q) {
   return {
     'tag': 'proxy',
     'protocol': 'trojan',
@@ -164,16 +189,30 @@ Map<String, Object?> _vmess(String body) {
   String s(String k) => '${j[k] ?? ''}';
   final address = s('add');
   if (address.isEmpty) throw const FormatException('no host');
+  final net = s('net').isEmpty ? 'tcp' : s('net');
+  // vmess carries the gRPC and XHTTP mode in "type", as v2rayNG reads it.
+  final modeInType = net == 'grpc' || net == 'xhttp' || net == 'splithttp';
   final q = <String, String>{
-    'type': s('net').isEmpty ? 'tcp' : s('net'),
+    'type': net,
     'security': s('tls'),
-    if (s('host').isNotEmpty) 'host': s('host'),
-    if (s('path').isNotEmpty) 'path': s('path'),
-    if (s('sni').isNotEmpty) 'sni': s('sni'),
-    if (s('alpn').isNotEmpty) 'alpn': s('alpn'),
-    if (s('fp').isNotEmpty) 'fp': s('fp'),
-    if (s('type').isNotEmpty) 'headerType': s('type'),
-    if (s('net') == 'grpc' && s('path').isNotEmpty) 'serviceName': s('path'),
+    for (final k in [
+      'host',
+      'path',
+      'sni',
+      'alpn',
+      'fp',
+      'pcs',
+      'vcn',
+      'ech',
+      'insecure',
+      'allowInsecure',
+      'extra',
+      'fm',
+    ])
+      if (s(k).isNotEmpty) k: s(k),
+    if (s('type').isNotEmpty) modeInType ? 'mode' : 'headerType': s('type'),
+    if (net == 'grpc' && s('path').isNotEmpty) 'serviceName': s('path'),
+    if (net == 'grpc' && s('host').isNotEmpty) 'authority': s('host'),
   };
   return {
     'tag': 'proxy',
@@ -241,52 +280,83 @@ String _b64(String s) {
 Map<String, Object?> _stream(Map<String, String> q, String address) {
   final net = (q['type'] ?? 'tcp').toLowerCase();
   final security = (q['security'] ?? 'none').toLowerCase();
-  final sni = q['sni'] ?? q['peer'] ?? q['host'] ?? address;
-  final alpn = q['alpn']?.split(',').where((a) => a.isNotEmpty).toList();
+  // The name the transport itself presents, which v2rayNG falls back to
+  // when the link has no sni: gRPC's authority, else the host header.
+  final hostName = net == 'grpc'
+      ? q['authority']
+      : q['host']?.split(',').first.trim();
+  final sni =
+      q['sni'] ??
+      q['peer'] ??
+      (_isDomain(hostName)
+          ? hostName
+          : _isDomain(address)
+          ? address
+          : hostName);
+  final alpn = q['alpn']
+      ?.split(',')
+      .map((a) => a.trim())
+      .where((a) => a.isNotEmpty)
+      .toList();
+  final pinned = q['pcs'] ?? q['pinSHA256'];
   final out = <String, Object?>{
     'network': net == 'h2' ? 'http' : net,
-    'security': security == 'none' || security.isEmpty ? 'none' : security,
+    'security': security == 'tls' || security == 'reality' ? security : 'none',
   };
   if (security == 'tls') {
     out['tlsSettings'] = {
-      'serverName': sni,
+      'serverName': ?sni,
       'fingerprint': ?q['fp'],
       if (alpn != null && alpn.isNotEmpty) 'alpn': alpn,
-      if (q['allowInsecure'] == '1' || q['insecure'] == '1')
+      // A pinned certificate replaces the usual checks, so a host behind a
+      // CDN can present another site's name (domain fronting); without it
+      // such an exit fails the handshake.
+      'pinnedPeerCertSha256': ?pinned,
+      'verifyPeerCertByName': ?q['vcn'],
+      if (pinned == null &&
+          [
+            'insecure',
+            'allowInsecure',
+            'allow_insecure',
+          ].any((k) => q[k] == '1' || q[k] == 'true'))
         'allowInsecure': true,
       // Encrypted Client Hello hides the SNI from filters; a host that
       // sets it often only answers with it.
-      if ((q['ech'] ?? '').isNotEmpty) 'echConfigList': q['ech'],
+      'echConfigList': ?q['ech'],
     };
   } else if (security == 'reality') {
     out['realitySettings'] = {
-      'serverName': sni,
+      'serverName': ?sni,
       'fingerprint': q['fp'] ?? 'chrome',
       'publicKey': q['pbk'] ?? '',
       'shortId': q['sid'] ?? '',
       'spiderX': q['spx'] ?? '',
-      if ((q['pqv'] ?? '').isNotEmpty) 'mldsa65Verify': q['pqv'],
+      'mldsa65Verify': ?q['pqv'],
     };
   }
+  // The host's own masks for this inbound (e.g. its fragment or noise
+  // settings); they must match the server, so they win over ours.
+  final mask = _json(q['fm']);
+  if (mask != null) out['finalmask'] = mask;
   final path = q['path'];
   final host = q['host'];
   switch (out['network']) {
     case 'ws':
-      out['wsSettings'] = {'path': ?path, 'host': ?host};
+      out['wsSettings'] = {'path': path ?? '/', 'host': ?host};
     case 'grpc':
       out['grpcSettings'] = {
         'serviceName': q['serviceName'] ?? path ?? '',
         'multiMode': q['mode'] == 'multi',
-        if ((q['authority'] ?? '').isNotEmpty) 'authority': q['authority'],
+        'authority': ?q['authority'],
       };
     case 'httpupgrade':
-      out['httpupgradeSettings'] = {'path': ?path, 'host': ?host};
+      out['httpupgradeSettings'] = {'path': path ?? '/', 'host': ?host};
     case 'xhttp' || 'splithttp':
       out['network'] = 'xhttp';
       out['xhttpSettings'] = {
-        'path': ?path,
+        'path': path ?? '/',
         'host': ?host,
-        'mode': q['mode'] ?? 'auto',
+        'mode': ?q['mode'],
         // xmux, padding and the rest of the host's XHTTP settings, as JSON.
         'extra': ?_json(q['extra']),
       };
@@ -311,6 +381,13 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
   }
   return out;
 }
+
+bool _isDomain(String? s) =>
+    s != null &&
+    s.isNotEmpty &&
+    !s.contains(':') &&
+    !RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(s) &&
+    s.contains('.');
 
 Object? _json(String? s) {
   if (s == null || s.isEmpty) return null;

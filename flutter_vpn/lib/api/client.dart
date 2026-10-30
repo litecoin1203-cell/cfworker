@@ -96,7 +96,7 @@ class ApiClient {
   /// Connecting must be quick so the next address is tried soon; an answer
   /// may take longer, because a trial or a purchase builds the account on
   /// the panel first (the Cloud Gold app waits 30 s as well).
-  static const _connect = Duration(seconds: 12);
+  static const _connect = Duration(seconds: 6);
 
   /// The Worker reads every panel before it answers `/me` and `/vpn`, and
   /// a panel may take up to 15 s per call, so the answer gets 45 s.
