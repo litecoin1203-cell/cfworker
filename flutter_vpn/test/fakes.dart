@@ -52,6 +52,9 @@ class FakeApi extends ApiClient {
 
   /// The Worker can't be reached for the server list.
   bool serversOffline = false;
+
+  /// More exits after the usual three, for every FakeApi made after it is set.
+  static List<Map<String, Object>> extraServers = [];
   final reports = <Map<String, Object?>>[];
   final orderBodies = <Map<String, Object?>>[];
 
@@ -187,6 +190,7 @@ class FakeApi extends ApiClient {
             'protocol': 'trojan',
             'link': 'trojan://p@us1.example.com:443#x',
           },
+          ...extraServers,
         ];
       case 'GET /net/rank':
         return {
