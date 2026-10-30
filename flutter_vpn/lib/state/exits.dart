@@ -20,6 +20,10 @@ class Exit {
   int? measured;
   DateTime? measuredAt;
 
+  /// Why the last test got no answer, as the core said it; null when it
+  /// answered or gave no reason.
+  String? failure;
+
   bool get unreachable => measured == -1;
 
   String get id => server.key;

@@ -71,6 +71,26 @@ class _LocationsScreenState extends State<LocationsScreen> {
     };
   }
 
+  /// Connect to [e] and show Home, where the connection plays out. The exit
+  /// already up (or coming up) just shows Home.
+  void _connect(Exit e) {
+    final app = AppScope.read(context);
+    if (!_on(app, e)) app.connect(e.id);
+    app.setTab(0);
+  }
+
+  static bool _on(AppState app, Exit e) =>
+      app.exit?.id == e.id && (app.busy || app.phase == Phase.protected);
+
+  /// Exits grouped by country, in list order (best first in each).
+  static List<List<Exit>> _byCountry(List<Exit> list) {
+    final by = <String, List<Exit>>{};
+    for (final e in list) {
+      by.putIfAbsent(e.code.isEmpty ? e.title : e.code, () => []).add(e);
+    }
+    return by.values.toList();
+  }
+
   void _open(Exit e) =>
       Navigator.of(context)
           .push(TunnelRoute(builder: (_) => LocationDetail(exitId: e.id)));
@@ -79,6 +99,15 @@ class _LocationsScreenState extends State<LocationsScreen> {
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
     final list = _filtered(app);
+    // One entry per country: the first two countries get the big cards
+    // (their best exit); the list holds the other countries, and every
+    // country with more than one exit opens into its exits.
+    final groups = _byCountry(list);
+    final heroes = [for (final g in groups.take(2)) g.first];
+    final rest = [
+      for (var i = 0; i < groups.length; i++)
+        if (i >= 2 || groups[i].length > 1) groups[i],
+    ];
     return SafeArea(
       bottom: false,
       child: ParallaxScroll(
@@ -168,24 +197,22 @@ class _LocationsScreenState extends State<LocationsScreen> {
                   child: Transform.translate(
                     offset: const Offset(24, 0),
                     child: StaggerIn(
-                      key: ValueKey('big-${list[0].id}'),
+                      key: ValueKey('big-${heroes[0].id}'),
                       index: 0,
                       child: MediaCard(
-                        exit: list[0],
+                        exit: heroes[0],
                         height: 248,
                         big: true,
-                        onOpen: () => _open(list[0]),
-                        tabLabel: app.exit?.id == list[0].id
-                            ? 'Selected'
-                            : 'Select',
-                        tabActive: app.exit?.id == list[0].id,
-                        onTab: () => app.select(list[0].id),
+                        onOpen: () => _open(heroes[0]),
+                        tabLabel: _on(app, heroes[0]) ? 'Connected' : 'Connect',
+                        tabActive: _on(app, heroes[0]),
+                        onTab: () => _connect(heroes[0]),
                       ),
                     ),
                   ),
                 ),
               ),
-              if (list.length > 1)
+              if (heroes.length > 1)
                 SliverToBoxAdapter(
                   // Second card is inset off the column and rides 16px over the first.
                   child: Transform.translate(
@@ -193,23 +220,23 @@ class _LocationsScreenState extends State<LocationsScreen> {
                     child: Padding(
                       padding: const EdgeInsets.fromLTRB(72, 0, 20, 0),
                       child: StaggerIn(
-                        key: ValueKey('second-${list[1].id}'),
+                        key: ValueKey('second-${heroes[1].id}'),
                         index: 1,
                         child: MediaCard(
-                          exit: list[1],
+                          exit: heroes[1],
                           height: 150,
-                          onOpen: () => _open(list[1]),
-                          tabLabel: app.exit?.id == list[1].id
-                              ? 'Selected'
-                              : 'Select',
-                          tabActive: app.exit?.id == list[1].id,
-                          onTab: () => app.select(list[1].id),
+                          onOpen: () => _open(heroes[1]),
+                          tabLabel: _on(app, heroes[1])
+                              ? 'Connected'
+                              : 'Connect',
+                          tabActive: _on(app, heroes[1]),
+                          onTab: () => _connect(heroes[1]),
                         ),
                       ),
                     ),
                   ),
                 ),
-              if (list.length > 2)
+              if (rest.isNotEmpty)
                 SliverPadding(
                   padding: const EdgeInsets.fromLTRB(20, 4, 20, 140),
                   sliver: SliverToBoxAdapter(
@@ -217,18 +244,25 @@ class _LocationsScreenState extends State<LocationsScreen> {
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       child: Column(
                         children: [
-                          for (var i = 2; i < list.length; i++)
+                          for (var i = 0; i < rest.length; i++)
                             StaggerIn(
                               key: ValueKey(
-                                'row-${app.category}-${list[i].id}',
+                                'row-${app.category}-${rest[i].first.code}-${rest[i].first.id}',
                               ),
-                              index: i,
-                              child: _ExitRow(
-                                exit: list[i],
-                                selected: app.exit?.id == list[i].id,
-                                onOpen: () => _open(list[i]),
-                                onSelect: () => app.select(list[i].id),
-                              ),
+                              index: i + 2,
+                              child: rest[i].length == 1
+                                  ? _ExitRow(
+                                      exit: rest[i].first,
+                                      selected: _on(app, rest[i].first),
+                                      onOpen: () => _open(rest[i].first),
+                                      onSelect: () => _connect(rest[i].first),
+                                    )
+                                  : _CountryGroup(
+                                      exits: rest[i],
+                                      isOn: (e) => _on(app, e),
+                                      onOpen: _open,
+                                      onConnect: _connect,
+                                    ),
                             ),
                         ],
                       ),
@@ -295,15 +329,121 @@ class _CategoryChip extends StatelessWidget {
   }
 }
 
+/// A country with several exits: one row that opens into its exits, so
+/// the person picks which one.
+class _CountryGroup extends StatefulWidget {
+  const _CountryGroup({
+    required this.exits,
+    required this.isOn,
+    required this.onOpen,
+    required this.onConnect,
+  });
+  final List<Exit> exits;
+  final bool Function(Exit) isOn;
+  final void Function(Exit) onOpen, onConnect;
+
+  @override
+  State<_CountryGroup> createState() => _CountryGroupState();
+}
+
+class _CountryGroupState extends State<_CountryGroup> {
+  bool? _open;
+
+  @override
+  Widget build(BuildContext context) {
+    final first = widget.exits.first;
+    final anyOn = widget.exits.any(widget.isOn);
+    final open = _open ?? anyOn;
+    final kinds = {for (final e in widget.exits) e.protocol}.join(', ');
+    return Column(
+      children: [
+        Pressable(
+          onTap: () => setState(() => _open = !open),
+          label:
+              '${first.title}, ${widget.exits.length} servers, ${open ? 'collapse' : 'expand'}',
+          radius: 20,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(14, 10, 18, 10),
+            child: Row(
+              children: [
+                RegionBadge(first),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        first.title,
+                        style: PType.h3().copyWith(fontSize: 16),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        '${widget.exits.length} servers  ·  $kinds',
+                        style: PType.meta(
+                          color: anyOn ? PColors.blue : PColors.ink,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                AnimatedRotation(
+                  turns: open ? 0.25 : 0,
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  child: const PIconView(
+                    PIcon.chevron,
+                    size: 20,
+                    color: PColors.muted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 260),
+          curve: Curves.easeOutCubic,
+          alignment: Alignment.topCenter,
+          child: open
+              ? Padding(
+                  padding: const EdgeInsets.only(left: 22),
+                  child: Column(
+                    children: [
+                      for (final e in widget.exits)
+                        _ExitRow(
+                          exit: e,
+                          sub: true,
+                          selected: widget.isOn(e),
+                          onOpen: () => widget.onOpen(e),
+                          onSelect: () => widget.onConnect(e),
+                        ),
+                    ],
+                  ),
+                )
+              : const SizedBox(width: double.infinity),
+        ),
+      ],
+    );
+  }
+}
+
 class _ExitRow extends StatelessWidget {
   const _ExitRow({
     required this.exit,
     required this.selected,
     required this.onOpen,
     required this.onSelect,
+    this.sub = false,
   });
   final Exit exit;
   final bool selected;
+
+  /// Inside a country group: the row names the exit, not the country.
+  final bool sub;
   final VoidCallback onOpen, onSelect;
 
   @override
@@ -316,21 +456,23 @@ class _ExitRow extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
         child: Row(
           children: [
-            RegionBadge(exit),
+            RegionBadge(exit, size: sub ? 34 : 44),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    exit.title,
+                    sub ? exit.label : exit.title,
                     style: PType.h3().copyWith(fontSize: 16),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    exit.meta,
+                    sub
+                        ? exit.meta.replaceFirst('${exit.label}  ·  ', '')
+                        : exit.meta,
                     style: PType.meta(color: PColors.ink),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
@@ -341,8 +483,8 @@ class _ExitRow extends StatelessWidget {
             Pressable(
               onTap: onSelect,
               label: selected
-                  ? '${exit.title} ${exit.label} selected'
-                  : 'Select ${exit.title} ${exit.label}',
+                  ? '${exit.title} ${exit.label} connected'
+                  : 'Connect to ${exit.title} ${exit.label}',
               selected: selected,
               radius: PRadius.pill,
               color: selected ? PColors.blue : PColors.field,
@@ -358,7 +500,7 @@ class _ExitRow extends StatelessWidget {
                             color: Colors.white,
                           )
                         : Text(
-                            'SELECT',
+                            'CONNECT',
                             style: PType.button(color: PColors.ink)
                                 .copyWith(fontSize: 11),
                           ),

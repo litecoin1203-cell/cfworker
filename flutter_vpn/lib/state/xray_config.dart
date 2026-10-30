@@ -254,6 +254,9 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
       if (alpn != null && alpn.isNotEmpty) 'alpn': alpn,
       if (q['allowInsecure'] == '1' || q['insecure'] == '1')
         'allowInsecure': true,
+      // Encrypted Client Hello hides the SNI from filters; a host that
+      // sets it often only answers with it.
+      if ((q['ech'] ?? '').isNotEmpty) 'echConfigList': q['ech'],
     };
   } else if (security == 'reality') {
     out['realitySettings'] = {
@@ -262,20 +265,19 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
       'publicKey': q['pbk'] ?? '',
       'shortId': q['sid'] ?? '',
       'spiderX': q['spx'] ?? '',
+      if ((q['pqv'] ?? '').isNotEmpty) 'mldsa65Verify': q['pqv'],
     };
   }
   final path = q['path'];
   final host = q['host'];
   switch (out['network']) {
     case 'ws':
-      out['wsSettings'] = {
-        'path': ?path,
-        if (host != null) 'headers': {'Host': host},
-      };
+      out['wsSettings'] = {'path': ?path, 'host': ?host};
     case 'grpc':
       out['grpcSettings'] = {
         'serviceName': q['serviceName'] ?? path ?? '',
         'multiMode': q['mode'] == 'multi',
+        if ((q['authority'] ?? '').isNotEmpty) 'authority': q['authority'],
       };
     case 'httpupgrade':
       out['httpupgradeSettings'] = {'path': ?path, 'host': ?host};
@@ -285,6 +287,8 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
         'path': ?path,
         'host': ?host,
         'mode': q['mode'] ?? 'auto',
+        // xmux, padding and the rest of the host's XHTTP settings, as JSON.
+        'extra': ?_json(q['extra']),
       };
     case 'http':
       out['httpSettings'] = {
@@ -306,4 +310,14 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
       };
   }
   return out;
+}
+
+Object? _json(String? s) {
+  if (s == null || s.isEmpty) return null;
+  try {
+    final v = jsonDecode(s);
+    return v is Map ? v : null;
+  } on FormatException {
+    return null;
+  }
 }

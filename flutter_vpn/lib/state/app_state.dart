@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import 'diagnose.dart';
 import 'exits.dart';
 import 'tunnel.dart';
 import 'xray_config.dart';
@@ -660,13 +661,21 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         String config;
         try {
           config = xrayConfig(e.server.link, forTest: true);
-        } on FormatException {
+        } on FormatException catch (x) {
+          e.measured = -1;
+          e.failure = 'unsupported: ${x.message}';
+          e.measuredAt = DateTime.now();
           return;
         }
-        final ms = await tunnel
-            .ping(config)
-            .timeout(const Duration(seconds: 12), onTimeout: () => null);
+        final r = await tunnel
+            .probe(config)
+            .timeout(
+              const Duration(seconds: 12),
+              onTimeout: () => (ms: null, error: 'timeout'),
+            );
+        final ms = r.ms;
         e.measured = ms ?? -1;
+        e.failure = ms == null ? r.error : null;
         e.measuredAt = DateTime.now();
         results.add({'k': e.id, 'ok': ms != null, 'ms': ms ?? 0});
         notifyListeners();
@@ -886,7 +895,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     } else if ((s == TunnelState.down || s == TunnelState.failed) &&
         phase == Phase.handshaking) {
       if (_failover()) return;
-      _fail('The exit didn’t answer. Try another one.');
+      final why = exit?.failure;
+      _fail(
+        why == null
+            ? 'The exit didn’t answer. Try another one.'
+            : '${diagnose(why).title}. ${diagnose(why).fix}',
+      );
     }
   }
 

@@ -83,9 +83,14 @@ class MainActivity : FlutterActivity() {
                             result.success(-1)
                             return@setMethodCallHandler
                         }
+                        // The delay in ms, or the core's reason as text (addresses blanked).
                         background(result) {
                             Engine.init(this)
-                            libv2ray.Libv2ray.measureOutboundDelay(config, Engine.TEST_URL).toInt()
+                            try {
+                                libv2ray.Libv2ray.measureOutboundDelay(config, Engine.TEST_URL).toInt()
+                            } catch (e: Exception) {
+                                blank(e.message.orEmpty().ifEmpty { e.javaClass.simpleName }).take(200)
+                            }
                         }
                     }
                     "delay" -> background(result) {
@@ -220,6 +225,12 @@ class MainActivity : FlutterActivity() {
             .joinToString("") { "%02x".format(it) }
             .take(32)
     }
+
+    /** The core's errors name the server; never show an address or a host. */
+    private fun blank(text: String): String = text
+        .replace(Regex("\\[[0-9a-fA-F:]+\\](:\\d+)?"), "…")
+        .replace(Regex("\\b\\d{1,3}(\\.\\d{1,3}){3}(:\\d+)?\\b"), "…")
+        .replace(Regex("\\b([a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}(:\\d+)?\\b"), "…")
 
     /** True when this build ships the core and the tun library. */
     private fun engineLoads(): Boolean = engineError() == null

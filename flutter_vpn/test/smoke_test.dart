@@ -61,6 +61,51 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
   });
 
+  testWidgets('Locations: one entry per country, CONNECT goes Home', (
+    tester,
+  ) async {
+    FakeApi.extraServers = [
+      {
+        'index': 3,
+        'name': 'DE 2',
+        'country_code': 'DE',
+        'protocol': 'vless',
+        'link': 'vless://u@de2.example.com:443?type=tcp#x',
+      },
+      {
+        'index': 4,
+        'name': 'FI 1',
+        'country_code': 'FI',
+        'protocol': 'vless',
+        'link': 'vless://u@fi1.example.com:443?type=tcp#x',
+      },
+    ];
+    addTearDown(() => FakeApi.extraServers = []);
+    final (app, _) = await _boot(tester, {'onboarded': true});
+    app.setTab(2);
+    await tester.pump(const Duration(milliseconds: 800));
+    // Germany has two exits: one row that opens into DE 1 and DE 2.
+    expect(find.text('2 servers  ·  VLESS'), findsOneWidget);
+    expect(find.text('DE 2'), findsNothing);
+    await tester.tap(find.text('2 servers  ·  VLESS'));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('DE 2'), findsOneWidget);
+    expect(find.text('CONNECT'), findsWidgets);
+    final connect = find.descendant(
+      of: find
+          .ancestor(of: find.text('DE 2'), matching: find.byType(Row))
+          .first,
+      matching: find.text('CONNECT'),
+    );
+    await tester.ensureVisible(connect);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(connect);
+    await tester.pump();
+    expect(app.tab, 0);
+    expect(app.exit?.label, 'DE 2');
+    await tester.pump(const Duration(seconds: 2));
+  });
+
   testWidgets('without a tunnel engine connect never reaches Protected', (
     tester,
   ) async {

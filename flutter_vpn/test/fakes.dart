@@ -52,6 +52,9 @@ class FakeApi extends ApiClient {
 
   /// The Worker can't be reached for the server list.
   bool serversOffline = false;
+
+  /// More exits after the usual three, for every FakeApi made after it is set.
+  static List<Map<String, Object>> extraServers = [];
   final reports = <Map<String, Object?>>[];
   final orderBodies = <Map<String, Object?>>[];
 
@@ -187,6 +190,7 @@ class FakeApi extends ApiClient {
             'protocol': 'trojan',
             'link': 'trojan://p@us1.example.com:443#x',
           },
+          ...extraServers,
         ];
       case 'GET /net/rank':
         return {
@@ -244,15 +248,21 @@ class FakeTunnel extends Tunnel {
   bool geo = true;
   final List<String> pinged = [];
 
+  /// The core's reason for an address with no ping; default a timeout.
+  Map<String, String> errors = {};
+
   @override
-  Future<int?> ping(String config) async {
+  Future<({int? ms, String? error})> probe(String config) async {
     for (final e in pings.entries) {
       if (config.contains('"${e.key}"')) {
         pinged.add(e.key);
-        return e.value;
+        return (ms: e.value, error: null);
       }
     }
-    return null;
+    for (final e in errors.entries) {
+      if (config.contains('"${e.key}"')) return (ms: null, error: e.value);
+    }
+    return (ms: null, error: 'context deadline exceeded');
   }
 
   @override
