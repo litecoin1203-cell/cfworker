@@ -14,6 +14,7 @@ export const backKb = (back) => ({ inline_keyboard: [back && back !== 'home' ? [
 
 export const userKb = (uid) => ({ inline_keyboard: [
   [b('🎁 دادن پلن', `m:ug:${uid}`), b('🔑 تغییر رمز', `m:w:reset:${uid}`)],
+  [b('🔗 وصل اکانت پنل', `m:w:link:${uid}`)],
   [b('🔄 به‌روزرسانی', `m:u:${uid}`), b('🔙 کاربران', 'm:usr'), HOME],
 ] });
 
@@ -194,6 +195,11 @@ async function ask(env, kind, args) {
     const u = await first(env, 'SELECT email FROM users WHERE id = ?', parseInt(args[0], 10));
     if (!u) return null;
     return [`/reset ${u.email}`, `u:${args[0]}`, `🔑 رمز جدید ${u.email} را بنویس (حداقل ۸ کاراکتر).\nپیامت بعد از خواندن پاک می‌شود.`, true];
+  }
+  if (kind === 'link') {
+    const u = await first(env, 'SELECT email FROM users WHERE id = ?', parseInt(args[0], 10));
+    if (!u) return null;
+    return [`/link ${u.email}`, `u:${args[0]}`, `🔗 یوزرنیم اکانتی که ${u.email} روی پنل پاسارگاد دارد (همان که با v2rayNG استفاده می‌کند) را بنویس.\nاگر روی پنل ۱ نیست، بعد از یوزرنیم شماره‌ی پنل را هم بنویس، مثلاً: ali_v2 2\n\nروی پنل اکانت جدیدی ساخته نمی‌شود.`];
   }
   if (kind === 'plan') {
     const id = parseInt(args[0], 10);

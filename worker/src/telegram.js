@@ -231,6 +231,24 @@ async function onConfirm(env, cq, yes) {
       }
     }
   }
+  if (row.action === 'link') {
+    const u = await first(env, 'SELECT * FROM users WHERE id = ?', payload.user_id);
+    const { getPanel } = await import('./panels.js');
+    const panel = await getPanel(env, payload.panel_id);
+    const check = u && panel ? await linkCheck(env, u, panel, payload.username) : { error: 'کاربر یا پنل پیدا نشد' };
+    if (check.error) { await editStatus(env, cq, '❌ ' + check.error); return ack('انجام نشد'); }
+    const { linkAccount } = await import('./sync.js');
+    try {
+      const r = await linkAccount(env, u, panel, check.remote);
+      await audit(env, chatId, 'user.link', 'user', u.id, `پنل #${panel.id} ← ${payload.username}${r.replaced ? ` (به جای ${r.replaced})` : ''}`);
+      result = `اکانت ${payload.username} از پنل #${panel.id} به ${u.email} وصل شد. روی پنل چیزی ساخته نشد؛ همان لینک و همان کانفیگ‌ها در اپ می‌آید.`;
+      if (r.replaced) result += r.disabled ? `\nاکانت قبلی‌اش (${r.replaced}) روی پنل خاموش شد.` : `\n⚠️ اکانت قبلی‌اش (${r.replaced}) خاموش نشد؛ آن را در پنل دستی خاموش کن.`;
+    } catch (e) {
+      const msg = /UNIQUE/i.test(String(e && e.message)) ? 'این اکانت پنل همین الان به کاربر دیگری وصل شد.' : (e && e.message) || 'خطای ناشناخته';
+      await editStatus(env, cq, '⚠️ وصل نشد:\n' + msg);
+      return ack('انجام نشد');
+    }
+  }
   if (row.action === 'del_coupon') {
     const r = await run(env, 'DELETE FROM coupons WHERE code = ?', String(payload.code || ''));
     if (r.meta && r.meta.changes) await audit(env, chatId, 'coupon.delete', 'coupon', payload.code, null);
@@ -238,6 +256,37 @@ async function onConfirm(env, cq, yes) {
   }
   await editStatus(env, cq, '✅ ' + result);
   return ack('انجام شد');
+}
+
+// ---------------- linking an existing panel account ----------------
+// Reads the panel user live and checks it can become this app user's account. {remote, summary} or {error}.
+export async function linkCheck(env, u, panel, username) {
+  if (!['active', 'rollout'].includes(panel.state)) return { error: `پنل #${panel.id} فعال نیست. لیست: /panels` };
+  const owner = await first(env, `SELECT a.user_id, u.email FROM panel_accounts a JOIN users u ON u.id = a.user_id
+    WHERE a.panel_id = ? AND a.remote_username = ?`, panel.id, username);
+  if (owner && owner.user_id === u.id) return { error: `این اکانت از قبل به ${u.email} وصل است.` };
+  if (owner) return { error: `این اکانت پنل به کاربر دیگری وصل است: ${owner.email}` };
+  const { adapterFor } = await import('./panels.js');
+  const { parseExpire } = await import('./pasarguard.js');
+  let remote;
+  try { remote = await adapterFor(env, panel).getUser(username); }
+  catch (e) { return { error: `پنل #${panel.id} جواب نداد: ${e.message}` }; }
+  if (!remote) return { error: `کاربری با یوزرنیم ${username} روی پنل #${panel.id} (${panel.label}) پیدا نشد.` };
+  if (!remote.subscription_url) return { error: 'پنل برای این کاربر لینک ساب نداد.' };
+  remote.username = remote.username || username;
+  const exp = parseExpire(remote.expire);
+  const now = nowSec();
+  const limit = parseInt(remote.data_limit || 0, 10) || 0, used = parseInt(remote.used_traffic || 0, 10) || 0;
+  const lines = [`🔗 اکانت ${username} روی پنل #${panel.id} (${panel.label}) به ${u.email} وصل شود؟`, '',
+    `وضعیت روی پنل: ${remote.status || '-'}`,
+    `زمان: ${exp ? (exp > now ? `${Math.ceil((exp - now) / 86400)} روز (تا ${new Date(exp * 1000).toISOString().slice(0, 10)})` : 'تمام شده') : 'نامحدود'}`,
+    `حجم: ${(used / GB).toFixed(2)} از ${limit ? (limit / GB).toFixed(1) + ' گیگ' : 'نامحدود'}`, '',
+    'روی پنل اکانت جدیدی ساخته نمی‌شود؛ همین اکانت (همان UUID و لینک) در اپ استفاده می‌شود و v2rayNG هم کار می‌کند.'];
+  const sub = await first(env, 'SELECT s.*, p.name FROM subscriptions s LEFT JOIN plans p ON p.id = s.plan_id WHERE s.user_id = ?', u.id);
+  if (sub) lines.push(`⚠️ اشتراک فعلی این کاربر در اپ${sub.name ? ` (${sub.name})` : ''} با این اکانت جایگزین می‌شود.`);
+  const mine = await first(env, 'SELECT remote_username FROM panel_accounts WHERE user_id = ? AND panel_id = ?', u.id, panel.id);
+  if (mine) lines.push(`اکانت قبلی‌اش روی این پنل (${mine.remote_username}) خاموش می‌شود (پاک نمی‌شود).`);
+  return { remote, summary: lines.join('\n') };
 }
 
 // ---------------- diagnostics ----------------
@@ -295,6 +344,7 @@ export const HELP = `دستورهای ربات Cloud Gold:
 👤 /find ایمیل — اطلاعات زنده‌ی کاربر از پنل
 🎁 /grant ایمیل شماره‌پلن — دادن پلن به کاربر
 🔑 /reset ایمیل رمزجدید — تغییر رمز کاربر
+🔗 /link ایمیل یوزرنیم‌پنل [شماره‌پنل] — وصل کردن اکانتی که از قبل روی پنل دارد (بدون ساخت اکانت جدید)
 💾 /backup — فایل پشتیبان
 
 📦 /plans — لیست پلن‌ها
@@ -456,6 +506,18 @@ async function onMessage(env, msg, opts = {}) {
     await run(env, 'UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?', await hashPassword(pass, env.SECRET_KEY), u.id);
     await audit(env, chatId, 'user.reset_password', 'user', u.id, null);
     return say(`رمز ${email} عوض شد. گوشی‌های دیگر از حساب خارج شدند.`);
+  }
+  if (cmd === '/link') {
+    const [, email, username, panelStr] = text.split(/\s+/);
+    const u = await first(env, 'SELECT * FROM users WHERE email = ?', (email || '').toLowerCase());
+    if (!u || !username) return say('شکل درست: /link ایمیل‌کاربر یوزرنیم‌پنل [شماره‌پنل]\nمثال: /link ali@gmail.com ali_v2ray\n(شماره‌ی پنل را فقط وقتی بنویس که پنل ۱ نیست؛ لیست: /panels)');
+    if (!/^[\w.@-]{1,64}$/.test(username)) return say('یوزرنیم پنل فقط حرف انگلیسی، عدد و _ . - @ دارد.');
+    const { getPanel } = await import('./panels.js');
+    const panel = await getPanel(env, panelStr ? parseInt(panelStr, 10) : 1);
+    if (!panel) return say('پنل پیدا نشد. لیست: /panels');
+    const check = await linkCheck(env, u, panel, username);
+    if (check.error) return say('❌ ' + check.error);
+    return askConfirm(env, chatId, 'link', { user_id: u.id, panel_id: panel.id, username }, check.summary);
   }
   if (cmd === '/grant') {
     const [, email, planIdStr] = text.split(/\s+/);
