@@ -375,6 +375,159 @@ section('telegram admin commands');
 }
 
 
+section('telegram button menu');
+{
+  const A = { chat: { id: 12345 } };
+  const tap = (data, message = { ...A, message_id: 500, text: 'menu' }) => tgWebhook({ callback_query: { id: 'mq-' + data, data, message } });
+  const say = (text, extra = {}) => tgWebhook({ message: { ...A, text, ...extra } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const kbData = (c) => ((c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard) || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const sent = (n) => since(n).filter((c) => c.method === 'sendMessage' || c.method === 'editMessageText').map((c) => c.body);
+
+  let n = fakes.tg.calls.length;
+  await say('/menu');
+  const homeMsg = since(n).find((c) => c.method === 'sendMessage');
+  ok(homeMsg && homeMsg.body.text.includes('مدیریت Cloud Gold') && ['m:ord', 'm:usr', 'm:pl', 'm:pa', 'm:cp', 'm:pay', 'm:set'].every((d) => kbData(homeMsg).includes(d)), '/menu opens the button menu');
+  n = fakes.tg.calls.length;
+  await say('/start');
+  ok(since(n).some((c) => c.method === 'sendMessage' && kbData(c).includes('m:usr')), '/start opens the menu for the admin');
+  n = fakes.tg.calls.length;
+  await say('/help');
+  ok(sent(n).some((m) => m.text.includes('/menu') && m.text.includes('/grant')), '/help still lists the text commands');
+
+  // navigation edits the same message
+  n = fakes.tg.calls.length;
+  await tap('m:usr');
+  const ed = since(n).find((c) => c.method === 'editMessageText');
+  ok(ed && ed.body.message_id === 500 && ed.body.text.includes('کاربران') && kbData(ed).includes('m:w:find'), 'users screen edits the menu message in place');
+  ok(since(n).some((c) => c.method === 'answerCallbackQuery'), 'button tap is answered (no spinner)');
+
+  // search by email: the bot asks, the next message is the answer
+  await tap('m:w:find');
+  n = fakes.tg.calls.length;
+  await say('ali@example.com');
+  const card = since(n).find((c) => c.method === 'sendMessage' && c.body.text.includes('👤 ali@example.com'));
+  ok(card && kbData(card).some((d) => d.startsWith('m:ug:')) && kbData(card).some((d) => d.startsWith('m:w:reset:')), 'search answer shows the user card with grant / password buttons');
+  n = fakes.tg.calls.length;
+  await say('ali@example.com');
+  ok(!sent(n).some((m) => m.text.includes('👤')), 'an answer is used once; the next text is not a search');
+
+  // text /find gets the same buttons
+  n = fakes.tg.calls.length;
+  await say('/find ali@example.com');
+  ok(since(n).some((c) => c.method === 'sendMessage' && kbData(c).some((d) => d.startsWith('m:ug:'))), '/find shows the user buttons too');
+
+  // password reset from the card; the message with the password is deleted
+  const ali = await env.DB.prepare("SELECT id FROM users WHERE email = 'ali@example.com'").first();
+  await tap(`m:w:reset:${ali.id}`);
+  n = fakes.tg.calls.length;
+  await say('menu-pass-123', { message_id: 777 });
+  ok(since(n).some((c) => c.method === 'deleteMessage' && c.body.message_id === 777), 'the message holding the new password is deleted');
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 'ali@example.com', password: 'menu-pass-123' } })).status === 200, 'password changed from the menu');
+
+  // cancel drops the question
+  await tap('m:w:find');
+  await tap('m:cancel:usr');
+  n = fakes.tg.calls.length;
+  await say('ali@example.com');
+  ok(!sent(n).some((m) => m.text.includes('👤')), 'cancel clears the question');
+
+  // an old question expires
+  await tap('m:w:find');
+  await env.DB.prepare("UPDATE settings SET value = json_set(value, '$.exp', 1) WHERE key = 'bot_wait'").run();
+  n = fakes.tg.calls.length;
+  await say('ali@example.com');
+  ok(!sent(n).some((m) => m.text.includes('👤')), 'an expired question is ignored');
+
+  // plans: edit a field and switch a plan off/on
+  const p = await env.DB.prepare('SELECT * FROM plans ORDER BY id LIMIT 1').first();
+  n = fakes.tg.calls.length;
+  await tap(`m:p:${p.id}`);
+  ok(since(n).some((c) => c.method === 'editMessageText' && kbData(c).includes(`m:w:plan:${p.id}:price`)), 'plan screen has field buttons');
+  await tap(`m:w:plan:${p.id}:price`);
+  n = fakes.tg.calls.length;
+  await say('123,456');
+  ok((await env.DB.prepare('SELECT price_toman FROM plans WHERE id = ?').bind(p.id).first()).price_toman === 123456, 'plan price changed by answering the question');
+  ok(sent(n).some((m) => kbData({ body: m }).includes(`m:p:${p.id}`)), 'answer carries a back button to the plan');
+  await tap(`m:pt:${p.id}`);
+  ok((await env.DB.prepare('SELECT is_active FROM plans WHERE id = ?').bind(p.id).first()).is_active === 0, 'plan switched off');
+  await tap(`m:pt:${p.id}`);
+  ok((await env.DB.prepare('SELECT is_active FROM plans WHERE id = ?').bind(p.id).first()).is_active === 1, 'plan switched on again');
+  await env.DB.prepare('UPDATE plans SET price_toman = ? WHERE id = ?').bind(p.price_toman, p.id).run();
+
+  // grant asks "are you sure?" first
+  await signup('menugrant@example.com');
+  const mg = await env.DB.prepare("SELECT id FROM users WHERE email = 'menugrant@example.com'").first();
+  n = fakes.tg.calls.length;
+  await tap(`m:ug:${mg.id}`);
+  ok(since(n).some((c) => kbData(c).includes(`m:ugp:${mg.id}:${p.id}`)), 'grant shows the plans as buttons');
+  n = fakes.tg.calls.length;
+  await tap(`m:ugp:${mg.id}:${p.id}`);
+  ok(!(await env.DB.prepare('SELECT 1 x FROM subscriptions WHERE user_id = ?').bind(mg.id).first()), 'nothing granted before the second tap');
+  const confirm = since(n).find((c) => c.method === 'sendMessage' && c.body.text.includes('مطمئنی'));
+  const cf = kbData(confirm).find((d) => d.startsWith('cf:'));
+  await tap(cf, { ...A, message_id: 600, text: confirm.body.text });
+  ok(!!(await env.DB.prepare('SELECT 1 x FROM subscriptions WHERE user_id = ?').bind(mg.id).first()), 'plan granted after "yes"');
+  ok(!!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE action = 'user.grant' AND target_id = ?").bind(String(mg.id)).first()), 'grant is in the admin log');
+
+  // coupons: create by answering, delete with confirm
+  await tap('m:w:coupon');
+  await say('MENU10 10 5');
+  ok(!!(await env.DB.prepare("SELECT 1 x FROM coupons WHERE code = 'MENU10'").first()), 'coupon made from the menu');
+  n = fakes.tg.calls.length;
+  await tap('m:cd:MENU10');
+  const dc = since(n).find((c) => c.method === 'sendMessage' && c.body.text.includes('MENU10'));
+  await tap(kbData(dc).find((d) => d.startsWith('cf:')), { ...A, message_id: 601, text: dc.body.text });
+  ok(!(await env.DB.prepare("SELECT 1 x FROM coupons WHERE code = 'MENU10'").first()), 'coupon deleted after "yes"');
+
+  // payment modes: only the known keys and values
+  await tap('m:sv:coin_auto:detect');
+  ok((await env.DB.prepare("SELECT value FROM settings WHERE key = 'coin_auto'").first()).value === 'detect', 'crypto auto-confirm mode set by button');
+  await tap('m:sv:card_number:auto');
+  ok((await env.DB.prepare("SELECT value FROM settings WHERE key = 'card_number'").first())?.value !== 'auto', 'buttons cannot write other settings');
+  await tap('m:sv:coin_auto:auto');
+
+  // settings key screen + answer goes through /set (with its checks)
+  await tap('m:w:set:wallet_xlm');
+  n = fakes.tg.calls.length;
+  await say('not-a-stellar-address');
+  ok(sent(n).some((m) => m.text.includes('درست به نظر نمی‌رسد')), 'settings answers keep the /set checks');
+
+  // a command button runs the text command and adds a back button
+  n = fakes.tg.calls.length;
+  await tap('m:x:home|/stats');
+  ok(sent(n).some((m) => m.text.includes('کاربران') && kbData({ body: m }).includes('m:home')), 'command buttons answer with a back button');
+
+  // pending receipts are sent again with approve / reject
+  const tok = await signup('menurcpt@example.com');
+  const ord = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: p.id, method: 'card' } });
+  await env.DB.prepare("UPDATE orders SET status = 'review', receipt_file_id = 'photo_x' WHERE id = ?").bind(ord.data.id).run();
+  n = fakes.tg.calls.length;
+  await tap('m:ord');
+  const ph = since(n).find((c) => c.method === 'sendPhoto');
+  ok(ph && ph.body.photo === 'photo_x' && kbData(ph).includes(`ap:${ord.data.id}`) && kbData(ph).includes(`rj:${ord.data.id}`), 'waiting receipt re-sent with approve / reject');
+  await tap(`rj:${ord.data.id}`, { ...A, message_id: 602, photo: [{}] });
+  ok((await env.DB.prepare('SELECT status FROM orders WHERE id = ?').bind(ord.data.id).first()).status === 'rejected', 'reject from the list works');
+
+  // every screen: buttons fit Telegram's 64-byte limit
+  for (const d of ['m:home', 'm:st', 'm:usr', 'm:pl', `m:p:${p.id}`, 'm:pa', 'm:pp:1', 'm:cp', 'm:pay', 'm:set', 'm:wl', 'm:sk:wallet_xlm_memo', 'm:help', `m:u:${mg.id}`]) {
+    n = fakes.tg.calls.length;
+    await tap(d);
+    const e = since(n).find((c) => c.method === 'editMessageText');
+    ok(e && e.body.text && kbData(e).length && kbData(e).every((x) => new TextEncoder().encode(x).length <= 64), `screen ${d} renders with valid buttons`);
+  }
+
+  // outsiders cannot use the menu
+  n = fakes.tg.calls.length;
+  await tgWebhook({ callback_query: { id: 'out', data: 'm:usr', message: { chat: { id: 999 }, message_id: 1, text: 'x' } } });
+  ok(!since(n).some((c) => c.method === 'editMessageText') && since(n).some((c) => c.body && c.body.text === 'اجازه نداری'), 'non-admin taps are refused');
+  n = fakes.tg.calls.length;
+  await tgWebhook({ message: { chat: { id: 999 }, text: '/menu' } });
+  ok(!since(n).some((c) => c.method === 'sendMessage'), 'non-admin /menu gets nothing');
+  const bk = await (await import('../src/telegram.js')).backupJson(env);
+  ok(!bk.includes('bot_wait'), 'menu state is not in the backup');
+}
+
 section('panel address normalisation + sub decoding');
 {
   const b = panelBases('https://p.rain.rest/hub/#/login');
@@ -1121,6 +1274,8 @@ section('webhook is registered by the Worker, with no secret in the path');
   await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain();
   const calls = fakes.tg.calls.filter((c) => c.method === 'setWebhook');
   ok(calls.length === before + 1 && calls[calls.length - 1].body.url === 'https://api.test/tg' && calls[calls.length - 1].body.secret_token === 'hook', 'setWebhook to /tg with secret_token');
+  const cmds = fakes.tg.calls.filter((c) => c.method === 'setMyCommands').pop();
+  ok(cmds && cmds.body.scope.chat_id === '12345' && cmds.body.commands.some((c) => c.command === 'menu'), 'menu command shown to the admin chat only');
   await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain();
   ok(fakes.tg.calls.filter((c) => c.method === 'setWebhook').length === before + 1, 'not repeated while nothing changed');
   ok((await call('POST', '/tg', { json: { message: { chat: { id: 12345 }, text: '/help' } }, headers: TG })).status === 200, '/tg with the header works');

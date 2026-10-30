@@ -7,7 +7,7 @@ const API = (env, method) => `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOK
 const fa = (n) => Number(n || 0).toLocaleString('en-US');
 const GB = 1024 ** 3;
 
-async function tg(env, method, body) {
+export async function tg(env, method, body) {
   if (!env.TELEGRAM_BOT_TOKEN) return null;
   try {
     const r = await fetch(API(env, method), {
@@ -104,6 +104,7 @@ export async function handleWebhook(env, update) {
 async function onCallback(env, cq) {
   const chatId = cq.message?.chat?.id;
   if (!isAdmin(env, chatId)) return tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: 'اجازه نداری' });
+  if (String(cq.data || '').startsWith('m:')) return (await import('./telegram-menu.js')).onMenu(env, cq);
   const [action, idStr] = String(cq.data || '').split(':');
   if (action === 'cf' || action === 'cx') return onConfirm(env, cq, action === 'cf');
   if (action === 'ts') {
@@ -161,11 +162,19 @@ export async function ensureWebhook(env) {
   const secret = env.TELEGRAM_WEBHOOK_SECRET;
   if (!env.TELEGRAM_BOT_TOKEN || !secret || !base) return false;
   const { hmacHex } = await import('./util.js');
-  const want = await hmacHex(secret, base + '|' + env.TELEGRAM_BOT_TOKEN.slice(-6));
+  // the "v2" bump re-registers once so the bot's command list (menu button) is set too
+  const want = await hmacHex(secret, base + '|' + env.TELEGRAM_BOT_TOKEN.slice(-6) + '|v2');
   const have = (await first(env, "SELECT value FROM settings WHERE key = 'tg_webhook_sig'"))?.value;
   if (have === want) return false;
   const r = await tg(env, 'setWebhook', { url: base + '/tg', secret_token: secret, allowed_updates: ['message', 'callback_query'] });
   if (!r || !r.ok) return false;
+  if (env.TELEGRAM_CHAT_ID) {
+    await tg(env, 'setMyCommands', { scope: { type: 'chat', chat_id: env.TELEGRAM_CHAT_ID }, commands: [
+      { command: 'menu', description: 'منوی مدیریت' }, { command: 'stats', description: 'آمار فروش' },
+      { command: 'find', description: 'جستجوی کاربر با ایمیل' }, { command: 'panel', description: 'تست سلامت پنل‌ها' },
+      { command: 'help', description: 'همه‌ی دستورها' },
+    ] });
+  }
   await setSetting(env, 'tg_webhook_sig', want);
   return true;
 }
@@ -177,7 +186,7 @@ export async function audit(env, adminId, action, targetType, targetId, summary)
 }
 
 // Dangerous actions wait for a second tap on a one-time button (2 minutes).
-async function askConfirm(env, chatId, action, payload, question) {
+export async function askConfirm(env, chatId, action, payload, question) {
   const token = [...crypto.getRandomValues(new Uint8Array(9))].map((b) => b.toString(16).padStart(2, '0')).join('');
   await insert(env, 'bot_confirm', { token, admin_id: String(chatId), action, payload_json: JSON.stringify(payload || {}), expires_at: nowSec() + 120 });
   return tg(env, 'sendMessage', { chat_id: chatId, text: `⚠️ مطمئنی؟\n${question}`, reply_markup: { inline_keyboard: [[
@@ -206,12 +215,33 @@ async function onConfirm(env, cq, yes) {
       result = `پنل #${panel.id} (${panel.label}) از لیست خارج شد. مصرفش یک بار دیگر خوانده می‌شود، بعد اکانت‌هایش خاموش و پنل غیرفعال می‌شود. تاریخچه‌ی مصرف پاک نمی‌شود.`;
     }
   }
+  if (row.action === 'grant') {
+    const u = await first(env, 'SELECT * FROM users WHERE id = ?', payload.user_id);
+    const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', payload.plan_id);
+    if (!u || !plan) result = 'کاربر یا پلن پیدا نشد';
+    else {
+      const { provision } = await import('./billing.js');
+      try {
+        await provision(env, u, plan);
+        await audit(env, chatId, 'user.grant', 'user', u.id, `پلن #${plan.id}`);
+        result = `پلن ${plan.name} به ${u.email} داده شد.`;
+      } catch (e) {
+        await editStatus(env, cq, '⚠️ ساخت اکانت روی پنل انجام نشد:\n' + e.message + '\n\nبرای عیب‌یابی /panel را بزن.');
+        return ack('انجام نشد');
+      }
+    }
+  }
+  if (row.action === 'del_coupon') {
+    const r = await run(env, 'DELETE FROM coupons WHERE code = ?', String(payload.code || ''));
+    if (r.meta && r.meta.changes) await audit(env, chatId, 'coupon.delete', 'coupon', payload.code, null);
+    result = r.meta && r.meta.changes ? `کد ${payload.code} پاک شد.` : 'این کد پیدا نشد.';
+  }
   await editStatus(env, cq, '✅ ' + result);
   return ack('انجام شد');
 }
 
 // ---------------- diagnostics ----------------
-const STATE_FA = { new: 'تازه', testing: 'تست‌شده', rollout: 'ورود تدریجی', active: 'فعال', draining: 'در حال خارج‌شدن', disabled: 'غیرفعال' };
+export const STATE_FA = { new: 'تازه', testing: 'تست‌شده', rollout: 'ورود تدریجی', active: 'فعال', draining: 'در حال خارج‌شدن', disabled: 'غیرفعال' };
 
 // Health of every panel, by its label. Never prints a panel address, user name or password.
 export async function panelReport(env) {
@@ -244,7 +274,7 @@ export async function backupJson(env) {
   // subscription links contain the panel address, which never goes into a chat
   out.tables.subscriptions = out.tables.subscriptions.map(({ sub_url, ...x }) => x);
   out.tables.panel_accounts = out.tables.panel_accounts.map(({ sub_path, ...x }) => x);
-  out.tables.settings = out.tables.settings.filter((x) => x.key !== 'tg_webhook_sig');
+  out.tables.settings = out.tables.settings.filter((x) => x.key !== 'tg_webhook_sig' && x.key !== 'bot_wait');
   return JSON.stringify(out);
 }
 
@@ -255,7 +285,9 @@ export async function sendBackup(env, chatId) {
   return sendDocument(env, chatId || env.TELEGRAM_CHAT_ID, `cloudgold-backup-${day}.json`, data, `💾 پشتیبان ${day} — ${users} کاربر\nاین فایل را جایی امن نگه دار.`);
 }
 
-const HELP = `دستورهای ربات Cloud Gold:
+export const HELP = `دستورهای ربات Cloud Gold:
+
+🏠 /menu — منوی دکمه‌ای (همه‌ی کارها بدون تایپ دستور)
 
 🔎 /panel — تست سلامت همه‌ی پنل‌ها
 🗂 /panels — پنل‌ها، افزودن، ورود تدریجی، خارج‌کردن
@@ -290,19 +322,37 @@ const HELP = `دستورهای ربات Cloud Gold:
 ⚙️ /settings — تنظیمات    /set کلید مقدار — تغییر
    trial_data_gb = حجم تست رایگان (0 = مثل پلن)`;
 
-const PLAN_FIELDS = { name: 'name', price: 'price_toman', old: 'old_price_toman', days: 'duration_days', gb: 'data_limit_gb', devices: 'device_limit', trial: 'trial_days', badge: 'badge', sort: 'sort', on: 'is_active', desc: 'description' };
+export const PLAN_FIELDS = { name: 'name', price: 'price_toman', old: 'old_price_toman', days: 'duration_days', gb: 'data_limit_gb', devices: 'device_limit', trial: 'trial_days', badge: 'badge', sort: 'sort', on: 'is_active', desc: 'description' };
 
-async function onMessage(env, msg) {
+// A command started from the button menu: its answers carry a "back" button to the screen it came from.
+export function runAdminCommand(env, chatId, text, kb) {
+  return onMessage(env, { chat: { id: chatId }, text }, { kb });
+}
+
+async function onMessage(env, msg, opts = {}) {
   const chatId = msg.chat?.id;
   const text = (msg.text || '').trim();
-  const say = (t, extra) => tg(env, 'sendMessage', { chat_id: chatId, text: String(t).slice(0, 4000), disable_web_page_preview: true, ...(extra || {}) });
+  // "⏳ working..." notes never get the back button; the real answer that follows does
+  const say = (t, extra) => tg(env, 'sendMessage', { chat_id: chatId, text: String(t).slice(0, 4000), disable_web_page_preview: true,
+    ...(opts.kb && !String(t).startsWith('⏳') ? { reply_markup: opts.kb } : {}), ...(extra || {}) });
   const cmd = text.split(/\s+/)[0].replace(/@\w+$/, '').toLowerCase();
   if (cmd === '/id' || (cmd === '/start' && !isAdmin(env, chatId))) {
     return say(`Chat id شما: ${chatId}\nاین عدد را در GitHub به اسم TELEGRAM_CHAT_ID بگذار.`);
   }
   if (!isAdmin(env, chatId)) return;
 
-  if (cmd === '/start' || cmd === '/help') return say(HELP);
+  if (cmd === '/start' || cmd === '/menu') return (await import('./telegram-menu.js')).sendHome(env, chatId);
+  if (cmd === '/help') return say(HELP);
+
+  // the menu asked a question ("write the email", "new price"...): this message is the answer
+  if (text && !opts.kb) {
+    const menu = await import('./telegram-menu.js');
+    const w = await menu.takeWait(env);
+    if (w && !text.startsWith('/')) {
+      if (w.secret && msg.message_id) await tg(env, 'deleteMessage', { chat_id: chatId, message_id: msg.message_id });
+      return onMessage(env, { chat: { id: chatId }, text: `${w.cmd} ${text}` }, { kb: menu.backKb(w.back) });
+    }
+  }
 
   // the admin pasted a bank SMS: find the card order and confirm it
   if (text && !text.startsWith('/')) {
@@ -395,20 +445,8 @@ async function onMessage(env, msg) {
     const email = text.split(/\s+/)[1]?.toLowerCase() || '';
     const u = await first(env, 'SELECT * FROM users WHERE email = ?', email);
     if (!u) return say('کاربری با این ایمیل نیست.');
-    const { subscriptionOut } = await import('./account.js');
-    const sub = await subscriptionOut(env, u);
-    const sRow = await first(env, 'SELECT pg_username FROM subscriptions WHERE user_id = ?', u.id);
-    const lines = [`👤 ${u.email}`, `کیف پول: ${fa(u.wallet_balance)} تومان`, `کد دعوت: ${u.referral_code}`];
-    if (sub) {
-      lines.push(`پلن: ${sub.plan_name || '-'} · وضعیت: ${sub.status}${sub.live ? '' : ' (پنل جواب نداد)'}`);
-      lines.push(`زمان: ${sub.unlimited_time ? 'نامحدود' : `${sub.days_left} روز (تا ${sub.expires_at.slice(0, 10)})`}`);
-      lines.push(`حجم: ${(sub.used_bytes / GB).toFixed(2)} از ${sub.unlimited_data ? 'نامحدود' : (sub.data_limit_bytes / GB).toFixed(1) + ' گیگ'}`);
-      if (sub.stop_reason) lines.push(`دلیل توقف: ${{ quota: 'حجم تمام شد', expired: 'زمان تمام شد', admin: 'ادمین' }[sub.stop_reason] || sub.stop_reason}`);
-      const pas = await all(env, 'SELECT a.desired, p.label FROM panel_accounts a JOIN panels p ON p.id = a.panel_id WHERE a.user_id = ?', u.id);
-      lines.push(`پنل‌ها: ${pas.map((a) => `${a.label}${a.desired === 'active' ? '' : ' (خاموش)'}`).join('، ') || '-'}`);
-      lines.push(`یوزر پنل ۱: ${sRow ? sRow.pg_username : '-'}`);
-    } else lines.push('اشتراک: ندارد');
-    return say(lines.join('\n'));
+    const { userKb } = await import('./telegram-menu.js');
+    return say(await userInfo(env, u), { reply_markup: userKb(u.id) });
   }
   if (cmd === '/reset') {
     const [, email, pass] = text.split(/\s+/);
@@ -572,6 +610,24 @@ async function onMessage(env, msg) {
   if (cmd === '/stats') {
     return say(await statsText(env));
   }
+}
+
+// What /find and the user card show: wallet, plan, time and data left, read live from the panels.
+export async function userInfo(env, u) {
+  const { subscriptionOut } = await import('./account.js');
+  const sub = await subscriptionOut(env, u);
+  const sRow = await first(env, 'SELECT pg_username FROM subscriptions WHERE user_id = ?', u.id);
+  const lines = [`👤 ${u.email}`, `کیف پول: ${fa(u.wallet_balance)} تومان`, `کد دعوت: ${u.referral_code}`];
+  if (sub) {
+    lines.push(`پلن: ${sub.plan_name || '-'} · وضعیت: ${sub.status}${sub.live ? '' : ' (پنل جواب نداد)'}`);
+    lines.push(`زمان: ${sub.unlimited_time ? 'نامحدود' : `${sub.days_left} روز (تا ${sub.expires_at.slice(0, 10)})`}`);
+    lines.push(`حجم: ${(sub.used_bytes / GB).toFixed(2)} از ${sub.unlimited_data ? 'نامحدود' : (sub.data_limit_bytes / GB).toFixed(1) + ' گیگ'}`);
+    if (sub.stop_reason) lines.push(`دلیل توقف: ${{ quota: 'حجم تمام شد', expired: 'زمان تمام شد', admin: 'ادمین' }[sub.stop_reason] || sub.stop_reason}`);
+    const pas = await all(env, 'SELECT a.desired, p.label FROM panel_accounts a JOIN panels p ON p.id = a.panel_id WHERE a.user_id = ?', u.id);
+    lines.push(`پنل‌ها: ${pas.map((a) => `${a.label}${a.desired === 'active' ? '' : ' (خاموش)'}`).join('، ') || '-'}`);
+    lines.push(`یوزر پنل ۱: ${sRow ? sRow.pg_username : '-'}`);
+  } else lines.push('اشتراک: ندارد');
+  return lines.join('\n');
 }
 
 const RATE_FROM = { live: 'زنده از صرافی‌ها', saved: 'آخرین قیمت ذخیره‌شده', manual: 'دستی (usd_rate_toman)', none: 'نامشخص' };
