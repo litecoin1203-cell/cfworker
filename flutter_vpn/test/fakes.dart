@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:async';
 import 'dart:typed_data';
 
@@ -33,6 +34,13 @@ class MemoryTokens extends TokenStore {
   Future<String?> cachedServers() async => servers;
   @override
   Future<void> cacheServers(String json) async => servers = json;
+
+  final store = <String, String>{};
+  @override
+  Future<String?> cached(String key) async => store[key];
+  @override
+  Future<void> cache(String key, Object? data) async =>
+      store[key] = jsonEncode(data);
 }
 
 /// Records every call and answers with Worker-shaped bodies.
@@ -236,7 +244,12 @@ class FakeTunnel extends Tunnel {
   @override
   Future<bool> available() async => true;
   @override
-  Future<void> start(String config) async => started = config;
+  Future<void> start(String config) async {
+    started = config;
+    // As the service does: "starting" comes first, then up or failed.
+    emit(TunnelState.starting);
+  }
+
   @override
   Future<TunnelState> current() async => TunnelState.down;
   @override
@@ -291,7 +304,13 @@ class FakeTunnel extends Tunnel {
   @override
   Future<Uint8List?> pickImage() async => photo;
   @override
-  void listen(void Function(TunnelState) onState) => _on = onState;
+  void listen(void Function(TunnelState) onState) {
+    final first = _on == null;
+    _on = onState;
+    // The platform stream replays its current state when first opened.
+    if (first) emit(TunnelState.down);
+  }
+
   void emit(TunnelState s) => _on?.call(s);
   @override
   void dispose() {}

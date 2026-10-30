@@ -81,8 +81,13 @@ class PleatVpnService : VpnService() {
     }
     private var core: CoreController? = null
     private var hevRunning = false
-    private var worker: Thread? = null
-    private val lock = Any()
+
+    /**
+     * Starting and stopping the core and the tun can take seconds, so they
+     * run here, one at a time and in order, never on the main thread: a
+     * Cancel pressed mid-start used to wait on the start and froze the app.
+     */
+    private val ops = java.util.concurrent.Executors.newSingleThreadExecutor()
 
     /** Bumped by every start and stop, so a late probe can't revive a stopped tunnel. */
     @Volatile
@@ -117,22 +122,22 @@ class PleatVpnService : VpnService() {
 
     private fun begin(config: String) {
         foreground()
-        worker?.interrupt()
         val gen = ++generation
-        worker = Thread {
+        // Said at once, so the app knows any later "down" or "failed" is
+        // about this attempt.
+        TunnelHub.set("starting")
+        ops.execute {
+            if (gen != generation) return@execute
             val ok = try {
-                synchronized(lock) {
-                    teardown()
-                    TunnelHub.set("starting")
-                    start(config)
-                }
-                probe()
+                teardown()
+                start(config)
+                probe { gen == generation }
             } catch (e: Throwable) {
                 false
             }
-            if (gen != generation) return@Thread
+            if (gen != generation) return@execute
             if (ok) TunnelHub.set("up") else stopTunnel("failed")
-        }.apply { start() }
+        }
     }
 
     private fun start(config: String) {
@@ -196,14 +201,15 @@ class PleatVpnService : VpnService() {
         hevRunning = true
     }
 
-    /** One request through the exit; true when it answers. */
-    private fun probe(): Boolean {
+    /** One request through the exit; true when it answers. Gives up early once [current] turns false. */
+    private fun probe(current: () -> Boolean): Boolean {
         val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", SOCKS_PORT))
         repeat(3) {
+            if (!current()) return false
             try {
                 val conn = URL(Engine.TEST_URL).openConnection(proxy) as HttpURLConnection
-                conn.connectTimeout = 8000
-                conn.readTimeout = 8000
+                conn.connectTimeout = 6000
+                conn.readTimeout = 6000
                 val code = conn.responseCode
                 conn.disconnect()
                 if (code == 204 || code == 200) return true
@@ -231,12 +237,21 @@ class PleatVpnService : VpnService() {
     }
 
     private fun stopTunnel(state: String) {
-        generation++
-        synchronized(lock) { teardown() }
-        TunnelHub.set(state)
-        stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        val gen = ++generation
+        ops.execute {
+            teardown()
+            // A newer start may have come in meanwhile; it owns the service now.
+            if (gen != generation) return@execute
+            TunnelHub.set(state)
+            main.post {
+                if (gen != generation) return@post
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf()
+            }
+        }
     }
+
+    private val main = android.os.Handler(android.os.Looper.getMainLooper())
 
     override fun onRevoke() {
         // Another VPN took over, or the person turned Pleat off in Settings.
@@ -245,8 +260,15 @@ class PleatVpnService : VpnService() {
 
     override fun onDestroy() {
         instance = null
-        teardown()
-        if (TunnelHub.state != "failed") TunnelHub.set("down")
+        generation++
+        val wasUp = TunnelHub.state == "up"
+        ops.execute {
+            teardown()
+            // Killed while running. Otherwise the stop has already said
+            // so, and a newer service may be starting.
+            if (wasUp) TunnelHub.set("down")
+        }
+        ops.shutdown()
         super.onDestroy()
     }
 
