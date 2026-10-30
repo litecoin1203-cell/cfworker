@@ -28,6 +28,9 @@ class MainActivity : FlutterActivity() {
 
     /** Server tests run a few at a time, off the main thread (as many as AppState's lanes). */
     private val tests = Executors.newFixedThreadPool(6)
+
+    /** Download tests run one by one: side by side they would split the line. */
+    private val speeds = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
 
     private var pendingConfig: String? = null
@@ -91,6 +94,23 @@ class MainActivity : FlutterActivity() {
                             } catch (e: Exception) {
                                 blank(e.message.orEmpty().ifEmpty { e.javaClass.simpleName }).take(200)
                             }
+                        }
+                    }
+                    "speed" -> {
+                        val config = call.argument<String>("config")
+                        if (config == null) {
+                            result.success(-1)
+                            return@setMethodCallHandler
+                        }
+                        // One at a time, so exits don't share the line and slow each other.
+                        speeds.execute {
+                            val kbps = try {
+                                Engine.init(this)
+                                Speed.measure(config)
+                            } catch (e: Throwable) {
+                                -1
+                            }
+                            main.post { result.success(kbps) }
                         }
                     }
                     "delay" -> background(result) {

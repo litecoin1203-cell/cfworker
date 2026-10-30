@@ -10,6 +10,22 @@ enum SceneTone { dawn, day, dusk, night }
 
 /// One backend config, as the screens see it: country, label, protocol and
 /// what people on this network measured. No host, no address.
+/// How fast an exit downloads here, at a glance.
+enum Speed {
+  fast('Fast'),
+  fair('Fair'),
+  slow('Slow');
+
+  const Speed(this.word);
+  final String word;
+
+  /// Enough for HD video.
+  static const fastKbps = 6000;
+
+  /// Enough for browsing and voice.
+  static const fairKbps = 1500;
+}
+
 class Exit {
   Exit(this.server, this.rank);
   final Server server;
@@ -25,6 +41,23 @@ class Exit {
   String? failure;
 
   bool get unreachable => measured == -1;
+
+  /// Download speed through this exit on this phone's network, in kbit/s;
+  /// -1 when nothing came through, null until tested.
+  int? kbps;
+  DateTime? kbpsAt;
+
+  /// A download test through this exit is running now.
+  bool speedTesting = false;
+
+  /// What [kbps] means for a person: video, browsing or text only.
+  Speed? get speed {
+    final k = kbps;
+    if (k == null) return null;
+    if (k >= Speed.fastKbps) return Speed.fast;
+    if (k >= Speed.fairKbps) return Speed.fair;
+    return Speed.slow;
+  }
 
   String get id => server.key;
 
@@ -77,5 +110,6 @@ class Exit {
     label,
     protocol,
     if (unreachable) 'no answer' else if (ping != null) '$ping ms',
+    if (speedTesting) 'testing speed' else if (speed != null) speed!.word,
   ].join('  ·  ');
 }
