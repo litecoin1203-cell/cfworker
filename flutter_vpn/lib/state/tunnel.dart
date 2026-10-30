@@ -16,16 +16,12 @@ class Tunnel {
   bool? _available;
   StreamSubscription<dynamic>? _sub;
 
-  /// Asks the platform once whether a tunnel engine is present.
+  /// Whether the tunnel engine loads. Asks the same question as
+  /// [engineError], so the two never disagree; only a yes is remembered,
+  /// so an early no (the engine still starting up) is asked again.
   Future<bool> available() async {
-    if (_available != null) return _available!;
-    try {
-      _available = await _method.invokeMethod<bool>('available') ?? false;
-    } on MissingPluginException {
-      _available = false;
-    } on PlatformException {
-      _available = false;
-    }
+    if (_available == true) return true;
+    _available = await engineError() == null;
     return _available!;
   }
 
@@ -81,7 +77,7 @@ class Tunnel {
     } on MissingPluginException {
       return 'no native side';
     } on PlatformException catch (e) {
-      return e.code;
+      return '${e.code}: ${e.message ?? ''}';
     }
   }
 
