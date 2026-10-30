@@ -80,6 +80,7 @@ class TokenStore {
   /// once and refreshes it in the background. Kept in the Keystore, like
   /// the tokens, because it is the account's own data.
   static const cacheKeys = ['me', 'plans', 'devices', 'ranks'];
+
   /// A cache is a convenience: when the Keystore can't be read or
   /// written, the app just loads from the Worker as before.
   Future<String?> cached(String key) async {
