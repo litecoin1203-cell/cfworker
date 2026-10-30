@@ -107,7 +107,7 @@ class _CheckScreenState extends State<CheckScreen> {
             ? 'core + place lists'
             : 'core, no place lists';
       });
-      for (final s in list.take(4)) {
+      for (final s in list) {
         await _step('Exit ${s.name}  ${s.protocolLabel}', () async {
           final String config;
           try {
@@ -117,7 +117,11 @@ class _CheckScreenState extends State<CheckScreen> {
           }
           final ms = await app.tunnel.ping(config);
           if (ms == null) {
-            throw ApiError(0, 'no_answer', 'no answer through the core');
+            throw ApiError(
+              0,
+              'no_answer',
+              app.tunnel.lastPingError ?? 'no answer through the core',
+            );
           }
           return '$ms ms through the core';
         });

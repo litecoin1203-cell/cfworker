@@ -71,6 +71,17 @@ class _LocationsScreenState extends State<LocationsScreen> {
     };
   }
 
+  /// Connect to [e] and show Home, where the connection plays out. The exit
+  /// already up (or coming up) just shows Home.
+  void _connect(Exit e) {
+    final app = AppScope.read(context);
+    if (!_on(app, e)) app.connect(e.id);
+    app.setTab(0);
+  }
+
+  static bool _on(AppState app, Exit e) =>
+      app.exit?.id == e.id && (app.busy || app.phase == Phase.protected);
+
   void _open(Exit e) =>
       Navigator.of(context)
           .push(TunnelRoute(builder: (_) => LocationDetail(exitId: e.id)));
@@ -175,11 +186,9 @@ class _LocationsScreenState extends State<LocationsScreen> {
                         height: 248,
                         big: true,
                         onOpen: () => _open(list[0]),
-                        tabLabel: app.exit?.id == list[0].id
-                            ? 'Selected'
-                            : 'Select',
-                        tabActive: app.exit?.id == list[0].id,
-                        onTab: () => app.select(list[0].id),
+                        tabLabel: _on(app, list[0]) ? 'Connected' : 'Connect',
+                        tabActive: _on(app, list[0]),
+                        onTab: () => _connect(list[0]),
                       ),
                     ),
                   ),
@@ -199,11 +208,9 @@ class _LocationsScreenState extends State<LocationsScreen> {
                           exit: list[1],
                           height: 150,
                           onOpen: () => _open(list[1]),
-                          tabLabel: app.exit?.id == list[1].id
-                              ? 'Selected'
-                              : 'Select',
-                          tabActive: app.exit?.id == list[1].id,
-                          onTab: () => app.select(list[1].id),
+                          tabLabel: _on(app, list[1]) ? 'Connected' : 'Connect',
+                          tabActive: _on(app, list[1]),
+                          onTab: () => _connect(list[1]),
                         ),
                       ),
                     ),
@@ -225,9 +232,9 @@ class _LocationsScreenState extends State<LocationsScreen> {
                               index: i,
                               child: _ExitRow(
                                 exit: list[i],
-                                selected: app.exit?.id == list[i].id,
+                                selected: _on(app, list[i]),
                                 onOpen: () => _open(list[i]),
-                                onSelect: () => app.select(list[i].id),
+                                onSelect: () => _connect(list[i]),
                               ),
                             ),
                         ],
@@ -341,8 +348,8 @@ class _ExitRow extends StatelessWidget {
             Pressable(
               onTap: onSelect,
               label: selected
-                  ? '${exit.title} ${exit.label} selected'
-                  : 'Select ${exit.title} ${exit.label}',
+                  ? '${exit.title} ${exit.label} connected'
+                  : 'Connect to ${exit.title} ${exit.label}',
               selected: selected,
               radius: PRadius.pill,
               color: selected ? PColors.blue : PColors.field,
@@ -358,7 +365,7 @@ class _ExitRow extends StatelessWidget {
                             color: Colors.white,
                           )
                         : Text(
-                            'SELECT',
+                            'CONNECT',
                             style: PType.button(color: PColors.ink)
                                 .copyWith(fontSize: 11),
                           ),

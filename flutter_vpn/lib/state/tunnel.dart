@@ -84,14 +84,22 @@ class Tunnel {
   /// Round trip in ms through a throw-away core running [config], the way
   /// v2rayNG tests a server; null when the server didn't answer.
   Future<int?> ping(String config) async {
+    lastPingError = null;
     if (!await available()) return null;
     try {
-      final ms = await _method.invokeMethod<int>('ping', {'config': config});
-      return ms != null && ms > 0 ? ms : null;
-    } on PlatformException {
+      final r = await _method.invokeMethod<Object>('ping', {'config': config});
+      if (r is int && r > 0) return r;
+      if (r is String && r.isNotEmpty) lastPingError = r;
+      return null;
+    } on PlatformException catch (e) {
+      lastPingError = e.code;
       return null;
     }
   }
+
+  /// Why the last [ping] got no answer, as the core said it (server
+  /// addresses blanked); null when it answered or gave no reason.
+  String? lastPingError;
 
   /// Round trip in ms through the running tunnel; null when it didn't
   /// answer or no tunnel runs.

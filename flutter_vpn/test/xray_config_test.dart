@@ -28,10 +28,7 @@ void main() {
       'vless://u@de1.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.example.com#x',
     )['streamSettings'];
     expect(st['network'], 'ws');
-    expect(st['wsSettings'], {
-      'path': '/ws',
-      'headers': {'Host': 'cdn.example.com'},
-    });
+    expect(st['wsSettings'], {'path': '/ws', 'host': 'cdn.example.com'});
     expect(st['tlsSettings']['serverName'], 'cdn.example.com');
   });
 
@@ -61,6 +58,30 @@ void main() {
     final o = _out('vmess://$body');
     expect(o['settings']['vnext'][0]['port'], 2053);
     expect(o['streamSettings']['grpcSettings']['serviceName'], 'svc');
+  });
+
+  test('host extras: ECH, ML-DSA, gRPC authority, XHTTP extra', () {
+    Map st(String l) => outboundOf(l)['streamSettings'] as Map;
+    final tls = st(
+      'vless://u@h.example.com:443?security=tls&type=tcp&ech=AEX%2B0ABB&fp=chrome#x',
+    );
+    expect(tls['tlsSettings']['echConfigList'], 'AEX+0ABB');
+    final reality = st(
+      'vless://u@h.example.com:443?security=reality&pbk=k&sid=1&pqv=PQ#x',
+    );
+    expect(reality['realitySettings']['mldsa65Verify'], 'PQ');
+    final grpc = st(
+      'vless://u@h.example.com:443?security=tls&type=grpc&serviceName=g&authority=a.example.com#x',
+    );
+    expect(grpc['grpcSettings']['authority'], 'a.example.com');
+    final xhttp = st(
+      'vless://u@h.example.com:443?security=tls&type=xhttp&path=%2Fx&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%7D#x',
+    );
+    expect(xhttp['xhttpSettings']['extra'], {'xPaddingBytes': '100-1000'});
+    final bad = st(
+      'vless://u@h.example.com:443?security=tls&type=xhttp&extra=nope#x',
+    );
+    expect((bad['xhttpSettings'] as Map).containsKey('extra'), isFalse);
   });
 
   test('shadowsocks, both link forms', () {
@@ -109,6 +130,10 @@ void main() {
           'vless://$uuid@de1.example.com:443?security=tls&type=grpc&serviceName=g#x',
       'vless_xhttp':
           'vless://$uuid@de1.example.com:443?security=tls&type=xhttp&path=%2Fx#x',
+      'vless_xhttp_extra':
+          'vless://$uuid@de1.example.com:443?security=tls&type=xhttp&path=%2Fx&mode=packet-up&extra=%7B%22xPaddingBytes%22%3A%22100-1000%22%2C%22noGRPCHeader%22%3Afalse%7D#x',
+      'vless_grpc_authority':
+          'vless://$uuid@de1.example.com:443?security=tls&type=grpc&serviceName=g&authority=cdn.example.com#x',
       'trojan': 'trojan://pass@us1.example.com:443#x',
       'vmess_ws': 'vmess://$vmess',
       'ss': 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#x',
