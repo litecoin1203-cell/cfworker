@@ -170,11 +170,17 @@ class Tunnel {
     }
   }
 
+  void Function(TunnelState)? _onState;
+
+  /// Hands every state change to [onState]. The platform stream is opened
+  /// once: opening it again replays the current state (often a "down" or
+  /// "failed" left from before), which a new attempt would read as its
+  /// own failure.
   void listen(void Function(TunnelState) onState) {
-    _sub?.cancel();
-    _sub = _events.receiveBroadcastStream().listen(
-      (v) => onState(_parse(v)),
-      onError: (_) => onState(TunnelState.down),
+    _onState = onState;
+    _sub ??= _events.receiveBroadcastStream().listen(
+      (v) => _onState?.call(_parse(v)),
+      onError: (_) => _onState?.call(TunnelState.down),
     );
   }
 

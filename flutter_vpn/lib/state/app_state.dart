@@ -245,14 +245,68 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// The last values from this phone's cache, shown at once on launch;
+  /// the loaders then refresh them in the background. A cache that no
+  /// longer parses is skipped.
+  Future<void> warmStart() async {
+    final t = api.tokens;
+    T? read<T>(String? raw, T Function(Object?) parse) {
+      if (raw == null) return null;
+      try {
+        return parse(jsonDecode(raw));
+      } catch (_) {
+        return null;
+      }
+    }
+
+    plans.value ??= read(await t.cached('plans'), _plansFrom);
+    if (signedIn) {
+      me.value ??= read(await t.cached('me'), _meFrom);
+      devices.value ??= read(await t.cached('devices'), _devicesFrom);
+      _ranks = read(await t.cached('ranks'), ranksFrom) ?? _ranks;
+      if (servers.value == null) {
+        final list = read(await t.cachedServers(), _exitsFrom);
+        if (list != null && list.isNotEmpty) {
+          servers.value = list;
+          serversStale = true;
+        }
+      }
+    }
+    notifyListeners();
+  }
+
+  static List<PlanInfo> _plansFrom(Object? data) => [
+    for (final p in data as List)
+      PlanInfo.fromJson((p as Map).cast<String, dynamic>()),
+  ];
+
+  static Me _meFrom(Object? data) =>
+      Me.fromJson((data as Map).cast<String, dynamic>());
+
+  List<Device> _devicesFrom(Object? data) => [
+    for (final d in data as List)
+      Device.fromJson(
+        (d as Map).cast<String, dynamic>(),
+        api.tokens.deviceId ?? '',
+      ),
+  ];
+
+  List<Exit> _exitsFrom(Object? data, [Map<String, Exit> before = const {}]) =>
+      [
+        for (final s in data as List)
+          _carry(
+            Exit(Server.fromJson((s as Map).cast<String, dynamic>()), null),
+            before,
+          ),
+      ];
+
   /// Public data, before sign-in.
   Future<void> loadPublic() async {
     await _fetch(plans, () async {
       final data = await api.get('/plans');
-      return [
-        for (final p in data as List)
-          PlanInfo.fromJson((p as Map).cast<String, dynamic>()),
-      ];
+      final list = _plansFrom(data);
+      api.tokens.cache('plans', data);
+      return list;
     });
     try {
       final c = await api.get('/app-config');
@@ -265,7 +319,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> loadMe() => _fetch(me, () async {
     final data = await api.get('/me');
-    return Me.fromJson((data as Map).cast<String, dynamic>());
+    final value = _meFrom(data);
+    api.tokens.cache('me', data);
+    return value;
   });
 
   Future<void> loadServers() async {
@@ -284,18 +340,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         serversStale = true;
       }
       try {
-        _ranks = ranksFrom(await api.get('/net/rank'));
+        final r = await api.get('/net/rank');
+        _ranks = ranksFrom(r);
+        api.tokens.cache('ranks', r);
       } on ApiError {
         // Keep the last ranking.
       }
-      return [
-        for (final s in data as List)
-          _carry(
-            Exit(Server.fromJson((s as Map).cast<String, dynamic>()), null),
-            before,
-          ),
-      ];
+      return _exitsFrom(data, before);
     });
+    // The Worker said no (not just unreachable, which the cache covers).
     if (servers.error != null) servers.value = null;
   }
 
@@ -312,13 +365,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> loadDevices() => _fetch(devices, () async {
     final data = await api.get('/devices');
-    return [
-      for (final d in data as List)
-        Device.fromJson(
-          (d as Map).cast<String, dynamic>(),
-          api.tokens.deviceId ?? '',
-        ),
-    ];
+    final list = _devicesFrom(data);
+    api.tokens.cache('devices', data);
+    return list;
   });
 
   /// Everything a signed-in screen shows.
@@ -652,6 +701,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// A working exit answers in a second or two; 10 s covers a slow one.
   static const _probeDeadline = Duration(seconds: 10);
 
+  /// Bumped by Cancel: running exit tests start no new ones.
+  int _testGen = 0;
+
   /// [enough]: stop starting new tests once that many exits answered
   /// (smart connect needs a good exit soon, not every exit measured).
   Future<void> testAll({int? enough}) =>
@@ -702,8 +754,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     // before go first.
     final queue = [...list]
       ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
+    final run = _testGen;
     Future<void> lane() async {
-      while (queue.isNotEmpty && (enough == null || answered < enough)) {
+      while (queue.isNotEmpty &&
+          run == _testGen &&
+          (enough == null || answered < enough)) {
         await probeOne(queue.removeAt(0));
       }
     }
@@ -843,6 +898,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       phase = Phase.handshaking;
       notifyListeners();
       tunnel.listen(_onTunnel);
+      _started = false;
+      _handshake?.cancel();
+      // The service tries the exit for up to ~30 s; past that, say so
+      // instead of spinning.
+      _handshake = Timer(const Duration(seconds: 45), () {
+        if (stale() || phase != Phase.handshaking) return;
+        tunnel.stop();
+        _fail('The exit didn’t answer. Try another one.');
+      });
       await tunnel.start(config);
     } on ApiError catch (e) {
       if (!stale()) _fail(e.message);
@@ -899,7 +963,20 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
   }
 
+  /// The service said "starting" for this attempt; until then a "down" or
+  /// "failed" is left over from before and means nothing.
+  bool _started = false;
+  Timer? _handshake;
+
   void _onTunnel(TunnelState s) {
+    if (s == TunnelState.starting) {
+      _started = true;
+      return;
+    }
+    if (s != TunnelState.up && phase == Phase.handshaking && !_started) {
+      return;
+    }
+    if (s != TunnelState.starting) _handshake?.cancel();
     if (s == TunnelState.up && phase == Phase.handshaking) {
       phase = Phase.protected;
       connectedAt = DateTime.now();
@@ -990,6 +1067,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   void _stopTimers() {
     _watch?.cancel();
     _pulse?.cancel();
+    _handshake?.cancel();
   }
 
   /// Before the first request: the phone's model and Android version, for
@@ -1031,12 +1109,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Stops at once: the screen goes idle first, then the tunnel and any
+  /// exit tests still running are told to stop.
   Future<void> cancel() async {
     _attempt++;
+    _testGen++;
+    _handshake?.cancel();
     progressNote = null;
-    await tunnel.stop();
     phase = Phase.idle;
     notifyListeners();
+    await tunnel.stop();
   }
 
   Future<void> disconnect() async {

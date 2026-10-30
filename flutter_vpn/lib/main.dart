@@ -22,7 +22,8 @@ Future<void> main() async {
   await tokens.load();
   final state = AppState(prefs, ApiClient(tokens));
   await state.loadDevice();
-  // Fetched while the splash draws; screens show their loading states.
+  // Last launch's values show at once; fresh ones load behind them.
+  await state.warmStart();
   state.signedIn ? state.refreshAccount() : state.loadPublic();
   state.resumeTunnel();
   runApp(PleatApp(state: state));

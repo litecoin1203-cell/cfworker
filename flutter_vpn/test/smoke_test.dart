@@ -122,6 +122,59 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
   });
 
+  testWidgets(
+    'an old "down" replayed by the tunnel is not this attempt failing',
+    (tester) async {
+      final tunnel = FakeTunnel();
+      final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+      await app.connect(app.exits[1].id);
+      // Left over from before this attempt's "starting": ignored.
+      expect(app.phase, Phase.handshaking);
+      expect(app.exitId, app.exits[1].id);
+      tunnel.emit(TunnelState.up);
+      expect(app.phase, Phase.protected);
+      await app.disconnect();
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
+
+  testWidgets(
+    'Cancel while connecting goes idle at once and stops the tunnel',
+    (tester) async {
+      final tunnel = FakeTunnel();
+      final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+      await app.connect(app.exits[1].id);
+      expect(app.phase, Phase.handshaking);
+      final done = app.cancel();
+      expect(app.phase, Phase.idle);
+      await done;
+      expect(tunnel.stopped, isTrue);
+      // A late answer from the cancelled attempt changes nothing.
+      tunnel.emit(TunnelState.failed);
+      expect(app.phase, Phase.idle);
+      expect(app.tunnelMessage, isNull);
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
+
+  testWidgets(
+    'next launch shows the last plan and exits before the Worker answers',
+    (tester) async {
+      final (first, api) = await _boot(tester, {'onboarded': true});
+      expect(first.exits, isNotEmpty);
+      final next = AppState(
+        await SharedPreferences.getInstance(),
+        api,
+        tunnel: FakeTunnel(),
+      );
+      await next.warmStart();
+      expect(next.exits.map((e) => e.id), first.exits.map((e) => e.id));
+      expect(next.me.value?.email, first.me.value?.email);
+      expect(next.serversStale, isTrue);
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
+
   testWidgets('Protected only after the tunnel is up; a stopped plan drops', (
     tester,
   ) async {

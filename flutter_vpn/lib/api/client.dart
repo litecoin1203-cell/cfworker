@@ -71,6 +71,32 @@ class TokenStore {
     await _s.delete(key: 'access');
     await _s.delete(key: 'refresh');
     await _s.delete(key: 'servers');
+    for (final k in cacheKeys) {
+      await _s.delete(key: 'cache.$k');
+    }
+  }
+
+  /// What the account screens showed last, so the next launch shows it at
+  /// once and refreshes it in the background. Kept in the Keystore, like
+  /// the tokens, because it is the account's own data.
+  static const cacheKeys = ['me', 'plans', 'devices', 'ranks'];
+
+  /// A cache is a convenience: when the Keystore can't be read or
+  /// written, the app just loads from the Worker as before.
+  Future<String?> cached(String key) async {
+    try {
+      return await _s.read(key: 'cache.$key');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<void> cache(String key, Object? data) async {
+    try {
+      await _s.write(key: 'cache.$key', value: jsonEncode(data));
+    } catch (_) {
+      // Next launch loads from the Worker.
+    }
   }
 
   /// The last server list, kept in the Keystore too because its configs
@@ -104,7 +130,7 @@ class ApiClient {
 
   /// Contract version, not Pleat's own: 1.9 tells the Worker this client
   /// never wants a raw subscription address (see `centralApp`).
-  static const appVersion = '1.9.0 (Pleat 1.2.0)';
+  static const appVersion = '1.9.0 (Pleat 1.2.1)';
 
   final TokenStore tokens;
   final List<String> _bases;
