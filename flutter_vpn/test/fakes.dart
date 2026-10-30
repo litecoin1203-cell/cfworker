@@ -248,15 +248,21 @@ class FakeTunnel extends Tunnel {
   bool geo = true;
   final List<String> pinged = [];
 
+  /// The core's reason for an address with no ping; default a timeout.
+  Map<String, String> errors = {};
+
   @override
-  Future<int?> ping(String config) async {
+  Future<({int? ms, String? error})> probe(String config) async {
     for (final e in pings.entries) {
       if (config.contains('"${e.key}"')) {
         pinged.add(e.key);
-        return e.value;
+        return (ms: e.value, error: null);
       }
     }
-    return null;
+    for (final e in errors.entries) {
+      if (config.contains('"${e.key}"')) return (ms: null, error: e.value);
+    }
+    return (ms: null, error: 'context deadline exceeded');
   }
 
   @override
