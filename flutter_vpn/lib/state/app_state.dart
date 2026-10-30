@@ -646,41 +646,69 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// Measures every exit through a throw-away core (a few at a time on the
   /// native side), then tells the Worker what worked on this network so
   /// other phones on the same operator rank better.
-  Future<void> testAll() => _testRun ??= _testAll().whenComplete(() {
-    _testRun = null;
-  });
+  /// Exits tested at once; the native test pool has as many threads.
+  static const _probeLanes = 6;
 
-  Future<void> _testAll() async {
+  /// A working exit answers in a second or two; 10 s covers a slow one.
+  static const _probeDeadline = Duration(seconds: 10);
+
+  /// [enough]: stop starting new tests once that many exits answered
+  /// (smart connect needs a good exit soon, not every exit measured).
+  Future<void> testAll({int? enough}) =>
+      _testRun ??= _testAll(enough).whenComplete(() {
+        _testRun = null;
+      });
+
+  Future<void> _testAll(int? enough) async {
     final list = exits;
     if (list.isEmpty || !await tunnel.available()) return;
     testing = true;
     notifyListeners();
     final results = <Map<String, Object>>[];
-    await Future.wait(
-      list.map((e) async {
-        String config;
-        try {
-          config = xrayConfig(e.server.link, forTest: true);
-        } on FormatException catch (x) {
-          e.measured = -1;
-          e.failure = 'unsupported: ${x.message}';
-          e.measuredAt = DateTime.now();
-          return;
-        }
-        final r = await tunnel
-            .probe(config)
-            .timeout(
-              const Duration(seconds: 12),
-              onTimeout: () => (ms: null, error: 'timeout'),
-            );
-        final ms = r.ms;
-        e.measured = ms ?? -1;
-        e.failure = ms == null ? r.error : null;
+    var answered = 0;
+
+    Future<void> probeOne(Exit e) async {
+      String config;
+      try {
+        config = xrayConfig(e.server.link, forTest: true);
+      } on FormatException catch (x) {
+        e.measured = -1;
+        e.failure = 'unsupported: ${x.message}';
         e.measuredAt = DateTime.now();
-        results.add({'k': e.id, 'ok': ms != null, 'ms': ms ?? 0});
-        notifyListeners();
-      }),
-    );
+        return;
+      }
+      final r = await tunnel
+          .probe(config)
+          .timeout(
+            _probeDeadline,
+            onTimeout: () => (
+              ms: null,
+              error: 'no answer in ${_probeDeadline.inSeconds} s (timeout)',
+            ),
+          );
+      final ms = r.ms;
+      if (ms != null) answered++;
+      e.measured = ms ?? -1;
+      e.failure = ms == null ? r.error : null;
+      e.measuredAt = DateTime.now();
+      results.add({'k': e.id, 'ok': ms != null, 'ms': ms ?? 0});
+      notifyListeners();
+    }
+
+    // The native side tests [_probeLanes] exits at a time, and each test
+    // gets its own deadline from when it really starts: one deadline for
+    // all of them ran out for those still waiting their turn, so they
+    // showed as timeouts without ever being tried. Exits that worked
+    // before go first.
+    final queue = [...list]
+      ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
+    Future<void> lane() async {
+      while (queue.isNotEmpty && (enough == null || answered < enough)) {
+        await probeOne(queue.removeAt(0));
+      }
+    }
+
+    await Future.wait([for (var i = 0; i < _probeLanes; i++) lane()]);
     testing = false;
     testedAt = DateTime.now();
     notifyListeners();
@@ -714,7 +742,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
             ..sort((a, b) => b.rank!.score.compareTo(a.rank!.score));
       if (strong.isNotEmpty) return strong.first;
     }
-    if (!_pingsFresh) await testAll();
+    if (!_pingsFresh) await testAll(enough: 3);
     final ok =
         exits
             .where((e) => (e.measured ?? 0) > 0 && !_tried.contains(e.id))

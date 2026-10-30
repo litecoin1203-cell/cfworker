@@ -87,6 +87,12 @@ const _path = Diagnosis(
   'This server’s transport settings are out of step with its link. Support needs to fix it; use another exit meanwhile.',
   Fixer.service,
 );
+const _closed = Diagnosis(
+  Cause.path,
+  'The server closed the request',
+  'The exit reached its server, but the server turned the request down: its transport settings (path, host or XHTTP mode) or its core version don’t match the link. Support needs to check this server; use another exit meanwhile.',
+  Fixer.service,
+);
 const _config = Diagnosis(
   Cause.config,
   'Pleat can’t run this server’s settings',
@@ -122,7 +128,10 @@ Diagnosis diagnose(String? error) {
   if (has(r'deadline exceeded|i/o timeout|timeout|timed out')) {
     return _timeout;
   }
-  if (has(r'reset by peer|\beof\b|broken pipe|forcibly closed|closed pipe')) {
+  // XHTTP's way of saying the server turned the request down (wrong path,
+  // host or mode, or a core version that doesn't match); not filtering.
+  if (has(r'closed pipe')) return _closed;
+  if (has(r'reset by peer|\beof\b|broken pipe|forcibly closed')) {
     return _reset;
   }
   return Diagnosis(
