@@ -194,7 +194,9 @@ async function unifiedLinks(env, user, fwd) {
 export async function vpnServers(env, user, request) {
   await activeSub(env, user);
   const r = await unifiedLinks(env, user, request ? fwdHeaders(request.headers) : {});
-  return json(r.links.map((link, i) => parseLink(i, link)));
+  const list = r.links.map((link, i) => parseLink(i, link));
+  try { const { rememberKeys } = await import('./netstats.js'); await rememberKeys(env, user, list); } catch (e) { /* stats only */ }
+  return json(list);
 }
 
 export async function devices(env, user) {

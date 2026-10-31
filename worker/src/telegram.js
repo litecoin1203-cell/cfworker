@@ -362,6 +362,7 @@ export const HELP = `دستورهای ربات Cloud Gold:
 📋 /coupons — لیست کدها    🗑 /delcoupon کد
 
 🔎 /google — کدام سرورها با گوگل و Gemini مشکل دارند
+📶 /carriers — کدام سرور روی کدام اپراتور (همراه اول، ایرانسل، ...) بهتر است
 💳 /sms — تأیید خودکار کارت‌به‌کارت با پیامک بانک
    (یا پیامک واریز را کپی کن و همین‌جا بفرست)
 
@@ -632,6 +633,21 @@ async function onMessage(env, msg, opts = {}) {
       lines.push(`${ico[r.status]} ${r.name} — ${txt[r.status]} · کشور از دید گوگل: ${r.google_cc || '?'} · ${r.tests} تست`);
     }
     lines.push('', 'برای 🔴 و 🟠: روی همان نود، خروجی را از IP دیگری بده (مثلاً WARP یا یک IP تمیز) تا گوگل آن را کشور دیگری ببیند.');
+    return say(lines.join('\n'));
+  }
+  if (cmd === '/carriers') {
+    const { carrierSummary } = await import('./netstats.js');
+    const nets = (await carrierSummary(env)).slice(0, 6);
+    if (!nets.length) return say('هنوز نتیجه‌ای از گوشی‌ها نرسیده. بعد از چند تست در اپ دوباره بزن.');
+    const line = (s) => `${s.name} — وصل ${fa(s.ok)}٪${s.ms ? ` · پینگ ${fa(s.ms)}ms` : ''}${s.kbps ? ` · سرعت ${fa((s.kbps / 1000).toFixed(1))} مگابیت` : ''} · ${fa(s.users)} نفر`;
+    const lines = ['📶 کدام سرور روی کدام اپراتور بهتر است (۳ روز اخیر)'];
+    for (const n of nets) {
+      lines.push('', `▪️ ${n.isp} — ${fa(n.tests)} تست`);
+      const best = n.servers.slice(0, 3), weak = n.servers.length > 3 ? n.servers.slice(-3).reverse() : [];
+      for (const s of best) lines.push('🟢 ' + line(s));
+      for (const s of weak) lines.push('🔴 ' + line(s));
+    }
+    lines.push('', '🔴 یعنی روی آن اپراتور کمتر وصل می‌شود یا کندتر است؛ می‌توانی آن سرور را برای آن اپراتور عوض کنی.');
     return say(lines.join('\n'));
   }
   if (cmd === '/rate') {

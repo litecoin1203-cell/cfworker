@@ -47,7 +47,8 @@ async function home(env) {
       [b('👤 کاربران', 'm:usr'), b('📦 پلن‌ها', 'm:pl')],
       [b('🗂 پنل‌ها', 'm:pa'), b('🏷 کدهای تخفیف', 'm:cp')],
       [b('💰 پرداخت‌ها', 'm:pay'), b('⚙️ تنظیمات', 'm:set')],
-      [b('🔎 گوگل', 'm:x:home|/google'), b('💾 پشتیبان', 'm:x:home|/backup'), b('❓ راهنما', 'm:help')],
+      [b('🔎 گوگل', 'm:x:home|/google'), b('📶 اپراتورها', 'm:x:home|/carriers')],
+      [b('💾 پشتیبان', 'm:x:home|/backup'), b('❓ راهنما', 'm:help')],
     ],
   };
 }
