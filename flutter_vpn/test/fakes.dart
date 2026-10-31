@@ -278,6 +278,22 @@ class FakeTunnel extends Tunnel {
     return (ms: null, error: 'context deadline exceeded');
   }
 
+  /// Download speed per outbound address in kbit/s; a missing entry is
+  /// -1 (nothing came through).
+  Map<String, int> speeds = {};
+  final List<String> speedTested = [];
+
+  @override
+  Future<int?> speed(String config) async {
+    for (final e in speeds.entries) {
+      if (config.contains('"${e.key}"')) {
+        speedTested.add(e.key);
+        return e.value;
+      }
+    }
+    return -1;
+  }
+
   @override
   Future<int?> delay() async => live;
   @override

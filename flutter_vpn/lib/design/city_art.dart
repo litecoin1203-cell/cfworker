@@ -464,9 +464,12 @@ class _ShardChipPainter extends CustomPainter {
 /// a translucent fold crosses it like the mark's planes, and a white ring
 /// sets it on photos and cards alike. No country: a mist coin with a globe.
 class RegionBadge extends StatelessWidget {
-  const RegionBadge(this.exit, {super.key, this.size = 44});
+  const RegionBadge(this.exit, {super.key, this.size = 44, this.ring});
   final Exit exit;
   final double size;
+
+  /// The coin's rim; white unless a speed tints it (see [SpeedBadge]).
+  final Color? ring;
 
   @override
   Widget build(BuildContext context) {
@@ -480,7 +483,10 @@ class RegionBadge extends StatelessWidget {
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: PColors.mist,
-            border: Border.all(color: Colors.white, width: size * 0.07),
+            border: Border.all(
+              color: ring ?? Colors.white,
+              width: size * (ring == null ? 0.07 : 0.09),
+            ),
             boxShadow: [
               BoxShadow(
                 color: PColors.navy.withValues(alpha: 0.16),
@@ -524,6 +530,143 @@ class RegionBadge extends StatelessWidget {
       ),
     );
   }
+}
+
+/// The country coin that also shows the exit's download speed here: its
+/// rim turns bright blue (fast), ice (fair) or grey (slow), and a light
+/// shard sweeps across it, quicker on a faster exit. While the test runs
+/// the rim breathes in ice. Untested exits show the plain coin.
+class SpeedBadge extends StatefulWidget {
+  const SpeedBadge(this.exit, {super.key, this.size = 44});
+  final Exit exit;
+  final double size;
+
+  static Color? ringOf(Exit e) {
+    if (e.speedTesting) return PColors.ice;
+    return switch (e.speed) {
+      Speed.fast => PColors.blue,
+      Speed.fair => PColors.ice,
+      Speed.slow => PColors.muted.withValues(alpha: 0.55),
+      null => null,
+    };
+  }
+
+  static Duration beatOf(Exit e) => e.speedTesting
+      ? const Duration(milliseconds: 1100)
+      : switch (e.speed) {
+          Speed.fast => const Duration(milliseconds: 1300),
+          Speed.fair => const Duration(milliseconds: 2400),
+          _ => const Duration(milliseconds: 4200),
+        };
+
+  @override
+  State<SpeedBadge> createState() => _SpeedBadgeState();
+}
+
+class _SpeedBadgeState extends State<SpeedBadge>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _t = AnimationController(
+    vsync: this,
+    duration: SpeedBadge.beatOf(widget.exit),
+  );
+
+  bool get _live => widget.exit.speedTesting || widget.exit.speed != null;
+
+  @override
+  void didUpdateWidget(SpeedBadge old) {
+    super.didUpdateWidget(old);
+    _t.duration = SpeedBadge.beatOf(widget.exit);
+    _sync();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _sync();
+  }
+
+  void _sync() {
+    final still = MediaQuery.of(context).disableAnimations;
+    if (_live && !still) {
+      if (!_t.isAnimating) _t.repeat();
+    } else {
+      _t.stop();
+    }
+  }
+
+  @override
+  void dispose() {
+    _t.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final e = widget.exit;
+    final ring = SpeedBadge.ringOf(e);
+    final badge = RegionBadge(e, size: widget.size, ring: ring);
+    if (!_live) return badge;
+    final word = e.speedTesting ? 'testing speed' : '${e.speed!.word} speed';
+    return Semantics(
+      label: word,
+      child: AnimatedBuilder(
+        animation: _t,
+        builder: (context, child) => Stack(
+          children: [
+            child!,
+            Positioned.fill(
+              child: IgnorePointer(
+                child: ClipOval(
+                  child: CustomPaint(
+                    painter: _SweepPainter(
+                      _t.value,
+                      testing: e.speedTesting,
+                      slow: e.speed == Speed.slow,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+        child: badge,
+      ),
+    );
+  }
+}
+
+/// A white shard crossing the coin once per beat; a slow exit's is faint,
+/// and while testing the whole coin glows on and off instead.
+class _SweepPainter extends CustomPainter {
+  _SweepPainter(this.t, {required this.testing, required this.slow});
+  final double t;
+  final bool testing, slow;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final w = size.width;
+    if (testing) {
+      final a = 0.08 + 0.22 * (0.5 - 0.5 * math.cos(t * 2 * math.pi));
+      canvas.drawCircle(
+        Offset(w / 2, w / 2),
+        w / 2,
+        Paint()..color = PColors.ice.withValues(alpha: a),
+      );
+      return;
+    }
+    // Crosses in the first 60% of the beat, then rests.
+    final p = (t / 0.6).clamp(0.0, 1.0);
+    if (p >= 1) return;
+    final x = -w * 0.4 + p * w * 1.8;
+    canvas.drawPath(
+      shardPath(Offset(x, w * 0.5), w * 0.22, w * 1.4, 0.56),
+      Paint()..color = Colors.white.withValues(alpha: slow ? 0.25 : 0.55),
+    );
+  }
+
+  @override
+  bool shouldRepaint(_SweepPainter old) =>
+      old.t != t || old.testing != testing || old.slow != slow;
 }
 
 class _FoldPainter extends CustomPainter {

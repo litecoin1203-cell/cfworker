@@ -31,6 +31,16 @@ class LocationsScreen extends StatefulWidget {
 class _LocationsScreenState extends State<LocationsScreen> {
   String _query = '';
 
+  @override
+  void initState() {
+    super.initState();
+    // Speeds older than half an hour are measured again, one exit at a
+    // time, in the background.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) AppScope.read(context).testSpeeds();
+    });
+  }
+
   /// Every list is the backend's: All in the Worker's order, Fastest by
   /// what this network reported, Saved and Recent from this phone.
   List<Exit> _filtered(AppState app) {
@@ -456,7 +466,7 @@ class _ExitRow extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
         child: Row(
           children: [
-            RegionBadge(exit, size: sub ? 34 : 44),
+            SpeedBadge(exit, size: sub ? 34 : 44),
             const SizedBox(width: 14),
             Expanded(
               child: Column(

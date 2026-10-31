@@ -7,6 +7,7 @@ import 'package:pleat/screens/checkout.dart';
 import 'package:pleat/screens/onboarding.dart';
 import 'package:pleat/screens/shell.dart';
 import 'package:pleat/state/app_state.dart';
+import 'package:pleat/state/exits.dart';
 import 'package:pleat/state/tunnel.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -174,6 +175,39 @@ void main() {
       await tester.pump(const Duration(seconds: 1));
     },
   );
+
+  testWidgets('download speed: answering exits only, kept for a while', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel()
+      ..pings = {'nl1.example.com': 240, 'de1.example.com': 60}
+      ..speeds = {'de1.example.com': 9000, 'nl1.example.com': 2000};
+    final (app, api) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    await app.testSpeeds();
+    // us1 never answered the ping, so it isn't download-tested.
+    expect(tunnel.speedTested..sort(), ['de1.example.com', 'nl1.example.com']);
+    Exit by(String host) =>
+        app.exits.firstWhere((e) => e.server.link.contains(host));
+    expect(by('de1').speed, Speed.fast);
+    expect(by('nl1').speed, Speed.fair);
+    expect(by('de1').meta, contains('Fast'));
+
+    // Fresh results aren't measured again, and survive a new launch.
+    tunnel.speedTested.clear();
+    await app.testSpeeds();
+    expect(tunnel.speedTested, isEmpty);
+    final next = AppState(
+      await SharedPreferences.getInstance(),
+      api,
+      tunnel: FakeTunnel(),
+    );
+    await next.loadServers();
+    expect(
+      next.exits.firstWhere((e) => e.server.link.contains('de1')).speed,
+      Speed.fast,
+    );
+    await tester.pump(const Duration(seconds: 1));
+  });
 
   testWidgets('Protected only after the tunnel is up; a stopped plan drops', (
     tester,

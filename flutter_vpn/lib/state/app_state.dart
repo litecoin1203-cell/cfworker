@@ -205,6 +205,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     sessions = (p.getStringList('sessions') ?? const [])
         .map((s) => Session.fromJson(jsonDecode(s) as Map<String, dynamic>))
         .toList();
+    _loadSpeeds();
   }
 
   void _save() {
@@ -359,6 +360,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (old != null) {
       e.measured = old.measured;
       e.measuredAt = old.measuredAt;
+    }
+    final sp = _speeds[fresh.id];
+    if (sp != null && DateTime.now().difference(sp.$2) < speedFresh) {
+      e.kbps = sp.$1;
+      e.kbpsAt = sp.$2;
     }
     return e;
   }
@@ -776,6 +782,93 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     api
         .post('/net/report', {'results': valid.take(60).toList()})
         .then((_) {}, onError: (_) {});
+  }
+
+  // ---- download speed --------------------------------------------------
+
+  /// Speeds measured on this phone, by exit id: kbit/s and when. Kept
+  /// across launches so Locations shows them at once.
+  Map<String, (int, DateTime)> _speeds = {};
+
+  /// A measured speed is shown, and not measured again, for this long.
+  static const speedFresh = Duration(minutes: 30);
+
+  Future<void>? _speedRun;
+
+  /// Measures the download speed of every exit that answers, one at a
+  /// time, skipping ones measured in the last [speedFresh]. Stops when a
+  /// connect starts (it needs the line) or on Cancel.
+  Future<void> testSpeeds() => _speedRun ??= _testSpeeds().whenComplete(() {
+    _speedRun = null;
+  });
+
+  bool get _connecting => phase == Phase.checking || phase == Phase.handshaking;
+
+  Future<void> _testSpeeds() async {
+    if (exits.isEmpty || !await tunnel.available()) return;
+    if (!_pingsFresh) await testAll();
+    final run = _testGen;
+    final now = DateTime.now();
+    final queue =
+        exits
+            .where(
+              (e) =>
+                  (e.measured ?? 0) > 0 &&
+                  (e.kbpsAt == null || now.difference(e.kbpsAt!) > speedFresh),
+            )
+            .toList()
+          ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
+    for (final e in queue) {
+      if (run != _testGen || _connecting) break;
+      final String config;
+      try {
+        config = xrayConfig(e.server.link, forTest: true);
+      } on FormatException {
+        continue;
+      }
+      e.speedTesting = true;
+      notifyListeners();
+      final k = await tunnel
+          .speed(config)
+          .timeout(const Duration(seconds: 20), onTimeout: () => -1);
+      e.speedTesting = false;
+      if (k != null) {
+        e.kbps = k;
+        e.kbpsAt = DateTime.now();
+        _speeds[e.id] = (k, e.kbpsAt!);
+        _saveSpeeds();
+      }
+      notifyListeners();
+    }
+  }
+
+  void _loadSpeeds() {
+    try {
+      final raw = _prefs.getString('speeds');
+      if (raw == null) return;
+      final m = jsonDecode(raw) as Map<String, dynamic>;
+      _speeds = {
+        for (final e in m.entries)
+          e.key: (
+            (e.value as List)[0] as int,
+            DateTime.fromMillisecondsSinceEpoch((e.value as List)[1] as int),
+          ),
+      };
+    } catch (_) {
+      _speeds = {};
+    }
+  }
+
+  void _saveSpeeds() {
+    final cut = DateTime.now().subtract(const Duration(days: 1));
+    _speeds.removeWhere((_, v) => v.$2.isBefore(cut));
+    _prefs.setString(
+      'speeds',
+      jsonEncode({
+        for (final e in _speeds.entries)
+          e.key: [e.value.$1, e.value.$2.millisecondsSinceEpoch],
+      }),
+    );
   }
 
   bool get _pingsFresh =>

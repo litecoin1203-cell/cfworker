@@ -98,6 +98,18 @@ class Tunnel {
     }
   }
 
+  /// Download speed in kbit/s through a throw-away core running [config]
+  /// (about 1 MB on the phone's own network); -1 when nothing came
+  /// through, null without an engine.
+  Future<int?> speed(String config) async {
+    if (!await available()) return null;
+    try {
+      return await _method.invokeMethod<int>('speed', {'config': config});
+    } on PlatformException {
+      return -1;
+    }
+  }
+
   /// Round trip in ms through the running tunnel; null when it didn't
   /// answer or no tunnel runs.
   Future<int?> delay() async {
