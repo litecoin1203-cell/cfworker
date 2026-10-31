@@ -9,6 +9,7 @@ import '../api/client.dart';
 import '../api/models.dart';
 import 'diagnose.dart';
 import 'exits.dart';
+import 'net_cache.dart';
 import 'tunnel.dart';
 import 'xray_config.dart';
 
@@ -128,6 +129,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   AppConfig config = const AppConfig.empty();
   Map<String, Rank> _ranks = const {};
 
+  /// The operator the Worker last saw this phone on (MCI, Irancell, a
+  /// home line ...); null until it said. Pleat sits outside its own
+  /// tunnel, so this is the real network even while connected.
+  NetInfo? network;
+  DateTime? _rankAt;
+
+  /// Last ping and speed of every exit, per network, kept on the phone.
+  NetCache _cache = NetCache({});
+
+  /// Cache key of the current network; '0' while it isn't known.
+  String get _net => network?.id ?? '0';
+
   // ---- UI and the live tunnel (not persisted) ---------------------------
   int tab = 0;
   Category category = Category.all;
@@ -225,7 +238,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     sessions = (p.getStringList('sessions') ?? const [])
         .map((s) => Session.fromJson(jsonDecode(s) as Map<String, dynamic>))
         .toList();
-    _loadSpeeds();
+    _cache = NetCache.decode(_prefs.getString('netcache'));
   }
 
   void _save() {
@@ -284,7 +297,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (signedIn) {
       me.value ??= read(await t.cached('me'), _meFrom);
       devices.value ??= read(await t.cached('devices'), _devicesFrom);
-      _ranks = read(await t.cached('ranks'), ranksFrom) ?? _ranks;
+      final ranks = await t.cached('ranks');
+      _ranks = read(ranks, ranksFrom) ?? _ranks;
+      network ??= read<NetInfo?>(ranks, NetInfo.from);
+      testedAt ??= _cache.testedAt(_net);
       if (servers.value == null) {
         final list = read(await t.cachedServers(), _exitsFrom);
         if (list != null && list.isNotEmpty) {
@@ -360,34 +376,69 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         data = jsonDecode(cached);
         serversStale = true;
       }
-      try {
-        final r = await api.get('/net/rank');
-        _ranks = ranksFrom(r);
-        api.tokens.cache('ranks', r);
-      } on ApiError {
-        // Keep the last ranking.
-      }
+      await _loadRank();
       return _exitsFrom(data, before);
     });
     // The Worker said no (not just unreachable, which the cache covers).
     if (servers.error != null) servers.value = null;
   }
 
-  /// Same exit with this list's ranking and the earlier measurement.
+  /// The ranking for the network the Worker sees now. A new network
+  /// shows that network's own last results (or none), never the old one's.
+  Future<bool> _loadRank() async {
+    try {
+      final r = await api.get('/net/rank');
+      _ranks = ranksFrom(r);
+      _rankAt = DateTime.now();
+      api.tokens.cache('ranks', r);
+      final before = _net;
+      network = NetInfo.from(r) ?? network;
+      if (_net != before) {
+        testedAt = _cache.testedAt(_net);
+        return true;
+      }
+      testedAt ??= _cache.testedAt(_net);
+    } on ApiError {
+      // Keep the last ranking and network.
+    }
+    return false;
+  }
+
+  /// Asks the Worker which network this is, at most every 2 minutes (or
+  /// now with [force]), and puts that network's results and ranking on
+  /// the exits.
+  Future<void> refreshNetwork({bool force = false}) async {
+    if (!signedIn || exits.isEmpty) return;
+    final at = _rankAt;
+    if (!force &&
+        at != null &&
+        DateTime.now().difference(at) < const Duration(minutes: 2)) {
+      return;
+    }
+    await _loadRank();
+    final before = {for (final e in exits) e.id: e};
+    servers.value = [for (final e in exits) _carry(e, before)];
+    notifyListeners();
+  }
+
+  /// Same exit with this list's ranking and the last results on this
+  /// network.
   Exit _carry(Exit fresh, Map<String, Exit> before) {
     final e = Exit(fresh.server, _ranks[fresh.id]);
+    final m = _cache.get(_net, fresh.id);
+    if (m != null) {
+      e.measured = m.ms;
+      e.measuredAt = m.msAt;
+      e.kbps = m.kbps;
+      e.kbpsAt = m.kbpsAt;
+    }
+    // The core's reason for no answer isn't kept; same test, same reason.
     final old = before[fresh.id];
-    if (old != null) {
-      e.measured = old.measured;
-      e.measuredAt = old.measuredAt;
-    }
-    final sp = _speeds[fresh.id];
-    if (sp != null && DateTime.now().difference(sp.$2) < speedFresh) {
-      e.kbps = sp.$1;
-      e.kbpsAt = sp.$2;
-    }
+    if (old != null && old.measuredAt == e.measuredAt) e.failure = old.failure;
     return e;
   }
+
+  void _saveCache() => _prefs.setString('netcache', _cache.encode());
 
   Future<void> loadDevices() => _fetch(devices, () async {
     final data = await api.get('/devices');
@@ -740,6 +791,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _testAll(int? enough) async {
     final list = exits;
     if (list.isEmpty || !await tunnel.available()) return;
+    final net = _net;
     testing = true;
     notifyListeners();
     final results = <Map<String, Object>>[];
@@ -769,6 +821,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       e.measured = ms ?? -1;
       e.failure = ms == null ? r.error : null;
       e.measuredAt = DateTime.now();
+      _cache.putPing(net, e.id, e.measured!, e.measuredAt!);
       results.add({'k': e.id, 'ok': ms != null, 'ms': ms ?? 0});
       notifyListeners();
     }
@@ -792,26 +845,44 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     await Future.wait([for (var i = 0; i < _probeLanes; i++) lane()]);
     testing = false;
     testedAt = DateTime.now();
+    if (enough == null) _cache.markTested(net, testedAt!);
+    _saveCache();
     notifyListeners();
     _report(results);
   }
 
+  DateTime? _reportedAt;
+
+  /// The Worker takes one report per phone every 8 s; a second one
+  /// sooner (speeds right after pings) waits its turn.
   void _report(List<Map<String, Object>> results) {
-    final valid = results.where((r) => serverKeyPattern.hasMatch('${r['k']}'));
+    final valid = results
+        .where((r) => serverKeyPattern.hasMatch('${r['k']}'))
+        .take(60)
+        .toList();
     if (valid.isEmpty) return;
-    api
-        .post('/net/report', {'results': valid.take(60).toList()})
+    final now = DateTime.now();
+    final last = _reportedAt;
+    var wait = Duration.zero;
+    if (last != null) {
+      final next = last.add(const Duration(seconds: 9));
+      if (next.isAfter(now)) wait = next.difference(now);
+    }
+    _reportedAt = now.add(wait);
+    void send() => api
+        .post('/net/report', {'results': valid})
         .then((_) {}, onError: (_) {});
+    wait == Duration.zero ? send() : Timer(wait, send);
   }
 
   // ---- download speed --------------------------------------------------
 
-  /// Speeds measured on this phone, by exit id: kbit/s and when. Kept
-  /// across launches so Locations shows them at once.
-  Map<String, (int, DateTime)> _speeds = {};
-
   /// A measured speed is shown, and not measured again, for this long.
-  static const speedFresh = Duration(minutes: 30);
+  static const speedFresh = Duration(hours: 6);
+
+  /// Locations tests the pings again by itself after this long on the
+  /// same network (pull to refresh tests now).
+  static const pingFresh = Duration(hours: 1);
 
   Future<void>? _speedRun;
 
@@ -829,20 +900,38 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// answer, one at a time, skipping ones measured in the last
   /// [speedFresh]. Not run on a metered network. Stops when a connect
   /// starts (it needs the line), on Cancel, and on [stopSpeeds].
-  Future<void> testSpeeds() => _speedRun ??= _testSpeeds().whenComplete(() {
-    _speedRun = null;
-  });
+  Future<void> testSpeeds({bool force = false}) =>
+      _speedRun ??= _testSpeeds(force).whenComplete(() {
+        _speedRun = null;
+      });
+
+  /// Locations opened: the last results show at once; pings are tested
+  /// again only when this network has none or they are over [pingFresh]
+  /// old, speeds when over [speedFresh].
+  Future<void> openLocations() async {
+    await refreshNetwork();
+    await testSpeeds();
+  }
+
+  /// Pull to refresh on Locations: every exit's ping now; then the best
+  /// few speeds go on in the background (not on a metered network).
+  Future<void> retestNow() async {
+    await refreshNetwork(force: true);
+    testedAt = null;
+    await testAll();
+    unawaited(testSpeeds(force: true));
+  }
 
   bool get _connecting => phase == Phase.checking || phase == Phase.handshaking;
 
-  Future<void> _testSpeeds() async {
+  Future<void> _testSpeeds(bool force) async {
     if (exits.isEmpty || !await tunnel.available()) return;
     // About 1 MB per exit: never on a metered network. Speeds measured
     // earlier still show.
     metered = await tunnel.metered();
     if (metered) return;
     final speedRun = _speedGen;
-    if (!_pingsFresh) await testAll();
+    if (!_pingsWithin(pingFresh)) await testAll();
     if (speedRun != _speedGen) return;
     final run = _testGen;
     final now = DateTime.now();
@@ -851,10 +940,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
             .where(
               (e) =>
                   (e.measured ?? 0) > 0 &&
-                  (e.kbpsAt == null || now.difference(e.kbpsAt!) > speedFresh),
+                  (force ||
+                      e.kbpsAt == null ||
+                      now.difference(e.kbpsAt!) > speedFresh),
             )
             .toList()
           ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
+    final net = _net;
+    final results = <Map<String, Object>>[];
     for (final e in queue.take(speedTop)) {
       if (run != _testGen || speedRun != _speedGen || _connecting) break;
       final String config;
@@ -872,45 +965,23 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       if (k != null) {
         e.kbps = k;
         e.kbpsAt = DateTime.now();
-        _speeds[e.id] = (k, e.kbpsAt!);
-        _saveSpeeds();
+        _cache.putSpeed(net, e.id, k, e.kbpsAt!);
+        _saveCache();
+        if (k > 0) results.add({'k': e.id, 'kbps': k});
       }
       notifyListeners();
     }
+    // Shared with people on the same operator, like the pings.
+    _report(results);
   }
 
-  void _loadSpeeds() {
-    try {
-      final raw = _prefs.getString('speeds');
-      if (raw == null) return;
-      final m = jsonDecode(raw) as Map<String, dynamic>;
-      _speeds = {
-        for (final e in m.entries)
-          e.key: (
-            (e.value as List)[0] as int,
-            DateTime.fromMillisecondsSinceEpoch((e.value as List)[1] as int),
-          ),
-      };
-    } catch (_) {
-      _speeds = {};
-    }
-  }
+  /// Smart connect tests again after 10 minutes: it needs an exit that
+  /// answers now.
+  bool get _pingsFresh => _pingsWithin(const Duration(minutes: 10));
 
-  void _saveSpeeds() {
-    final cut = DateTime.now().subtract(const Duration(days: 1));
-    _speeds.removeWhere((_, v) => v.$2.isBefore(cut));
-    _prefs.setString(
-      'speeds',
-      jsonEncode({
-        for (final e in _speeds.entries)
-          e.key: [e.value.$1, e.value.$2.millisecondsSinceEpoch],
-      }),
-    );
-  }
-
-  bool get _pingsFresh =>
+  bool _pingsWithin(Duration d) =>
       testedAt != null &&
-      DateTime.now().difference(testedAt!) < const Duration(minutes: 10) &&
+      DateTime.now().difference(testedAt!) < d &&
       exits.any((e) => (e.measured ?? 0) > 0);
 
   /// Best exit not yet tried: one that works for nearly everyone on this

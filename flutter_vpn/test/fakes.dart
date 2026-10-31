@@ -100,6 +100,13 @@ class FakeApi extends ApiClient {
   /// Reports behind the one ranked exit; 8 or more makes it a sure pick.
   int rankReports = 41;
 
+  /// The network /net/rank says the phone is on; 0 = not known.
+  int asn = 0;
+  String ispEn = '';
+  int rankPeople = 0;
+  int rankKbps = 0;
+  double rankScore = 0.968;
+
   Map<String, Object?> get sub => {
     'active': active,
     'status': active ? 'active' : 'limited',
@@ -202,8 +209,17 @@ class FakeApi extends ApiClient {
         ];
       case 'GET /net/rank':
         return {
+          'asn': asn,
+          'isp_en': ispEn,
+          'mobile': asn == 44244,
           'servers': {
-            'k53ca1f60': {'score': 0.968, 'n': rankReports, 'ms': 95},
+            'k53ca1f60': {
+              'score': rankScore,
+              'n': rankReports,
+              'ms': 95,
+              'users': rankPeople,
+              'kbps': rankKbps,
+            },
           },
         };
       case 'GET /vpn':
