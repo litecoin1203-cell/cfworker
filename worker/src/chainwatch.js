@@ -115,8 +115,32 @@ async function candidates(env, onlyId) {
   return onlyId ? all(env, sql, since, onlyId) : all(env, sql, since);
 }
 
+// a transfer already tied to another live order (also while that order is still being settled)
+const TXID_HELD = "status NOT IN ('rejected','cancelled')";
 async function txidTaken(env, txid, orderId) {
-  return !!(await first(env, "SELECT id FROM orders WHERE txid = ? AND id != ? AND status IN ('review','paid')", txid, orderId));
+  return !!(await first(env, `SELECT id FROM orders WHERE txid = ? AND id != ? AND ${TXID_HELD}`, txid, orderId));
+}
+
+// Every open coin order's exact amount on its wallet. A transfer of exactly that amount belongs to that order
+// only, so it is never handed to another order whose tolerance window happens to cover it.
+async function exactOwners(env) {
+  const rows = await all(env, "SELECT id, coin, coin_address, coin_amount FROM orders WHERE method = 'coin' AND coin_amount IS NOT NULL AND status IN ('pending','review','expired','settling') AND created_at > ?", nowSec() - LOOKBACK_SEC);
+  const map = new Map();
+  for (const r of rows) {
+    const w = WATCHERS[r.coin];
+    if (w) map.set(r.coin + '|' + r.coin_address + '|' + toUnits(r.coin_amount, w.precision), r.id);
+  }
+  return map;
+}
+
+// Tie a transfer to one order atomically: one SQL statement, so two callers racing on the same txid can never
+// both win (the check and the write are not separate round trips).
+async function claimTxid(env, orderId, txid, setReview) {
+  const r = await run(env,
+    `UPDATE orders SET txid = ?, status = ${setReview ? "'review', admin_note = NULL" : "CASE WHEN status = 'expired' THEN 'review' ELSE status END"}
+     WHERE id = ? AND NOT EXISTS (SELECT 1 FROM orders WHERE txid = ? AND id != ? AND ${TXID_HELD})`,
+    txid, orderId, txid, orderId);
+  return !!(r && r.meta && r.meta.changes);
 }
 
 // Match fetched transfers to orders and confirm them. Returns [{orderId, result}]
@@ -125,6 +149,7 @@ async function matchAndConfirm(env, orders, txsByKey, mode) {
   const { notifyAdmin, sendCoinNotice } = await import('./telegram.js');
   const done = [];
   const claimed = new Set();
+  const owners = await exactOwners(env);
   for (const o of orders) {
     const txs = txsByKey.get(o.coin + '|' + o.coin_address);
     if (!txs) continue;
@@ -133,23 +158,25 @@ async function matchAndConfirm(env, orders, txsByKey, mode) {
     const upper = (want * 102n) / 100n, lower = (want * 95n) / 100n;
     const memoOk = (t) => !o.coin_memo || t.memo === String(o.coin_memo).trim();
     const fresh = (t) => !t.time || t.time >= o.created_at - 120;
-    const pool = txs.filter((t) => t.txid && fresh(t) && memoOk(t) && !claimed.has(t.txid));
-    // exact amount first, then a little more; a little less only goes to manual review.
-    // A transfer that already paid another order is skipped and the next one is tried.
+    const ownerOf = (t) => owners.get(o.coin + '|' + o.coin_address + '|' + t.units);
+    const pool = txs.filter((t) => t.txid && fresh(t) && memoOk(t) && !claimed.has(t.txid) && (ownerOf(t) === undefined || ownerOf(t) === o.id));
+    // exact amount first; a little more or a little less only goes to manual review (it could be someone else's
+    // payment). A transfer that already paid another order is skipped and the next one is tried.
     const ranked = [
-      ...pool.filter((t) => t.units === want).map((t) => [t, false]),
-      ...pool.filter((t) => t.units > want && t.units <= upper).map((t) => [t, false]),
-      ...pool.filter((t) => t.units >= lower && t.units < want).map((t) => [t, true]),
+      ...pool.filter((t) => t.units === want).map((t) => [t, 'exact']),
+      ...pool.filter((t) => t.units > want && t.units <= upper).map((t) => [t, 'over']),
+      ...pool.filter((t) => t.units >= lower && t.units < want).map((t) => [t, 'under']),
     ];
-    let hit = null, under = false;
-    for (const [t, u] of ranked) {
-      if (!(await txidTaken(env, t.txid, o.id))) { hit = t; under = u; break; }
+    let hit = null, fit = 'exact';
+    for (const [t, f] of ranked) {
+      if (!(await txidTaken(env, t.txid, o.id))) { hit = t; fit = f; break; }
     }
     if (!hit) continue;
     claimed.add(hit.txid);
+    const auto = mode === 'auto' && fit === 'exact';
+    if (!(await claimTxid(env, o.id, hit.txid, !auto))) continue; // another caller tied this transfer to another order first
     const user = await first(env, 'SELECT * FROM users WHERE id = ?', o.user_id);
-    if (mode === 'auto' && !under) {
-      await run(env, "UPDATE orders SET txid = ?, status = CASE WHEN status = 'expired' THEN 'review' ELSE status END WHERE id = ?", hit.txid, o.id);
+    if (auto) {
       const fresh2 = await first(env, 'SELECT * FROM orders WHERE id = ?', o.id);
       try {
         await settle(env, fresh2);
@@ -161,11 +188,13 @@ async function matchAndConfirm(env, orders, txsByKey, mode) {
         done.push({ orderId: o.id, result: 'review' }); // settle() already told the admin why (with a retry button)
       }
     } else {
-      await run(env, "UPDATE orders SET txid = ?, status = 'review', admin_note = NULL WHERE id = ?", hit.txid, o.id);
       const fresh2 = await first(env, 'SELECT * FROM orders WHERE id = ?', o.id);
-      await sendCoinNotice(env, fresh2, user, under
-        ? `⚠️ واریز روی بلاک‌چین پیدا شد ولی ${(Number(want - hit.units) / 10 ** w.precision).toFixed(w.precision)} کمتر از مبلغ سفارش است (احتمالاً کارمزد صرافی). خودت تصمیم بگیر.`
-        : '✅ این واریز روی بلاک‌چین پیدا و با مبلغ سفارش تطبیق داده شد.');
+      const diff = (n) => (Number(n) / 10 ** w.precision).toFixed(w.precision);
+      await sendCoinNotice(env, fresh2, user, fit === 'under'
+        ? `⚠️ واریز روی بلاک‌چین پیدا شد ولی ${diff(want - hit.units)} کمتر از مبلغ سفارش است (احتمالاً کارمزد صرافی). خودت تصمیم بگیر.`
+        : fit === 'over'
+          ? `⚠️ واریز روی بلاک‌چین پیدا شد ولی ${diff(hit.units - want)} بیشتر از مبلغ دقیق سفارش است. مطمئن شو مال همین کاربر است، بعد تأیید کن.`
+          : '✅ این واریز روی بلاک‌چین پیدا و با مبلغ سفارش تطبیق داده شد.');
       done.push({ orderId: o.id, result: 'review' });
     }
   }

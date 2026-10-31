@@ -26,7 +26,7 @@ const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/cs
 // seed card settings + auto-approve webhook helper
 async function seed() {
   await worker.fetch(new Request('http://x/api/v1/plans'), env, ctx); // triggers plan seed
-  const bot = (text) => worker.fetch(new Request('http://x/tg/hook', { method: 'POST', headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': 'hook' }, body: JSON.stringify({ message: { chat: { id: 12345 }, text } }) }), env, ctx);
+  const bot = (text) => worker.fetch(new Request('http://x/tg/hook', { method: 'POST', headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': 'hook' }, body: JSON.stringify({ message: { chat: { id: 12345, type: 'private' }, from: { id: 12345 }, text } }) }), env, ctx);
   await bot('/set card_number 6037991234567893');
   await bot('/set card_holder Ali Ahmadi');
   await bot('/set card_bank ملی');
@@ -67,7 +67,7 @@ globalThis.fetch = async (input, init) => {
     // find the latest review order and approve it
     setTimeout(async () => {
       const row = await env.DB.prepare("SELECT id FROM orders WHERE status='review' ORDER BY id DESC LIMIT 1").bind().first();
-      if (row) await worker.fetch(new Request('http://x/tg/hook', { method: 'POST', headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': 'hook' }, body: JSON.stringify({ callback_query: { id: 'x', data: 'ap:' + row.id, message: { chat: { id: 12345 }, message_id: 1 } } }) }), env, ctx);
+      if (row) await worker.fetch(new Request('http://x/tg/hook', { method: 'POST', headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': 'hook' }, body: JSON.stringify({ callback_query: { id: 'x', data: 'ap:' + row.id, from: { id: 12345 }, message: { chat: { id: 12345, type: 'private' }, message_id: 1 } } }) }), env, ctx);
     }, 1500);
     return res;
   }

@@ -51,9 +51,14 @@ export async function report(env, user, request, body) {
   const list = Array.isArray(body.results) ? body.results.slice(0, 60) : [];
   const b = bucketNow();
   let n = 0;
+  const seenNow = new Set();
   for (const r of list) {
     const k = String(r.k || '');
-    if (!KEY_RE.test(k)) continue;
+    if (!KEY_RE.test(k) || seenNow.has(k)) continue; // one result per server per report
+    seenNow.add(k);
+    // one vote per user per server per network per 3-hour bucket, so one account cannot outvote everyone else
+    const vote = await run(env, 'INSERT OR IGNORE INTO net_votes (user_id, asn, geo, skey, bucket) VALUES (?,?,?,?,?)', user.id, asn, geo, k, b);
+    if (!vote.meta.changes) continue;
     const ok = r.ok ? 1 : 0;
     const ms = ok ? Math.max(1, Math.min(10000, parseInt(r.ms, 10) || 0)) : 0;
     await run(env, `INSERT INTO net_geo (asn, geo, skey, bucket, ok, fail, ms_sum, ms_n) VALUES (?,?,?,?,?,?,?,?)
@@ -75,9 +80,12 @@ function decayed(rows) {
   return out;
 }
 
+const GOOGLE_KEYS_PER_USER_DAY = 30; // a phone tests its own few servers; more than this is not a real app
+const GOOGLE_MAP_MAX = 200;           // most-tested servers returned to the app
+
 async function googleMap(env) {
   const rows = await all(env, `SELECT skey, SUM(tests) t, SUM(gemini_ok) g, SUM(google_ir) ir, SUM(google_wall) wall,
-      MAX(last_at) at FROM google_probe WHERE day >= ? GROUP BY skey`, day() - 2);
+      MAX(last_at) at FROM google_probe WHERE day >= ? GROUP BY skey ORDER BY t DESC LIMIT ${GOOGLE_MAP_MAX}`, day() - 2);
   const latest = await all(env, `SELECT p.skey, p.last_cc, p.last_gcc, p.last_ip FROM google_probe p
       JOIN (SELECT skey, MAX(last_at) m FROM google_probe WHERE day >= ? GROUP BY skey) x ON x.skey = p.skey AND x.m = p.last_at`, day() - 2);
   const last = Object.fromEntries(latest.map((r) => [r.skey, r]));
@@ -86,7 +94,7 @@ async function googleMap(env) {
     const L = last[r.skey] || {};
     const iranShare = r.ir / r.t, wallShare = r.wall / r.t, geminiShare = r.g / r.t;
     let status = 'google';
-    if (L.last_gcc === 'IR' || iranShare >= 0.5) status = 'iran';
+    if (iranShare >= 0.5) status = 'iran'; // the majority of tests decides, never a single latest report
     else if (wallShare >= 0.5) status = 'flagged';
     else if (geminiShare < 0.5) status = 'no_gemini';
     out[r.skey] = { status, tests: r.t, gemini: +geminiShare.toFixed(2), google_cc: L.last_gcc || null, cc: L.last_cc || null, at: r.at };
@@ -124,6 +132,13 @@ export async function googleReport(env, user, body) {
   const k = String(body.k || '');
   if (!KEY_RE.test(k)) return json({ ok: false, skipped: 'bad_key' });
   if (throttle('__cgGoo', user.id + ':' + k, 60000)) return json({ ok: true, skipped: 'throttled' });
+  // one test per user per server per day counts, and only for a handful of servers: new keys cost every
+  // /net/rank caller a bigger answer, so one account cannot invent them without limit
+  const d = day();
+  const already = await first(env, 'SELECT 1 FROM google_votes WHERE user_id = ? AND skey = ? AND day = ?', user.id, k, d);
+  if (already) return json({ ok: true, skipped: 'already_counted', ...((await googleMap(env))[k] || {}) });
+  const mine = await first(env, 'SELECT COUNT(*) n FROM google_votes WHERE user_id = ? AND day = ?', user.id, d);
+  if (mine && mine.n >= GOOGLE_KEYS_PER_USER_DAY) return json({ ok: false, skipped: 'too_many' });
   const cc = /^[A-Z]{2}$/.test(body.cc || '') ? body.cc : null;
   const gcc = /^[A-Z]{2}$/.test(body.google_cc || '') ? body.google_cc : null;
   if (!cc && !gcc && body.gemini == null) return json({ ok: false, skipped: 'empty' });
@@ -137,7 +152,8 @@ export async function googleReport(env, user, body) {
     VALUES (?,?,1,?,?,?,?,?,?,?,?) ON CONFLICT(skey, day) DO UPDATE SET tests = tests + 1, gemini_ok = gemini_ok + excluded.gemini_ok,
     google_ir = google_ir + excluded.google_ir, google_wall = google_wall + excluded.google_wall, last_cc = excluded.last_cc,
     last_gcc = excluded.last_gcc, last_ip = COALESCE(excluded.last_ip, last_ip), name = COALESCE(NULLIF(excluded.name, ''), name), last_at = excluded.last_at`,
-    k, day(), gemini, ir, wall, cc, gcc, ip, name, nowSec());
+    k, d, gemini, ir, wall, cc, gcc, ip, name, nowSec());
+  await run(env, 'INSERT OR IGNORE INTO google_votes (user_id, skey, day) VALUES (?,?,?)', user.id, k, d);
   return json({ ok: true, ...((await googleMap(env))[k] || {}) });
 }
 
@@ -153,4 +169,6 @@ export async function prune(env) {
   await run(env, 'DELETE FROM net_stats WHERE day < ?', day() - 14);
   await run(env, 'DELETE FROM net_geo WHERE bucket < ?', bucketNow() - 32);
   await run(env, 'DELETE FROM google_probe WHERE day < ?', day() - 14);
+  await run(env, 'DELETE FROM net_votes WHERE bucket < ?', bucketNow() - 32);
+  await run(env, 'DELETE FROM google_votes WHERE day < ?', day() - 3);
 }

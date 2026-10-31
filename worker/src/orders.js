@@ -85,16 +85,26 @@ async function attachCoinQuote(env, order, coinId) {
   if (!usd || !p || !p[c.id]) throw err(503, 'price_unavailable', 'قیمت لحظه‌ای ارز در دسترس نیست. چند دقیقه دیگر امتحان کن.');
   const s = await getSettings(env);
   const minutes = Math.max(10, Math.min(180, parseInt(s.coin_minutes, 10) || 30));
-  const amount = quoteAmount(order.amount_toman, usd, p[c.id], c, order.id);
+  const address = String(s[walletKey(c)]).trim();
+  // the exact amount must belong to this order alone among orders that could still be paid on this wallet
+  // (chainwatch auto-confirms only an exact match, and gives an exact amount to its owner only)
+  let amount;
+  for (let bump = 0; bump < 500; bump++) {
+    amount = quoteAmount(order.amount_toman, usd, p[c.id], c, order.id, bump);
+    const clash = await first(env, "SELECT id FROM orders WHERE method = 'coin' AND coin = ? AND coin_address = ? AND coin_amount = ? AND id != ? AND status NOT IN ('paid','cancelled','rejected') AND created_at > ?",
+      c.id, address, amount, order.id, nowSec() - 48 * 3600);
+    if (!clash) break;
+  }
   const memo = c.memo ? String(s[memoKey(c)] || '').trim() || null : null;
   await run(env, 'UPDATE orders SET coin = ?, coin_amount = ?, coin_address = ?, coin_memo = ?, coin_price_usd = ?, coin_expires_at = ? WHERE id = ?',
-    c.id, amount, String(s[walletKey(c)]).trim(), memo, p[c.id], nowSec() + minutes * 60, order.id);
+    c.id, amount, address, memo, p[c.id], nowSec() + minutes * 60, order.id);
 }
 
 // ---------------- discount codes ----------------
-// how long an unpaid order keeps its discount code reserved (same window as a card payment's SMS match)
-const COUPON_HOLD_SEC = 36 * 3600;
-const OPEN_STATUSES = "'pending','review','settling'";
+// how long an unpaid order keeps its discount code reserved: as long as it can still be paid (a coin transfer
+// is matched for 48h, also on an expired quote; a rejected card order can get a new receipt or SMS)
+const COUPON_HOLD_SEC = 48 * 3600;
+const OPEN_STATUSES = "'pending','review','settling','expired','rejected'";
 
 async function findCoupon(env, user, code, plan) {
   code = String(code || '').trim().toUpperCase();

@@ -100,11 +100,12 @@ export async function prices(env) {
 }
 
 // Amount of `coin` for `toman`, rounded up and made unique per order (a few smallest units added, ~cents).
-export function quoteAmount(toman, usdToman, priceUsd, coin, orderId) {
+// `bump` moves past an amount another open order already has (orders.js attachCoinQuote).
+export function quoteAmount(toman, usdToman, priceUsd, coin, orderId, bump = 0) {
   const step = 10 ** -coin.decimals;
   const raw = toman / usdToman / priceUsd;
   const base = Math.ceil(raw / step) * step;
-  const unique = base + ((orderId % 89) + 1) * step;
+  const unique = base + ((orderId % 89) + 1 + bump) * step;
   return unique.toFixed(coin.decimals);
 }
 
