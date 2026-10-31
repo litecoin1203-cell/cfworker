@@ -1267,6 +1267,126 @@ section('acceptance: the user sees one list with no trace of the panels');
   ok(!!old.data.subscription.sub_url, 'apps before 1.9.0 still get their link (no forced update)');
 }
 
+section('bot: link an existing panel account to an app user, without creating one');
+{
+  const A = { chat: { id: 12345 } };
+  const since = (n) => fakes.tg.calls.slice(n);
+  const kbData = (c) => ((c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard) || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const tap = (data, text = 'x') => tgWebhook({ callback_query: { id: 'lk-' + data, data, message: { ...A, message_id: 900, text } } });
+  const confirmOf = (n) => since(n).find((c) => c.method === 'sendMessage' && c.body.text.includes('مطمئنی'));
+  const now = Math.floor(Date.now() / 1000);
+  const mkPanelUser = (name, extra = {}) => (fakes.pg.users[name] = { id: 5000 + Object.keys(fakes.pg.users).length, username: name, status: 'active',
+    expire: now + 20 * 86400, data_limit: 30 * GB, used_traffic: 5 * GB, token: 'tok_' + name, note: 'made by hand', ...extra });
+
+  const v2 = mkPanelUser('ali_v2');
+  const tok = await signup('link1@example.com', { device: 'pleat-phone' });
+  const uid = await userId('link1@example.com');
+  const panelCount = Object.keys(fakes.pg.users).length;
+
+  await admin('/link link1@example.com nobody_here');
+  ok(lastText().includes('پیدا نشد'), 'a panel user that does not exist is refused: ' + lastText());
+  await admin('/link link1@example.com');
+  ok(lastText().includes('شکل درست'), 'missing username shows the usage');
+
+  let n = fakes.tg.calls.length;
+  await admin('/link link1@example.com ali_v2');
+  const c1 = confirmOf(n);
+  ok(c1 && c1.body.text.includes('ali_v2') && c1.body.text.includes('20 روز') && c1.body.text.includes('5.00 از 30.0'), 'asks first, showing the panel account: ' + (c1 && c1.body.text));
+  ok(!(await env.DB.prepare('SELECT 1 x FROM panel_accounts WHERE user_id = ?').bind(uid).first()), 'nothing linked before "yes"');
+  await tap(kbData(c1).find((d) => d.startsWith('cf:')), c1.body.text);
+
+  const pa = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(uid).first();
+  ok(pa && pa.remote_username === 'ali_v2' && pa.sub_path.includes('tok_ali_v2') && pa.desired === 'active', 'the app user now owns that panel account');
+  ok(!Object.values(fakes.pg.users).some((x) => (x.note || '').endsWith('· link1@example.com') && Object.keys(fakes.pg.users).indexOf(x.username) < panelCount) && Object.keys(fakes.pg.users).length === panelCount,
+    'no account was created on panel 1');
+  ok(v2.status === 'active' && v2.token === 'tok_ali_v2' && v2.used_traffic === 5 * GB && v2.data_limit === 30 * GB, 'the panel account is unchanged (v2rayNG keeps working)');
+  const me = (await call('GET', '/api/v1/me', { token: tok, headers: { 'x-app-version': '1.9.0 (Android 14)' } })).data;
+  ok(me.subscription && me.subscription.active && me.subscription.used_bytes === 5 * GB && me.subscription.data_limit_bytes === 30 * GB && me.subscription.days_left === 20,
+    'the app shows the same time, data and usage as the panel: ' + JSON.stringify(me.subscription));
+  ok(me.trial_available === false, 'no free trial on top of a linked account');
+  const servers = await call('GET', '/api/v1/vpn/servers', { token: tok, headers: { 'x-device-id': 'pleat-phone', 'x-app-version': '1.9.0 (Android 14)' } });
+  ok(servers.status === 200 && servers.data.length >= 3 && fakes.pg.lastSubPath === '/sub/tok_ali_v2/', 'configs come from the linked account: ' + fakes.pg.lastSubPath);
+  ok(!!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE action = 'user.link' AND target_id = ? AND summary LIKE '%ali_v2%'").bind(String(uid)).first()), 'link is in the admin log');
+
+  // usage on the panel keeps counting
+  v2.used_traffic = 7 * GB;
+  const me2 = (await call('GET', '/api/v1/me', { token: tok })).data;
+  ok(me2.subscription.used_bytes === 7 * GB, 'new usage on the panel is counted: ' + me2.subscription.used_bytes);
+
+  // the same panel account cannot go to a second user, or twice to the same one
+  await signup('link2@example.com');
+  await admin('/link link2@example.com ali_v2');
+  ok(lastText().includes('link1@example.com'), 'already owned by another user is refused: ' + lastText());
+  await admin('/link link1@example.com ali_v2');
+  ok(lastText().includes('از قبل'), 'linking twice says it is already linked');
+
+  // a used confirmation button cannot run again
+  const before = (await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE action = 'user.link'").first()).c;
+  await tap(kbData(c1).find((d) => d.startsWith('cf:')), c1.body.text);
+  ok((await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE action = 'user.link'").first()).c === before, 'a confirmation works once');
+
+  // a user who already got an account (free trial / grant) gets it replaced; the old one is switched off, not deleted
+  await signup('link3@example.com');
+  await admin(`/grant link3@example.com ${tenGb.id}`);
+  const uid3 = await userId('link3@example.com');
+  const made = (await env.DB.prepare('SELECT remote_username FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(uid3).first()).remote_username;
+  const v3 = mkPanelUser('reza_v2', { expire: 0, data_limit: 0, used_traffic: 1 * GB });
+  n = fakes.tg.calls.length;
+  await admin('/link link3@example.com reza_v2');
+  const c3 = confirmOf(n);
+  ok(c3 && c3.body.text.includes('جایگزین') && c3.body.text.includes(made) && c3.body.text.includes('نامحدود'), 'the question warns about the current plan and account');
+  await tap(kbData(c3).find((d) => d.startsWith('cf:')), c3.body.text);
+  const pa3 = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(uid3).first();
+  ok(pa3.remote_username === 'reza_v2', 'panel-1 account is now the linked one');
+  ok(fakes.pg.users[made] && fakes.pg.users[made].status === 'disabled', 'the old account is switched off on the panel, not deleted');
+  ok(v3.status === 'active', 'the linked account stays on');
+  const s3 = await env.DB.prepare('SELECT * FROM subscriptions WHERE user_id = ?').bind(uid3).first();
+  ok(s3.expires_at === null && s3.data_limit_bytes === 0 && s3.state === 'active' && s3.pg_username === 'reza_v2', 'subscription mirrors the linked account (unlimited)');
+  const periods = (await env.DB.prepare('SELECT * FROM sub_periods WHERE user_id = ? ORDER BY id').bind(uid3).all()).results;
+  ok(periods.length === 2 && periods[0].ended_at && periods[0].end_reason === 'admin' && !periods[1].ended_at, 'the granted period stays in the history');
+  const others = (await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id != 1').bind(uid3).all()).results;
+  ok(others.every((a) => a.desired_expire === null && a.desired_limit_bytes === 0), 'accounts on the other panels follow the new expiry and limit');
+
+  // an account that is already out of time is linked, then stopped at once with its reason
+  mkPanelUser('old_v2', { status: 'expired', expire: now - 86400 });
+  await signup('link4@example.com');
+  n = fakes.tg.calls.length;
+  await admin('/link link4@example.com old_v2');
+  const c4 = confirmOf(n);
+  ok(c4 && c4.body.text.includes('تمام شده'), 'the question says the time is over');
+  await tap(kbData(c4).find((d) => d.startsWith('cf:')), c4.body.text);
+  const s4 = await env.DB.prepare('SELECT state, stop_reason FROM subscriptions WHERE user_id = ?').bind(await userId('link4@example.com')).first();
+  ok(s4.state === 'stopped' && s4.stop_reason === 'expired', 'an expired panel account shows as expired in the app');
+
+  // from the button menu: user card -> "link" -> type the username -> confirm
+  mkPanelUser('sara_v2');
+  await signup('link5@example.com');
+  const uid5 = await userId('link5@example.com');
+  n = fakes.tg.calls.length;
+  await admin('/find link5@example.com');
+  ok(since(n).some((c) => kbData(c).includes(`m:w:link:${uid5}`)), 'the user card has a link button');
+  await tap(`m:w:link:${uid5}`);
+  n = fakes.tg.calls.length;
+  await admin('sara_v2');
+  const c5 = confirmOf(n);
+  ok(c5 && c5.body.text.includes('sara_v2') && c5.body.text.includes('link5@example.com'), 'the typed username leads to the confirmation');
+  await tap(kbData(c5).find((d) => d.startsWith('cx:')), c5.body.text);
+  ok(!(await env.DB.prepare('SELECT 1 x FROM panel_accounts WHERE user_id = ?').bind(uid5).first()), '"cancel" links nothing');
+
+  // a panel account on another panel, by its number
+  pg2.users['nima_v2'] = { id: 77, username: 'nima_v2', status: 'active', expire: now + 5 * 86400, data_limit: 0, used_traffic: 0, token: 'tok_nima' };
+  n = fakes.tg.calls.length;
+  await admin('/link link5@example.com nima_v2 2');
+  const c6 = confirmOf(n);
+  if (c6) await tap(kbData(c6).find((d) => d.startsWith('cf:')), c6.body.text);
+  const p2state = (await env.DB.prepare('SELECT state FROM panels WHERE id = 2').first()).state;
+  if (['active', 'rollout'].includes(p2state)) {
+    const pa6 = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 2').bind(uid5).first();
+    ok(pa6 && pa6.remote_username === 'nima_v2', 'linked on panel 2 by its number');
+    ok((await env.DB.prepare('SELECT pg_username FROM subscriptions WHERE user_id = ?').bind(uid5).first()).pg_username === '', 'panel-1 username is not overwritten by another panel');
+  } else ok(lastText().includes('فعال نیست'), 'a panel that is not serving cannot take a link');
+}
+
 section('webhook is registered by the Worker, with no secret in the path');
 {
   await env.DB.prepare("DELETE FROM settings WHERE key = 'tg_webhook_sig'").run();

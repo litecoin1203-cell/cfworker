@@ -124,6 +124,7 @@ export function installFakes({ panelBase }) {
       if (path.match(/^\/sub\/[^/]+\/?$/)) {
         const hh = new Headers(init.headers || {});
         pg.lastSubHeaders = { ua: hh.get('user-agent'), hwid: hh.get('x-hwid') };
+        pg.lastSubPath = path;
         // a panel with "custom JSON for v2rayNG" answers the core's agent with an Xray JSON config
         if (pg.subJson) return resJson([{ remarks: 'x', outbounds: [] }]);
         return new Response(btoa(subLinks(pg)), { status: 200, headers: { 'subscription-userinfo': 'upload=0; download=0; total=0; expire=0' } });

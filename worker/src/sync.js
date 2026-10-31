@@ -190,6 +190,78 @@ export async function ensureAccount(env, user, panel, { expire, limit, hwid } = 
   return first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
 }
 
+// An account that already exists on a panel (made there by hand and used with v2rayNG) becomes this user's
+// account on that panel: same username, UUID and link, nothing is created on the panel. The logical subscription
+// starts a new period that mirrors that account (its expiry, its limit and what it has used so far). Every
+// database change is one batch, so a link is either fully made or not at all; the UNIQUE (panel_id,
+// remote_username) index refuses the batch if the account already belongs to another user.
+// remote = the panel's user record, read just before. Returns {replaced, disabled}: the user's previous account
+// on that panel (if any) is switched off on the panel, never deleted.
+export async function linkAccount(env, user, panel, remote) {
+  const pg = adapterFor(env, panel);
+  const subPath = pg.absoluteSubUrl(remote.subscription_url || '');
+  if (!subPath) throw new PasarGuardError('panel returned no subscription link for this user', 0);
+  const now = nowSec();
+  const expire = parseExpire(remote.expire) || null;
+  const limit = parseInt(remote.data_limit || 0, 10) || 0;
+  const used = Math.max(0, parseInt(remote.used_traffic || 0, 10) || 0);
+  const devices = parseInt(remote.hwid_limit || 0, 10) || 0;
+  const applied = String(remote.status || 'active') === 'active' ? 'active' : 'stopped';
+  const left = limit > 0 ? Math.max(1, limit - used) : 0;
+  const sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
+  const old = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
+  const st = (sql, ...args) => env.DB.prepare(sql).bind(...args);
+  const period = '(SELECT MAX(id) FROM sub_periods WHERE user_id = ?)'; // the period opened in this batch
+  const p1 = panel.id === 1;
+  const stmts = [];
+  if (sub && sub.period_id) {
+    stmts.push(st(`UPDATE sub_periods SET ended_at = ?, end_reason = 'admin',
+      final_used_bytes = (SELECT COALESCE(SUM(accounted_bytes), 0) FROM usage_counters WHERE period_id = ?) WHERE id = ? AND ended_at IS NULL`,
+    now, sub.period_id, sub.period_id));
+  }
+  stmts.push(st('INSERT INTO sub_periods (user_id, plan_id, started_at, expires_at, limit_bytes) VALUES (?, NULL, ?, ?, ?)', user.id, now, expire, limit));
+  // a panel account that is switched off but still has time and data is switched on again by the sync job
+  if (old) {
+    stmts.push(st(`UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = ?,
+      desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ?, dirty = ?, attempts = 0, last_error = NULL, applied_at = ?
+      WHERE id = ?`, remote.username, remote.id ?? null, subPath, applied, limit, limit, expire, expire, applied === 'active' ? 0 : 1, now, old.id));
+  } else {
+    stmts.push(st(`INSERT INTO panel_accounts (user_id, panel_id, remote_username, remote_id, sub_path, desired, applied,
+      desired_limit_bytes, applied_limit_bytes, desired_expire, applied_expire, dirty, applied_at, created_at)
+      VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?, ?, ?)`,
+    user.id, panel.id, remote.username, remote.id ?? null, subPath, applied, limit, limit, expire, expire, applied === 'active' ? 0 : 1, now, now));
+  }
+  // what the account used before the link counts against its own limit, as it does on the panel
+  stmts.push(st(`INSERT INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at) VALUES (${period}, ?, ?, ?, ?)`,
+    user.id, panel.id, used, used, now));
+  // the user's accounts on other panels follow the new expiry and what is left; their next reading is their start
+  stmts.push(st(`INSERT OR IGNORE INTO usage_counters (period_id, panel_id, baseline_pending, last_seen_at)
+    SELECT ${period}, panel_id, 1, ? FROM panel_accounts WHERE user_id = ? AND panel_id != ?`, user.id, now, user.id, panel.id));
+  stmts.push(st(`UPDATE panel_accounts SET desired = 'active', desired_limit_bytes = ?, desired_expire = ?, dirty = 1, attempts = 0
+    WHERE user_id = ? AND panel_id != ? AND desired != 'removed'`, left, expire, user.id, panel.id));
+  stmts.push(st(`INSERT INTO subscriptions (user_id, pg_username, plan_id, expires_at, data_limit_bytes, device_limit, sub_url, period_days, updated_at,
+      period_id, state, stop_reason, used_bytes, used_at, baselined)
+    VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ${period}, 'active', NULL, ?, ?, 1)
+    ON CONFLICT(user_id) DO UPDATE SET plan_id = NULL, expires_at = excluded.expires_at, data_limit_bytes = excluded.data_limit_bytes,
+      device_limit = excluded.device_limit, period_days = excluded.period_days, updated_at = excluded.updated_at, period_id = excluded.period_id,
+      state = 'active', stop_reason = NULL, used_bytes = excluded.used_bytes, used_at = excluded.used_at, baselined = 1,
+      pg_username = CASE WHEN ? THEN excluded.pg_username ELSE subscriptions.pg_username END,
+      sub_url = CASE WHEN ? THEN excluded.sub_url ELSE subscriptions.sub_url END`,
+  user.id, p1 ? remote.username : '', expire, limit, devices, p1 ? subPath : '', expire ? Math.max(1, Math.ceil((expire - now) / 86400)) : null, now,
+  user.id, used, now, p1 ? 1 : 0, p1 ? 1 : 0));
+  stmts.push(st('UPDATE users SET trial_used = 1 WHERE id = ?', user.id)); // the linked account replaces a free trial
+  await env.DB.batch(stmts);
+
+  let replaced = null, disabled = false;
+  if (old && old.remote_username !== remote.username) {
+    replaced = old.remote_username;
+    try { await pg.setStatus(replaced, 'disabled'); disabled = true; } catch (e) { /* the admin is told to switch it off by hand */ }
+  }
+  await evaluate(env, user.id); // stops at once if the account is already out of time or data
+  await pushPending(env, { userId: user.id });
+  return { replaced, disabled };
+}
+
 function randomHex(n) {
   const b = crypto.getRandomValues(new Uint8Array(n));
   return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');
