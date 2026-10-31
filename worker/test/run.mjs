@@ -30,7 +30,22 @@ let pass = 0, fail = 0;
 function ok(cond, msg) { if (cond) { pass++; } else { fail++; console.log('  ✗ ' + msg); } }
 function section(name) { console.log('• ' + name); }
 
+// Telegram always says what kind of chat an update came from and who sent it; tests that leave those out
+// mean the admin writing in their private chat
+function asTelegram(u) {
+  if (!u || typeof u !== 'object') return u;
+  const fill = (m, from) => {
+    if (!m || !m.chat) return;
+    if (m.chat.type === undefined) m.chat.type = 'private';
+    if (from && !from.from) from.from = { id: m.chat.id };
+  };
+  if (u.message) fill(u.message, u.message);
+  if (u.callback_query) fill(u.callback_query.message, u.callback_query);
+  return u;
+}
+
 async function call(method, path, { token, json: j, headers = {}, form, cf } = {}) {
+  if (path.startsWith('/tg')) j = asTelegram(j);
   const h = { ...headers };
   if (token) h.authorization = 'Bearer ' + token;
   let bodyInit;
@@ -1432,6 +1447,153 @@ section('acceptance: an existing user keeps account, link and session through th
   const pa = await DB2.prepare('SELECT * FROM panel_accounts WHERE user_id = 1').first();
   ok(pa && pa.remote_username === 'cg_1_abcd' && pa.panel_id === 1, 'panel account is the same user (same UUID)');
   ok(fakes.pg.users['cg_1_abcd'].status === 'active' && fakes.pg.users['cg_1_abcd'].hwid_limit === undefined, 'nothing was changed on the panel');
+}
+
+
+section('security audit round 1: F1-F6 and N1 regressions');
+{
+  const { scanAll, checkOrder } = await import('../src/chainwatch.js');
+  const XLM = 'G' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.repeat(2).slice(0, 55);
+  const MEMO = '84021733';
+  const nowIso = new Date().toISOString();
+  const rial = (n) => n.toLocaleString('en-US');
+  const getOrder = (id) => env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+  const wallet = async (t) => (await call('GET', '/api/v1/me', { token: t })).data.wallet_balance;
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.price_toman === 189000);
+
+  // ---- F1: a bank SMS number is rial; the same digits never pay an order of that many toman
+  await botSet('card_number', '6037991234567893');
+  await botSet('card_auto', 'auto');
+  await botSet('sms_senders', '+989100');
+  const key = (await env.DB.prepare("SELECT value FROM settings WHERE key = 'sms_key'").bind().first()).value;
+  const f1 = await signup('f1@example.com', { device: 'f1' });
+  const o1 = (await call('POST', '/api/v1/orders', { token: f1, json: { topup_toman: 1000000, method: 'card' } })).data;
+  const tenth = await call('POST', '/sms/' + key, { json: { from: '+989100', text: `بانک ملی\nواریز: ${rial(o1.amount_toman)}\nمانده: 3,000,000` } });
+  ok(tenth.data.result !== 'paid' && (await getOrder(o1.id)).status !== 'paid' && (await wallet(f1)) === 0, 'F1: paying the order amount in rial (one tenth) does not confirm it: ' + tenth.data.result);
+  const tenthRial = await call('POST', '/sms/' + key, { json: { from: '+989100', text: `واریز ${rial(o1.amount_toman)} ریال` } });
+  ok(tenthRial.data.result !== 'paid' && (await getOrder(o1.id)).status !== 'paid', 'F1: an SMS that says ریال is never read as toman');
+  const full = await call('POST', '/sms/' + key, { json: { from: '+989100', text: `بانک ملی\nواریز: ${rial(o1.amount_toman * 10)}\nمانده: 9,000,000` } });
+  ok(full.data.result === 'paid' && (await wallet(f1)) === o1.amount_toman, 'F1: the full amount in rial still confirms it');
+  const logRow = await env.DB.prepare('SELECT amount_rial FROM sms_log WHERE order_id = ?').bind(o1.id).first();
+  ok(logRow && logRow.amount_rial === o1.amount_toman * 10, 'F1: sms_log records the real rial amount');
+
+  // ---- F2: an attacker's order just under a plan price never takes another user's exact transfer
+  await botSet('wallet_xlm', XLM); await botSet('wallet_xlm_memo', MEMO); await botSet('coin_auto', 'auto');
+  const att = await signup('f2-attacker@example.com', { device: 'f2a' });
+  const vic = await signup('f2-victim@example.com', { device: 'f2v' });
+  const ao = (await call('POST', '/api/v1/orders', { token: att, json: { topup_toman: 187000, method: 'coin', coin: 'xlm' } })).data;
+  const vo = (await call('POST', '/api/v1/orders', { token: vic, json: { plan_id: monthly.id, method: 'coin', coin: 'xlm' } })).data;
+  const ratio = Number(vo.coin.amount) / Number(ao.coin.amount);
+  ok(ratio > 1 && ratio < 1.02, `F2 setup: the victim's amount sits inside the attacker's +2% window (${ratio.toFixed(4)})`);
+  globalThis.__chain.xlm = [{ type: 'payment', to: XLM, asset_type: 'native', amount: vo.coin.amount, transaction_hash: '7'.repeat(64), created_at: nowIso, transaction: { memo: MEMO } }];
+  globalThis.__cgChk = {};
+  await call('GET', `/api/v1/orders/${ao.id}`, { token: att }); // the attacker polls first
+  await scanAll(env);
+  ok((await getOrder(ao.id)).status !== 'paid' && !(await getOrder(ao.id)).txid && (await wallet(att)) === 0, 'F2: the attacker order did not get the victim transfer');
+  ok((await getOrder(vo.id)).status === 'paid' && (await getOrder(vo.id)).txid === '7'.repeat(64), 'F2: the victim order is paid by its own transfer');
+  // a transfer a little above an order's amount (owned by no other order) waits for the admin
+  const oo = (await call('POST', '/api/v1/orders', { token: att, json: { topup_toman: 120000, method: 'coin', coin: 'xlm' } })).data;
+  globalThis.__chain.xlm = [{ type: 'payment', to: XLM, asset_type: 'native', amount: (Number(oo.coin.amount) * 1.01).toFixed(7), transaction_hash: '8'.repeat(64), created_at: nowIso, transaction: { memo: MEMO } }];
+  await scanAll(env);
+  ok((await getOrder(oo.id)).status === 'review' && (await wallet(att)) === 0, 'F2: an inexact transfer goes to the admin, never auto-confirmed');
+  // quotes: two open orders of the same amount never share an exact coin amount
+  const q1 = (await call('POST', '/api/v1/orders', { token: att, json: { topup_toman: 150000, method: 'coin', coin: 'xlm' } })).data;
+  await env.DB.prepare('UPDATE orders SET coin_amount = ? WHERE id = ?').bind('99.0000001', q1.id).run();
+  const clashRows = await env.DB.prepare("SELECT coin_amount, COUNT(*) n FROM orders WHERE method = 'coin' AND status NOT IN ('paid','cancelled','rejected') GROUP BY coin, coin_address, coin_amount HAVING n > 1").bind().all();
+  ok(clashRows.results.length === 0, 'F2: every open coin order has its own exact amount');
+
+  // ---- F3: one transfer is tied to one order, also when two callers race
+  await env.DB.prepare("UPDATE orders SET status = 'cancelled' WHERE method = 'coin' AND status != 'paid'").bind().run();
+  const r1 = (await call('POST', '/api/v1/orders', { token: att, json: { topup_toman: 1000000, method: 'coin', coin: 'xlm' } })).data;
+  const r2 = (await call('POST', '/api/v1/orders', { token: att, json: { topup_toman: 1000000, method: 'coin', coin: 'xlm' } })).data;
+  // a transfer just above both amounts (exact for neither): both orders' windows cover it
+  const over = (Math.max(Number(r1.coin.amount), Number(r2.coin.amount)) * 1.005).toFixed(7);
+  globalThis.__chain.xlm = [{ type: 'payment', to: XLM, asset_type: 'native', amount: over, transaction_hash: '9'.repeat(64), created_at: nowIso, transaction: { memo: MEMO } }];
+  // D1 answers over the network: every query yields, so two requests interleave like in production
+  const slow = (db) => ({ ...db, batch: db.batch.bind(db), exec: db.exec && db.exec.bind(db), prepare: (sql) => { const st = db.prepare(sql); return { bind: (...a) => { const b = st.bind(...a); const lag = (f) => new Promise((res) => setTimeout(res, 2)).then(f); return { first: () => lag(() => b.first()), all: () => lag(() => b.all()), run: () => lag(() => b.run()) }; } }; } });
+  const envLat = { ...env, DB: slow(env.DB) };
+  globalThis.__cgChk = {};
+  await Promise.all([checkOrder(envLat, await getOrder(r1.id)), checkOrder(envLat, await getOrder(r2.id))]);
+  const holders = (await env.DB.prepare("SELECT id FROM orders WHERE txid = ?").bind('9'.repeat(64)).all()).results;
+  ok(holders.length === 1, 'F3: two racing checks tie the transfer to exactly one order (holders: ' + holders.length + ')');
+  // a transfer held by an order that is still being settled is not given to another order
+  await env.DB.prepare("UPDATE orders SET status = 'cancelled' WHERE method = 'coin' AND status != 'paid'").bind().run();
+  const s1 = (await call('POST', '/api/v1/orders', { token: att, json: { topup_toman: 200000, method: 'coin', coin: 'xlm' } })).data;
+  const s2 = (await call('POST', '/api/v1/orders', { token: att, json: { topup_toman: 300000, method: 'coin', coin: 'xlm' } })).data;
+  await env.DB.prepare("UPDATE orders SET txid = ?, status = 'settling', settling_at = ? WHERE id = ?").bind('6'.repeat(64), Math.floor(Date.now() / 1000), s1.id).run();
+  globalThis.__chain.xlm = [{ type: 'payment', to: XLM, asset_type: 'native', amount: s2.coin.amount, transaction_hash: '6'.repeat(64), created_at: nowIso, transaction: { memo: MEMO } }];
+  const walletBefore = await wallet(att);
+  await scanAll(env);
+  ok((await getOrder(s2.id)).status !== 'paid' && (await wallet(att)) === walletBefore, 'F3: a transfer held by an order in settlement pays nothing else');
+
+  // ---- F4: a one-use code cannot be reused through an expired (or rejected) order
+  await env.DB.prepare("UPDATE orders SET status = 'cancelled' WHERE method = 'coin' AND status != 'paid'").bind().run();
+  await tgWebhook({ message: { chat: { id: 12345 }, text: '/coupon ONCEF4 50 1' } });
+  const f4 = await signup('f4@example.com', { device: 'f4' });
+  const c1 = await call('POST', '/api/v1/orders', { token: f4, json: { plan_id: monthly.id, method: 'coin', coin: 'xlm', coupon_code: 'ONCEF4' } });
+  ok(c1.status === 201, 'F4 setup: first order takes the code');
+  await env.DB.prepare('UPDATE orders SET coin_expires_at = 1 WHERE id = ?').bind(c1.data.id).run();
+  ok((await call('GET', `/api/v1/orders/${c1.data.id}`, { token: f4 })).data.status === 'expired', 'F4 setup: quote expired');
+  const c2 = await call('POST', '/api/v1/orders', { token: f4, json: { plan_id: monthly.id, method: 'coin', coin: 'xlm', coupon_code: 'ONCEF4' } });
+  ok(c2.status === 400 && c2.data.detail.code === 'coupon_in_use', 'F4: an expired order still holds the code: ' + c2.status + ' ' + JSON.stringify(c2.data.detail));
+  // the code is also redeemed at delivery: a second order of the same user carrying it is not delivered
+  const cp = await env.DB.prepare("SELECT * FROM coupons WHERE code = 'ONCEF4'").bind().first();
+  await call('POST', `/api/v1/orders/${c1.data.id}/paid`, { token: f4, json: { txid: '5'.repeat(64) } }); // late payment -> review
+  await tgWebhook({ callback_query: { id: 'f4a', data: `ap:${c1.data.id}`, message: { chat: { id: 12345 }, message_id: 41 } } });
+  ok((await getOrder(c1.data.id)).status === 'paid', 'F4 setup: the first order is delivered with the code');
+  const sneak = await env.DB.prepare("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, coupon_id, list_price_toman, created_at) VALUES ((SELECT id FROM users WHERE email = 'f4@example.com'), 'plan', ?, 95000, 'coin', 'review', ?, 189000, ?) RETURNING id").bind(monthly.id, cp.id, Math.floor(Date.now() / 1000)).first();
+  await tgWebhook({ callback_query: { id: 'f4b', data: `ap:${sneak.id}`, message: { chat: { id: 12345 }, message_id: 42 } } });
+  const cpAfter = await env.DB.prepare('SELECT used FROM coupons WHERE id = ?').bind(cp.id).first();
+  ok((await getOrder(sneak.id)).status !== 'paid' && cpAfter.used === 1, 'F4: a second order with the same one-use code is not delivered, used stays 1');
+
+  // ---- F5: one account cannot flood the shared google map with invented servers
+  const f5 = await signup('f5@example.com', { device: 'f5' });
+  let lastG = null;
+  for (let i = 0; i < 31; i++) {
+    globalThis.__cgGoo = {};
+    lastG = await call('POST', '/api/v1/net/google', { token: f5, json: { k: 'zz' + String(i).padStart(6, '0'), cc: 'DE', google_cc: 'DE', gemini: true } });
+  }
+  ok(lastG.data.skipped === 'too_many', 'F5: the 31st new server from one account in a day is refused');
+  globalThis.__cgGoo = {};
+  await call('POST', '/api/v1/net/google', { token: f5, json: { k: 'zz000000', cc: 'DE', google_cc: 'DE', gemini: true } });
+  const zz = await env.DB.prepare("SELECT tests FROM google_probe WHERE skey = 'zz000000'").bind().first();
+  ok(zz.tests === 1, 'F5: the same server counts once per account per day');
+  const rank5 = (await call('GET', '/api/v1/net/rank', { token: f5 })).data;
+  ok(Object.keys(rank5.google).filter((k) => k.startsWith('zz')).length <= 30, 'F5: /net/rank carries at most 30 of that account\'s servers');
+  for (const [who, gcc] of [['f5c', 'DE'], ['f5d', 'DE'], ['f5b', 'IR']]) {
+    globalThis.__cgGoo = {};
+    await call('POST', '/api/v1/net/google', { token: await signup(who + '@example.com', { device: who }), json: { k: 'zy000001', cc: 'DE', google_cc: gcc, gemini: gcc !== 'IR' } });
+  }
+  ok((await call('GET', '/api/v1/net/rank', { token: f5 })).data.google.zy000001.status !== 'iran', 'F5: one latest Iran report among others does not flip a server to "iran"');
+
+  // ---- F6: one report counts one vote per server
+  const MTN = { asn: 44244, asOrganization: 'Iran Cell', region: 'Tehran', city: 'Tehran' };
+  const f6 = await signup('f6@example.com', { device: 'f6' });
+  globalThis.__cgNet = {};
+  const dup = await call('POST', '/api/v1/net/report', { token: f6, cf: MTN, json: { results: Array.from({ length: 60 }, () => ({ k: 'f6f6f6f6', ok: true, ms: 20 })) } });
+  ok(dup.data.stored === 1, 'F6: 60 copies of one server in one report count once: ' + dup.data.stored);
+  globalThis.__cgNet = {};
+  const again6 = await call('POST', '/api/v1/net/report', { token: f6, cf: MTN, json: { results: [{ k: 'f6f6f6f6', ok: true, ms: 20 }] } });
+  ok(again6.data.stored === 0, 'F6: the same account votes once per server per 3 hours');
+  const r6 = (await call('GET', '/api/v1/net/rank', { token: f6, cf: MTN })).data;
+  ok(r6.servers.f6f6f6f6 && r6.servers.f6f6f6f6.n === 1, 'F6: the ranking shows one result, not 60');
+
+  // ---- N1: the bot answers the admin only in their private chat
+  const before = (await env.DB.prepare("SELECT value FROM settings WHERE key = 'referral_percent'").bind().first() || {}).value;
+  await tgWebhook({ message: { chat: { id: 12345, type: 'supergroup' }, from: { id: 999 }, text: '/set referral_percent 55' } });
+  await tgWebhook({ message: { chat: { id: 12345, type: 'group' }, from: { id: 12345 }, text: '/set referral_percent 56' } });
+  await tgWebhook({ message: { chat: { id: 12345, type: 'private' }, from: { id: 999 }, text: '/set referral_percent 57' } });
+  const after = (await env.DB.prepare("SELECT value FROM settings WHERE key = 'referral_percent'").bind().first() || {}).value;
+  ok(after === before, 'N1: a group chat, or someone other than the admin, cannot run admin commands');
+  const nOrder = (await call('POST', '/api/v1/orders', { token: f1, json: { plan_id: monthly.id, method: 'card' } })).data;
+  const bA = fakes.tg.messages.length;
+  await tgWebhook({ callback_query: { id: 'n1', data: `ap:${nOrder.id}`, from: { id: 999 }, message: { chat: { id: 12345, type: 'supergroup' }, message_id: 77 } } });
+  ok((await getOrder(nOrder.id)).status !== 'paid', 'N1: an approve tap from a group member is refused');
+  const bI = fakes.tg.messages.length;
+  await tgWebhook({ message: { chat: { id: -100555, type: 'supergroup' }, from: { id: 999 }, text: '/id' } });
+  ok(fakes.tg.messages.slice(bI).some((m) => m.text.includes('چت خصوصی')), 'N1: /id in a group says the bot works only in a private chat');
+  await tgWebhook({ message: { chat: { id: 12345, type: 'private' }, from: { id: 12345 }, text: '/set referral_percent 12' } });
+  ok((await env.DB.prepare("SELECT value FROM settings WHERE key = 'referral_percent'").bind().first()).value === '12', 'N1: the admin in their private chat still runs commands');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

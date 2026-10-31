@@ -18,7 +18,12 @@ const BALANCE_WORD = /(مانده|موجودي|موجودی|balance|mande)/i;
 // a whole number: 1,890,370 or 1890370 (5-12 digits), never a slice of a longer digit run (account numbers)
 const AMOUNT_RE = /([+-]?)\s*(?<![\d,])(\d{1,3}(?:,\d{3})+|\d{5,12})(?![\d,])/g;
 
-// Returns { deposit: bool, amounts: [n, ...] } — likeliest deposited amount first
+const TOMAN_WORD = /(تومان|تومن|toman)/i;
+const RIAL_WORD = /(ريال|ریال|rial)/i;
+
+// Returns { deposit: bool, amounts: [n, ...], toman: [n, ...] } — likeliest deposited amount first.
+// Bank SMS amounts are rial. `toman` lists the amounts whose own line says تومان (and not ریال): only those
+// may be read as toman, so a transfer of X rial can never pay an order of X toman.
 export function parseBankSms(text) {
   const t = fa2en(text).replace(/[٬،]/g, ',');
   const hasDeposit = DEPOSIT_WORD.test(t) || /\+\s*\d/.test(t);
@@ -36,11 +41,11 @@ export function parseBankSms(text) {
       if (m[1] === '-') continue;            // money leaving the account
       if (bal && !d && m[1] !== '+') continue; // the balance, not the deposit
       if (/(حساب|شبا|کارت|account|card)/i.test(line) && !/,/.test(m[2]) && m[2].length >= 10) continue; // an account number
-      found.push({ n, score: (d ? 2 : 0) + (m[1] === '+' ? 1 : 0) });
+      found.push({ n, score: (d ? 2 : 0) + (m[1] === '+' ? 1 : 0), toman: TOMAN_WORD.test(line) && !RIAL_WORD.test(line) });
     }
   }
   found.sort((a, b) => b.score - a.score);
-  return { deposit, amounts: [...new Set(found.map((x) => x.n))] };
+  return { deposit, amounts: [...new Set(found.map((x) => x.n))], toman: [...new Set(found.filter((x) => x.toman).map((x) => x.n))] };
 }
 
 async function trustedSenders(env) {
@@ -66,11 +71,12 @@ export async function handleBankSms(env, { sender = '', text = '', trusted = fal
     return { result: 'not_deposit' };
   }
   const orders = await openCardOrders(env);
-  // amounts in SMS are usually rial; accept toman too
+  // amounts in SMS are rial; a number is read as toman only when its line says تومان
   let matches = [], rial = 0;
   for (const n of p.amounts) {
-    const m = orders.filter((o) => o.amount_toman * 10 === n || o.amount_toman === n);
-    if (m.length) { matches = m; rial = m[0].amount_toman * 10 === n ? n : n * 10; break; }
+    const asToman = p.toman.includes(n);
+    const m = orders.filter((o) => (asToman ? o.amount_toman === n : o.amount_toman * 10 === n));
+    if (m.length) { matches = m; rial = asToman ? n * 10 : n; break; }
   }
   const first_ = p.amounts[0];
   if (!matches.length) {
@@ -96,7 +102,7 @@ export async function handleBankSms(env, { sender = '', text = '', trusted = fal
       await run(env, "UPDATE orders SET receipt_ref = COALESCE(receipt_ref, ?) WHERE id = ?", source === 'paste' ? 'پیامک (تلگرام)' : 'پیامک بانک', order.id);
       await settle(env, await first(env, 'SELECT * FROM orders WHERE id = ?', order.id));
       await run(env, 'UPDATE sms_log SET result = ? WHERE hash = ?', 'paid', hash);
-      await notifyAdmin(env, `⚡ کارت‌به‌کارت خودکار تأیید شد — سفارش #${order.id}\n${order.amount_toman.toLocaleString('en-US')} تومان از ${user.email}\n(از ${source === 'paste' ? 'پیامکی که در ربات گذاشتی' : 'پیامک بانک'})`);
+      await notifyAdmin(env, `⚡ کارت‌به‌کارت خودکار تأیید شد — سفارش #${order.id}\n${order.amount_toman.toLocaleString('en-US')} تومان از ${user.email}\nمبلغ واریز در پیامک: ${rial.toLocaleString('en-US')} ریال\n(از ${source === 'paste' ? 'پیامکی که در ربات گذاشتی' : 'پیامک بانک'})`);
       return { result: 'paid', orderId: order.id };
     } catch (e) {
       await run(env, 'UPDATE sms_log SET result = ? WHERE hash = ?', 'settle_failed', hash);

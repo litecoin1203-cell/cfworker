@@ -90,8 +90,11 @@ const buttons = (orderId) => ({
   ]],
 });
 
-function isAdmin(env, chatId) {
-  return env.TELEGRAM_CHAT_ID && String(chatId) === String(env.TELEGRAM_CHAT_ID);
+// The admin is one person in their own private chat with the bot: the chat must be private and the sender must
+// be that same account. A group (or anyone else in a chat whose id matched) is never the admin.
+function isAdmin(env, chat, from) {
+  const id = String(env.TELEGRAM_CHAT_ID || '');
+  return !!id && !!chat && !!from && chat.type === 'private' && String(chat.id) === id && String(from.id) === id;
 }
 
 // ---------------- webhook ----------------
@@ -103,7 +106,7 @@ export async function handleWebhook(env, update) {
 
 async function onCallback(env, cq) {
   const chatId = cq.message?.chat?.id;
-  if (!isAdmin(env, chatId)) return tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: 'اجازه نداری' });
+  if (!isAdmin(env, cq.message?.chat, cq.from)) return tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: 'اجازه نداری' });
   if (String(cq.data || '').startsWith('m:')) return (await import('./telegram-menu.js')).onMenu(env, cq);
   const [action, idStr] = String(cq.data || '').split(':');
   if (action === 'cf' || action === 'cx') return onConfirm(env, cq, action === 'cf');
@@ -130,7 +133,7 @@ async function onCallback(env, cq) {
       await settle(env, order);
     } catch (e) {
       // settle already sent the panel's exact error with a retry button
-      if (e instanceof BillingError && e.code === 'settle_busy') return ack(e.message, true);
+      if (e instanceof BillingError && (e.code === 'settle_busy' || e.code.startsWith('coupon'))) return ack(e.message, true);
       return ack('⚠️ ' + (e instanceof BillingError ? 'ساخت اکانت روی پنل انجام نشد. پیام بعدی را ببین.' : e.message), true);
     }
     await editStatus(env, cq, `✅ تأیید و فعال شد — سفارش #${order.id} (${user.email})`);
@@ -375,8 +378,9 @@ export const HELP = `دستورهای ربات Cloud Gold:
 export const PLAN_FIELDS = { name: 'name', price: 'price_toman', old: 'old_price_toman', days: 'duration_days', gb: 'data_limit_gb', devices: 'device_limit', trial: 'trial_days', badge: 'badge', sort: 'sort', on: 'is_active', desc: 'description' };
 
 // A command started from the button menu: its answers carry a "back" button to the screen it came from.
+// Only reached from onMenu, after onCallback checked that the tap came from the admin in their private chat.
 export function runAdminCommand(env, chatId, text, kb) {
-  return onMessage(env, { chat: { id: chatId }, text }, { kb });
+  return onMessage(env, { chat: { id: chatId, type: 'private' }, from: { id: chatId }, text }, { kb });
 }
 
 async function onMessage(env, msg, opts = {}) {
@@ -386,10 +390,12 @@ async function onMessage(env, msg, opts = {}) {
   const say = (t, extra) => tg(env, 'sendMessage', { chat_id: chatId, text: String(t).slice(0, 4000), disable_web_page_preview: true,
     ...(opts.kb && !String(t).startsWith('⏳') ? { reply_markup: opts.kb } : {}), ...(extra || {}) });
   const cmd = text.split(/\s+/)[0].replace(/@\w+$/, '').toLowerCase();
-  if (cmd === '/id' || (cmd === '/start' && !isAdmin(env, chatId))) {
+  const admin = isAdmin(env, msg.chat, msg.from);
+  if (cmd === '/id' || (cmd === '/start' && !admin)) {
+    if (msg.chat?.type !== 'private') return say('ربات مدیریت فقط در چت خصوصی کار می‌کند. /id را در چت خصوصی با ربات بفرست.');
     return say(`Chat id شما: ${chatId}\nاین عدد را در GitHub به اسم TELEGRAM_CHAT_ID بگذار.`);
   }
-  if (!isAdmin(env, chatId)) return;
+  if (!admin) return;
 
   if (cmd === '/start' || cmd === '/menu') return (await import('./telegram-menu.js')).sendHome(env, chatId);
   if (cmd === '/help') return say(HELP);
@@ -400,7 +406,7 @@ async function onMessage(env, msg, opts = {}) {
     const w = await menu.takeWait(env);
     if (w && !text.startsWith('/')) {
       if (w.secret && msg.message_id) await tg(env, 'deleteMessage', { chat_id: chatId, message_id: msg.message_id });
-      return onMessage(env, { chat: { id: chatId }, text: `${w.cmd} ${text}` }, { kb: menu.backKb(w.back) });
+      return onMessage(env, { chat: msg.chat, from: msg.from, text: `${w.cmd} ${text}` }, { kb: menu.backKb(w.back) });
     }
   }
 
