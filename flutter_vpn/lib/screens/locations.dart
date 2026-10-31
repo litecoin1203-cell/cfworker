@@ -110,7 +110,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
     return by.values.toList();
   }
 
-  /// "On Irancell · Tested 25 min ago · Pull to test again".
+  /// "On Irancell · Tested 25 min ago · Pull or tap a flag to test".
   static String _statusLine(AppState app) {
     final at = app.testedAt;
     return [
@@ -119,7 +119,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
         'Testing exits'
       else if (at != null)
         'Tested ${ago(DateTime.now().difference(at))}',
-      'Pull to test again',
+      'Pull or tap a flag to test',
     ].join('  ·  ');
   }
 
@@ -247,6 +247,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
                           height: 248,
                           big: true,
                           note: heroes[0].verdictOn(app.network),
+                          onBadge: () => app.testOne(heroes[0].id),
                           onOpen: () => _open(heroes[0]),
                           tabLabel: _on(app, heroes[0])
                               ? 'Connected'
@@ -272,6 +273,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
                             exit: heroes[1],
                             height: 150,
                             note: heroes[1].verdictOn(app.network),
+                            onBadge: () => app.testOne(heroes[1].id),
                             onOpen: () => _open(heroes[1]),
                             tabLabel: _on(app, heroes[1])
                                 ? 'Connected'
@@ -505,7 +507,12 @@ class _ExitRow extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
         child: Row(
           children: [
-            SpeedBadge(exit, size: sub ? 34 : 44),
+            Pressable(
+              onTap: () => AppScope.read(context).testOne(exit.id),
+              label: 'Test ${exit.label} now',
+              radius: PRadius.pill,
+              child: SpeedBadge(exit, size: sub ? 34 : 44),
+            ),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
