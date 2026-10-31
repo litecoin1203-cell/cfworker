@@ -149,12 +149,39 @@ async function referralCommission(env, buyer, order) {
   if (referrer) await walletApply(env, referrer, commission, 'referral', order.id, `پاداش دعوت از سفارش #${order.id}`);
 }
 
-async function markCouponUsed(env, order) {
+// The discount code is redeemed here, before the plan is delivered, and atomically: the per-user row is
+// UNIQUE(coupon_id, user_id) and the counter only moves while it is under max_uses. A second order carrying the
+// same code (for example one revived after it expired) is refused instead of being delivered at the discount.
+// a refunded, cancelled order gives its discount code back (only if it was never delivered)
+async function releaseCoupon(env, order) {
   if (!order.coupon_id) return;
+  const o = await first(env, 'SELECT provisioned_at FROM orders WHERE id = ?', order.id);
+  if (o && o.provisioned_at) return;
+  const r = await run(env, 'DELETE FROM coupon_uses WHERE coupon_id = ? AND user_id = ? AND order_id = ?', order.coupon_id, order.user_id, order.id);
+  if (r.meta.changes) await run(env, 'UPDATE coupons SET used = used - 1 WHERE id = ? AND used > 0', order.coupon_id);
+}
+
+async function claimCoupon(env, order, user, quiet) {
+  if (!order.coupon_id) return;
+  const mine = await first(env, 'SELECT order_id FROM coupon_uses WHERE coupon_id = ? AND user_id = ?', order.coupon_id, order.user_id);
+  if (mine && mine.order_id === order.id) return; // a retry of this same order: already counted
+  const refuse = async (code, msg) => {
+    if (!quiet) await notifyAdmin(env, `⚠️ سفارش #${order.id} (${user.email}) با کد تخفیفی پرداخت شده که ${msg}. تحویل نشد؛ خودت تصمیم بگیر.`);
+    throw new BillingError(code, 'این کد تخفیف دیگر برای این سفارش معتبر نیست. پشتیبانی خبردار شد.');
+  };
+  if (mine) await refuse('coupon_used', 'این کاربر قبلاً روی سفارش دیگری استفاده کرده');
   try {
     await insert(env, 'coupon_uses', { coupon_id: order.coupon_id, user_id: order.user_id, order_id: order.id, created_at: nowSec() });
-    await run(env, 'UPDATE coupons SET used = used + 1 WHERE id = ?', order.coupon_id);
-  } catch (e) { /* already counted */ }
+  } catch (e) {
+    const now = await first(env, 'SELECT order_id FROM coupon_uses WHERE coupon_id = ? AND user_id = ?', order.coupon_id, order.user_id);
+    if (now && now.order_id === order.id) return;
+    await refuse('coupon_used', 'این کاربر همین الان روی سفارش دیگری استفاده کرد');
+  }
+  const r = await run(env, 'UPDATE coupons SET used = used + 1 WHERE id = ? AND (max_uses IS NULL OR max_uses <= 0 OR used < max_uses)', order.coupon_id);
+  if (!r.meta.changes) {
+    await run(env, 'DELETE FROM coupon_uses WHERE coupon_id = ? AND user_id = ? AND order_id = ?', order.coupon_id, order.user_id, order.id);
+    await refuse('coupon_used_up', 'ظرفیتش پر شده');
+  }
 }
 
 export const retryButton = (orderId) => ({ inline_keyboard: [[{ text: '🔁 دوباره بساز', callback_data: `rp:${orderId}` }]] });
@@ -204,6 +231,7 @@ async function deliver(env, order, quiet) {
   // a retry after a crash must not extend the panel account a second time
   const done = await first(env, 'SELECT provisioned_at FROM orders WHERE id = ?', order.id);
   if (!done || !done.provisioned_at) {
+    await claimCoupon(env, order, user, quiet);
     try {
       await provision(env, user, plan, { orderId: order.id });
     } catch (e) {
@@ -218,7 +246,6 @@ async function deliver(env, order, quiet) {
     await run(env, 'UPDATE orders SET provisioned_at = ? WHERE id = ?', nowSec(), order.id);
   }
   await referralCommission(env, user, order);
-  await markCouponUsed(env, order);
   await markPaid(env, order);
 }
 
@@ -255,6 +282,7 @@ export async function payWithWallet(env, user, order) {
     // refund what we just deducted, keeping idempotency via a distinct reason
     await walletApply(env, user, order.amount_toman, 'refund', order.id, `بازگشت وجه سفارش #${order.id}`);
     await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ?", order.id);
+    await releaseCoupon(env, order);
     throw e;
   }
 }
