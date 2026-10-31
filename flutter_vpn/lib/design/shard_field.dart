@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
@@ -140,7 +141,9 @@ class ShardScene {
 
 /// The shard field: three or four brand planes that are always on stage.
 /// A slow drift loop keeps them alive; scene changes travel over 700ms;
-/// scroll drives parallax. Reduced motion freezes drift and travel but the
+/// scroll drives parallax. The drift moves a few pixels a second, so it is
+/// drawn about eight times a second instead of every frame, and only while
+/// the field can be seen (the app on screen, the route not covered). Reduced motion freezes drift and travel but the
 /// scene still changes.
 class ShardField extends StatefulWidget {
   const ShardField({super.key, required this.scene, this.scroll});
@@ -152,11 +155,16 @@ class ShardField extends StatefulWidget {
   State<ShardField> createState() => _ShardFieldState();
 }
 
-class _ShardFieldState extends State<ShardField> with TickerProviderStateMixin {
-  late final AnimationController _drift = AnimationController(
-    vsync: this,
-    duration: const Duration(seconds: 18),
-  );
+class _ShardFieldState extends State<ShardField>
+    with TickerProviderStateMixin, WidgetsBindingObserver {
+  /// One drift loop, and how often the drift is drawn.
+  static const _loop = Duration(seconds: 18);
+  static const driftStep = Duration(milliseconds: 125);
+
+  /// 0 … 1 through the loop; moves only on [driftStep] ticks.
+  final _drift = ValueNotifier<double>(0);
+  Timer? _driftTick;
+  bool _visible = true, _shown = true;
   late final AnimationController _travel = AnimationController(
     vsync: this,
     duration: PMotion.scene,
@@ -173,12 +181,39 @@ class _ShardFieldState extends State<ShardField> with TickerProviderStateMixin {
   );
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    final now = WidgetsBinding.instance.lifecycleState;
+    _shown = now == null || onScreen(now);
+  }
+
+  @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (PMotion.reduced(context)) {
-      _drift.stop();
-    } else if (!_drift.isAnimating) {
-      _drift.repeat();
+    // False under a covering route; also a dependency, so this runs again
+    // when it changes.
+    _visible = TickerMode.valuesOf(context).enabled;
+    _syncDrift();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    _shown = onScreen(s);
+    _syncDrift();
+  }
+
+  void _syncDrift() {
+    final run = _visible && _shown && !PMotion.reduced(context);
+    if (run && _driftTick == null) {
+      _driftTick = Timer.periodic(driftStep, (_) {
+        _drift.value =
+            (_drift.value + driftStep.inMicroseconds / _loop.inMicroseconds) %
+            1;
+      });
+    } else if (!run) {
+      _driftTick?.cancel();
+      _driftTick = null;
     }
   }
 
@@ -198,6 +233,8 @@ class _ShardFieldState extends State<ShardField> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _driftTick?.cancel();
     _drift.dispose();
     _travel.dispose();
     super.dispose();
@@ -228,7 +265,7 @@ class _ShardPainter extends CustomPainter {
     required this.scene,
   }) : super(repaint: Listenable.merge([drift, travel, scroll]));
 
-  final Animation<double> drift;
+  final ValueListenable<double> drift;
   final Animation<double> travel;
   final ValueListenable<double> scroll;
   final ShardScene Function() scene;

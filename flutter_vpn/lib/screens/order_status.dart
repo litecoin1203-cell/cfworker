@@ -31,17 +31,32 @@ class _OrderStatusScreenState extends State<OrderStatusScreen>
   String? _error;
   Timer? _poll;
 
+  /// Paid or closed: nothing left to wait for.
+  bool _settled = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _check();
+    _startPoll();
+  }
+
+  void _startPoll() {
+    _poll?.cancel();
+    if (_settled) return;
     _poll = Timer.periodic(const Duration(seconds: 4), (_) => _check());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
-    if (s == AppLifecycleState.resumed) _check();
+    if (s == AppLifecycleState.resumed) {
+      _check();
+      _startPoll();
+    } else if (!onScreen(s)) {
+      // Off screen: no polling until the app is back.
+      _poll?.cancel();
+    }
   }
 
   @override
@@ -57,12 +72,16 @@ class _OrderStatusScreenState extends State<OrderStatusScreen>
       final o = await app.order(widget.id);
       if (!mounted) return;
       if (o.status == 'paid') {
+        _settled = true;
         _poll?.cancel();
         await app.afterPaid(o);
         if (mounted) showOrder(context, o, replace: true);
         return;
       }
-      if (!o.open) _poll?.cancel();
+      if (!o.open) {
+        _settled = true;
+        _poll?.cancel();
+      }
       setState(() {
         _o = o;
         _error = null;

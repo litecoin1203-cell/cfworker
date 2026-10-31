@@ -26,26 +26,53 @@ class CoinPayScreen extends StatefulWidget {
   State<CoinPayScreen> createState() => _CoinPayScreenState();
 }
 
-class _CoinPayScreenState extends State<CoinPayScreen> {
+class _CoinPayScreenState extends State<CoinPayScreen>
+    with WidgetsBindingObserver {
   late Order _o = widget.order;
   final _tx = TextEditingController();
   Timer? _poll, _tick;
   late DateTime _until;
   bool _sending = false;
 
+  /// Paid: nothing left to wait for.
+  bool _settled = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _tx.text = _o.txid;
     _until = DateTime.now().add(Duration(seconds: _o.coin?.secondsLeft ?? 0));
-    _poll = Timer.periodic(const Duration(seconds: 5), (_) => _check());
+    _startTimers();
+  }
+
+  void _startTimers() {
+    _poll?.cancel();
+    _tick?.cancel();
+    if (!_settled) {
+      _poll = Timer.periodic(const Duration(seconds: 5), (_) => _check());
+    }
+    // The countdown is counted from [_until], so pausing it loses nothing.
     _tick = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted) setState(() {});
     });
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s == AppLifecycleState.resumed) {
+      // Back from the wallet app: look right away.
+      _check();
+      _startTimers();
+    } else if (!onScreen(s)) {
+      _poll?.cancel();
+      _tick?.cancel();
+    }
+  }
+
+  @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _poll?.cancel();
     _tick?.cancel();
     _tx.dispose();
@@ -58,6 +85,7 @@ class _CoinPayScreenState extends State<CoinPayScreen> {
       final o = await app.order(_o.id);
       if (!mounted) return;
       if (o.status == 'paid') {
+        _settled = true;
         _poll?.cancel();
         await app.afterPaid(o);
         if (mounted) showOrder(context, o, replace: true);

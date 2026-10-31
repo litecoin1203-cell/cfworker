@@ -291,6 +291,7 @@ class MediaCard extends StatelessWidget {
     this.tabActive = false,
     this.height = 180,
     this.big = false,
+    this.note,
   });
 
   final Exit exit;
@@ -300,6 +301,9 @@ class MediaCard extends StatelessWidget {
   final bool tabActive;
   final double height;
   final bool big;
+
+  /// A short bold line under the facts, e.g. "Strong on Irancell".
+  final String? note;
 
   @override
   Widget build(BuildContext context) {
@@ -362,6 +366,14 @@ class MediaCard extends StatelessWidget {
                         color: Colors.white.withValues(alpha: 0.85),
                       ),
                     ),
+                    if (note != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        note!,
+                        style: PType.meta(color: Colors.white)
+                            .copyWith(fontWeight: FontWeight.w700),
+                      ),
+                    ],
                   ],
                 ),
               ),

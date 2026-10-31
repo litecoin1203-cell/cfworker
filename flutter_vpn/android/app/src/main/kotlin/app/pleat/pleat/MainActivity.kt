@@ -113,6 +113,12 @@ class MainActivity : FlutterActivity() {
                             main.post { result.success(kbps) }
                         }
                     }
+                    "metered" -> {
+                        // Pleat is outside its own tunnel, so this is the real
+                        // network: mobile data, or Wi-Fi marked metered.
+                        val cm = getSystemService(android.net.ConnectivityManager::class.java)
+                        result.success(cm?.isActiveNetworkMetered ?: false)
+                    }
                     "delay" -> background(result) {
                         PleatVpnService.running?.measureDelay(Engine.TEST_URL)?.toInt() ?: -1
                     }

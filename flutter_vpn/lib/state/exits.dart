@@ -26,6 +26,9 @@ enum Speed {
   static const fairKbps = 1500;
 }
 
+/// How an exit does for everyone on this phone's operator.
+enum Verdict { strong, weak }
+
 class Exit {
   Exit(this.server, this.rank);
   final Server server;
@@ -50,9 +53,34 @@ class Exit {
   /// A download test through this exit is running now.
   bool speedTesting = false;
 
-  /// What [kbps] means for a person: video, browsing or text only.
+  /// Labels and others' speed count from this many different people.
+  static const minPeople = 3;
+
+  /// Strong or Weak on this operator, from what at least [minPeople]
+  /// people on it measured; null while too few did, or in between.
+  Verdict? get verdict {
+    final r = rank;
+    if (r == null || r.people < minPeople) return null;
+    if (r.score >= 0.7) return Verdict.strong;
+    if (r.score <= 0.4) return Verdict.weak;
+    return null;
+  }
+
+  /// "Strong on Irancell" / "Weak on Irancell", or null.
+  String? verdictOn(NetInfo? net) => switch (verdict) {
+    _ when net == null => null,
+    Verdict.strong => 'Strong on ${net.name}',
+    Verdict.weak => 'Weak on ${net.name}',
+    null => null,
+  };
+
+  /// What [kbps] means for a person: video, browsing or text only. Until
+  /// this phone measured it, what people on this operator measured.
   Speed? get speed {
-    final k = kbps;
+    final r = rank;
+    final k =
+        kbps ??
+        (r != null && r.people >= minPeople && r.kbps > 0 ? r.kbps : null);
     if (k == null) return null;
     if (k >= Speed.fastKbps) return Speed.fast;
     if (k >= Speed.fairKbps) return Speed.fair;

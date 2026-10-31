@@ -206,6 +206,144 @@ void main() {
       next.exits.firstWhere((e) => e.server.link.contains('de1')).speed,
       Speed.fast,
     );
+    // Speeds go to the network stats once the 8 s between reports passed.
+    await tester.pump(const Duration(seconds: 10));
+    expect(
+      api.reports.where((r) => r['kbps'] != null).map((r) => r['kbps']),
+      unorderedEquals([9000, 2000]),
+    );
+  });
+
+  testWidgets('Locations keeps the last results; a new network has its own', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel()
+      ..pings = {'nl1.example.com': 240, 'de1.example.com': 60}
+      ..speeds = {'de1.example.com': 9000, 'nl1.example.com': 2000};
+    final (app, api) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    api
+      ..asn = 44244
+      ..ispEn = 'Irancell';
+    await app.refreshNetwork(force: true);
+    expect(app.network?.name, 'Irancell');
+    await app.openLocations();
+    expect(tunnel.pinged, isNotEmpty);
+    Exit de() => app.exits.firstWhere((e) => e.server.link.contains('de1'));
+    expect(de().measured, 60);
+
+    // Opened again later: nothing is tested, the results stay.
+    tunnel
+      ..pinged.clear()
+      ..speedTested.clear();
+    await app.openLocations();
+    expect(tunnel.pinged, isEmpty);
+    expect(tunnel.speedTested, isEmpty);
+    expect(de().measured, 60);
+    expect(de().speed, Speed.fast);
+
+    // A new launch on the same network shows them at once.
+    final next = AppState(
+      await SharedPreferences.getInstance(),
+      api,
+      tunnel: FakeTunnel(),
+    );
+    await next.loadServers();
+    expect(next.network?.name, 'Irancell');
+    expect(
+      next.exits.firstWhere((e) => e.server.link.contains('de1')).measured,
+      60,
+    );
+
+    // On MCI the Irancell results are not shown; MCI gets its own test.
+    api
+      ..asn = 197207
+      ..ispEn = 'MCI';
+    tunnel.pings = {'nl1.example.com': 90};
+    await app.refreshNetwork(force: true);
+    expect(de().measured, isNull);
+    await app.openLocations();
+    expect(de().unreachable, isTrue);
+    expect(
+      app.exits.firstWhere((e) => e.server.link.contains('nl1')).measured,
+      90,
+    );
+
+    // Back on Irancell: its results again, no new test.
+    api
+      ..asn = 44244
+      ..ispEn = 'Irancell';
+    tunnel.pinged.clear();
+    await app.refreshNetwork(force: true);
+    await app.openLocations();
+    expect(de().measured, 60);
+    expect(tunnel.pinged, isEmpty);
+
+    // Pull to refresh tests now.
+    tunnel.pings = {'de1.example.com': 70};
+    await app.retestNow();
+    await app.testSpeeds();
+    expect(tunnel.pinged, isNotEmpty);
+    expect(de().measured, 70);
+    for (var i = 0; i < 8; i++) {
+      await tester.pump(const Duration(seconds: 10));
+    }
+  });
+
+  testWidgets('pings are tested again by themselves after an hour', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel()..pings = {'de1.example.com': 60};
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    await app.openLocations();
+    tunnel.pinged.clear();
+    app.testedAt = DateTime.now().subtract(const Duration(minutes: 59));
+    await app.openLocations();
+    expect(tunnel.pinged, isEmpty);
+    app.testedAt = DateTime.now().subtract(const Duration(minutes: 61));
+    await app.openLocations();
+    expect(tunnel.pinged, isNotEmpty);
+    for (var i = 0; i < 4; i++) {
+      await tester.pump(const Duration(seconds: 10));
+    }
+  });
+
+  testWidgets('Strong and Weak on the operator need three people', (
+    tester,
+  ) async {
+    final (app, api) = await _boot(tester, {'onboarded': true});
+    api
+      ..asn = 44244
+      ..ispEn = 'Irancell'
+      ..rankPeople = 2
+      ..rankKbps = 8000;
+    await app.refreshNetwork(force: true);
+    Exit de() => app.exits.firstWhere((e) => e.server.link.contains('de1'));
+    expect(de().verdict, isNull);
+    expect(de().speed, isNull);
+    api.rankPeople = 3;
+    await app.refreshNetwork(force: true);
+    expect(de().verdict, Verdict.strong);
+    expect(de().speed, Speed.fast, reason: 'others measured it on Irancell');
+    api.rankScore = 0.3;
+    await app.refreshNetwork(force: true);
+    expect(de().verdict, Verdict.weak);
+
+    app.setTab(2);
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(find.textContaining('On Irancell'), findsOneWidget);
+    expect(find.text('Weak on Irancell'), findsWidgets);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('a metered network gets no download tests', (tester) async {
+    final tunnel = FakeTunnel()
+      ..pings = {'nl1.example.com': 240, 'de1.example.com': 60}
+      ..speeds = {'de1.example.com': 9000, 'nl1.example.com': 2000}
+      ..onMetered = true;
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    await app.testSpeeds();
+    expect(tunnel.speedTested, isEmpty);
+    expect(app.metered, isTrue);
     await tester.pump(const Duration(seconds: 1));
   });
 
@@ -233,7 +371,7 @@ void main() {
     await app.connect();
     tunnel.emit(TunnelState.up);
     api.active = false;
-    await tester.pump(const Duration(seconds: 61));
+    await tester.pump(AppState.planCheckEvery + const Duration(seconds: 1));
     await tester.pump(const Duration(milliseconds: 50));
     expect(app.phase, Phase.dropped);
     expect(tunnel.stopped, isTrue);
@@ -283,7 +421,10 @@ void main() {
     await tester.pump(PMotion.seal);
     expect(app.phase, Phase.protected);
     await app.disconnect();
-    await tester.pump(const Duration(seconds: 1));
+    // Reports sent close together wait out the Worker's 8 s between them.
+    for (var i = 0; i < 4; i++) {
+      await tester.pump(const Duration(seconds: 10));
+    }
   });
 
   testWidgets('a picked exit is kept; smart connect does not override it', (

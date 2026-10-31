@@ -13,7 +13,7 @@ import 'states.dart';
 
 const _categories = [
   (Category.all, PIcon.grid, 'All'),
-  (Category.fastest, PIcon.bolt, 'Fastest'),
+  (Category.fastest, PIcon.bolt, 'Best'),
   (Category.saved, PIcon.bookmark, 'Saved'),
   (Category.recent, PIcon.clock, 'Recent'),
 ];
@@ -34,11 +34,19 @@ class _LocationsScreenState extends State<LocationsScreen> {
   @override
   void initState() {
     super.initState();
-    // Speeds older than half an hour are measured again, one exit at a
-    // time, in the background.
+    // The last results show at once. Pings older than an hour on this
+    // network, and speeds older than six, are measured again; pull to
+    // refresh tests now.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) AppScope.read(context).testSpeeds();
+      if (mounted) AppScope.read(context).openLocations();
     });
+  }
+
+  @override
+  void deactivate() {
+    // Leaving Locations: no more download tests nobody sees.
+    AppScope.read(context).stopSpeeds();
+    super.deactivate();
   }
 
   /// Every list is the backend's: All in the Worker's order, Fastest by
@@ -74,7 +82,8 @@ class _LocationsScreenState extends State<LocationsScreen> {
   String _emptyLine(AppState app) {
     if (_query.trim().isNotEmpty) return 'No exit matches “$_query”';
     return switch (app.category) {
-      Category.fastest => 'No speed reports from your network yet',
+      Category.fastest =>
+        'No reports from ${app.network?.name ?? 'your network'} yet',
       Category.saved => 'Nothing saved yet',
       Category.recent => 'No sessions on this phone yet',
       Category.all => 'No exits',
@@ -101,6 +110,19 @@ class _LocationsScreenState extends State<LocationsScreen> {
     return by.values.toList();
   }
 
+  /// "On Irancell · Tested 25 min ago · Pull to test again".
+  static String _statusLine(AppState app) {
+    final at = app.testedAt;
+    return [
+      if (app.network != null) 'On ${app.network!.name}',
+      if (app.testing)
+        'Testing exits'
+      else if (at != null)
+        'Tested ${ago(DateTime.now().difference(at))}',
+      'Pull to test again',
+    ].join('  ·  ');
+  }
+
   void _open(Exit e) =>
       Navigator.of(context)
           .push(TunnelRoute(builder: (_) => LocationDetail(exitId: e.id)));
@@ -121,168 +143,184 @@ class _LocationsScreenState extends State<LocationsScreen> {
     return SafeArea(
       bottom: false,
       child: ParallaxScroll(
-        child: CustomScrollView(
-          slivers: [
-            SliverPadding(
-              padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
-              sliver: SliverToBoxAdapter(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Expanded(child: Text('Locations', style: PType.h1())),
-                        if (app.exit != null) ...[
-                          Text(
-                            app.exit!.label,
-                            style: PType.small(color: PColors.blue)
-                                .copyWith(fontWeight: FontWeight.w700),
-                          ),
-                          const SizedBox(width: 6),
-                          RegionBadge(app.exit!, size: 22),
-                        ],
-                      ],
-                    ),
-                    const SizedBox(height: 18),
-                    PillSearch(
-                      hint: 'Search countries or codes',
-                      onChanged: (v) => setState(() => _query = v),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-            SliverToBoxAdapter(
-              child: Container(
-                margin: const EdgeInsets.only(top: 18),
-                height: 86,
-                child: ListView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  children: [
-                    for (final (c, icon, label) in _categories)
-                      _CategoryChip(
-                        icon: icon,
-                        label: label,
-                        active: app.category == c,
-                        onTap: () => app.setCategory(c),
-                      ),
-                  ],
-                ),
-              ),
-            ),
-            if (app.exits.isEmpty)
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 30, 20, 0),
-                  child: ServersState(app: app),
-                ),
-              )
-            else if (list.isEmpty)
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 40, 20, 0),
-                  child: SurfaceCard(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(_emptyLine(app), style: PType.h3()),
-                        const SizedBox(height: 6),
-                        Text(
-                          app.category == Category.saved
-                              ? 'Open an exit and tap the bookmark. Saved exits stay on this phone.'
-                              : 'Try a country name or a two-letter code like DE.',
-                          style: PType.small(),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              )
-            else ...[
-              // Oversized first city: bleeds past the right gutter.
-              SliverToBoxAdapter(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 10, 0, 0),
-                  child: Transform.translate(
-                    offset: const Offset(24, 0),
-                    child: StaggerIn(
-                      key: ValueKey('big-${heroes[0].id}'),
-                      index: 0,
-                      child: MediaCard(
-                        exit: heroes[0],
-                        height: 248,
-                        big: true,
-                        onOpen: () => _open(heroes[0]),
-                        tabLabel: _on(app, heroes[0]) ? 'Connected' : 'Connect',
-                        tabActive: _on(app, heroes[0]),
-                        onTab: () => _connect(heroes[0]),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-              if (heroes.length > 1)
-                SliverToBoxAdapter(
-                  // Second card is inset off the column and rides 16px over the first.
-                  child: Transform.translate(
-                    offset: const Offset(0, -16),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(72, 0, 20, 0),
-                      child: StaggerIn(
-                        key: ValueKey('second-${heroes[1].id}'),
-                        index: 1,
-                        child: MediaCard(
-                          exit: heroes[1],
-                          height: 150,
-                          onOpen: () => _open(heroes[1]),
-                          tabLabel: _on(app, heroes[1])
-                              ? 'Connected'
-                              : 'Connect',
-                          tabActive: _on(app, heroes[1]),
-                          onTab: () => _connect(heroes[1]),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              if (rest.isNotEmpty)
-                SliverPadding(
-                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 140),
-                  sliver: SliverToBoxAdapter(
-                    child: SurfaceCard(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Column(
+        child: RefreshIndicator(
+          color: PColors.blue,
+          onRefresh: app.retestNow,
+          child: CustomScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            slivers: [
+              SliverPadding(
+                padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
+                sliver: SliverToBoxAdapter(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
                         children: [
-                          for (var i = 0; i < rest.length; i++)
-                            StaggerIn(
-                              key: ValueKey(
-                                'row-${app.category}-${rest[i].first.code}-${rest[i].first.id}',
-                              ),
-                              index: i + 2,
-                              child: rest[i].length == 1
-                                  ? _ExitRow(
-                                      exit: rest[i].first,
-                                      selected: _on(app, rest[i].first),
-                                      onOpen: () => _open(rest[i].first),
-                                      onSelect: () => _connect(rest[i].first),
-                                    )
-                                  : _CountryGroup(
-                                      exits: rest[i],
-                                      isOn: (e) => _on(app, e),
-                                      onOpen: _open,
-                                      onConnect: _connect,
-                                    ),
+                          Expanded(child: Text('Locations', style: PType.h1())),
+                          if (app.exit != null) ...[
+                            Text(
+                              app.exit!.label,
+                              style: PType.small(color: PColors.blue)
+                                  .copyWith(fontWeight: FontWeight.w700),
                             ),
+                            const SizedBox(width: 6),
+                            RegionBadge(app.exit!, size: 22),
+                          ],
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        _statusLine(app),
+                        style: PType.small(color: PColors.muted),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      const SizedBox(height: 14),
+                      PillSearch(
+                        hint: 'Search countries or codes',
+                        onChanged: (v) => setState(() => _query = v),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              SliverToBoxAdapter(
+                child: Container(
+                  margin: const EdgeInsets.only(top: 18),
+                  height: 86,
+                  child: ListView(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    children: [
+                      for (final (c, icon, label) in _categories)
+                        _CategoryChip(
+                          icon: icon,
+                          label: label,
+                          active: app.category == c,
+                          onTap: () => app.setCategory(c),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+              if (app.exits.isEmpty)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 30, 20, 0),
+                    child: ServersState(app: app),
+                  ),
+                )
+              else if (list.isEmpty)
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 40, 20, 0),
+                    child: SurfaceCard(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(_emptyLine(app), style: PType.h3()),
+                          const SizedBox(height: 6),
+                          Text(
+                            app.category == Category.saved
+                                ? 'Open an exit and tap the bookmark. Saved exits stay on this phone.'
+                                : 'Try a country name or a two-letter code like DE.',
+                            style: PType.small(),
+                          ),
                         ],
                       ),
                     ),
                   ),
                 )
-              else
-                const SliverToBoxAdapter(child: SizedBox(height: 140)),
+              else ...[
+                // Oversized first city: bleeds past the right gutter.
+                SliverToBoxAdapter(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 10, 0, 0),
+                    child: Transform.translate(
+                      offset: const Offset(24, 0),
+                      child: StaggerIn(
+                        key: ValueKey('big-${heroes[0].id}'),
+                        index: 0,
+                        child: MediaCard(
+                          exit: heroes[0],
+                          height: 248,
+                          big: true,
+                          note: heroes[0].verdictOn(app.network),
+                          onOpen: () => _open(heroes[0]),
+                          tabLabel: _on(app, heroes[0])
+                              ? 'Connected'
+                              : 'Connect',
+                          tabActive: _on(app, heroes[0]),
+                          onTab: () => _connect(heroes[0]),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                if (heroes.length > 1)
+                  SliverToBoxAdapter(
+                    // Second card is inset off the column and rides 16px over the first.
+                    child: Transform.translate(
+                      offset: const Offset(0, -16),
+                      child: Padding(
+                        padding: const EdgeInsets.fromLTRB(72, 0, 20, 0),
+                        child: StaggerIn(
+                          key: ValueKey('second-${heroes[1].id}'),
+                          index: 1,
+                          child: MediaCard(
+                            exit: heroes[1],
+                            height: 150,
+                            note: heroes[1].verdictOn(app.network),
+                            onOpen: () => _open(heroes[1]),
+                            tabLabel: _on(app, heroes[1])
+                                ? 'Connected'
+                                : 'Connect',
+                            tabActive: _on(app, heroes[1]),
+                            onTab: () => _connect(heroes[1]),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                if (rest.isNotEmpty)
+                  SliverPadding(
+                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 140),
+                    sliver: SliverToBoxAdapter(
+                      child: SurfaceCard(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Column(
+                          children: [
+                            for (var i = 0; i < rest.length; i++)
+                              StaggerIn(
+                                key: ValueKey(
+                                  'row-${app.category}-${rest[i].first.code}-${rest[i].first.id}',
+                                ),
+                                index: i + 2,
+                                child: rest[i].length == 1
+                                    ? _ExitRow(
+                                        exit: rest[i].first,
+                                        selected: _on(app, rest[i].first),
+                                        onOpen: () => _open(rest[i].first),
+                                        onSelect: () => _connect(rest[i].first),
+                                      )
+                                    : _CountryGroup(
+                                        exits: rest[i],
+                                        isOn: (e) => _on(app, e),
+                                        onOpen: _open,
+                                        onConnect: _connect,
+                                      ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  )
+                else
+                  const SliverToBoxAdapter(child: SizedBox(height: 140)),
+              ],
             ],
-          ],
+          ),
         ),
       ),
     );
@@ -458,6 +496,7 @@ class _ExitRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final net = AppScope.of(context).network;
     return Pressable(
       onTap: onOpen,
       label: 'Open ${exit.title}, ${exit.label}',
@@ -487,6 +526,19 @@ class _ExitRow extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
+                  if (exit.verdictOn(net) != null) ...[
+                    const SizedBox(height: 3),
+                    Text(
+                      exit.verdictOn(net)!,
+                      style: PType.meta(
+                        color: exit.verdict == Verdict.strong
+                            ? PColors.blue
+                            : PColors.muted,
+                      ).copyWith(fontWeight: FontWeight.w700),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ],
               ),
             ),
@@ -523,4 +575,12 @@ class _ExitRow extends StatelessWidget {
       ),
     );
   }
+}
+
+/// "just now", "25 min ago", "3 h ago", "2 days ago".
+String ago(Duration d) {
+  if (d.inMinutes < 1) return 'just now';
+  if (d.inMinutes < 60) return '${d.inMinutes} min ago';
+  if (d.inHours < 24) return '${d.inHours} h ago';
+  return d.inDays == 1 ? '1 day ago' : '${d.inDays} days ago';
 }

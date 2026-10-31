@@ -32,17 +32,32 @@ class _CardPayScreenState extends State<CardPayScreen>
   Timer? _poll;
   bool _sending = false;
 
+  /// Paid or sent for review: nothing left to wait for here.
+  bool _settled = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _startPoll();
+  }
+
+  void _startPoll() {
+    _poll?.cancel();
+    if (_settled) return;
     _poll = Timer.periodic(const Duration(seconds: 6), (_) => _check());
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
-    // Back from the bank app: look right away.
-    if (s == AppLifecycleState.resumed) _check();
+    if (s == AppLifecycleState.resumed) {
+      // Back from the bank app: look right away.
+      _check();
+      _startPoll();
+    } else if (!onScreen(s)) {
+      // In the bank app or off screen: no polling until back.
+      _poll?.cancel();
+    }
   }
 
   @override
@@ -58,6 +73,7 @@ class _CardPayScreenState extends State<CardPayScreen>
       final o = await AppScope.read(context).order(_o.id);
       if (!mounted) return;
       if (o.status == 'paid' || o.status == 'review') {
+        _settled = true;
         _poll?.cancel();
         if (o.status == 'paid') await AppScope.read(context).afterPaid(o);
         if (mounted) showOrder(context, o, replace: true);

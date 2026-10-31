@@ -216,9 +216,37 @@ class Rank {
   Rank.fromJson(Map<String, dynamic> j)
     : score = (j['score'] as num?)?.toDouble() ?? 0,
       ms = _int(j['ms']),
-      reports = _int(j['n']);
+      reports = _int(j['n']),
+      people = _int(j['users']),
+      kbps = _int(j['kbps']);
   final double score;
-  final int ms, reports;
+
+  /// Median ping and average download speed people measured; 0 = none.
+  final int ms, reports, kbps;
+
+  /// Different people behind [reports]; labels need at least three.
+  final int people;
+}
+
+/// The network the Worker saw this phone on: its id (ASN) and English
+/// name, e.g. "Irancell". Comes from the network address the Worker sees
+/// anyway; Pleat reads nothing from the SIM.
+class NetInfo {
+  const NetInfo(this.id, this.name, {this.mobile = false});
+  final String id, name;
+  final bool mobile;
+
+  static NetInfo? from(dynamic data) {
+    if (data is! Map) return null;
+    final asn = _int(data['asn']);
+    if (asn <= 0) return null;
+    final name = _str(data['isp_en']).trim();
+    return NetInfo(
+      '$asn',
+      name.isEmpty ? 'your network' : name,
+      mobile: data['mobile'] == true,
+    );
+  }
 }
 
 Map<String, Rank> ranksFrom(dynamic data) {

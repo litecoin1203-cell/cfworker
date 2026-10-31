@@ -66,18 +66,32 @@ class PleatVpnService : VpnService() {
      */
     private val connectivity by lazy { getSystemService(ConnectivityManager::class.java) }
     private var watching = false
+
+    /** The network last handed to Android, so signal changes on it aren't handed over again. */
+    @Volatile
+    private var handed: Network? = null
     private val underlying = object : ConnectivityManager.NetworkCallback() {
         override fun onAvailable(network: Network) {
-            setUnderlyingNetworks(arrayOf(network))
+            hand(network)
         }
 
         override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-            setUnderlyingNetworks(arrayOf(network))
+            // Fires on every signal-strength change. Android follows the
+            // capabilities of the network it was handed by itself, so only
+            // a different network needs handing over.
+            hand(network)
         }
 
         override fun onLost(network: Network) {
+            handed = null
             setUnderlyingNetworks(null)
         }
+    }
+
+    private fun hand(network: Network) {
+        if (network == handed) return
+        handed = network
+        setUnderlyingNetworks(arrayOf(network))
     }
     private var core: CoreController? = null
     private var hevRunning = false
@@ -224,6 +238,7 @@ class PleatVpnService : VpnService() {
         if (watching) {
             try { connectivity.unregisterNetworkCallback(underlying) } catch (e: Exception) {}
             watching = false
+            handed = null
         }
         if (hevRunning) {
             try { TProxyService.TProxyStopService() } catch (e: Exception) {}

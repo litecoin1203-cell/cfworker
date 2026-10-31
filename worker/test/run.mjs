@@ -137,6 +137,8 @@ section('card purchase -> telegram -> approve -> servers');
   const servers = await call('GET', '/api/v1/vpn/servers', { token: tok });
   ok(servers.status === 200 && servers.data.length === 3, 'three servers parsed');
   ok(servers.data[0].country_code === 'NL', 'flag -> country code');
+  const sk = await env.DB.prepare('SELECT keys FROM user_skeys').bind().first();
+  ok(sk && Object.keys(JSON.parse(sk.keys)).length === 3, 'the server list remembers which servers this user can report on');
   const vpn = await call('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'buyer-phone' } });
   ok(vpn.status === 200 && vpn.data.subscription.sub_url, 'vpn returns sub url');
 }
@@ -1594,6 +1596,54 @@ section('security audit round 1: F1-F6 and N1 regressions');
   ok(fakes.tg.messages.slice(bI).some((m) => m.text.includes('چت خصوصی')), 'N1: /id in a group says the bot works only in a private chat');
   await tgWebhook({ message: { chat: { id: 12345, type: 'private' }, from: { id: 12345 }, text: '/set referral_percent 12' } });
   ok((await env.DB.prepare("SELECT value FROM settings WHERE key = 'referral_percent'").bind().first()).value === '12', 'N1: the admin in their private chat still runs commands');
+}
+
+section('carriers: speed per network, own servers only, people count');
+{
+  const ns = await import('../src/netstats.js');
+  ok(ns.serverKey('vless://uuid@de1.example.com:443?security=tls#x') === 'k53ca1f60', 'server key matches Pleat and the Cloud Gold app');
+  const vm = 'vmess://' + btoa(JSON.stringify({ add: 'De1.Example.com', port: 443, ps: 'x' }));
+  ok(ns.serverKey(vm) === ns.serverKey('vmess://' + btoa(JSON.stringify({ add: 'de1.example.com', port: '443' }))), 'vmess key from add/port, case-insensitive');
+  const RTL = { asn: 57218, asOrganization: 'Rightel' };
+  const toks = [], ids = [];
+  for (let i = 0; i < 4; i++) {
+    toks.push(await signup(`car${i}@example.com`, { device: 'car' + i }));
+    ids.push((await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(`car${i}@example.com`).first()).id);
+  }
+  // three people have servers g1 and g2; g1 is fast, g2 slow
+  for (let i = 0; i < 3; i++) {
+    await ns.rememberKeys(env, { id: ids[i] }, [{ name: 'DE 1', link: 'vless://u@g1.example.com:443#a' }, { name: 'NL 1', link: 'vless://u@g2.example.com:443#b' }]);
+  }
+  const g1 = ns.serverKey('vless://u@g1.example.com:443'), g2 = ns.serverKey('vless://u@g2.example.com:443');
+  for (let i = 0; i < 3; i++) {
+    globalThis.__cgNet = {};
+    const r = await call('POST', '/api/v1/net/report', { token: toks[i], cf: RTL, json: { results: [{ k: g1, ok: true, ms: 200 }, { k: g2, ok: true, ms: 200 }, { k: 'zzzz9999', ok: true, ms: 5 }] } });
+    ok(r.data.stored === 2, 'a server the user does not have is not counted: ' + r.data.stored);
+    globalThis.__cgNet = {};
+    const sp = await call('POST', '/api/v1/net/report', { token: toks[i], cf: RTL, json: { results: [{ k: g1, kbps: 9000 }, { k: g2, kbps: 900 }] } });
+    ok(sp.data.stored === 2, 'speed-only results stored');
+  }
+  globalThis.__cgNet = {};
+  const again = await call('POST', '/api/v1/net/report', { token: toks[0], cf: RTL, json: { results: [{ k: g1, kbps: 999999999 }] } });
+  ok(again.data.stored === 0, 'one speed vote per user per server per 3 hours');
+  const r = (await call('GET', '/api/v1/net/rank', { token: toks[0], cf: RTL })).data;
+  ok(r.isp_en === 'Rightel' && r.mobile === true, 'English carrier name for Pleat: ' + r.isp_en);
+  ok(r.servers[g1].kbps === 9000 && r.servers[g2].kbps === 900, 'average speed per carrier: ' + JSON.stringify(r.servers[g1]));
+  ok(r.servers[g1].users === 3 && r.servers[g1].n === 3, 'people counted once each');
+  ok(r.servers[g1].score > r.servers[g2].score, 'faster server ranks higher when both connect');
+  ok(r.servers[g1].ok === undefined && !JSON.stringify(r).includes('car0@'), 'no user data in the ranking');
+  // a user who never loaded servers (older app) still reports, with the old limits
+  globalThis.__cgNet = {};
+  const old = await call('POST', '/api/v1/net/report', { token: toks[3], cf: RTL, json: { results: [{ k: g1, ok: false }] } });
+  ok(old.data.stored === 1, 'older apps without a server list still count');
+  const other = (await call('GET', '/api/v1/net/rank', { token: toks[0], cf: { asn: 12345, asOrganization: 'Some Net Ltd' } })).data;
+  ok(other.isp_en === 'Some Net Ltd' && other.mobile === false && Object.keys(other.servers).length === 0, 'unknown network: its own name, no data from other carriers');
+  const sum = await ns.carrierSummary(env);
+  const rt = sum.find((x) => x.asn === 57218);
+  ok(rt && rt.isp === 'رایتل' && rt.servers[0].name === 'DE 1', 'admin summary names the servers: ' + JSON.stringify(rt && rt.servers[0]));
+  const bm = fakes.tg.messages.length;
+  await tgWebhook({ message: { chat: { id: 12345, type: 'private' }, from: { id: 12345 }, text: '/carriers' } });
+  ok(fakes.tg.messages.slice(bm).some((m) => m.text.includes('رایتل') && m.text.includes('DE 1')), '/carriers lists best servers per carrier');
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

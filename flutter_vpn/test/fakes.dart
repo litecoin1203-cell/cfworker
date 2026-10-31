@@ -100,6 +100,13 @@ class FakeApi extends ApiClient {
   /// Reports behind the one ranked exit; 8 or more makes it a sure pick.
   int rankReports = 41;
 
+  /// The network /net/rank says the phone is on; 0 = not known.
+  int asn = 0;
+  String ispEn = '';
+  int rankPeople = 0;
+  int rankKbps = 0;
+  double rankScore = 0.968;
+
   Map<String, Object?> get sub => {
     'active': active,
     'status': active ? 'active' : 'limited',
@@ -202,8 +209,17 @@ class FakeApi extends ApiClient {
         ];
       case 'GET /net/rank':
         return {
+          'asn': asn,
+          'isp_en': ispEn,
+          'mobile': asn == 44244,
           'servers': {
-            'k53ca1f60': {'score': 0.968, 'n': rankReports, 'ms': 95},
+            'k53ca1f60': {
+              'score': rankScore,
+              'n': rankReports,
+              'ms': 95,
+              'users': rankPeople,
+              'kbps': rankKbps,
+            },
           },
         };
       case 'GET /vpn':
@@ -283,8 +299,12 @@ class FakeTunnel extends Tunnel {
   Map<String, int> speeds = {};
   final List<String> speedTested = [];
 
+  /// How long one download test takes; zero answers at once.
+  Duration speedTakes = Duration.zero;
+
   @override
   Future<int?> speed(String config) async {
+    if (speedTakes > Duration.zero) await Future<void>.delayed(speedTakes);
     for (final e in speeds.entries) {
       if (config.contains('"${e.key}"')) {
         speedTested.add(e.key);
@@ -294,8 +314,21 @@ class FakeTunnel extends Tunnel {
     return -1;
   }
 
+  /// Live pings asked of the running tunnel.
+  int delays = 0;
+
+  /// The phone's network is metered (mobile data, metered Wi-Fi).
+  bool onMetered = false;
+
   @override
-  Future<int?> delay() async => live;
+  Future<bool> metered() async => onMetered;
+
+  @override
+  Future<int?> delay() async {
+    delays++;
+    return live;
+  }
+
   @override
   Future<bool> hasGeo() async => geo;
   ({bool alwaysOn, bool lockdown})? guard;
