@@ -209,6 +209,18 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
   });
 
+  testWidgets('a metered network gets no download tests', (tester) async {
+    final tunnel = FakeTunnel()
+      ..pings = {'nl1.example.com': 240, 'de1.example.com': 60}
+      ..speeds = {'de1.example.com': 9000, 'nl1.example.com': 2000}
+      ..onMetered = true;
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    await app.testSpeeds();
+    expect(tunnel.speedTested, isEmpty);
+    expect(app.metered, isTrue);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
   testWidgets('Protected only after the tunnel is up; a stopped plan drops', (
     tester,
   ) async {

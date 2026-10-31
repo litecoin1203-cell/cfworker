@@ -110,6 +110,18 @@ class Tunnel {
     }
   }
 
+  /// Whether the phone's own network (not the tunnel) is metered: mobile
+  /// data, or Wi-Fi marked metered. False when unknown.
+  Future<bool> metered() async {
+    try {
+      return await _method.invokeMethod<bool>('metered') ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
   /// Round trip in ms through the running tunnel; null when it didn't
   /// answer or no tunnel runs.
   Future<int?> delay() async {

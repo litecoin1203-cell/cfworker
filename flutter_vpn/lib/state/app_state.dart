@@ -827,8 +827,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Measures the download speed of the [speedTop] best exits that
   /// answer, one at a time, skipping ones measured in the last
-  /// [speedFresh]. Stops when a connect starts (it needs the line), on
-  /// Cancel, and on [stopSpeeds].
+  /// [speedFresh]. Not run on a metered network. Stops when a connect
+  /// starts (it needs the line), on Cancel, and on [stopSpeeds].
   Future<void> testSpeeds() => _speedRun ??= _testSpeeds().whenComplete(() {
     _speedRun = null;
   });
@@ -837,6 +837,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _testSpeeds() async {
     if (exits.isEmpty || !await tunnel.available()) return;
+    // About 1 MB per exit: never on a metered network. Speeds measured
+    // earlier still show.
+    metered = await tunnel.metered();
+    if (metered) return;
     final speedRun = _speedGen;
     if (!_pingsFresh) await testAll();
     if (speedRun != _speedGen) return;
@@ -1151,14 +1155,30 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     Duration(seconds: 300),
   ];
 
+  /// On a metered network (mobile data, or Wi-Fi marked metered) pings
+  /// space out sooner and further: 20 s for the first three and after any
+  /// miss, then 120 s, 300 s and at most 600 s; at most 120 s on screen.
+  static const pulseStepsMetered = [
+    Duration(seconds: 20),
+    Duration(seconds: 120),
+    Duration(seconds: 300),
+    Duration(seconds: 600),
+  ];
+
   /// Answered pings in a row that move the spacing one step up.
-  static const _pulseFirst = 6, _pulsePer = 3;
+  static const _pulseFirst = 6, _pulseFirstMetered = 3, _pulsePer = 3;
+
+  /// The phone's own network is metered (Pleat sits outside its tunnel, so
+  /// Android answers for the real network). Read before every live ping.
+  bool metered = false;
 
   Duration get pulseGap {
-    if (_misses > 0 || _okStreak < _pulseFirst) return pulseSteps.first;
-    var i = 1 + (_okStreak - _pulseFirst) ~/ _pulsePer;
-    i = i.clamp(1, _foreground ? 1 : pulseSteps.length - 1);
-    return pulseSteps[i];
+    final steps = metered ? pulseStepsMetered : pulseSteps;
+    final first = metered ? _pulseFirstMetered : _pulseFirst;
+    if (_misses > 0 || _okStreak < first) return steps.first;
+    var i = 1 + (_okStreak - first) ~/ _pulsePer;
+    i = i.clamp(1, _foreground ? 1 : steps.length - 1);
+    return steps[i];
   }
 
   void _schedulePulse() {
@@ -1183,6 +1203,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _beatOnce() async {
+    metered = await tunnel.metered();
     final ms = await tunnel.delay();
     final e = exit;
     if (phase != Phase.protected || e == null) return;

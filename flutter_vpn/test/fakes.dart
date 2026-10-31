@@ -301,6 +301,12 @@ class FakeTunnel extends Tunnel {
   /// Live pings asked of the running tunnel.
   int delays = 0;
 
+  /// The phone's network is metered (mobile data, metered Wi-Fi).
+  bool onMetered = false;
+
+  @override
+  Future<bool> metered() async => onMetered;
+
   @override
   Future<int?> delay() async {
     delays++;
