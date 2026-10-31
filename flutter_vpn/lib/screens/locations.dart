@@ -34,11 +34,18 @@ class _LocationsScreenState extends State<LocationsScreen> {
   @override
   void initState() {
     super.initState();
-    // Speeds older than half an hour are measured again, one exit at a
-    // time, in the background.
+    // Speeds older than half an hour are measured again for the best few
+    // exits, one at a time, while Locations stays open.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) AppScope.read(context).testSpeeds();
     });
+  }
+
+  @override
+  void deactivate() {
+    // Leaving Locations: no more download tests nobody sees.
+    AppScope.read(context).stopSpeeds();
+    super.deactivate();
   }
 
   /// Every list is the backend's: All in the Worker's order, Fastest by

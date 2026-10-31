@@ -233,7 +233,7 @@ void main() {
     await app.connect();
     tunnel.emit(TunnelState.up);
     api.active = false;
-    await tester.pump(const Duration(seconds: 61));
+    await tester.pump(AppState.planCheckEvery + const Duration(seconds: 1));
     await tester.pump(const Duration(milliseconds: 50));
     expect(app.phase, Phase.dropped);
     expect(tunnel.stopped, isTrue);

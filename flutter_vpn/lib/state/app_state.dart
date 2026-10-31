@@ -76,10 +76,26 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// have changed there (always-on, lockdown) and on the server (plan).
   @override
   void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (s == AppLifecycleState.paused || s == AppLifecycleState.hidden) {
+      // Off screen: live pings space out further and the download tests,
+      // which only Locations shows, stop.
+      _foreground = false;
+      stopSpeeds();
+      return;
+    }
     if (s != AppLifecycleState.resumed) return;
-    if (phase == Phase.protected) readGuard();
+    _foreground = true;
+    if (phase == Phase.protected) {
+      readGuard();
+      // Back on screen: check the exit now instead of when the next,
+      // longer-spaced ping is due.
+      _beat();
+    }
     if (signedIn && !me.loading) loadMe();
   }
+
+  /// The app is on screen (not paused or hidden).
+  bool _foreground = true;
 
   final SharedPreferences _prefs;
   final ApiClient api;
@@ -140,6 +156,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   final List<String> _tried = [];
   bool _resynced = false;
   int _misses = 0;
+
+  /// Live pings answered in a row since the session came up.
+  int _okStreak = 0;
+  bool _beating = false;
   bool _reported = false;
   Future<void>? _testRun;
 
@@ -795,9 +815,20 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void>? _speedRun;
 
-  /// Measures the download speed of every exit that answers, one at a
-  /// time, skipping ones measured in the last [speedFresh]. Stops when a
-  /// connect starts (it needs the line) or on Cancel.
+  /// Only the best few answering exits get a download test: each one is
+  /// about 1 MB and a throw-away core.
+  static const speedTop = 3;
+
+  /// Bumped when Locations closes or the app leaves the screen: running
+  /// download tests start no new ones.
+  int _speedGen = 0;
+
+  void stopSpeeds() => _speedGen++;
+
+  /// Measures the download speed of the [speedTop] best exits that
+  /// answer, one at a time, skipping ones measured in the last
+  /// [speedFresh]. Stops when a connect starts (it needs the line), on
+  /// Cancel, and on [stopSpeeds].
   Future<void> testSpeeds() => _speedRun ??= _testSpeeds().whenComplete(() {
     _speedRun = null;
   });
@@ -806,7 +837,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _testSpeeds() async {
     if (exits.isEmpty || !await tunnel.available()) return;
+    final speedRun = _speedGen;
     if (!_pingsFresh) await testAll();
+    if (speedRun != _speedGen) return;
     final run = _testGen;
     final now = DateTime.now();
     final queue =
@@ -818,8 +851,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
             )
             .toList()
           ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
-    for (final e in queue) {
-      if (run != _testGen || _connecting) break;
+    for (final e in queue.take(speedTop)) {
+      if (run != _testGen || speedRun != _speedGen || _connecting) break;
       final String config;
       try {
         config = xrayConfig(e.server.link, forTest: true);
@@ -1075,10 +1108,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       connectedAt = DateTime.now();
       _misses = 0;
       _reported = false;
+      _okStreak = 0;
       _watch?.cancel();
-      _watch = Timer.periodic(const Duration(seconds: 60), (_) => _check());
+      _watch = Timer.periodic(planCheckEvery, (_) => _check());
       _pulse?.cancel();
-      _pulse = Timer.periodic(const Duration(seconds: 20), (_) => _beat());
       _beat();
       readGuard();
       notifyListeners();
@@ -1102,15 +1135,60 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  /// Live ping through the running tunnel. Two misses in a row with smart
-  /// connect on move the session to the next best exit.
-  Future<void> _beat() async {
+  /// While a session is up, how often the plan is read again (it can stop
+  /// on quota or expiry). Coming back to the app also reads it.
+  static const planCheckEvery = Duration(minutes: 10);
+
+  /// Live-ping spacing. Every ping is an HTTPS request through the exit,
+  /// and on mobile data each one keeps the radio awake for several
+  /// seconds, so pings space out while the exit keeps answering: 20 s for
+  /// the first six (about two minutes) and after any miss, then 60 s,
+  /// 120 s and at most 300 s. On screen the spacing stays at most 60 s.
+  static const pulseSteps = [
+    Duration(seconds: 20),
+    Duration(seconds: 60),
+    Duration(seconds: 120),
+    Duration(seconds: 300),
+  ];
+
+  /// Answered pings in a row that move the spacing one step up.
+  static const _pulseFirst = 6, _pulsePer = 3;
+
+  Duration get pulseGap {
+    if (_misses > 0 || _okStreak < _pulseFirst) return pulseSteps.first;
+    var i = 1 + (_okStreak - _pulseFirst) ~/ _pulsePer;
+    i = i.clamp(1, _foreground ? 1 : pulseSteps.length - 1);
+    return pulseSteps[i];
+  }
+
+  void _schedulePulse() {
+    _pulse?.cancel();
     if (phase != Phase.protected) return;
+    _pulse = Timer(pulseGap, _beat);
+  }
+
+  /// Live ping through the running tunnel. Two misses in a row with smart
+  /// connect on move the session to the next best exit; the ping after a
+  /// miss comes after 20 s, as before.
+  Future<void> _beat() async {
+    if (phase != Phase.protected || _beating) return;
+    _pulse?.cancel();
+    _beating = true;
+    try {
+      await _beatOnce();
+    } finally {
+      _beating = false;
+      _schedulePulse();
+    }
+  }
+
+  Future<void> _beatOnce() async {
     final ms = await tunnel.delay();
     final e = exit;
     if (phase != Phase.protected || e == null) return;
     if (ms != null) {
       _misses = 0;
+      _okStreak++;
       e.measured = ms;
       e.measuredAt = DateTime.now();
       if (!_reported) {
@@ -1122,6 +1200,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       return;
     }
+    _okStreak = 0;
     if (++_misses < 2 || !smartConnect) return;
     _misses = 0;
     _logSession();

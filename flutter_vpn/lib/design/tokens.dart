@@ -138,3 +138,9 @@ abstract final class PType {
   static TextStyle tab({Color color = PColors.muted}) =>
       _base(10.5, FontWeight.w700, color: color, tracking: 10.5 * 0.08);
 }
+
+/// The app can be seen: resumed, or inactive under a sheet or dialog.
+/// Paused or hidden, anything that only draws or polls for the screen
+/// should stop.
+bool onScreen(AppLifecycleState s) =>
+    s == AppLifecycleState.resumed || s == AppLifecycleState.inactive;

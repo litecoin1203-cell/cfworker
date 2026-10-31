@@ -29,23 +29,6 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   _HomeTab _tab = _HomeTab.now;
-  Timer? _clock;
-
-  @override
-  void initState() {
-    super.initState();
-    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted && AppScope.read(context).phase == Phase.protected) {
-        setState(() {});
-      }
-    });
-  }
-
-  @override
-  void dispose() {
-    _clock?.cancel();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -74,7 +57,11 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             const SizedBox(height: 18),
-            _Instrument(app: app, tab: _tab),
+            // Only the session clock ticks, not the whole of Home.
+            EverySecond(
+              active: app.phase == Phase.protected && _tab == _HomeTab.now,
+              builder: (_) => _Instrument(app: app, tab: _tab),
+            ),
             // The control stands in the shard field and overlaps the crop.
             Transform.translate(
               offset: const Offset(0, -40),
@@ -649,4 +636,64 @@ class _Usage extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Rebuilds [builder] once a second while [active] and the app is on
+/// screen; nothing ticks otherwise.
+class EverySecond extends StatefulWidget {
+  const EverySecond({super.key, required this.active, required this.builder});
+  final bool active;
+  final WidgetBuilder builder;
+
+  @override
+  State<EverySecond> createState() => _EverySecondState();
+}
+
+class _EverySecondState extends State<EverySecond> with WidgetsBindingObserver {
+  Timer? _tick;
+  bool _shown = true;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    final now = WidgetsBinding.instance.lifecycleState;
+    _shown = now == null || onScreen(now);
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(EverySecond old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    _shown = onScreen(s);
+    _sync();
+    if (_shown) setState(() {});
+  }
+
+  void _sync() {
+    final want = widget.active && _shown;
+    if (want && _tick == null) {
+      _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else if (!want) {
+      _tick?.cancel();
+      _tick = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(context);
 }

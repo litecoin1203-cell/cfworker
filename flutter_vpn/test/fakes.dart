@@ -283,8 +283,12 @@ class FakeTunnel extends Tunnel {
   Map<String, int> speeds = {};
   final List<String> speedTested = [];
 
+  /// How long one download test takes; zero answers at once.
+  Duration speedTakes = Duration.zero;
+
   @override
   Future<int?> speed(String config) async {
+    if (speedTakes > Duration.zero) await Future<void>.delayed(speedTakes);
     for (final e in speeds.entries) {
       if (config.contains('"${e.key}"')) {
         speedTested.add(e.key);
@@ -294,8 +298,15 @@ class FakeTunnel extends Tunnel {
     return -1;
   }
 
+  /// Live pings asked of the running tunnel.
+  int delays = 0;
+
   @override
-  Future<int?> delay() async => live;
+  Future<int?> delay() async {
+    delays++;
+    return live;
+  }
+
   @override
   Future<bool> hasGeo() async => geo;
   ({bool alwaysOn, bool lockdown})? guard;
