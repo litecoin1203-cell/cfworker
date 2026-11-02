@@ -1646,5 +1646,116 @@ section('carriers: speed per network, own servers only, people count');
   ok(fakes.tg.messages.slice(bm).some((m) => m.text.includes('رایتل') && m.text.includes('DE 1')), '/carriers lists best servers per carrier');
 }
 
+section('rebecca adapter: no groups, service discovery, panel 1 untouched');
+{
+  const { Rebecca } = await import('../src/rebecca.js');
+  const { adapterFor, groupIdsFor } = await import('../src/panels.js');
+  const { PasarGuard } = await import('../src/pasarguard.js');
+  const savedFetch = globalThis.fetch;
+  const calls = [];
+  const rbJson = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
+  const rbText = (text, status = 200) => new Response(text, { status });
+  // Mock a Rebecca panel: token login, one non-default service plus a
+  // "default" one, user creation, system version, and NO groups route.
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const method = (init.method || 'GET').toUpperCase();
+    calls.push(method + ' ' + url);
+    if (url.endsWith('/api/admin/token')) return rbJson({ access_token: 'rb-tok' });
+    if (url.endsWith('/api/v2/services')) return rbJson({ services: [{ id: 1, name: 'default' }, { id: 7, name: 'Main' }] });
+    if (url.endsWith('/api/user') && method === 'POST') {
+      const b = JSON.parse(init.body);
+      return rbJson({ id: 9, username: b.username, status: 'active', expire: b.expire, data_limit: b.data_limit, used_traffic: 0, subscription_url: '/sub/abc123/' }, 201);
+    }
+    if (url.endsWith('/api/system')) return rbJson({ version: '9.9-test' });
+    if (url.includes('/api/groups')) return rbText('not found', 404);
+    return rbText('unhandled', 500);
+  };
+  const rb = new Rebecca({}, { url: 'http://rb.test:8000/dashboard', username: 'u', password: 'p' }, { panelId: 2 });
+  const before = calls.length;
+  ok((await rb.listGroups()).length === 0 && (await rb.listGroupIds()).length === 0, 'rebecca listGroups/listGroupIds are []');
+  ok(calls.length === before, 'rebecca listGroups makes no fetch at all');
+  const gPanel = { id: 2, kind: 'rebecca', options_json: '{}' };
+  ok((await groupIdsFor(env, gPanel, rb)).length === 0, 'groupIdsFor for a rebecca panel returns []');
+  ok(calls.length === before, 'groupIdsFor for rebecca never calls groups');
+  const created = await rb.createUser('cgtest_1', { expire: 123, dataLimit: 1000, groupIds: [1, 2], note: 'test' });
+  const postCall = calls.find((c) => c.startsWith('POST http://rb.test:8000/api/user'));
+  ok(!!postCall, 'rebecca createUser posts to /api/user');
+  // Re-run with a body-capturing fetch to inspect the payload itself.
+  let lastBody = null;
+  const mock2 = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    if (typeof input === 'string' && input.endsWith('/api/user') && (init.method || 'GET').toUpperCase() === 'POST') lastBody = JSON.parse(init.body);
+    return mock2(input, init);
+  };
+  const rb2 = new Rebecca({}, { url: 'http://rb.test:8000/dashboard', username: 'u', password: 'p' }, { panelId: 2 });
+  await rb2.createUser('cgtest_2', { expire: 123, dataLimit: 1000, groupIds: [1], note: 'test' });
+  globalThis.fetch = mock2;
+  ok(lastBody && lastBody.service_id === 7, 'createUser uses the one discovered non-default service: ' + JSON.stringify(lastBody));
+  ok(lastBody && !('group_ids' in lastBody) && !('proxy_settings' in lastBody) && !('inbounds' in lastBody), 'createUser sends no group_ids/proxy_settings/inbounds: ' + JSON.stringify(lastBody));
+  ok(created.subscription_url === '/sub/abc123/', 'created user carries a subscription url');
+  ok((await rb.version()) === '9.9-test', 'rebecca version reads /api/system');
+  // Ambiguous services must fail naming /panelservice, never pick at random.
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.endsWith('/api/admin/token')) return rbJson({ access_token: 'rb-tok' });
+    if (url.endsWith('/api/v2/services')) return rbJson({ services: [{ id: 7, name: 'A' }, { id: 8, name: 'B' }] });
+    return rbText('unhandled', 500);
+  };
+  const rbAmb = new Rebecca({}, { url: 'http://rb.test', username: 'u', password: 'p' }, { panelId: 2 });
+  let ambErr = '';
+  try { await rbAmb.createUser('cgtest_3', { expire: 0, dataLimit: 0 }); } catch (e) { ambErr = e.message; }
+  ok(/\/panelservice 2/.test(ambErr), 'ambiguous services fail naming /panelservice 2: ' + ambErr);
+  // Hand-set service_id wins over discovery and skips the services call.
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.endsWith('/api/admin/token')) return rbJson({ access_token: 'rb-tok' });
+    if (url.endsWith('/api/user')) return rbJson({ id: 10, username: 'x', subscription_url: '/sub/zzz/' }, 201);
+    return rbText('unhandled', 500);
+  };
+  const rbManual = new Rebecca({}, { url: 'http://rb.test', username: 'u', password: 'p' }, { panelId: 2, serviceId: 42 });
+  let manualBody = null;
+  const mock3 = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    if (typeof input === 'string' && input.endsWith('/api/user')) manualBody = JSON.parse(init.body);
+    return mock3(input, init);
+  };
+  await rbManual.createUser('cgtest_4', { expire: 0, dataLimit: 0 });
+  globalThis.fetch = mock3;
+  ok(manualBody && manualBody.service_id === 42, 'hand-set service_id is used: ' + JSON.stringify(manualBody));
+  globalThis.fetch = savedFetch;
+  // Dispatch: rebecca goes to the new adapter, pasarguard is unchanged.
+  const envRb = { PANEL_9_CRED: JSON.stringify({ url: 'http://rb.test', username: 'u', password: 'p' }) };
+  const dispRb = adapterFor(envRb, { id: 9, kind: 'rebecca', cred_ref: 'PANEL_9_CRED', options_json: '{}' });
+  ok(dispRb instanceof Rebecca, 'adapterFor dispatches rebecca to the Rebecca adapter');
+  const envPg = { PASARGUARD_URL: PANEL, PASARGUARD_USERNAME: 'admin', PASARGUARD_PASSWORD: 'pw' };
+  const dispPg = adapterFor(envPg, { id: 1, kind: 'pasarguard', cred_ref: 'PASARGUARD', options_json: '{}' });
+  ok(dispPg instanceof PasarGuard && !(dispPg instanceof Rebecca), 'adapterFor still dispatches pasarguard unchanged');
+}
+
+section('bot: /panelkind refuses panel 1, /panelservice stores the service');
+{
+  const beforeKind = (await env.DB.prepare('SELECT kind FROM panels WHERE id = 1').first()).kind;
+  await admin('/panelkind 1 rebecca');
+  ok(lastText().includes('پنل #۱ را نمی‌توان تغییر داد'), '/panelkind 1 is refused: ' + lastText());
+  ok((await env.DB.prepare('SELECT kind FROM panels WHERE id = 1').first()).kind === beforeKind, 'panel 1 kind is unchanged after the refused command');
+  await admin('/panelservice 1 42');
+  ok(lastText().includes('پنل #۱ را نمی‌توان تغییر داد'), '/panelservice 1 is refused: ' + lastText());
+  await admin('/panelservice 2 42');
+  const opts2 = JSON.parse((await env.DB.prepare('SELECT options_json FROM panels WHERE id = 2').first()).options_json || '{}');
+  ok(opts2.service_id === 42, '/panelservice 2 stores service_id in options: ' + JSON.stringify(opts2));
+  const log2 = (await env.DB.prepare("SELECT action FROM admin_audit WHERE target_type = 'panel' AND target_id = '2'").all()).results.map((r) => r.action);
+  ok(log2.includes('panel.service'), 'panel.service is audited: ' + log2.join());
+  // /panelkind 2 rebecca asks for confirmation first and only then changes kind.
+  await admin('/panelkind 2 rebecca');
+  ok(lastText().includes('مطمئنی'), '/panelkind 2 asks for confirmation first');
+  const tokRow = await env.DB.prepare("SELECT token FROM bot_confirm WHERE action = 'panel_kind' ORDER BY rowid DESC LIMIT 1").first();
+  await tgWebhook({ callback_query: { id: 'pk1', data: `cf:${tokRow.token}`, from: { id: 12345 }, message: { chat: { id: 12345, type: 'private' }, message_id: 91 } } });
+  ok((await env.DB.prepare('SELECT kind FROM panels WHERE id = 2').first()).kind === 'rebecca', 'confirmed /panelkind 2 switches the kind to rebecca');
+  const logK = (await env.DB.prepare("SELECT action FROM admin_audit WHERE target_type = 'panel' AND target_id = '2'").all()).results.map((r) => r.action);
+  ok(logK.includes('panel.kind'), 'panel.kind is audited: ' + logK.join());
+  ok((await env.DB.prepare('SELECT kind FROM panels WHERE id = 1').first()).kind === beforeKind, 'panel 1 still untouched after all panel 2 changes');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

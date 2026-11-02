@@ -4,10 +4,11 @@
 import { first, all, run, insert } from './db.js';
 import { nowSec, err } from './util.js';
 import { PasarGuard, PasarGuardError, decodeSub } from './pasarguard.js';
+import { Rebecca } from './rebecca.js';
 
 // states whose configs users get; draining/disabled panels are already out of the list
 const SERVING = ['active', 'rollout'];
-export const KINDS = ['pasarguard', 'marzban', 'hiddify'];
+export const KINDS = ['pasarguard', 'marzban', 'hiddify', 'rebecca'];
 
 // Credentials of a panel, from its Workers Secret. PASARGUARD = the original PASARGUARD_* secrets (panel 1);
 // PANEL_<id>_CRED holds JSON {"url", "username", "password"} or {"url", "api_key"}. null = not set or unreadable.
@@ -29,10 +30,12 @@ export function options(panel) {
 }
 
 // The adapter for a panel. Marzban and Hiddify adapters arrive in stage 5; until then such a panel cannot be used.
+// Rebecca has its own adapter (worker/src/rebecca.js); panel 1's Pasarguard path below is unchanged.
 export function adapterFor(env, panel) {
   const cred = credOf(env, panel);
   if (!cred) throw new PasarGuardError(`secret ${panel.cred_ref} is not set`, 0);
   if (panel.kind === 'pasarguard') return new PasarGuard(env, cred);
+  if (panel.kind === 'rebecca') return new Rebecca(env, cred, { panelId: panel.id, serviceId: options(panel).service_id });
   throw new PasarGuardError(`no adapter for panel type ${panel.kind} yet`, 0);
 }
 
@@ -152,8 +155,11 @@ export async function collectLinks(env, userId, fwd = {}) {
 }
 
 // Groups new accounts go into: panel 1 keeps the pg_group_ids setting, other panels use options.group_ids;
-// empty = every group this admin may use.
+// empty = every group this admin may use. Rebecca has no groups at all, so it
+// returns [] immediately and never calls a groups endpoint (which 404s there).
+// Panel 1's path below is exactly as before.
 export async function groupIdsFor(env, panel, pg) {
+  if (panel.kind === 'rebecca') return [];
   let ids = [];
   if (panel.id === 1) {
     const raw = String((await first(env, "SELECT value FROM settings WHERE key = 'pg_group_ids'"))?.value || '').trim();
