@@ -176,6 +176,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   bool _reported = false;
   Future<void>? _testRun;
 
+  /// The running test stops after a few answers (smart connect's quick run).
+  bool _testRunPartial = false;
+
   bool get signedIn => api.tokens.signedIn;
   bool get busy => phase == Phase.checking || phase == Phase.handshaking;
   String get email => me.value?.email ?? '';
@@ -783,10 +786,25 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   /// [enough]: stop starting new tests once that many exits answered
   /// (smart connect needs a good exit soon, not every exit measured).
-  Future<void> testAll({int? enough}) =>
-      _testRun ??= _testAll(enough).whenComplete(() {
-        _testRun = null;
-      });
+  ///
+  /// A full run asked for while a quick one is going waits for it and then
+  /// tests every exit: joining it left most exits untested, so the
+  /// Connection check showed them as "not tested".
+  Future<void> testAll({int? enough}) async {
+    while (_testRun != null) {
+      final partial = _testRunPartial;
+      await _testRun;
+      if (enough != null || !partial) return;
+    }
+    _testRunPartial = enough != null;
+    final run = _testAll(enough);
+    _testRun = run;
+    try {
+      await run;
+    } finally {
+      if (identical(_testRun, run)) _testRun = null;
+    }
+  }
 
   Future<void> _testAll(int? enough) async {
     final list = exits;
