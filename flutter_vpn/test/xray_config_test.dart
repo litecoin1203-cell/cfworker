@@ -208,6 +208,53 @@ void main() {
     );
   });
 
+  test('wireguard by name: its server is looked up outside the tunnel', () {
+    const key = 'AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE%3D';
+    final byName = jsonDecode(
+      xrayConfig('wireguard://$key@wg.example.com:51820?publickey=p#x'),
+    ) as Map;
+    final servers = (byName['dns'] as Map)['servers'] as List;
+    expect(servers.first, {
+      'address': 'localhost',
+      'domains': ['full:wg.example.com'],
+      'skipFallback': true,
+    });
+    final wg = ((byName['outbounds'] as List).first as Map)['settings'] as Map;
+    expect(wg['domainStrategy'], 'ForceIPv4v6');
+
+    final byIp = jsonDecode(
+      xrayConfig('wireguard://$key@5.6.7.8:51820?publickey=p#x'),
+    ) as Map;
+    expect((byIp['dns'] as Map)['servers'], ['1.1.1.1', '8.8.8.8']);
+    final vless = jsonDecode(
+      xrayConfig('vless://u@de1.example.com:443?security=tls&type=ws#x'),
+    ) as Map;
+    expect((vless['dns'] as Map)['servers'], ['1.1.1.1', '8.8.8.8']);
+  });
+
+  test('websocket and httpupgrade never offer h2', () {
+    Map<String, Object?> tls(String link) =>
+        (outboundOf(link)['streamSettings'] as Map)['tlsSettings']
+            as Map<String, Object?>;
+    expect(
+      tls(
+        'vless://u@h.example.com:443?security=tls&type=ws&alpn=h2%2Chttp%2F1.1#x',
+      )['alpn'],
+      ['http/1.1'],
+    );
+    expect(
+      tls('vless://u@h.example.com:443?security=tls&type=httpupgrade&alpn=h2#x')
+          .containsKey('alpn'),
+      false,
+    );
+    expect(
+      tls(
+        'vless://u@h.example.com:443?security=tls&type=xhttp&alpn=h2%2Chttp%2F1.1#x',
+      )['alpn'],
+      ['h2', 'http/1.1'],
+    );
+  });
+
   test('unsupported protocols are refused, not guessed', () {
     expect(() => outboundOf('tuic://x@h:443'), throwsFormatException);
     expect(() => outboundOf('vless://u@h:0'), throwsFormatException);

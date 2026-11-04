@@ -34,10 +34,25 @@ String xrayConfig(
   bool forTest = false,
 }) {
   final proxy = outboundOf(link);
+  // WireGuard looks its server's name up with the core's own DNS, whose
+  // queries leave through the first outbound: WireGuard itself, which can't
+  // send anything before it knows where its server is. That name is asked
+  // of the phone's own resolver instead (Pleat is outside its tunnel), so
+  // an exit given by name no longer times out while one given by IP works.
+  final wgHost = _wireguardHost(proxy);
   return jsonEncode({
     'log': {'loglevel': 'warning'},
     'dns': {
-      'servers': ['1.1.1.1', '8.8.8.8'],
+      'servers': [
+        if (wgHost != null)
+          {
+            'address': 'localhost',
+            'domains': ['full:$wgHost'],
+            'skipFallback': true,
+          },
+        '1.1.1.1',
+        '8.8.8.8',
+      ],
       'queryStrategy': 'UseIP',
     },
     'inbounds': [
@@ -85,6 +100,16 @@ String xrayConfig(
       ],
     },
   });
+}
+
+/// The WireGuard server's name, when the link gives a name and not an IP.
+String? _wireguardHost(Map<String, Object?> proxy) {
+  if (proxy['protocol'] != 'wireguard') return null;
+  final peers = (proxy['settings'] as Map)['peers'] as List;
+  final endpoint = '${(peers.first as Map)['endpoint']}';
+  if (endpoint.startsWith('[')) return null;
+  final host = endpoint.substring(0, endpoint.lastIndexOf(':'));
+  return RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(host) ? null : host;
 }
 
 Map<String, Object?> outboundOf(String link) {
@@ -199,6 +224,8 @@ Map<String, Object?> _wireguard(String link) {
     'settings': {
       'secretKey': a.user,
       'noKernelTun': true,
+      // Most Iranian networks have no IPv6: try the server's IPv4 first.
+      'domainStrategy': 'ForceIPv4v6',
       // the tunnel's own address on the server's network; the core picks
       // a placeholder when the link names none
       if (address.isNotEmpty) 'address': address,
@@ -415,10 +442,14 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
           : _isDomain(address)
           ? address
           : hostName);
+  // WebSocket and HTTPUpgrade only work over HTTP/1.1: offered h2, a CDN
+  // picks it and the upgrade dies ("closed pipe"), so h2/h3 are dropped.
+  final http1Only = net == 'ws' || net == 'httpupgrade';
   final alpn = q['alpn']
       ?.split(',')
       .map((a) => a.trim())
       .where((a) => a.isNotEmpty)
+      .where((a) => !http1Only || a == 'http/1.1')
       .toList();
   final pinned = q['pcs'] ?? q['pinSHA256'];
   final out = <String, Object?>{
