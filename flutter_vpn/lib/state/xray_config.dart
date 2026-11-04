@@ -10,6 +10,32 @@ import 'dart:math' as math;
 
 const socksPort = 10808;
 
+/// Pleat is left out of its own tun, so its calls to the Worker would
+/// leave on the filtered line even while the tunnel is up. The core also
+/// listens here (HTTP, with a password only this install knows) and the
+/// app sends its own API calls through it.
+const tunnelApiPort = 10809;
+
+/// The same for the "bridge": a core started without a tun, only to carry
+/// the app's calls to the Worker while the tunnel is off.
+const bridgePort = 10810;
+
+/// The user and password of the local API proxy (see [tunnelApiPort]).
+typedef ProxyLogin = ({String user, String pass});
+
+Map<String, Object?> _apiInbound(int port, ProxyLogin login) => {
+  'tag': 'api',
+  'listen': '127.0.0.1',
+  'port': port,
+  'protocol': 'http',
+  'settings': {
+    'accounts': [
+      {'user': login.user, 'pass': login.pass},
+    ],
+    'allowTransparent': false,
+  },
+};
+
 /// Private and link-local ranges stay on the local network.
 const _privateCidrs = [
   '10.0.0.0/8',
@@ -29,10 +55,13 @@ const _privateCidrs = [
 /// The same rules as the Cloud Gold app's default; they need the geo files.
 ///
 /// [forTest]: no inbound, for a throw-away core that only measures delay.
+///
+/// [api]: also listen on [tunnelApiPort] for the app's own calls.
 String xrayConfig(
   String link, {
   bool localDirect = false,
   bool forTest = false,
+  ProxyLogin? api,
 }) {
   final proxy = outboundOf(link);
   // WireGuard looks its server's name up with the core's own DNS, whose
@@ -70,6 +99,7 @@ String xrayConfig(
             'routeOnly': true,
           },
         },
+      if (!forTest && api != null) _apiInbound(tunnelApiPort, api),
     ],
     'outbounds': [
       proxy,
@@ -98,6 +128,46 @@ String xrayConfig(
             'outboundTag': 'direct',
           },
         ],
+      ],
+    },
+  });
+}
+
+/// The bridge: one exit, a password-locked HTTP port on [bridgePort], and
+/// nothing but the Worker's own [hosts] may cross it; anything else is
+/// refused, so the bridge is never a free tunnel for other apps.
+String bridgeConfig(String link, List<String> hosts, ProxyLogin login) {
+  final proxy = outboundOf(link);
+  final wgHost = _wireguardHost(proxy);
+  return jsonEncode({
+    'log': {'loglevel': 'warning'},
+    'dns': {
+      'servers': [
+        if (wgHost != null)
+          {
+            'address': 'localhost',
+            'domains': ['full:$wgHost'],
+            'skipFallback': true,
+          },
+        '1.1.1.1',
+        '8.8.8.8',
+      ],
+      'queryStrategy': 'UseIP',
+    },
+    'inbounds': [_apiInbound(bridgePort, login)],
+    'outbounds': [
+      proxy,
+      {'tag': 'block', 'protocol': 'blackhole'},
+    ],
+    'routing': {
+      'domainStrategy': 'AsIs',
+      'rules': [
+        {
+          'type': 'field',
+          'domain': [for (final h in hosts) 'full:$h'],
+          'outboundTag': 'proxy',
+        },
+        {'type': 'field', 'network': 'tcp,udp', 'outboundTag': 'block'},
       ],
     },
   });

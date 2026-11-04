@@ -94,6 +94,14 @@ class _CardPayScreenState extends State<CardPayScreen>
     try {
       final o = await app.sendReceipt(_o, photo, _ref.text.trim());
       if (!mounted) return;
+      if (o == null) {
+        // No line: kept on the phone, sent by itself later.
+        setState(() => _sending = false);
+        return showNote(
+          context,
+          'Can’t reach the server right now. The receipt is saved on this phone and Pleat sends it by itself when it gets through.',
+        );
+      }
       _poll?.cancel();
       showOrder(context, o, replace: true);
     } on ApiError catch (e) {
@@ -283,6 +291,12 @@ class _CardPayScreenState extends State<CardPayScreen>
           hint: 'Reference number (optional)',
           keyboard: TextInputType.number,
         ),
+        if (AppScope.of(context).pendingReceipts.containsKey(_o.id)) ...[
+          const SizedBox(height: 12),
+          const UnavailableNote(
+            'Receipt saved on this phone. Pleat sends it by itself as soon as it can reach the server while open, or when you connect.',
+          ),
+        ],
         const SizedBox(height: 14),
         PillButton(
           label: _sending

@@ -116,10 +116,13 @@ jobs:
           PLEAT_KEYSTORE_PASSWORD: ${{ secrets.APP_KEYSTORE_PASSWORD }}
           PLEAT_KEY_ALIAS: ${{ secrets.APP_KEYSTORE_ALIAS || 'cloudgold' }}
           PLEAT_KEY_PASSWORD: ${{ secrets.APP_KEY_PASSWORD }}
+          # Optional: share links for the bridge a phone with no plan yet uses to reach the Worker when the open line
+          # can't (space separated). Anyone can read them out of the APK, so give them their own small panel account.
+          PLEAT_BRIDGE: ${{ secrets.PLEAT_BRIDGE }}
         run: |
           API="${API_INPUT:-$API_VAR}"
           [ -z "$API" ] && echo "::warning::No CG_API_BASE set; the APK will say it has no server address."
-          flutter build apk --release --dart-define=PLEAT_API="$API"
+          flutter build apk --release --dart-define=PLEAT_API="$API" --dart-define=PLEAT_BRIDGE="$PLEAT_BRIDGE"
       - name: Check APK
         run: |
           apk=build/app/outputs/flutter-apk/app-release.apk

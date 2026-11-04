@@ -316,6 +316,70 @@ void main() {
     File(
       '$out/ping_test.json',
     ).writeAsStringSync(xrayConfig(samples['vless_reality']!, forTest: true));
+    // The tunnel with the app's own API port, and the bridge.
+    const login = (user: 'u1', pass: 'p1');
+    File('$out/tunnel_api.json').writeAsStringSync(
+      xrayConfig(samples['trojan']!, localDirect: true, api: login),
+    );
+    samples.forEach(
+      (k, v) => File('$out/bridge_$k.json').writeAsStringSync(
+        bridgeConfig(v, ['api.example.org', 'cloudgold.example.dev'], login),
+      ),
+    );
+  });
+
+  test('the tunnel opens a password-locked API port for the app', () {
+    final c = jsonDecode(
+      xrayConfig(
+        'trojan://p@us1.example.com:443#x',
+        api: (user: 'u', pass: 'p'),
+      ),
+    );
+    final api = (c['inbounds'] as List).firstWhere((i) => i['tag'] == 'api');
+    expect(api['listen'], '127.0.0.1');
+    expect(api['port'], tunnelApiPort);
+    expect(api['protocol'], 'http');
+    expect(api['settings']['accounts'], [
+      {'user': 'u', 'pass': 'p'},
+    ]);
+    final plain = jsonDecode(xrayConfig('trojan://p@us1.example.com:443#x'));
+    expect((plain['inbounds'] as List).map((i) => i['tag']), ['socks']);
+    final test = jsonDecode(
+      xrayConfig(
+        'trojan://p@us1.example.com:443#x',
+        forTest: true,
+        api: (user: 'u', pass: 'p'),
+      ),
+    );
+    expect(test['inbounds'], isEmpty);
+  });
+
+  test('the bridge lets only the Worker through, behind a password', () {
+    final c = jsonDecode(
+      bridgeConfig(
+        'trojan://p@us1.example.com:443#x',
+        ['api.example.org', 'w.example.dev'],
+        (user: 'u', pass: 'p'),
+      ),
+    );
+    final inbounds = c['inbounds'] as List;
+    expect(inbounds, hasLength(1));
+    expect(inbounds.single['port'], bridgePort);
+    expect(inbounds.single['listen'], '127.0.0.1');
+    expect(inbounds.single['settings']['accounts'], [
+      {'user': 'u', 'pass': 'p'},
+    ]);
+    final rules = c['routing']['rules'] as List;
+    expect(rules.first['domain'], [
+      'full:api.example.org',
+      'full:w.example.dev',
+    ]);
+    expect(rules.first['outboundTag'], 'proxy');
+    expect(rules.last['outboundTag'], 'block');
+    expect(
+      (c['outbounds'] as List).map((o) => o['tag']),
+      isNot(contains('direct')),
+    );
   });
 
   test('local direct: QUIC blocked, Iranian sites and IPs direct', () {

@@ -21,7 +21,8 @@ class MainActivity : FlutterActivity() {
     private companion object {
         const val ASK_VPN = 41
         const val PICK_IMAGE = 42
-        const val MAX_IMAGE = 8 * 1024 * 1024
+        // Read whole (a phone photo can be over 8 MB), then made small by shrink().
+        const val MAX_IMAGE = 25 * 1024 * 1024
     }
 
     private var pendingImage: MethodChannel.Result? = null
@@ -166,6 +167,16 @@ class MainActivity : FlutterActivity() {
                         )
                         result.success(null)
                     }
+                    "bridgeStart" -> {
+                        val config = call.argument<String>("config")
+                        if (config == null) {
+                            result.success(false)
+                            return@setMethodCallHandler
+                        }
+                        background(result, false) { Bridge.start(this, config) }
+                    }
+                    "bridgeStop" -> background(result, false) { Bridge.stop(); true }
+                    "filesDir" -> result.success(filesDir.absolutePath)
                     "pickImage" -> {
                         pendingImage?.success(null)
                         pendingImage = result
@@ -223,7 +234,8 @@ class MainActivity : FlutterActivity() {
                 } catch (e: Exception) {
                     null
                 }
-                main.post { result.success(bytes) }
+                val small = bytes?.let { shrink(it) ?: it }
+                main.post { result.success(small) }
             }
             return
         }
@@ -307,6 +319,62 @@ class MainActivity : FlutterActivity() {
         .replace(Regex("\\[[0-9a-fA-F:]+\\](:\\d+)?"), "…")
         .replace(Regex("\\b\\d{1,3}(\\.\\d{1,3}){3}(:\\d+)?\\b"), "…")
         .replace(Regex("\\b([a-zA-Z0-9-]+\\.)+[a-zA-Z]{2,}(:\\d+)?\\b"), "…")
+
+    /**
+     * A receipt photo made small enough for a slow, filtered line: at most
+     * 1600 px on the long side, JPEG at quality 82 (a bank receipt stays
+     * readable; usually 150 to 400 KB instead of several MB). Null when the
+     * bytes aren't an image Android can read, so the original is sent.
+     */
+    private fun shrink(bytes: ByteArray): ByteArray? = try {
+        val bounds = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        val long = maxOf(bounds.outWidth, bounds.outHeight)
+        if (long <= 0) {
+            null
+        } else {
+            var sample = 1
+            while (long / (sample * 2) >= 1600) sample *= 2
+            val opts = android.graphics.BitmapFactory.Options().apply { inSampleSize = sample }
+            val decoded = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size, opts)
+            if (decoded == null) {
+                null
+            } else {
+                val side = maxOf(decoded.width, decoded.height)
+                val scaled = if (side > 1600) {
+                    val k = 1600f / side
+                    android.graphics.Bitmap.createScaledBitmap(
+                        decoded, (decoded.width * k).toInt().coerceAtLeast(1), (decoded.height * k).toInt().coerceAtLeast(1), true
+                    ).also { if (it !== decoded) decoded.recycle() }
+                } else decoded
+                // A camera photo keeps its turn in EXIF, which a re-encode drops.
+                val turn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) try {
+                    when (android.media.ExifInterface(java.io.ByteArrayInputStream(bytes)).getAttributeInt(
+                        android.media.ExifInterface.TAG_ORIENTATION, android.media.ExifInterface.ORIENTATION_NORMAL
+                    )) {
+                        android.media.ExifInterface.ORIENTATION_ROTATE_90 -> 90f
+                        android.media.ExifInterface.ORIENTATION_ROTATE_180 -> 180f
+                        android.media.ExifInterface.ORIENTATION_ROTATE_270 -> 270f
+                        else -> 0f
+                    }
+                } catch (e: Exception) { 0f } else 0f
+                val bmp = if (turn != 0f) {
+                    android.graphics.Bitmap.createBitmap(
+                        scaled, 0, 0, scaled.width, scaled.height,
+                        android.graphics.Matrix().apply { postRotate(turn) }, true
+                    ).also { if (it !== scaled) scaled.recycle() }
+                } else scaled
+                val out = java.io.ByteArrayOutputStream()
+                bmp.compress(android.graphics.Bitmap.CompressFormat.JPEG, 82, out)
+                bmp.recycle()
+                val jpeg = out.toByteArray()
+                // Already small (a screenshot, say): keep whichever is smaller.
+                if (jpeg.isNotEmpty() && jpeg.size < bytes.size) jpeg else null
+            }
+        }
+    } catch (e: Throwable) {
+        null
+    }
 
     /** True when this build ships the core and the tun library. */
     private fun engineLoads(): Boolean = engineError() == null

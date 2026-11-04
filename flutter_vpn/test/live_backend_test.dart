@@ -106,7 +106,7 @@ void main() {
       ...List.filled(64, 0),
     ];
     final sent = await app.sendReceipt(card, png, '123456');
-    expect(sent.status, 'review');
+    expect(sent!.status, 'review');
     expect((await app.orders()).map((o) => o.id), contains(card.id));
 
     step('store: top-up order, then cancel');

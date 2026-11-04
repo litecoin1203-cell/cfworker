@@ -129,6 +129,13 @@ section('card purchase -> telegram -> approve -> servers');
   const up = await call('POST', `/api/v1/orders/${order.data.id}/receipt`, { token: tok, form });
   ok(up.status === 200 && up.data.status === 'review', 'receipt -> review');
   ok(fakes.tg.photos.length === 1, 'receipt photo sent to telegram');
+  // the app sends a kept receipt again with the same upload id: the admin gets it once
+  form.set('upload_id', 'up-1');
+  const again1 = await call('POST', `/api/v1/orders/${order.data.id}/receipt`, { token: tok, form });
+  const again2 = await call('POST', `/api/v1/orders/${order.data.id}/receipt`, { token: tok, form });
+  ok(again1.status === 200 && again2.status === 200 && again2.data.status === 'review', 'resent receipt answers like the first');
+  ok(fakes.tg.photos.length === 2, 'same upload id is sent to the admin only once');
+  form.delete('upload_id');
   // admin approves via inline button
   const ap = await tgWebhook({ callback_query: { id: 'c1', data: `ap:${order.data.id}`, message: { chat: { id: 12345 }, message_id: 1 } } });
   ok(ap.status === 200, 'approve callback handled');
@@ -141,6 +148,19 @@ section('card purchase -> telegram -> approve -> servers');
   ok(sk && Object.keys(JSON.parse(sk.keys)).length === 3, 'the server list remembers which servers this user can report on');
   const vpn = await call('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'buyer-phone' } });
   ok(vpn.status === 200 && vpn.data.subscription.sub_url, 'vpn returns sub url');
+}
+
+section('app-config: extra addresses and bridge links for filtered lines');
+{
+  const empty = (await call('GET', '/api/v1/app-config')).data;
+  ok(Array.isArray(empty.api_bases) && empty.api_bases.length === 0 && empty.bridges.length === 0, 'nothing set -> empty lists');
+  await botSet('app_api_bases', 'https://a.example.org, https://b.example.org/ http://plain.example.org https://x.org/path');
+  await botSet('app_bridges', 'vless://u@h.example:443?security=tls#br1 nonsense https://not-a-link.org');
+  const cfg = (await call('GET', '/api/v1/app-config')).data;
+  ok(cfg.api_bases.join() === 'https://a.example.org,https://b.example.org', 'only https hosts are handed out: ' + cfg.api_bases.join());
+  ok(cfg.bridges.length === 1 && cfg.bridges[0].startsWith('vless://'), 'only share links are handed out as bridges');
+  await botSet('app_api_bases', '');
+  await botSet('app_bridges', '');
 }
 
 section('reject receipt');
