@@ -6,6 +6,7 @@
 library;
 
 import 'dart:convert';
+import 'dart:math' as math;
 
 const socksPort = 10808;
 
@@ -229,7 +230,10 @@ Map<String, Object?> _wireguard(String link) {
       // the tunnel's own address on the server's network; the core picks
       // a placeholder when the link names none
       if (address.isNotEmpty) 'address': address,
-      'mtu': int.tryParse(q['mtu'] ?? '') ?? 1420,
+      // Panels give 1420 (made for a 1500-byte line); over mobile and
+      // filtered paths larger packets are dropped, so the handshake works
+      // and then nothing gets through. 1280, IPv6's minimum, always fits.
+      'mtu': math.min(int.tryParse(q['mtu'] ?? '') ?? 1280, 1280),
       if (reserved.length == 3 && reserved.every((b) => b != null && b < 256))
         'reserved': reserved,
       'peers': [
