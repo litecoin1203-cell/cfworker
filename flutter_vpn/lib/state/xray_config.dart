@@ -96,7 +96,129 @@ Map<String, Object?> outboundOf(String link) {
     'trojan' => _trojan(Uri.parse(link), _query(link)),
     'vmess' => _vmess(link.substring(i + 3)),
     'ss' => _shadowsocks(link),
+    'hysteria2' || 'hy2' => _hysteria2(link),
+    'wireguard' || 'wg' => _wireguard(link),
     _ => throw FormatException('unsupported protocol $scheme'),
+  };
+}
+
+/// `scheme://userinfo@host:port/?query#remark` split by hand: Hysteria 2
+/// links may carry a port range in place of the port ("443,20000-30000"),
+/// which [Uri.parse] refuses.
+({String user, String host, String ports}) _authority(String link) {
+  var rest = link.substring(link.indexOf('://') + 3).split('#').first;
+  rest = rest.split('?').first;
+  final slash = rest.indexOf('/');
+  if (slash >= 0) rest = rest.substring(0, slash);
+  final at = rest.lastIndexOf('@');
+  final user = at >= 0 ? Uri.decodeComponent(rest.substring(0, at)) : '';
+  final hostPort = rest.substring(at + 1);
+  String host, ports;
+  if (hostPort.startsWith('[')) {
+    final close = hostPort.indexOf(']');
+    if (close < 0) throw const FormatException('bad host');
+    host = hostPort.substring(1, close);
+    ports = hostPort.substring(close + 1).replaceFirst(':', '');
+  } else {
+    final c = hostPort.lastIndexOf(':');
+    if (c < 0) throw const FormatException('bad port');
+    host = hostPort.substring(0, c);
+    ports = hostPort.substring(c + 1);
+  }
+  if (host.isEmpty) throw const FormatException('no host');
+  return (user: user, host: host, ports: ports);
+}
+
+/// Hysteria 2 over QUIC, the way Rebecca's own Xray subscription and
+/// v2rayNG build it: TLS on the hysteria transport, Salamander obfuscation
+/// and port hopping as the core's UDP masks.
+Map<String, Object?> _hysteria2(String link) {
+  final a = _authority(link);
+  final q = _query(link);
+  // "443,20000-30000": the first port is the server's, all of them hop.
+  final first = RegExp(r'^\d+').firstMatch(a.ports)?.group(0);
+  final hop = a.ports.contains(RegExp(r'[,-]')) ? a.ports : q['mport'];
+  // pinSHA256 and insecure are read by [_stream] like on any TLS link.
+  final stream = _stream({...q, 'type': 'tcp', 'security': 'tls'}, a.host);
+  stream['network'] = 'hysteria';
+  stream['hysteriaSettings'] = {
+    'version': 2,
+    if (a.user.isNotEmpty) 'auth': a.user,
+    'udpIdleTimeout': 60,
+  };
+  final mask = <String, Object?>{
+    ...?(stream['finalmask'] as Map<String, Object?>?),
+  };
+  final obfs = q['obfs'];
+  if (obfs != null && obfs != 'none') {
+    mask['udp'] = [
+      {
+        'type': obfs == 'gecko' ? 'salamander' : obfs,
+        'settings': {
+          'password': q['obfs-password'] ?? '',
+          if (obfs == 'gecko') 'packetSize': '512-1200',
+        },
+      },
+    ];
+  }
+  if (hop != null) {
+    mask['quicParams'] = {
+      'udpHop': {'ports': hop},
+    };
+  }
+  if (mask.isNotEmpty) stream['finalmask'] = mask;
+  return {
+    'tag': 'proxy',
+    'protocol': 'hysteria',
+    'settings': {'version': 2, 'address': a.host, 'port': _port(first)},
+    'streamSettings': stream,
+  };
+}
+
+/// WireGuard as the core runs it in user space (no kernel tun on a phone),
+/// from the `wireguard://privatekey@host:port?publickey=&address=` link
+/// Rebecca and v2rayNG share.
+Map<String, Object?> _wireguard(String link) {
+  final a = _authority(link);
+  final q = _query(link);
+  final port = _port(a.ports);
+  if (a.user.isEmpty) throw const FormatException('no private key');
+  final peerKey = q['publickey'] ?? q['publicKey'] ?? q['peer_public_key'];
+  if (peerKey == null) throw const FormatException('no public key');
+  List<String> list(String? s) => (s ?? '')
+      .split(',')
+      .map((e) => e.trim())
+      .where((e) => e.isNotEmpty)
+      .toList();
+  final reserved = list(q['reserved']).map(int.tryParse).toList();
+  final keepAlive = int.tryParse(q['keepalive'] ?? '');
+  final address = list(q['address'] ?? q['ip']);
+  return {
+    'tag': 'proxy',
+    'protocol': 'wireguard',
+    'settings': {
+      'secretKey': a.user,
+      'noKernelTun': true,
+      // the tunnel's own address on the server's network; the core picks
+      // a placeholder when the link names none
+      if (address.isNotEmpty) 'address': address,
+      'mtu': int.tryParse(q['mtu'] ?? '') ?? 1420,
+      if (reserved.length == 3 && reserved.every((b) => b != null && b < 256))
+        'reserved': reserved,
+      'peers': [
+        {
+          'publicKey': peerKey,
+          'preSharedKey': ?(q['presharedkey'] ?? q['preSharedKey']),
+          'endpoint': a.host.contains(':')
+              ? '[${a.host}]:$port'
+              : '${a.host}:$port',
+          if (keepAlive != null && keepAlive > 0) 'keepAlive': keepAlive,
+          // Everything goes through the exit, IPv6 included, whatever the
+          // panel's peer list says: the phone has no other route out.
+          'allowedIPs': ['0.0.0.0/0', '::/0'],
+        },
+      ],
+    },
   };
 }
 

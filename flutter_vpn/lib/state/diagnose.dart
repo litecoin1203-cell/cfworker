@@ -145,8 +145,11 @@ Diagnosis diagnose(String? error) {
 /// How the exit reaches its server, e.g. "REALITY", "TLS · WS", "plain".
 String transportOf(String link) {
   try {
-    final st = outboundOf(link)['streamSettings'];
+    final out = outboundOf(link);
+    if (out['protocol'] == 'wireguard') return 'UDP';
+    final st = out['streamSettings'];
     if (st is! Map) return 'plain';
+    if (st['network'] == 'hysteria') return 'QUIC';
     final security = '${st['security'] ?? 'none'}';
     final net = '${st['network'] ?? 'tcp'}'.toUpperCase();
     if (security == 'reality') return 'REALITY';

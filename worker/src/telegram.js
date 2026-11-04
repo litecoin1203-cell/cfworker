@@ -562,7 +562,7 @@ async function onMessage(env, msg, opts = {}) {
       if (parts[2] !== 'silent') await say('⏳ در حال تست پنل...');
       const t = await testPanel(env, panel);
       await audit(env, chatId, 'panel.test', 'panel', panel.id, t.healthy ? 'سالم' : 'ناسالم');
-      const typesLine = t.kinds && t.configs ? `\nنوع کانفیگ‌ها: ${Object.entries(t.kinds.counts).map(([k, n]) => `${k} ×${n}`).join('، ')}${t.kinds.unusable ? `\n⚠️ ${t.kinds.unusable} کانفیگ از نوعی است که اپ Pleat پشتیبانی نمی‌کند (فقط vless، vmess، trojan و shadowsocks) و در اپ نشان داده نمی‌شود.` : ''}` : '';
+      const typesLine = t.kinds && t.configs ? `\nنوع کانفیگ‌ها: ${Object.entries(t.kinds.counts).map(([k, n]) => `${k} ×${n}`).join('، ')}${t.kinds.unusable ? `\n⚠️ ${t.kinds.unusable} کانفیگ از نوعی است که اپ Pleat پشتیبانی نمی‌کند (اپ vless، vmess، trojan، shadowsocks، hysteria2 و wireguard را می‌شناسد) و در اپ نشان داده نمی‌شود.` : ''}` : '';
       const kindLine = t.kind ? `نوع پنل: ${t.kind}${t.kindChanged ? ' (خودکار تشخیص داده و ثبت شد)' : ''}\n` : '';
       const go = t.healthy ? { reply_markup: { inline_keyboard: [
         [{ text: '🚀 ۱۰٪ کاربران', callback_data: `m:x:pp:${panel.id}|/rollout ${panel.id} 10` }, { text: '🚀 همه‌ی کاربران', callback_data: `m:x:pp:${panel.id}|/rollout ${panel.id} 100` }],

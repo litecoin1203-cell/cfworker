@@ -131,8 +131,85 @@ void main() {
     }
   });
 
+  test('hysteria2: auth, TLS, salamander, port hopping, pin', () {
+    final o = outboundOf(
+      'hysteria2://p%40ss@hy.example.com:443,20000-30000/?sni=cdn.example.com'
+      '&obfs=salamander&obfs-password=ob&insecure=1&alpn=h3#x',
+    );
+    expect(o['protocol'], 'hysteria');
+    expect(o['settings'], {
+      'version': 2,
+      'address': 'hy.example.com',
+      'port': 443,
+    });
+    final st = o['streamSettings'] as Map;
+    expect(st['network'], 'hysteria');
+    expect(st['security'], 'tls');
+    expect((st['hysteriaSettings'] as Map)['auth'], 'p@ss');
+    expect((st['hysteriaSettings'] as Map)['version'], 2);
+    final tls = st['tlsSettings'] as Map;
+    expect(tls['serverName'], 'cdn.example.com');
+    expect(tls['allowInsecure'], true);
+    expect(tls['alpn'], ['h3']);
+    final mask = st['finalmask'] as Map;
+    expect(mask['udp'], [
+      {
+        'type': 'salamander',
+        'settings': {'password': 'ob'},
+      },
+    ]);
+    expect(mask['quicParams'], {
+      'udpHop': {'ports': '443,20000-30000'},
+    });
+
+    final hy = outboundOf('hy2://pw@1.2.3.4:8443?pinSHA256=ab12#x');
+    final hst = hy['streamSettings'] as Map;
+    expect((hy['settings'] as Map)['port'], 8443);
+    expect(hst.containsKey('finalmask'), false);
+    expect((hst['tlsSettings'] as Map)['pinnedPeerCertSha256'], 'ab12');
+    expect(
+      () => outboundOf('hysteria2://pw@h.example.com#x'),
+      throwsFormatException,
+    );
+  });
+
+  test('wireguard as Rebecca shares it', () {
+    // the private key is url-escaped in the userinfo, as Go's url.User does
+    final o = outboundOf(
+      'wireguard://${Uri.encodeComponent('cGl2YXRla2V5cHJpdmF0ZWtleXByaXZhdGVrZXk/AA=')}'
+      '@wg.example.com:51820?address=10.8.0.2%2F32&publickey=c2VydmVya2V5c2VydmVya2V5c2VydmVya2V5c2U%2BAA%3D'
+      '&reserved=1%2C2%2C3&allowedips=0.0.0.0%2F0&dns=1.1.1.1&mtu=1380&keepalive=25#x',
+    );
+    expect(o['protocol'], 'wireguard');
+    final s = o['settings'] as Map;
+    expect(s['secretKey'], 'cGl2YXRla2V5cHJpdmF0ZWtleXByaXZhdGVrZXk/AA=');
+    expect(s['address'], ['10.8.0.2/32']);
+    expect(s['mtu'], 1380);
+    expect(s['reserved'], [1, 2, 3]);
+    expect(s['noKernelTun'], true);
+    final peer = (s['peers'] as List).single as Map;
+    expect(peer['publicKey'], 'c2VydmVya2V5c2VydmVya2V5c2VydmVya2V5c2U+AA=');
+    expect(peer['endpoint'], 'wg.example.com:51820');
+    expect(peer['keepAlive'], 25);
+    expect(peer['allowedIPs'], ['0.0.0.0/0', '::/0']);
+
+    final v6 = outboundOf(
+      'wg://k@[2001:db8::1]:51820?publickey=p&reserved=0%2C0%2C0#x',
+    );
+    final v6s = v6['settings'] as Map;
+    expect(
+      ((v6s['peers'] as List).single as Map)['endpoint'],
+      '[2001:db8::1]:51820',
+    );
+    expect(v6s.containsKey('address'), false);
+    expect(
+      () => outboundOf('wireguard://k@h.example.com:51820#x'),
+      throwsFormatException,
+    );
+  });
+
   test('unsupported protocols are refused, not guessed', () {
-    expect(() => outboundOf('hy2://x@h:443'), throwsFormatException);
+    expect(() => outboundOf('tuic://x@h:443'), throwsFormatException);
     expect(() => outboundOf('vless://u@h:0'), throwsFormatException);
   });
 
@@ -176,6 +253,11 @@ void main() {
       'trojan': 'trojan://pass@us1.example.com:443#x',
       'vmess_ws': 'vmess://$vmess',
       'ss': 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#x',
+      'hysteria2': 'hysteria2://pw@hy.example.com:443,20000-30000/?sni=hy.example.com&obfs=salamander&obfs-password=ob#x',
+      'hysteria2_plain': 'hy2://pw@1.2.3.4:8443?insecure=1#x',
+      'wireguard':
+          'wireguard://${Uri.encodeComponent('AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=')}@wg.example.com:51820'
+          '?address=10.8.0.2%2F32&publickey=AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI%3D&reserved=0%2C0%2C0&mtu=1420&keepalive=25#x',
     };
     Directory(out).createSync(recursive: true);
     samples.forEach(
