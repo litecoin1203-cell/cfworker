@@ -240,7 +240,7 @@ export async function ensureWebhook(env) {
   if (env.TELEGRAM_CHAT_ID) {
     await tg(env, 'setMyCommands', { scope: { type: 'chat', chat_id: env.TELEGRAM_CHAT_ID }, commands: [
       { command: 'menu', description: 'منوی مدیریت' }, { command: 'stats', description: 'آمار فروش' },
-      { command: 'find', description: 'جستجوی کاربر با ایمیل' }, { command: 'panel', description: 'تست سلامت پنل‌ها' },
+      { command: 'find', description: 'جستجوی کاربر (ایمیل یا تلگرام)' }, { command: 'panel', description: 'تست سلامت پنل‌ها' },
       { command: 'help', description: 'همه‌ی دستورها' },
     ] });
   }
@@ -439,6 +439,19 @@ async function onMessage(env, msg, opts = {}) {
   };
   const cmd = text.split(/\s+/)[0].replace(/@\w+$/, '').toLowerCase();
   const admin = isAdmin(env, msg.chat, msg.from);
+  // app sign-in link (t.me/<bot>?start=L<nonce>): anyone, the admin too, gets a 6-digit code in a private chat
+  const startArg = cmd === '/start' ? (text.split(/\s+/)[1] || '') : '';
+  if (startArg.startsWith('L')) {
+    if (msg.chat?.type !== 'private') return;
+    const { tgIssueCode } = await import('./auth.js');
+    const r = await tgIssueCode(env, startArg.slice(1), msg.from);
+    return tg(env, 'sendMessage', { chat_id: chatId, text: r.text, ...(r.html ? { parse_mode: 'HTML' } : {}) });
+  }
+  // people who open the bot themselves (not from the app) are told how sign-in works; /id still shows the chat id
+  if (cmd === '/start' && !admin && env.TELEGRAM_CHAT_ID) {
+    if (msg.chat?.type !== 'private') return;
+    return tg(env, 'sendMessage', { chat_id: chatId, text: 'Hi! To sign in, open the Pleat app and tap "Continue with Telegram". This bot will then send you a 6-digit code.' });
+  }
   if (cmd === '/id' || (cmd === '/start' && !admin)) {
     if (msg.chat?.type !== 'private') return say('ربات مدیریت فقط در چت خصوصی کار می‌کند. /id را در چت خصوصی با ربات بفرست.');
     return say(`Chat id شما: ${chatId}\nاین عدد را در GitHub به اسم TELEGRAM_CHAT_ID بگذار.`);
@@ -597,9 +610,9 @@ async function onMessage(env, msg, opts = {}) {
   }
 
   if (cmd === '/find' || cmd === '/user') {
-    const email = text.split(/\s+/)[1]?.toLowerCase() || '';
-    const u = await first(env, 'SELECT * FROM users WHERE email = ?', email);
-    if (!u) return say('کاربری با این ایمیل نیست.');
+    const { findUserByLogin } = await import('./auth.js');
+    const u = await findUserByLogin(env, text.split(/\s+/)[1] || '').catch(() => null);
+    if (!u) return say('کاربری با این ایمیل / یوزرنیم تلگرام / آیدی عددی نیست.');
     const { userKb } = await import('./telegram-menu.js');
     return say(await userInfo(env, u), { reply_markup: userKb(u.id) });
   }
@@ -799,7 +812,7 @@ export async function userInfo(env, u) {
   const { subscriptionOut } = await import('./account.js');
   const sub = await subscriptionOut(env, u);
   const sRow = await first(env, 'SELECT pg_username FROM subscriptions WHERE user_id = ?', u.id);
-  const lines = [`👤 ${u.email}`, `کیف پول: ${fa(u.wallet_balance)} تومان`, `کد دعوت: ${u.referral_code}`];
+  const lines = [`👤 ${u.email}`, ...(u.tg_id ? [`تلگرام: ${u.tg_username ? '@' + u.tg_username : '(بدون یوزرنیم)'} · آیدی ${u.tg_id}${u.tg_name ? ` · ${u.tg_name}` : ''}`] : []), `کیف پول: ${fa(u.wallet_balance)} تومان`, `کد دعوت: ${u.referral_code}`];
   if (sub) {
     lines.push(`پلن: ${sub.plan_name || '-'} · وضعیت: ${sub.status}${sub.live ? '' : ' (پنل جواب نداد)'}`);
     lines.push(`زمان: ${sub.unlimited_time ? 'نامحدود' : `${sub.days_left} روز (تا ${sub.expires_at.slice(0, 10)})`}`);

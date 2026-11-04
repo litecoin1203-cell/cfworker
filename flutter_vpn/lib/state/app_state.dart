@@ -182,6 +182,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   bool get signedIn => api.tokens.signedIn;
   bool get busy => phase == Phase.checking || phase == Phase.handshaking;
   String get email => me.value?.email ?? '';
+
+  /// Email, @username or Telegram id: what this account signs in with.
+  String get login => me.value?.login ?? email;
   Subscription? get subscription => me.value?.subscription;
 
   List<Exit> get exits => servers.value ?? const [];
@@ -217,7 +220,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   List<String> get protocols => {for (final e in exits) e.protocol}.toList();
 
   String get firstName {
-    final local = email.split('@').first.split(RegExp(r'[._\-+]')).first;
+    final tgName = (me.value?.telegramName ?? '').trim().split(' ').first;
+    final local = tgName.isNotEmpty
+        ? tgName
+        : email.isNotEmpty
+        ? email.split('@').first.split(RegExp(r'[._\-+]')).first
+        : login.replaceFirst('@', '').split('_').first;
     if (local.isEmpty) return 'there';
     return local[0].toUpperCase() + local.substring(1);
   }
@@ -469,7 +477,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   }) async {
     try {
       final data = await api.post(create ? '/auth/register' : '/auth/login', {
-        'email': address,
+        create ? 'email' : 'login': address,
         'password': password,
         'device_id': api.tokens.deviceId,
         'device_model': api.deviceModel,
@@ -485,6 +493,69 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     } on ApiError catch (e) {
       return e.message;
     }
+  }
+
+  /// Telegram step 1: a sign-in link for the bot. The app keeps the nonce;
+  /// the bot sends a 6-digit code to whoever opens the link.
+  Future<TelegramStart> telegramStart() async {
+    final data = await api.post('/auth/tg/start');
+    return TelegramStart(
+      nonce: data['nonce'] as String,
+      botUrl: data['bot_url'] as String,
+      appUrl: (data['app_url'] as String?) ?? '',
+    );
+  }
+
+  /// Telegram step 2: the code from the bot. Signs in when the Telegram
+  /// account already has an account; otherwise returns the sign-up ticket
+  /// for [telegramRegister]. Errors come back as [ApiError].
+  Future<TelegramSignup?> telegramVerify(String nonce, String code) async {
+    final data = await api.post('/auth/tg/verify', {
+      'nonce': nonce,
+      'code': code,
+      'device_id': api.tokens.deviceId,
+      'device_model': api.deviceModel,
+    });
+    if (data['need_password'] == true) {
+      return TelegramSignup(
+        token: data['signup_token'] as String,
+        login: (data['login'] as String?) ?? '',
+        name: (data['tg_name'] as String?) ?? '',
+      );
+    }
+    await _signedIn(data);
+    return null;
+  }
+
+  /// Telegram step 3 (new accounts): the app password. Returns the error to
+  /// show, or null.
+  Future<String?> telegramRegister(
+    TelegramSignup s,
+    String password, {
+    String invite = '',
+  }) async {
+    try {
+      final data = await api.post('/auth/tg/register', {
+        'signup_token': s.token,
+        'password': password,
+        'device_id': api.tokens.deviceId,
+        'device_model': api.deviceModel,
+        if (invite.isNotEmpty) 'referral_code': invite,
+      });
+      await _signedIn(data);
+      return null;
+    } on ApiError catch (e) {
+      return e.message;
+    }
+  }
+
+  Future<void> _signedIn(dynamic data) async {
+    await api.tokens.save(
+      data['access_token'] as String,
+      data['refresh_token'] as String,
+    );
+    tab = 0;
+    await refreshAccount();
   }
 
   /// Clears both tokens and every account value; nothing authenticated is
@@ -1525,4 +1596,30 @@ class AppScope extends InheritedNotifier<AppState> {
 
   static AppState read(BuildContext context) =>
       context.getInheritedWidgetOfExactType<AppScope>()!.notifier!;
+}
+
+class TelegramStart {
+  const TelegramStart({
+    required this.nonce,
+    required this.botUrl,
+    required this.appUrl,
+  });
+  final String nonce;
+
+  /// https://t.me/... link; [appUrl] is the tg:// one that opens the app.
+  final String botUrl;
+  final String appUrl;
+}
+
+class TelegramSignup {
+  const TelegramSignup({
+    required this.token,
+    required this.login,
+    required this.name,
+  });
+  final String token;
+
+  /// @username, or the numeric Telegram id.
+  final String login;
+  final String name;
 }

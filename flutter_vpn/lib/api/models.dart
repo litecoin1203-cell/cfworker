@@ -53,6 +53,10 @@ class Me {
   Me.fromJson(Map<String, dynamic> j)
     : id = _int(j['id']),
       email = _str(j['email']),
+      login = _str(j['login']).isNotEmpty ? _str(j['login']) : _str(j['email']),
+      telegramName = j['telegram'] is Map
+          ? _str((j['telegram'] as Map)['name'])
+          : '',
       wallet = _int(j['wallet_balance']),
       referralCode = _str(j['referral_code']),
       trialAvailable = j['trial_available'] == true,
@@ -63,7 +67,16 @@ class Me {
           : null;
 
   final int id;
+
+  /// Empty for accounts made with Telegram.
   final String email;
+
+  /// What the person signs in with: the email, the Telegram @username, or
+  /// the numeric Telegram id when they have no username.
+  final String login;
+
+  /// The name on their Telegram account, when they signed up with Telegram.
+  final String telegramName;
 
   /// Toman.
   final int wallet;

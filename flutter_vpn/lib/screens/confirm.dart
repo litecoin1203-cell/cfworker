@@ -27,6 +27,11 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
   final _invite = TextEditingController();
   bool _create = false;
   bool _busy = false;
+
+  /// A Telegram @username or id can only sign in; new Telegram accounts
+  /// are made from the Telegram screen.
+  bool get _isEmail =>
+      widget.address.contains('@') && !widget.address.startsWith('@');
   String? _error;
 
   @override
@@ -224,43 +229,54 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                             ),
                     ),
                     const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        const PIconView(
-                          PIcon.user,
-                          size: 18,
-                          color: PColors.muted,
+                    if (!_isEmail)
+                      Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 8),
+                        child: Text(
+                          'New? Go back and tap Continue with Telegram.',
+                          style: PType.small(),
                         ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            _create ? 'Have an account?' : 'New to Pleat?',
-                            style: PType.small(),
+                      )
+                    else
+                      Row(
+                        children: [
+                          const PIconView(
+                            PIcon.user,
+                            size: 18,
+                            color: PColors.muted,
                           ),
-                        ),
-                        Pressable(
-                          onTap: _busy
-                              ? null
-                              : () => setState(() {
-                                  _create = !_create;
-                                  _error = null;
-                                }),
-                          label: _create ? 'Sign in instead' : 'Create account',
-                          radius: 20,
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 14,
-                            ),
+                          const SizedBox(width: 8),
+                          Expanded(
                             child: Text(
-                              _create ? 'Sign in' : 'Create account',
-                              style: PType.small(color: PColors.blue)
-                                  .copyWith(fontWeight: FontWeight.w700),
+                              _create ? 'Have an account?' : 'New to Pleat?',
+                              style: PType.small(),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
+                          Pressable(
+                            onTap: _busy
+                                ? null
+                                : () => setState(() {
+                                    _create = !_create;
+                                    _error = null;
+                                  }),
+                            label: _create
+                                ? 'Sign in instead'
+                                : 'Create account',
+                            radius: 20,
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 10,
+                                vertical: 14,
+                              ),
+                              child: Text(
+                                _create ? 'Sign in' : 'Create account',
+                                style: PType.small(color: PColors.blue)
+                                    .copyWith(fontWeight: FontWeight.w700),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                   ],
                 ),
               ),

@@ -128,8 +128,23 @@ async function route(request, env, p) {
   if (p === '/auth/login' && m === 'POST') {
     const b = await body(request);
     await rateLimit(env, 'RL_IP', 'login:' + ip);
-    await rateLimit(env, 'RL_LOGIN', 'login:' + String(b.email || '').trim().toLowerCase());
+    await rateLimit(env, 'RL_LOGIN', 'login:' + String(b.login ?? b.email ?? '').trim().toLowerCase().replace(/^@/, ''));
     return auth.login(env, b, H);
+  }
+  // Telegram sign-up / login (6-digit code from the bot); verify is also limited per sign-in link
+  if (p === '/auth/tg/start' && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'tgstart:' + ip);
+    return auth.tgStart(env);
+  }
+  if (p === '/auth/tg/verify' && m === 'POST') {
+    const b = await body(request);
+    await rateLimit(env, 'RL_IP', 'tgverify:' + ip);
+    await rateLimit(env, 'RL_LOGIN', 'tgverify:' + String(b.nonce || '').slice(0, 64));
+    return auth.tgVerify(env, b, H);
+  }
+  if (p === '/auth/tg/register' && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'register:' + ip);
+    return auth.tgRegister(env, await body(request), H);
   }
   if (p === '/auth/refresh' && m === 'POST') return auth.refresh(env, await body(request));
 

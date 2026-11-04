@@ -110,7 +110,9 @@ async function trialAvailable(env, user) {
 
 export async function me(env, user, request) {
   return json({
-    id: user.id, email: user.email, wallet_balance: user.wallet_balance, referral_code: user.referral_code,
+    id: user.id, email: user.tg_id ? '' : user.email, login: user.tg_id ? (user.tg_username ? '@' + user.tg_username : String(user.tg_id)) : user.email,
+    telegram: user.tg_id ? { id: String(user.tg_id), username: user.tg_username || null, name: user.tg_name || '' } : null,
+    wallet_balance: user.wallet_balance, referral_code: user.referral_code,
     created_at: new Date(user.created_at * 1000).toISOString(),
     trial_available: await trialAvailable(env, user),
     subscription: await subscriptionOut(env, user, true, { withSubUrl: !centralApp(request) }),

@@ -1,6 +1,7 @@
-// Accounts: register / login / refresh / change-password. Email + password, no verification code.
+// Accounts: register / login / refresh / change-password. Email + password, or Telegram (6-digit code from the
+// bot, then a password; later logins with @username or numeric Telegram id + password).
 import { first, run, insert, touchDevice } from './db.js';
-import { json, err, hashPassword, verifyPassword, signJwt, verifyJwt, jwtSecret, cleanEmail, randomCode, nowSec } from './util.js';
+import { json, err, hashPassword, verifyPassword, signJwt, verifyJwt, jwtSecret, cleanEmail, randomCode, nowSec, hmacHex, safeEqual, rateLimit } from './util.js';
 
 const ACCESS_MIN = 30;
 const REFRESH_DAYS = 60;
@@ -40,21 +41,15 @@ const dev = (body, headers) => ({
 
 export async function register(env, body, headers) {
   const email = cleanEmail(body.email);
+  // addresses of Telegram accounts are made up by the server; nobody may take one by email first
+  if (email.endsWith('@' + TG_DOMAIN)) throw err(422, 'invalid_input', 'یک ایمیل درست وارد کن.', 'email');
   checkPassword(body.password);
   const existing = await first(env, 'SELECT id FROM users WHERE email = ?', email);
   if (existing) throw err(409, 'email_taken', 'با این ایمیل قبلاً حساب ساخته شده. وارد شو.');
-  let referredBy = null;
-  if (body.referral_code) {
-    const r = await first(env, 'SELECT id FROM users WHERE referral_code = ?', String(body.referral_code).trim().toUpperCase());
-    if (r) referredBy = r.id;
-  }
-  let code;
-  for (let i = 0; i < 5; i++) { code = randomCode(); if (!(await first(env, 'SELECT 1 FROM users WHERE referral_code = ?', code))) break; }
   let id;
   try {
     id = await insert(env, 'users', {
-      email, password_hash: await hashPassword(body.password, env.SECRET_KEY), referral_code: code,
-      referred_by_id: referredBy, created_at: nowSec(),
+      email, password_hash: await hashPassword(body.password, env.SECRET_KEY), ...(await newUserFields(env, body)),
     });
   } catch (e) {
     // two sign-ups with the same email at the same moment: the UNIQUE index stops the second one
@@ -69,13 +64,41 @@ export async function register(env, body, headers) {
   return json(await makeTokens(env, user), 201);
 }
 
+async function newUserFields(env, body) {
+  let referredBy = null;
+  if (body.referral_code) {
+    const r = await first(env, 'SELECT id FROM users WHERE referral_code = ?', String(body.referral_code).trim().toUpperCase());
+    if (r) referredBy = r.id;
+  }
+  let code;
+  for (let i = 0; i < 5; i++) { code = randomCode(); if (!(await first(env, 'SELECT 1 FROM users WHERE referral_code = ?', code))) break; }
+  return { referral_code: code, referred_by_id: referredBy, created_at: nowSec() };
+}
+
+// What the person typed in the login box: an email, a Telegram @username (with or without "@") or a numeric
+// Telegram id. Usernames start with a letter on Telegram, so an all-digit login is always an id.
+export function loginKey(v) {
+  const s = String(v || '').trim().toLowerCase();
+  if (/^[^@\s]+@[^@\s]+$/.test(s)) return { kind: 'email', value: cleanEmail(s), key: s };
+  const name = s.replace(/^@/, '');
+  if (/^\d{1,20}$/.test(name)) return { kind: 'tg_id', value: name, key: 'tg:' + name };
+  if (/^[a-z][a-z0-9_]{3,31}$/.test(name)) return { kind: 'tg_username', value: name, key: '@' + name };
+  throw err(422, 'invalid_input', 'Enter your email, Telegram username or Telegram ID.', 'email');
+}
+
+export async function findUserByLogin(env, v) {
+  const k = loginKey(v);
+  if (k.kind === 'email') return first(env, 'SELECT * FROM users WHERE email = ?', k.value);
+  if (k.kind === 'tg_id') return first(env, 'SELECT * FROM users WHERE tg_id = ?', Number(k.value));
+  return first(env, 'SELECT * FROM users WHERE tg_username = ?', k.value);
+}
+
 export async function login(env, body, headers) {
-  const email = cleanEmail(body.email);
-  const user = await first(env, 'SELECT * FROM users WHERE email = ?', email);
+  const user = await findUserByLogin(env, body.login ?? body.email);
   // an unknown email still costs one hash, so the response time doesn't tell which emails have accounts
   const stored = user ? user.password_hash : DUMMY_HASH;
   if (!(await verifyPassword(body.password || '', stored, env.SECRET_KEY)) || !user) {
-    throw err(401, 'bad_credentials', 'ایمیل یا رمز اشتباه است.');
+    throw err(401, 'bad_credentials', 'ایمیل/یوزرنیم یا رمز اشتباه است.');
   }
   if (!user.is_active) throw err(403, 'account_disabled', 'این حساب غیرفعال شده است.');
   await run(env, 'UPDATE users SET last_login_at = ? WHERE id = ?', nowSec(), user.id);
@@ -105,4 +128,153 @@ export async function changePassword(env, user, body) {
 export async function logoutAll(env, user) {
   await run(env, 'UPDATE users SET token_version = token_version + 1 WHERE id = ?', user.id);
   return new Response(null, { status: 204 });
+}
+
+// ---------------- Telegram sign-up / login ----------------
+// 1. app: POST /auth/tg/start -> { nonce, bot_url }. The app keeps the nonce and opens the bot with it.
+// 2. bot: "/start L<nonce>" -> the bot sends a 6-digit code to the Telegram user who opened the link. Telegram
+//    itself says who that is (id, username, name), so nobody can claim someone else's Telegram account.
+// 3. app: POST /auth/tg/verify { nonce, code } -> tokens (account exists) or { need_password, signup_token }.
+// 4. app: POST /auth/tg/register { signup_token, password } -> account created, tokens.
+// The code only works together with the nonce of the phone that asked for it, lives 5 minutes, and allows
+// 5 wrong tries; the link lives 10 minutes and sends at most 5 codes. Nonce and code are stored as HMACs.
+export const TG_DOMAIN = 'telegram.local';
+export const tgEmail = (tgId) => `tg${tgId}@${TG_DOMAIN}`;
+const LINK_SEC = 600;
+const CODE_SEC = 300;
+const MAX_TRIES = 5;
+const MAX_CODES = 5;
+const SIGNUP_MIN = 15;
+
+const nonceHash = (env, nonce) => hmacHex(env.SECRET_KEY, 'tg-nonce|' + nonce);
+const codeHash = (env, nonce, code) => hmacHex(env.SECRET_KEY, 'tg-code|' + nonce + '|' + code);
+const NONCE_RE = /^[a-f0-9]{32}$/;
+
+function randomHex(bytes) {
+  return [...crypto.getRandomValues(new Uint8Array(bytes))].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+// 6 digits, every value equally likely (rejects the few 32-bit values that would bias the remainder)
+export function sixDigits() {
+  const lim = 4294000000; // multiple of 1e6 below 2^32
+  for (;;) {
+    const v = crypto.getRandomValues(new Uint32Array(1))[0];
+    if (v < lim) return String(v % 1000000).padStart(6, '0');
+  }
+}
+
+let botName = null;
+async function botUsername(env) {
+  if (env.TELEGRAM_BOT_USERNAME) return String(env.TELEGRAM_BOT_USERNAME).replace(/^@/, '');
+  if (botName) return botName;
+  const { tg } = await import('./telegram.js');
+  const r = await tg(env, 'getMe', {});
+  if (r && r.ok && r.result && r.result.username) botName = r.result.username;
+  return botName;
+}
+
+export async function tgStart(env) {
+  const bot = await botUsername(env);
+  if (!bot) throw err(503, 'telegram_unavailable', 'Telegram sign-in is not available right now. Try again later or use email.');
+  const nonce = randomHex(16);
+  const now = nowSec();
+  await run(env, 'DELETE FROM tg_logins WHERE expires_at < ?', now - 3600);
+  await insert(env, 'tg_logins', { nonce_hash: await nonceHash(env, nonce), created_at: now, expires_at: now + LINK_SEC });
+  return json({
+    nonce, bot_username: bot, expires_in: LINK_SEC,
+    bot_url: `https://t.me/${bot}?start=L${nonce}`,
+    app_url: `tg://resolve?domain=${bot}&start=L${nonce}`,
+  });
+}
+
+// The bot got "/start L<nonce>" from `from` (a private chat). Returns the text to send back.
+export async function tgIssueCode(env, nonce, from) {
+  const expired = 'This sign-in link has expired. Go back to the app and tap "Continue with Telegram" again.';
+  if (!NONCE_RE.test(nonce || '') || !from || from.is_bot || !from.id) return { text: expired };
+  try { await rateLimit(env, 'RL_LOGIN', 'tgcode:' + from.id); } catch (e) { return { text: 'Too many codes. Wait a minute and tap Start again.' }; }
+  const h = await nonceHash(env, nonce);
+  const row = await first(env, 'SELECT * FROM tg_logins WHERE nonce_hash = ?', h);
+  const now = nowSec();
+  if (!row || row.used || row.expires_at < now) return { text: expired };
+  if (row.tg_id && String(row.tg_id) !== String(from.id)) return { text: 'This sign-in link was already opened by another Telegram account.' };
+  if (row.codes_sent >= MAX_CODES) return { text: 'Too many codes for this link. Go back to the app and start again.' };
+  const code = sixDigits();
+  const username = /^[A-Za-z][A-Za-z0-9_]{3,31}$/.test(from.username || '') ? from.username.toLowerCase() : null;
+  const name = [from.first_name, from.last_name].filter(Boolean).join(' ').slice(0, 64);
+  // a new code also gives back the 5 tries (the person had to tap Start again in Telegram to get it)
+  const r = await run(env, `UPDATE tg_logins SET tg_id = ?, tg_username = ?, tg_name = ?, code_hash = ?, code_expires_at = ?,
+      codes_sent = codes_sent + 1, attempts = 0 WHERE nonce_hash = ? AND used = 0 AND codes_sent < ? AND (tg_id IS NULL OR tg_id = ?)`,
+    from.id, username, name, await codeHash(env, nonce, code), now + CODE_SEC, h, MAX_CODES, from.id);
+  if (!r.meta.changes) return { text: expired };
+  return { text: `Your Pleat sign-in code:\n\n<code>${code}</code>\n\nType it in the app. It works for 5 minutes. Never share this code with anyone.`, html: true };
+}
+
+// Telegram username follows the person: whoever had it before (they renamed on Telegram) loses it here.
+async function setTgUsername(env, userId, tgId, username, name) {
+  if (username) await run(env, 'UPDATE users SET tg_username = NULL WHERE tg_username = ? AND id != ?', username, userId);
+  await run(env, 'UPDATE users SET tg_username = ?, tg_name = ? WHERE id = ?', username, name || '', userId);
+}
+
+export async function tgVerify(env, body, headers) {
+  const nonce = String(body.nonce || '');
+  const code = String(body.code || '').replace(/\D/g, '');
+  const wrong = () => err(400, 'bad_code', 'The code is wrong or has expired.', 'code');
+  if (!NONCE_RE.test(nonce) || code.length !== 6) throw wrong();
+  const h = await nonceHash(env, nonce);
+  const now = nowSec();
+  // count the try first (atomically), so parallel guesses can't get more than 5
+  const c = await run(env, `UPDATE tg_logins SET attempts = attempts + 1 WHERE nonce_hash = ? AND used = 0 AND code_hash IS NOT NULL
+      AND code_expires_at >= ? AND attempts < ?`, h, now, MAX_TRIES);
+  if (!c.meta.changes) {
+    const row = await first(env, 'SELECT attempts, code_hash FROM tg_logins WHERE nonce_hash = ?', h);
+    if (row && !row.code_hash) throw err(409, 'code_not_sent', 'Open the bot in Telegram and tap Start to get your code.');
+    if (row && row.attempts >= MAX_TRIES) throw err(429, 'too_many_tries', 'Too many wrong codes. Tap Start in the bot again for a new code.');
+    throw wrong();
+  }
+  const row = await first(env, 'SELECT * FROM tg_logins WHERE nonce_hash = ?', h);
+  if (!(await safeEqual(row.code_hash, await codeHash(env, nonce, code)))) throw wrong();
+  const u = await run(env, 'UPDATE tg_logins SET used = 1 WHERE nonce_hash = ? AND used = 0', h);
+  if (!u.meta.changes) throw wrong();
+
+  const user = await first(env, 'SELECT * FROM users WHERE tg_id = ?', row.tg_id);
+  if (user) {
+    if (!user.is_active) throw err(403, 'account_disabled', 'این حساب غیرفعال شده است.');
+    await setTgUsername(env, user.id, row.tg_id, row.tg_username, row.tg_name);
+    await run(env, 'UPDATE users SET last_login_at = ? WHERE id = ?', now, user.id);
+    const d = dev(body, headers);
+    await touchDevice(env, user.id, d.id, d.model);
+    return json({ ...(await makeTokens(env, user)), login: row.tg_username ? '@' + row.tg_username : String(row.tg_id) });
+  }
+  const signup_token = await signJwt({ typ: 'tgsignup', tg: String(row.tg_id), un: row.tg_username || '', nm: row.tg_name || '' },
+    jwtSecret(env), SIGNUP_MIN * 60);
+  return json({ need_password: true, signup_token, login: row.tg_username ? '@' + row.tg_username : String(row.tg_id),
+    tg_name: row.tg_name || '', expires_in: SIGNUP_MIN * 60 });
+}
+
+export async function tgRegister(env, body, headers) {
+  const p = await verifyJwt(body.signup_token, jwtSecret(env));
+  if (!p || p.typ !== 'tgsignup' || !/^\d{1,20}$/.test(p.tg || '')) throw err(401, 'signup_expired', 'Sign-up took too long. Tap "Continue with Telegram" again.');
+  checkPassword(body.password);
+  const tgId = Number(p.tg);
+  if (await first(env, 'SELECT id FROM users WHERE tg_id = ?', tgId)) throw err(409, 'telegram_taken', 'This Telegram account already has an account. Log in instead.');
+  let id;
+  try {
+    id = await insert(env, 'users', {
+      email: tgEmail(tgId), password_hash: await hashPassword(body.password, env.SECRET_KEY), tg_id: tgId,
+      ...(await newUserFields(env, body)),
+    });
+  } catch (e) {
+    if (/UNIQUE/i.test(String(e && e.message))) throw err(409, 'telegram_taken', 'This Telegram account already has an account. Log in instead.');
+    throw e;
+  }
+  await setTgUsername(env, id, tgId, p.un || null, p.nm || '');
+  const user = await first(env, 'SELECT * FROM users WHERE id = ?', id);
+  const d = dev(body, headers);
+  await touchDevice(env, id, d.id, d.model);
+  return json({ ...(await makeTokens(env, user)), login: p.un ? '@' + p.un : String(tgId) }, 201);
+}
+
+// how a person is shown to the admin: Telegram name when they signed up with Telegram, else email
+export function userLabel(u) {
+  if (u && u.tg_id) return u.tg_username ? '@' + u.tg_username : 'TG ' + u.tg_id;
+  return u ? u.email : '';
 }

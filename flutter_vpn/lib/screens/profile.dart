@@ -72,7 +72,7 @@ class ProfileScreen extends StatelessWidget {
                         Text(app.firstName, style: PType.h2()),
                         const SizedBox(height: 2),
                         Text(
-                          app.email,
+                          app.login,
                           style: PType.small(),
                           overflow: TextOverflow.ellipsis,
                         ),

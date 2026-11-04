@@ -17,7 +17,7 @@ const env = {
   PUBLIC_BASE_URL: 'http://127.0.0.1:8787',
   PASARGUARD_URL: PANEL, PASARGUARD_USERNAME: 'a', PASARGUARD_PASSWORD: 'b', PASARGUARD_USERNAME_PREFIX: 'cg',
   NOWPAYMENTS_API_KEY: 'k', NOWPAYMENTS_IPN_SECRET: 's',
-  TELEGRAM_BOT_TOKEN: 'bot:token', TELEGRAM_CHAT_ID: '12345', TELEGRAM_WEBHOOK_SECRET: 'hook',
+  TELEGRAM_BOT_TOKEN: 'bot:token', TELEGRAM_CHAT_ID: '12345', TELEGRAM_WEBHOOK_SECRET: 'hook', TELEGRAM_BOT_USERNAME: 'PleatDevBot',
 };
 const ctx = { waitUntil: () => {} };
 const WEB = new URL('../../app-web/', import.meta.url).pathname;
@@ -86,6 +86,18 @@ function serveStatic(res, pathname) {
 createServer(async (req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1:8787');
   const p = url.pathname;
+  // preview only: a Telegram user opens the app's sign-in link, and the bot's reply (with the code) comes back
+  if (p === '/dev/tg-open' && req.method === 'POST') {
+    const chunks = []; for await (const c of req) chunks.push(c);
+    const { nonce, id, username } = JSON.parse(Buffer.concat(chunks).toString() || '{}');
+    const from = { id, is_bot: false, username, first_name: 'Dev' };
+    await worker.fetch(new Request('http://x/tg/hook', { method: 'POST', headers: { 'content-type': 'application/json', 'x-telegram-bot-api-secret-token': 'hook' },
+      body: JSON.stringify({ message: { chat: { id, type: 'private' }, from, text: '/start L' + nonce } }) }), env, { waitUntil: (x) => x });
+    await new Promise((r) => setTimeout(r, 50));
+    const last = fakes.tg.messages[fakes.tg.messages.length - 1] || {};
+    res.writeHead(200, { 'content-type': 'application/json' });
+    return res.end(JSON.stringify({ text: last.chat_id === id ? last.text : '' }));
+  }
   // preview only: pretend a deposit landed on the blockchain  (POST /dev/chain {coin, record})
   if (p === '/dev/chain' && req.method === 'POST') {
     const chunks = []; for await (const c of req) chunks.push(c);

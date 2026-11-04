@@ -130,7 +130,7 @@ class ApiClient {
 
   /// Contract version, not Pleat's own: 1.9 tells the Worker this client
   /// never wants a raw subscription address (see `centralApp`).
-  static const appVersion = '1.9.0 (Pleat 1.2.7)';
+  static const appVersion = '1.9.0 (Pleat 1.2.8)';
 
   final TokenStore tokens;
   final List<String> _bases;
@@ -381,7 +381,17 @@ class ApiClient {
   /// English copy for the Worker's error codes. Unknown codes keep the
   /// server's message, so nothing is hidden.
   static const _english = {
-    'bad_credentials': 'Email or password is wrong.',
+    'bad_credentials': 'Login or password is wrong.',
+    'bad_code': 'The code is wrong or has expired.',
+    'code_not_sent': 'Open the bot in Telegram and tap Start to get your code.',
+    'too_many_tries':
+        'Too many wrong codes. Tap Start in the bot again for a new one.',
+    'signup_expired':
+        'Sign-up took too long. Tap Continue with Telegram again.',
+    'telegram_taken':
+        'This Telegram account already has an account. Sign in instead.',
+    'telegram_unavailable':
+        'Telegram sign-in isn’t available right now. Use email instead.',
     'email_taken': 'An account with this email exists. Sign in instead.',
     'invalid_input': 'Check the fields and try again.',
     'not_authenticated': 'Sign in first.',

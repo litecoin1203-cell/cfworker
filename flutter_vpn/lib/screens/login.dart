@@ -6,12 +6,16 @@ import '../design/mark.dart';
 import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
+import '../api/client.dart';
+import '../design/backdrop.dart';
+import '../design/scenes.dart';
 import '../state/app_state.dart';
 import 'confirm.dart';
+import 'shell.dart';
 
 /// Login: a navy cut header built from the brand planes, the mark on the
-/// blue plane, one field and Continue. The backend signs in by email and
-/// password only, so "Use a phone number" says so instead of faking it.
+/// blue plane, Continue with Telegram first, then one field for an email,
+/// a Telegram @username or a Telegram id, and Continue to the password.
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
 
@@ -29,16 +33,29 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  /// Email, Telegram @username (with or without @) or numeric Telegram id.
+  static final _loginRe = RegExp(
+    r'^([^@\s]+@[^@\s]+\.[^@\s]+|@?[A-Za-z][A-Za-z0-9_]{3,31}|\d{1,20})$',
+  );
+
   void _continue() {
     final v = _email.text.trim();
-    if (!RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$').hasMatch(v)) {
-      setState(() => _error = 'That email address looks incomplete.');
+    if (!_loginRe.hasMatch(v)) {
+      setState(
+        () => _error = 'Enter your email, Telegram @username or Telegram ID.',
+      );
       return;
     }
     setState(() => _error = null);
     FocusScope.of(context).unfocus();
     Navigator.of(context)
         .push(FadeRoute(builder: (_) => ConfirmScreen(address: v)));
+  }
+
+  void _telegram() {
+    FocusScope.of(context).unfocus();
+    Navigator.of(context)
+        .push(FadeRoute(builder: (_) => const TelegramLoginScreen()));
   }
 
   @override
@@ -81,6 +98,8 @@ class _LoginScreenState extends State<LoginScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  PillButton(label: 'Continue with Telegram', onTap: _telegram),
+                  const SizedBox(height: 22),
                   _emailField(),
                   AnimatedSize(
                     duration: reduced ? Duration.zero : PMotion.quick,
@@ -94,45 +113,17 @@ class _LoginScreenState extends State<LoginScreen> {
                             ),
                           ),
                   ),
-                  const SizedBox(height: 22),
-                  PillButton(label: 'Continue', onTap: _continue),
-                  const SizedBox(height: 8),
-                  Center(
-                    child: Pressable(
-                      onTap: () => setState(
-                        () => _error =
-                            'Phone sign-in isn’t offered. Use your email.',
-                      ),
-                      label: 'Use a phone number',
-                      radius: 20,
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 14,
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const PIconView(
-                              PIcon.phone,
-                              size: 18,
-                              color: PColors.blue,
-                            ),
-                            const SizedBox(width: 8),
-                            Text(
-                              'Use a phone number',
-                              style: PType.small(color: PColors.blue)
-                                  .copyWith(fontWeight: FontWeight.w700),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
+                  const SizedBox(height: 16),
+                  PillButton(
+                    label: 'Continue with password',
+                    onTap: _continue,
+                    color: PColors.field,
+                    textColor: PColors.ink,
                   ),
                   const SizedBox(height: 18),
                   Text(
                     AppScope.of(context).api.configured
-                        ? 'Sign in with your Cloud Gold account, or create one on the next step.'
+                        ? 'New here? Continue with Telegram. No Telegram access yet? Type your email and create an account on the next step.'
                         : 'This build has no server address, so sign-in can’t reach anyone.',
                     style: PType.small(),
                   ),
@@ -172,18 +163,322 @@ class _LoginScreenState extends State<LoginScreen> {
     key: const ValueKey('email'),
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      _label('Email'),
+      _label('Or sign in with a password'),
       _fieldShell(
         TextField(
           controller: _email,
           keyboardType: TextInputType.emailAddress,
-          autofillHints: const [AutofillHints.email],
+          autocorrect: false,
+          autofillHints: const [AutofillHints.username],
           textInputAction: TextInputAction.go,
           onSubmitted: (_) => _continue(),
           style: PType.body().copyWith(fontWeight: FontWeight.w700),
-          decoration: _dec('you@example.com'),
+          decoration: _dec('Email, @username or Telegram ID'),
         ),
       ),
+    ],
+  );
+}
+
+/// Sign in or sign up with Telegram: the bot sends a 6-digit code to the
+/// Telegram account that opens the link, the code goes in here, and a new
+/// account then sets its app password. Later sign-ins can use the
+/// @username (or the numeric Telegram id) and that password.
+class TelegramLoginScreen extends StatefulWidget {
+  const TelegramLoginScreen({super.key});
+
+  @override
+  State<TelegramLoginScreen> createState() => _TelegramLoginScreenState();
+}
+
+class _TelegramLoginScreenState extends State<TelegramLoginScreen> {
+  final _code = TextEditingController();
+  final _password = TextEditingController();
+  final _again = TextEditingController();
+  final _invite = TextEditingController();
+  TelegramStart? _link;
+  TelegramSignup? _signup;
+  bool _busy = false;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _newLink());
+  }
+
+  @override
+  void dispose() {
+    _code.dispose();
+    _password.dispose();
+    _again.dispose();
+    _invite.dispose();
+    super.dispose();
+  }
+
+  Future<void> _run(Future<void> Function() job) async {
+    if (_busy) return;
+    FocusScope.of(context).unfocus();
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      await job();
+    } on ApiError catch (e) {
+      if (mounted) setState(() => _error = e.message);
+    } catch (_) {
+      if (mounted) {
+        setState(() => _error = 'Can’t reach the server. Try again.');
+      }
+    }
+    if (mounted) setState(() => _busy = false);
+  }
+
+  Future<void> _newLink() => _run(() async {
+    final link = await AppScope.read(context).telegramStart();
+    if (!mounted) return;
+    setState(() {
+      _link = link;
+      _code.clear();
+    });
+    await _openBot();
+  });
+
+  Future<void> _openBot() async {
+    final link = _link;
+    if (link == null) return;
+    final tunnel = AppScope.read(context).tunnel;
+    final ok = link.appUrl.isNotEmpty && await tunnel.openUrl(link.appUrl);
+    if (!ok) await tunnel.openUrl(link.botUrl);
+  }
+
+  Future<void> _verify() async {
+    final link = _link;
+    final code = _code.text.replaceAll(RegExp(r'\D'), '');
+    if (link == null) return _newLink();
+    if (code.length != 6) {
+      setState(() => _error = 'The code has 6 digits.');
+      return;
+    }
+    await _run(() async {
+      final signup = await AppScope.read(context)
+          .telegramVerify(link.nonce, code);
+      if (!mounted) return;
+      if (signup == null) return _home();
+      setState(() => _signup = signup);
+    });
+  }
+
+  Future<void> _create() async {
+    final signup = _signup;
+    if (signup == null) return;
+    if (_password.text.length < 8) {
+      setState(() => _error = 'Passwords have at least 8 characters.');
+      return;
+    }
+    if (_password.text != _again.text) {
+      setState(() => _error = 'The two passwords don’t match.');
+      return;
+    }
+    await _run(() async {
+      final err = await AppScope.read(
+        context,
+      ).telegramRegister(signup, _password.text, invite: _invite.text.trim());
+      if (!mounted) return;
+      if (err != null) {
+        setState(() => _error = err);
+        return;
+      }
+      _home();
+    });
+  }
+
+  void _home() {
+    Navigator.of(context).pushAndRemoveUntil(
+      FadeRoute(builder: (_) => const Shell()),
+      (_) => false,
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final signup = _signup;
+    return Scaffold(
+      backgroundColor: PColors.ground,
+      body: ShardBackdrop(
+        layout: Layouts.confirm,
+        child: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 28),
+            children: [
+              Align(
+                alignment: Alignment.centerLeft,
+                child: RoundIcon(
+                  PIcon.back,
+                  onTap: () => Navigator.of(context).pop(),
+                  label: 'Back',
+                ),
+              ),
+              const SizedBox(height: 18),
+              SurfaceCard(
+                padding: const EdgeInsets.fromLTRB(24, 26, 24, 22),
+                child: signup == null ? _codeStep() : _passwordStep(signup),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _header(PIcon icon, String title) => Row(
+    children: [
+      Container(
+        width: 48,
+        height: 48,
+        decoration: const BoxDecoration(
+          color: PColors.mist,
+          shape: BoxShape.circle,
+        ),
+        alignment: Alignment.center,
+        child: PIconView(icon, color: PColors.blue),
+      ),
+      const SizedBox(width: 14),
+      Expanded(child: Text(title, style: PType.h2())),
+    ],
+  );
+
+  Widget _field(
+    TextEditingController c,
+    String hint, {
+    bool secret = false,
+    bool digits = false,
+    VoidCallback? onDone,
+  }) => Container(
+    height: 56,
+    margin: const EdgeInsets.only(top: 12),
+    padding: const EdgeInsets.symmetric(horizontal: 22),
+    decoration: BoxDecoration(
+      color: PColors.field,
+      borderRadius: BorderRadius.circular(PRadius.pill),
+    ),
+    alignment: Alignment.centerLeft,
+    child: TextField(
+      controller: c,
+      obscureText: secret,
+      autocorrect: false,
+      keyboardType: digits ? TextInputType.number : null,
+      maxLength: digits ? 6 : null,
+      autofillHints: digits
+          ? const [AutofillHints.oneTimeCode]
+          : secret
+          ? const [AutofillHints.newPassword]
+          : null,
+      textInputAction: onDone == null
+          ? TextInputAction.next
+          : TextInputAction.go,
+      onSubmitted: onDone == null ? null : (_) => onDone(),
+      style: PType.body().copyWith(
+        fontWeight: FontWeight.w700,
+        letterSpacing: digits ? 6 : null,
+      ),
+      decoration: InputDecoration(
+        isCollapsed: true,
+        counterText: '',
+        border: InputBorder.none,
+        hintText: hint,
+        hintStyle: PType.body(color: PColors.muted),
+      ),
+    ),
+  );
+
+  Widget _errorLine() => AnimatedSize(
+    duration: PMotion.reduced(context) ? Duration.zero : PMotion.quick,
+    child: _error == null
+        ? const SizedBox(width: double.infinity)
+        : Padding(
+            padding: const EdgeInsets.only(top: 10, left: 18),
+            child: Text(_error!, style: PType.small(color: PColors.ink)),
+          ),
+  );
+
+  Widget _textLink(String text, VoidCallback onTap) => Pressable(
+    onTap: _busy ? null : onTap,
+    label: text,
+    radius: 20,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
+      child: Text(
+        text,
+        style: PType.small(color: PColors.blue)
+            .copyWith(fontWeight: FontWeight.w700),
+      ),
+    ),
+  );
+
+  Widget _codeStep() => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _header(PIcon.lock, 'Sign in with Telegram'),
+      const SizedBox(height: 16),
+      Text(
+        '1. Open Telegram and tap Start in our bot.\n'
+        '2. Type the 6-digit code the bot sends you.',
+        style: PType.body(color: PColors.muted),
+      ),
+      const SizedBox(height: 16),
+      PillButton(
+        label: _link == null ? 'Getting your link…' : 'Open Telegram',
+        onTap: _busy || _link == null ? null : _openBot,
+        color: PColors.field,
+        textColor: PColors.ink,
+      ),
+      _field(_code, '6-digit code', digits: true, onDone: _verify),
+      _errorLine(),
+      const SizedBox(height: 16),
+      PillButton(label: _busy ? 'Checking…' : 'Continue', onTap: _verify),
+      const SizedBox(height: 4),
+      Row(
+        children: [
+          Expanded(child: Text('Didn’t get a code?', style: PType.small())),
+          _textLink('New link', _newLink),
+        ],
+      ),
+      Text(
+        'Can’t open Telegram? Go back and use your email instead.',
+        style: PType.small(),
+      ),
+    ],
+  );
+
+  Widget _passwordStep(TelegramSignup s) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      _header(PIcon.user, 'Set your app password'),
+      const SizedBox(height: 16),
+      Text.rich(
+        TextSpan(
+          style: PType.body(color: PColors.muted),
+          children: [
+            const TextSpan(text: 'Your login is '),
+            TextSpan(
+              text: s.login,
+              style: PType.body().copyWith(fontWeight: FontWeight.w700),
+            ),
+            const TextSpan(
+              text: '. Use it with this password to sign in on any phone.',
+            ),
+          ],
+        ),
+      ),
+      const SizedBox(height: 4),
+      _field(_password, 'Password (at least 8 characters)', secret: true),
+      _field(_again, 'Password again', secret: true),
+      _field(_invite, 'Invite code (optional)', onDone: _create),
+      _errorLine(),
+      const SizedBox(height: 16),
+      PillButton(label: _busy ? 'Creating…' : 'Create account', onTap: _create),
     ],
   );
 }
