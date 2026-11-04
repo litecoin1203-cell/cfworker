@@ -4,6 +4,71 @@ import { first, run, all, insert, getSettings, setSetting, SETTING_DEFAULTS } fr
 import { hashPassword, nowSec } from './util.js';
 
 const API = (env, method) => `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
+
+// ---------------- no typing: commands in bot text become buttons ----------------
+// Every admin message goes through buttonize(): a "/command args" in its text is replaced by the button's
+// name in «», and the button itself is added under the message. A tapped command inside a Telegram message
+// would send only its first word, and the admin should never have to type one anyway. Commands that still
+// need an answer (a number, an email, a password) open the menu's "write your answer" question instead.
+const MENU_BTN = '🏠 منو';
+const x = (cmd) => `m:x:home|${cmd}`;
+const one = (label, cmd) => () => [label, x(cmd)];
+const PA = ['🗂 پنل‌ها', 'm:pa'];
+const CMD_BTN = {
+  '/menu': () => ['🏠 منوی اصلی', 'm:home'],
+  '/start': () => ['🏠 منوی اصلی', 'm:home'],
+  '/help': () => ['❓ راهنما', 'm:help'],
+  '/panels': () => PA,
+  '/panel': one('🔎 تست همه‌ی پنل‌ها', '/panel'),
+  '/backup': one('💾 پشتیبان', '/backup'),
+  '/google': one('🔎 گوگل', '/google'),
+  '/carriers': one('📶 اپراتورها', '/carriers'),
+  '/rate': one('💵 قیمت دلار', '/rate'),
+  '/sms': one('📩 پیامک بانک', '/sms'),
+  '/wallets': one('💎 ولت‌ها', '/wallets'),
+  '/stats': one('📊 آمار', '/stats'),
+  '/settings': () => ['⚙️ تنظیمات', 'm:set'],
+  '/plans': () => ['📦 پلن‌ها', 'm:pl'],
+  '/coupons': () => ['🏷 کدهای تخفیف', 'm:cp'],
+  '/addpanel': () => ['➕ افزودن پنل', 'm:w:addpanel'],
+  '/newplan': () => ['➕ پلن جدید', 'm:w:newplan'],
+  '/coupon': () => ['🏷 کد تخفیف جدید', 'm:w:coupon'],
+  '/paneltest': (a) => (a[0] ? [`🧪 تست پنل #${a[0]}`, x(`/paneltest ${a[0]}`)] : PA),
+  '/rollout': (a) => (a[0] && a[1] ? [`🚀 پنل #${a[0]} برای ${a[1]}٪ کاربران`, x(`/rollout ${a[0]} ${a[1]}`)] : a[0] ? [`🗂 پنل #${a[0]}`, `m:pp:${a[0]}`] : PA),
+  '/drainpanel': (a) => (a[0] ? [`🚪 خارج‌کردن پنل #${a[0]}`, x(`/drainpanel ${a[0]}`)] : PA),
+  '/panelcred': (a) => (a[0] ? [`🔐 ورود پنل #${a[0]}`, `m:w:panelcred:${a[0]}`] : PA),
+  '/panelgroups': (a) => (a[0] && a[1] ? [`👥 پنل #${a[0]}: ${a[1]}`, x(`/panelgroups ${a[0]} ${a[1]}`)] : a[0] ? [`👥 گروه/سرویس پنل #${a[0]}`, `m:w:groups:${a[0]}`] : PA),
+  '/find': (a) => (a[0] ? [`👤 ${a[0]}`, x(`/find ${a[0]}`)] : ['🔎 جستجوی کاربر', 'm:w:find']),
+  '/user': (a) => (a[0] ? [`👤 ${a[0]}`, x(`/find ${a[0]}`)] : ['🔎 جستجوی کاربر', 'm:w:find']),
+  '/grant': (a) => (a[0] && a[1] ? [`🎁 پلن ${a[1]} به ${a[0]}`, x(`/grant ${a[0]} ${a[1]}`)] : ['👤 کاربران', 'm:usr']),
+  '/reset': () => ['👤 کاربران', 'm:usr'],
+  '/link': () => ['👤 کاربران', 'm:usr'],
+  '/plan': (a) => (a[0] ? [`📦 پلن #${a[0]}`, `m:p:${a[0]}`] : ['📦 پلن‌ها', 'm:pl']),
+  '/delcoupon': () => ['🏷 کدهای تخفیف', 'm:cp'],
+  '/set': (a) => (a[0] && a[1] ? [`⚙️ ${a[0]} = ${a[1]}`, x(`/set ${a[0]} ${a[1]}`)] : a[0] ? [`✏️ ${a[0]}`, `m:w:set:${a[0]}`] : ['⚙️ تنظیمات', 'm:set']),
+};
+const CMD_RE = /(^|[\s(:،«])(\/[a-z]+)((?:[ \t]+[A-Za-z0-9@_%+-]+(?:[.,][A-Za-z0-9@_%+-]+)*)*)/g;
+
+// {text, reply_markup}: commands replaced by «button name», their buttons appended to any inline keyboard.
+export function buttonize(text, replyMarkup) {
+  const found = [];
+  const out = String(text).replace(CMD_RE, (m, pre, cmd, rest) => {
+    const fn = CMD_BTN[cmd];
+    if (!fn) return m;
+    const args = rest.trim() ? rest.trim().split(/[ \t]+/) : [];
+    const [label, data] = fn(args);
+    if (new TextEncoder().encode(data).length <= 64 && !found.some((f) => f.callback_data === data)) found.push({ text: label, callback_data: data });
+    return `${pre}«${label}»`;
+  });
+  if (!found.length) return { text: out, reply_markup: replyMarkup };
+  if (replyMarkup && !replyMarkup.inline_keyboard) return { text: out, reply_markup: replyMarkup }; // a reply keyboard stays as it is
+  const rows = [...(replyMarkup?.inline_keyboard || [])];
+  const have = new Set(rows.flat().map((b) => b.callback_data));
+  const extra = found.filter((f) => !have.has(f.callback_data)).slice(0, 8);
+  for (let i = 0; i < extra.length; i += 2) rows.push(extra.slice(i, i + 2));
+  return { text: out, reply_markup: rows.length ? { inline_keyboard: rows } : replyMarkup };
+}
+
 const fa = (n) => Number(n || 0).toLocaleString('en-US');
 const GB = 1024 ** 3;
 
@@ -21,7 +86,8 @@ export async function tg(env, method, body) {
 
 export async function notifyAdmin(env, text, replyMarkup) {
   if (!env.TELEGRAM_CHAT_ID) return;
-  await tg(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, text: String(text).slice(0, 4000), reply_markup: replyMarkup, disable_web_page_preview: true });
+  const b = buttonize(text, replyMarkup);
+  await tg(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, text: b.text.slice(0, 4000), reply_markup: b.reply_markup, disable_web_page_preview: true });
 }
 
 async function sendDocument(env, chatId, filename, content, caption) {
@@ -337,44 +403,21 @@ export async function sendBackup(env, chatId) {
   return sendDocument(env, chatId || env.TELEGRAM_CHAT_ID, `cloudgold-backup-${day}.json`, data, `💾 پشتیبان ${day} — ${users} کاربر\nاین فایل را جایی امن نگه دار.`);
 }
 
-export const HELP = `دستورهای ربات Cloud Gold:
+export const HELP = `راهنمای ربات Cloud Gold
 
-🏠 /menu — منوی دکمه‌ای (همه‌ی کارها بدون تایپ دستور)
+همه‌ی کارها با دکمه است؛ لازم نیست چیزی با / تایپ کنی. دکمه‌ی «🏠 منو» همیشه پایین صفحه است.
 
-🔎 /panel — تست سلامت همه‌ی پنل‌ها
-🗂 /panels — پنل‌ها، افزودن، ورود تدریجی، خارج‌کردن
-📊 /stats — آمار فروش
-👤 /find ایمیل — اطلاعات زنده‌ی کاربر از پنل
-🎁 /grant ایمیل شماره‌پلن — دادن پلن به کاربر
-🔑 /reset ایمیل رمزجدید — تغییر رمز کاربر
-🔗 /link ایمیل یوزرنیم‌پنل [شماره‌پنل] — وصل کردن اکانتی که از قبل روی پنل دارد (بدون ساخت اکانت جدید)
-💾 /backup — فایل پشتیبان
+🧾 رسیدهای منتظر — تأیید یا رد پرداخت‌ها
+👤 کاربران — جستجو با ایمیل؛ در کارت کاربر: دادن پلن، تغییر رمز، وصل اکانت پنل
+📦 پلن‌ها — ویرایش هر پلن و ساخت پلن جدید
+🗂 پنل‌ها — افزودن پنل (نوعش خودکار تشخیص داده می‌شود)، ورود پنل، تست، ورود تدریجی، خارج‌کردن
+🏷 کدهای تخفیف — ساخت و حذف
+💰 پرداخت‌ها — کارت، ولت‌ها، قیمت دلار، پیامک بانک
+⚙️ تنظیمات — هر مقدار با دکمه‌ی تغییر
+📊 آمار، 🔎 گوگل، 📶 اپراتورها، 💾 پشتیبان
 
-📦 /plans — لیست پلن‌ها
-✏️ /plan شماره فیلد مقدار — تغییر پلن
-   فیلدها: name price old days gb devices trial badge sort on
-   مثال: /plan 1 name یک ماهه
-➕ /newplan نام|روز|گیگ|دستگاه|قیمت — پلن جدید
-   مثال: /newplan سه ماهه|90|0|2|399000
-
-🏷 /coupon کد درصد [تعداد] [روز] [شماره‌پلن] — کد تخفیف
-   مثال: /coupon YALDA 20 100 7
-📋 /coupons — لیست کدها    🗑 /delcoupon کد
-
-🔎 /google — کدام سرورها با گوگل و Gemini مشکل دارند
-📶 /carriers — کدام سرور روی کدام اپراتور (همراه اول، ایرانسل، ...) بهتر است
-💳 /sms — تأیید خودکار کارت‌به‌کارت با پیامک بانک
-   (یا پیامک واریز را کپی کن و همین‌جا بفرست)
-
-💎 /wallets — ولت‌های درگاه ارز دیجیتال و قیمت لحظه‌ای
-   /rate — قیمت لحظه‌ای دلار از صرافی‌های ایرانی (خودکار)
-   /set coin_auto auto — تأیید خودکار روی بلاک‌چین (XLM XRP TRX TON ALGO)
-     detect = فقط پیدا کند و تو تأیید کنی · off = همه دستی
-   /set wallet_xlm آدرس — (xrp trx sol ton ltc doge bch bnb pol algo هم همین‌طور)
-   /set wallet_xlm_memo ... — Memo برای ولت صرافی (xrp و ton هم دارند)
-
-⚙️ /settings — تنظیمات    /set کلید مقدار — تغییر
-   trial_data_gb = حجم تست رایگان (0 = مثل پلن)`;
+وقتی ربات سؤالی می‌پرسد (ایمیل، عدد، رمز…) فقط جواب را بنویس و بفرست.
+پیامک واریز بانک را هم می‌توانی کپی کنی و همین‌جا بفرستی.`;
 
 export const PLAN_FIELDS = { name: 'name', price: 'price_toman', old: 'old_price_toman', days: 'duration_days', gb: 'data_limit_gb', devices: 'device_limit', trial: 'trial_days', badge: 'badge', sort: 'sort', on: 'is_active', desc: 'description' };
 
@@ -388,8 +431,12 @@ async function onMessage(env, msg, opts = {}) {
   const chatId = msg.chat?.id;
   const text = (msg.text || '').trim();
   // "⏳ working..." notes never get the back button; the real answer that follows does
-  const say = (t, extra) => tg(env, 'sendMessage', { chat_id: chatId, text: String(t).slice(0, 4000), disable_web_page_preview: true,
-    ...(opts.kb && !String(t).startsWith('⏳') ? { reply_markup: opts.kb } : {}), ...(extra || {}) });
+  const say = (t, extra) => {
+    const markup = (extra && extra.reply_markup) || (opts.kb && !String(t).startsWith('⏳') ? opts.kb : undefined);
+    const b = buttonize(t, markup);
+    return tg(env, 'sendMessage', { chat_id: chatId, disable_web_page_preview: true, ...(extra || {}),
+      text: b.text.slice(0, 4000), ...(b.reply_markup ? { reply_markup: b.reply_markup } : {}) });
+  };
   const cmd = text.split(/\s+/)[0].replace(/@\w+$/, '').toLowerCase();
   const admin = isAdmin(env, msg.chat, msg.from);
   if (cmd === '/id' || (cmd === '/start' && !admin)) {
@@ -398,8 +445,14 @@ async function onMessage(env, msg, opts = {}) {
   }
   if (!admin) return;
 
-  if (cmd === '/start' || cmd === '/menu') return (await import('./telegram-menu.js')).sendHome(env, chatId);
-  if (cmd === '/help') return say(HELP);
+  if (text === MENU_BTN || cmd === '/start' || cmd === '/menu' || cmd === '/help') {
+    const menu = await import('./telegram-menu.js');
+    if (text === MENU_BTN) await menu.takeWait(env); // the menu button also cancels an open question
+    // a button that stays under the chat's text box, so the menu is always one tap away
+    if (cmd === '/start') await tg(env, 'sendMessage', { chat_id: chatId, text: 'همه‌ی کارها با دکمه است؛ لازم نیست دستوری تایپ کنی. دکمه‌ی «🏠 منو» همیشه پایین صفحه است.',
+      reply_markup: { keyboard: [[{ text: MENU_BTN }]], resize_keyboard: true, is_persistent: true } });
+    return menu.sendHome(env, chatId);
+  }
 
   // the menu asked a question ("write the email", "new price"...): this message is the answer
   if (text && !opts.kb) {

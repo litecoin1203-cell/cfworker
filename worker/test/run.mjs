@@ -410,7 +410,7 @@ section('telegram button menu');
   ok(since(n).some((c) => c.method === 'sendMessage' && kbData(c).includes('m:usr')), '/start opens the menu for the admin');
   n = fakes.tg.calls.length;
   await say('/help');
-  ok(sent(n).some((m) => m.text.includes('/menu') && m.text.includes('/grant')), '/help still lists the text commands');
+  ok(since(n).some((c) => c.method === 'sendMessage' && kbData(c).includes('m:usr')), '/help opens the button menu');
 
   // navigation edits the same message
   n = fakes.tg.calls.length;
@@ -1678,7 +1678,8 @@ section('any panel type: Rebecca, Marzban and PasarGuard are detected on /panelt
   // a Rebecca admin with no usable service gets told how to set one
   reb.services = [];
   await admin(`/paneltest ${rid}`);
-  ok(lastText().includes('/panelgroups') && lastText().includes('سرویس'), 'no service: bot says how to set it: ' + lastText());
+  const lastKb = () => JSON.stringify(fakes.tg.messages[fakes.tg.messages.length - 1].reply_markup || {});
+  ok(lastKb().includes(`m:w:groups:${rid}`) && lastText().includes('سرویس') && !lastText().includes('/panelgroups'), 'no service: a button asks for the service: ' + lastText());
   await admin(`/panelgroups ${rid} 9`);
   await admin(`/paneltest ${rid}`);
   ok(lastText().includes('سالم است') && reb.createLog[reb.createLog.length - 1].service_id === 9, 'service set by hand is used');
@@ -1725,7 +1726,7 @@ section('any panel type: Rebecca, Marzban and PasarGuard are detected on /panelt
   ok(lastText().includes('does not answer like PasarGuard, Marzban or Rebecca') && !lastText().includes('hidd.test'), 'unknown panel: clear message without the address: ' + lastText());
   env[`PANEL_${hid}_CRED`] = 'not json';
   await admin(`/paneltest ${hid}`);
-  ok(lastText().includes(`/panelcred ${hid}`), 'broken secret: says how to give the login');
+  ok(JSON.stringify(fakes.tg.messages[fakes.tg.messages.length - 1].reply_markup || {}).includes(`m:w:panelcred:${hid}`), 'broken secret: a button asks for the login');
   await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(hid).run();
 
   // panel 1 (PasarGuard) is still recognised as PasarGuard
@@ -1854,6 +1855,27 @@ section('a new panel reaches existing users: at once when the app loads servers,
   await admin('/panels');
   ok(!lastText().includes('ساخت اکانت رد شد'), 'error cleared once creates work again');
   for (const x of [id, qid]) await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(x).run();
+}
+
+section('no typing: commands in bot messages become buttons, a menu button stays under the chat');
+{
+  const { buttonize } = await import('../src/telegram.js');
+  const b = buttonize('برای شروع: /rollout 2 10 یا /paneltest 2. شکل درست: /addpanel نام', undefined);
+  ok(!/\/[a-z]/.test(b.text) && b.text.includes('«🚀 پنل #2 برای 10٪ کاربران»'), 'command text replaced by the button name: ' + b.text);
+  const data = b.reply_markup.inline_keyboard.flat().map((x) => x.callback_data);
+  ok(data.includes('m:x:home|/rollout 2 10') && data.includes('m:x:home|/paneltest 2') && data.includes('m:w:addpanel'), 'each command has its button: ' + data.join());
+  const keep = buttonize('ok /panels', { inline_keyboard: [[{ text: 'a', callback_data: 'm:home' }]] });
+  ok(keep.reply_markup.inline_keyboard[0][0].callback_data === 'm:home' && keep.reply_markup.inline_keyboard.length === 2, 'existing buttons kept, new ones added');
+  ok(buttonize('https://p.example.com:8000/dashboard/ and /api/x').text.includes('/dashboard/'), 'addresses are left alone');
+  const n = fakes.tg.calls.length;
+  await admin('/start');
+  ok(fakes.tg.calls.slice(n).some((c) => c.method === 'sendMessage' && c.body.reply_markup && c.body.reply_markup.keyboard && c.body.reply_markup.keyboard[0][0].text === '🏠 منو'), '/start puts the menu button under the chat');
+  const m = fakes.tg.calls.length;
+  await admin('🏠 منو');
+  ok(fakes.tg.calls.slice(m).some((c) => c.method === 'sendMessage' && JSON.stringify(c.body.reply_markup || {}).includes('m:usr')), 'the menu button opens the menu');
+  // every message the bot sent in this whole run: no "/command" the admin would have to type
+  const left = fakes.tg.messages.map((x) => x.text || '').filter((t) => /(^|[\s(:،«])\/(panels?|paneltest|rollout|drainpanel|panelcred|panelgroups|addpanel|find|grant|set|plan|plans|newplan|coupons?|delcoupon|backup|google|carriers|rate|sms|wallets|stats|settings|menu|help)\b/.test(t));
+  ok(left.length === 0, 'no bot message asks to type a command: ' + (left[0] || '').slice(0, 200));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);
