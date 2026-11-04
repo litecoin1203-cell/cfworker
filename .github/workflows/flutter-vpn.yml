@@ -27,6 +27,8 @@ env:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write # only the manual run uses it, to put the APK on the pleat-latest release
     defaults:
       run:
         working-directory: flutter_vpn
@@ -124,12 +126,29 @@ jobs:
           aapt=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
           "$aapt" dump badging "$apk" | grep -E "^(package|minSdkVersion|sdkVersion|targetSdkVersion|native-code)"
           unzip -l "$apk" | grep -E "lib/[^/]+/lib(hev-socks5-tunnel|gojni|flutter)\.so" | awk '{print $4}'
-      # Pull requests and feature branches only need to prove the app builds; uploading every APK fills the
-      # account's artifact storage (when it is full, every upload fails and turns the check red). The APK is
-      # kept for manual runs (workflow_dispatch, the usual way to get one) and pushes to main.
+      # The APK of a manual run goes to the release "pleat-latest" (Releases page of the repo, file pleat.apk).
+      # Release files do not count toward the Actions artifact storage, which fills up and then refuses every
+      # upload. Pull requests and pushes only prove the app builds and keep nothing.
+      - name: Publish APK to the pleat-latest release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp build/app/outputs/flutter-apk/app-release.apk "$RUNNER_TEMP/pleat.apk"
+          ver=$(grep -E '^version:' pubspec.yaml | awk '{print $2}')
+          notes="Pleat $ver, built from ${GITHUB_SHA::7} on $(date -u +%Y-%m-%d). Install pleat.apk."
+          if gh release view pleat-latest >/dev/null 2>&1; then
+            gh release edit pleat-latest --title "Pleat $ver (latest build)" --notes "$notes" --prerelease
+          else
+            gh release create pleat-latest --title "Pleat $ver (latest build)" --notes "$notes" --prerelease --target "$GITHUB_SHA"
+          fi
+          gh release upload pleat-latest "$RUNNER_TEMP/pleat.apk" --clobber
+          echo "### APK: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/pleat-latest" >> "$GITHUB_STEP_SUMMARY"
+      # Also as a run artifact while storage allows; a full storage no longer fails the build.
       - uses: actions/upload-artifact@v4
-        if: github.event_name == 'workflow_dispatch' || github.ref == 'refs/heads/main'
+        if: github.event_name == 'workflow_dispatch'
+        continue-on-error: true
         with:
           name: pleat-apk
           path: flutter_vpn/build/app/outputs/flutter-apk/app-release.apk
-          retention-days: 14
+          retention-days: 3
