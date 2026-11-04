@@ -53,6 +53,12 @@ class Exit {
   /// A download test through this exit is running now.
   bool speedTesting = false;
 
+  /// A ping through this exit is running now (a tap on its flag).
+  bool pingTesting = false;
+
+  /// Ping or download test running: the flag pulses.
+  bool get busy => pingTesting || speedTesting;
+
   /// Labels and others' speed count from this many different people.
   static const minPeople = 3;
 
@@ -137,7 +143,12 @@ class Exit {
   String get meta => [
     label,
     protocol,
-    if (unreachable) 'no answer' else if (ping != null) '$ping ms',
+    if (pingTesting)
+      'testing'
+    else if (unreachable)
+      'no answer'
+    else if (ping != null)
+      '$ping ms',
     if (speedTesting) 'testing speed' else if (speed != null) speed!.word,
   ].join('  ·  ');
 }

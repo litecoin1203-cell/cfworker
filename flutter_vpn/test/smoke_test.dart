@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pleat/design/connect_control.dart';
 import 'package:pleat/design/tokens.dart';
+import 'package:pleat/design/widgets.dart';
 import 'package:pleat/main.dart';
 import 'package:pleat/screens/checkout.dart';
 import 'package:pleat/screens/onboarding.dart';
@@ -334,6 +335,56 @@ void main() {
     expect(find.text('Weak on Irancell'), findsWidgets);
     await tester.pump(const Duration(seconds: 1));
   });
+
+  testWidgets(
+    'a tap on a flag tests that exit now, and it is kept and shared',
+    (tester) async {
+      final tunnel = FakeTunnel()
+        ..pings = {'de1.example.com': 60}
+        ..speeds = {'de1.example.com': 9000}
+        ..onMetered = true;
+      final (app, api) = await _boot(tester, {
+        'onboarded': true,
+      }, tunnel: tunnel);
+      app.setTab(2);
+      await tester.pump(const Duration(milliseconds: 600));
+      tunnel
+        ..pinged.clear()
+        ..speedTested.clear();
+      await tester.tap(
+        find.byWidgetPredicate(
+          (w) => w is Pressable && w.label == 'Test DE 1 now',
+        ),
+      );
+      for (var i = 0; i < 5; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      Exit de() => app.exits.firstWhere((e) => e.server.link.contains('de1'));
+      expect(tunnel.pinged, ['de1.example.com']);
+      expect(tunnel.speedTested, [
+        'de1.example.com',
+      ], reason: 'asked for, so it runs on a metered network too');
+      expect(de().measured, 60);
+      expect(de().speed, Speed.fast);
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(seconds: 10));
+      }
+      expect(
+        api.reports.where((r) => r['k'] == de().id && r['kbps'] == 9000),
+        hasLength(1),
+      );
+      final next = AppState(
+        await SharedPreferences.getInstance(),
+        api,
+        tunnel: FakeTunnel(),
+      );
+      await next.loadServers();
+      expect(
+        next.exits.firstWhere((e) => e.server.link.contains('de1')).measured,
+        60,
+      );
+    },
+  );
 
   testWidgets('a metered network gets no download tests', (tester) async {
     final tunnel = FakeTunnel()

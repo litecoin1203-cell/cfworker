@@ -292,6 +292,7 @@ class MediaCard extends StatelessWidget {
     this.height = 180,
     this.big = false,
     this.note,
+    this.onBadge,
   });
 
   final Exit exit;
@@ -304,6 +305,9 @@ class MediaCard extends StatelessWidget {
 
   /// A short bold line under the facts, e.g. "Strong on Irancell".
   final String? note;
+
+  /// Tap on the flag: test this exit now.
+  final VoidCallback? onBadge;
 
   @override
   Widget build(BuildContext context) {
@@ -345,7 +349,15 @@ class MediaCard extends StatelessWidget {
                   children: [
                     Row(
                       children: [
-                        RegionBadge(exit, size: big ? 40 : 32),
+                        if (onBadge == null)
+                          RegionBadge(exit, size: big ? 40 : 32)
+                        else
+                          Pressable(
+                            onTap: onBadge!,
+                            label: 'Test ${exit.label} now',
+                            radius: PRadius.pill,
+                            child: SpeedBadge(exit, size: big ? 40 : 32),
+                          ),
                         const SizedBox(width: 10),
                         Expanded(
                           child: Text(
@@ -554,7 +566,7 @@ class SpeedBadge extends StatefulWidget {
   final double size;
 
   static Color? ringOf(Exit e) {
-    if (e.speedTesting) return PColors.ice;
+    if (e.busy) return PColors.ice;
     return switch (e.speed) {
       Speed.fast => PColors.blue,
       Speed.fair => PColors.ice,
@@ -563,7 +575,7 @@ class SpeedBadge extends StatefulWidget {
     };
   }
 
-  static Duration beatOf(Exit e) => e.speedTesting
+  static Duration beatOf(Exit e) => e.busy
       ? const Duration(milliseconds: 1100)
       : switch (e.speed) {
           Speed.fast => const Duration(milliseconds: 1300),
@@ -582,7 +594,7 @@ class _SpeedBadgeState extends State<SpeedBadge>
     duration: SpeedBadge.beatOf(widget.exit),
   );
 
-  bool get _live => widget.exit.speedTesting || widget.exit.speed != null;
+  bool get _live => widget.exit.busy || widget.exit.speed != null;
 
   @override
   void didUpdateWidget(SpeedBadge old) {
@@ -618,7 +630,7 @@ class _SpeedBadgeState extends State<SpeedBadge>
     final ring = SpeedBadge.ringOf(e);
     final badge = RegionBadge(e, size: widget.size, ring: ring);
     if (!_live) return badge;
-    final word = e.speedTesting ? 'testing speed' : '${e.speed!.word} speed';
+    final word = e.busy ? 'testing' : '${e.speed!.word} speed';
     return Semantics(
       label: word,
       child: AnimatedBuilder(
@@ -632,7 +644,7 @@ class _SpeedBadgeState extends State<SpeedBadge>
                   child: CustomPaint(
                     painter: _SweepPainter(
                       _t.value,
-                      testing: e.speedTesting,
+                      testing: e.busy,
                       slow: e.speed == Speed.slow,
                     ),
                   ),

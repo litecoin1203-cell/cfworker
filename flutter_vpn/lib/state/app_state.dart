@@ -975,6 +975,62 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _report(results);
   }
 
+  /// Tap on an exit's flag: its ping and download speed now, kept on the
+  /// phone for this network and shared with people on the same operator.
+  /// The person asked, so the download runs on a metered network too.
+  Future<void> testOne(String id) async {
+    final e = exitById(id);
+    if (e == null || e.busy || _connecting || !await tunnel.available()) {
+      return;
+    }
+    final String config;
+    try {
+      config = xrayConfig(e.server.link, forTest: true);
+    } on FormatException catch (x) {
+      e.measured = -1;
+      e.failure = 'unsupported: ${x.message}';
+      e.measuredAt = DateTime.now();
+      notifyListeners();
+      return;
+    }
+    final net = _net;
+    e.pingTesting = true;
+    notifyListeners();
+    final r = await tunnel
+        .probe(config)
+        .timeout(
+          _probeDeadline,
+          onTimeout: () => (
+            ms: null,
+            error: 'no answer in ${_probeDeadline.inSeconds} s (timeout)',
+          ),
+        );
+    final ms = r.ms;
+    e.pingTesting = false;
+    e.measured = ms ?? -1;
+    e.failure = ms == null ? r.error : null;
+    e.measuredAt = DateTime.now();
+    _cache.putPing(net, e.id, e.measured!, e.measuredAt!);
+    final result = <String, Object>{'k': e.id, 'ok': ms != null, 'ms': ms ?? 0};
+    if (ms != null && !_connecting) {
+      e.speedTesting = true;
+      notifyListeners();
+      final k = await tunnel
+          .speed(config)
+          .timeout(const Duration(seconds: 20), onTimeout: () => -1);
+      e.speedTesting = false;
+      if (k != null) {
+        e.kbps = k;
+        e.kbpsAt = DateTime.now();
+        _cache.putSpeed(net, e.id, k, e.kbpsAt!);
+        if (k > 0) result['kbps'] = k;
+      }
+    }
+    _saveCache();
+    notifyListeners();
+    _report([result]);
+  }
+
   /// Smart connect tests again after 10 minutes: it needs an exit that
   /// answers now.
   bool get _pingsFresh => _pingsWithin(const Duration(minutes: 10));
