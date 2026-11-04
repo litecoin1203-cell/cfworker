@@ -59,6 +59,12 @@ async function timedFetch(url, init = {}) {
 }
 
 export class PasarGuard {
+  // what other code may ask of any adapter: its kind, whether new users need a group (a "service" on Rebecca),
+  // and the subscription sub-path that always answers plain share links
+  get kind() { return 'pasarguard'; }
+  get usesGroups() { return true; }
+  get linksSuffix() { return 'links'; }
+
   // cred: {url, username, password, api_key} from a PANEL_<id>_CRED secret; without it the original
   // PASARGUARD_* secrets are used (panel 1)
   constructor(env, cred) {
@@ -79,7 +85,7 @@ export class PasarGuard {
   }
 
   async _login() {
-    if (!this.username || !this.password) throw new PasarGuardError('panel username/password are not set (PASARGUARD_USERNAME / PASARGUARD_PASSWORD)', 0);
+    if (!this.username || !this.password) throw new PasarGuardError('panel username/password are not set in its secret', 0);
     let last = null;
     // try the plain origin first, then the pasted path (in case the panel lives under a sub-path)
     const order = [this.base, ...this.bases.filter((b) => b !== this.base)];
@@ -210,6 +216,11 @@ export class PasarGuard {
     return (await this.listGroups()).map((g) => g.id);
   }
 
+  // the same subscription, asked for plain share links
+  linksUrl(subUrl) {
+    return this.absoluteSubUrl(subUrl).replace(/\/+$/, '') + '/' + this.linksSuffix;
+  }
+
   absoluteSubUrl(subUrl) {
     if (!subUrl) return '';
     if (/^https?:\/\//i.test(subUrl)) return subUrl;
@@ -230,9 +241,8 @@ export class PasarGuard {
 
   // Share links (vless://, vmess://...) for the user, one per line.
   async subscriptionLinks(subUrl) {
-    const base = this.absoluteSubUrl(subUrl).replace(/\/$/, '');
     try {
-      const r = await timedFetch(base + '/links', { headers: { 'user-agent': CORE_UA } });
+      const r = await timedFetch(this.linksUrl(subUrl), { headers: { 'user-agent': CORE_UA } });
       if (r.ok) {
         const lines = decodeSub(await r.text());
         if (lines.length) return lines;

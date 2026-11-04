@@ -52,8 +52,9 @@ export function makeDB(schemaPath, { upto } = {}) {
 
 // ---------------- fake PasarGuard + NOWPayments + Telegram over fetch ----------------
 export function installFakes({ panelBase }) {
-  const newPanel = (host) => ({ users: {}, tokens: new Set(), deletedHwids: [], seq: 0, lastSubHeaders: null, groupsSudoOnly: false, failCreate: null,
-    down: false, puts: 0, putLog: [], host: host || 'example.com' });
+  // kind: which panel API this fake speaks (pasarguard | marzban | rebecca); creates/puts are kept in createLog/putBodies
+  const newPanel = (host, kind = 'pasarguard') => ({ users: {}, tokens: new Set(), deletedHwids: [], seq: 0, lastSubHeaders: null, groupsSudoOnly: false, failCreate: null,
+    down: false, puts: 0, putLog: [], host: host || 'example.com', kind, createLog: [], putBodies: [], services: [{ id: 4, name: 'main', has_hosts: true, broken: false }] });
   const pg = newPanel();
   const panels = { [panelBase]: pg };
   const tg = { messages: [], photos: [], lastButtons: null, calls: [] };
@@ -92,14 +93,24 @@ export function installFakes({ panelBase }) {
         return resJson({ users: all.slice(off, off + lim).map(outUser), total: all.length });
       }
       if (path === '/api/system') return resJson({ version: '1.0.0-test' });
+      if (path === '/api/admin/token' && pg.kind === 'none') return resText('{"detail":"Not Found"}', 404);
       if (path === '/api/admin/token') { const t = 'tok' + ++pg.seq; pg.tokens.add(t); return resJson({ access_token: t, token_type: 'bearer' }); }
+      if (pg.kind !== 'pasarguard' && (path === '/api/groups' || path.startsWith('/api/groups/'))) return resText('{"detail":"Not Found"}', 404);
+      if (path.startsWith('/api/v2/services')) return pg.kind === 'rebecca' ? resJson({ services: pg.services, total: pg.services.length }) : resText('{"detail":"Not Found"}', 404);
+      if (path === '/api/inbounds') return pg.kind === 'pasarguard' ? resJson(['vless-in']) : resJson({ vless: [{ tag: 'vless-in' }], trojan: [{ tag: 'tr-in' }], shadowsocks: [] });
       if (path === '/api/groups') return pg.groupsSudoOnly ? resText('{"detail":"You\'re not allowed"}', 403) : resJson({ groups: [{ id: 1, name: 'default' }] });
       if (path.startsWith('/api/groups/simple')) return resJson({ groups: [{ id: 1, name: 'default' }, { id: 2, name: 'reseller' }], total: 2 });
       let mm;
       if (path === '/api/user' && method === 'POST') {
         const b = JSON.parse(body);
+        pg.createLog.push(b);
         if (pg.failCreate) return resText(JSON.stringify({ detail: pg.failCreate }), 400);
-        if (!b.group_ids || !b.group_ids.length) return resText('{"detail":"group_ids required"}', 422);
+        if (pg.kind === 'rebecca') {
+          if (!(b.service_id > 0)) return resText('{"detail":"service_id is required. Users must be assigned to a service."}', 400);
+          if (b.inbounds && Object.keys(b.inbounds).length) return resText('{"detail":"Manual inbound selection has been removed"}', 400);
+        } else if (pg.kind === 'marzban') {
+          if (!b.proxies || !Object.keys(b.proxies).length) return resText('{"detail":"Each user needs at least one proxy"}', 422);
+        } else if (!b.group_ids || !b.group_ids.length) return resText('{"detail":"group_ids required"}', 422);
         const u = { ...b, id: ++pg.seq, token: 'sub' + pg.seq, used_traffic: 0 };
         pg.users[b.username] = u;
         return resJson(outUser(u), 201);
@@ -108,7 +119,7 @@ export function installFakes({ panelBase }) {
         const name = decodeURIComponent(mm[1]);
         const u = pg.users[name];
         if (method === 'GET') return u ? resJson(outUser(u)) : resText('not found', 404);
-        if (method === 'PUT') { if (!u) return resText('not found', 404); pg.puts++; pg.putLog.push(name); Object.assign(u, JSON.parse(body)); return resJson(outUser(u)); }
+        if (method === 'PUT') { if (!u) return resText('not found', 404); pg.puts++; pg.putLog.push(name); pg.putBodies.push(JSON.parse(body)); Object.assign(u, JSON.parse(body)); return resJson(outUser(u)); }
         if (method === 'DELETE') { delete pg.users[name]; return resText('', 204); }
       }
       if ((mm = path.match(/^\/api\/user\/([^/]+)\/reset$/)) && method === 'POST') {
@@ -117,7 +128,11 @@ export function installFakes({ panelBase }) {
       if ((mm = path.match(/^\/api\/user\/(\d+)\/hwids\/(.+)$/)) && method === 'DELETE') {
         pg.deletedHwids.push([parseInt(mm[1], 10), decodeURIComponent(mm[2])]); return resText('', 204);
       }
-      if (path.match(/^\/sub\/[^/]+\/links$/)) {
+      if (path.match(/^\/sub\/[^/]+\/v2ray$/) && pg.kind !== 'pasarguard') {
+        pg.lastLinksHwid = new Headers(init.headers || {}).get('x-hwid');
+        return resText(btoa(subLinks(pg)));
+      }
+      if (path.match(/^\/sub\/[^/]+\/links$/) && pg.kind === 'pasarguard') {
         pg.lastLinksHwid = new Headers(init.headers || {}).get('x-hwid');
         return resText(subLinks(pg));
       }
@@ -129,6 +144,7 @@ export function installFakes({ panelBase }) {
         if (pg.subJson) return resJson([{ remarks: 'x', outbounds: [] }]);
         return new Response(btoa(subLinks(pg)), { status: 200, headers: { 'subscription-userinfo': 'upload=0; download=0; total=0; expire=0' } });
       }
+      if (path.startsWith('/sub/')) return resText('{"detail":"Not Found"}', 404);
       return resText('panel: unhandled ' + method + ' ' + path, 500);
     }
 
@@ -170,6 +186,6 @@ export function installFakes({ panelBase }) {
     throw new Error('unexpected fetch to ' + url);
   };
 
-  const addPanel = (b, host) => (panels[b] = newPanel(host));
+  const addPanel = (b, host, kind) => (panels[b] = newPanel(host, kind));
   return { pg, tg, np, panels, addPanel };
 }

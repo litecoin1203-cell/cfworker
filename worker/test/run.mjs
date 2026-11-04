@@ -1646,5 +1646,92 @@ section('carriers: speed per network, own servers only, people count');
   ok(fakes.tg.messages.slice(bm).some((m) => m.text.includes('رایتل') && m.text.includes('DE 1')), '/carriers lists best servers per carrier');
 }
 
+section('any panel type: Rebecca, Marzban and PasarGuard are detected on /paneltest and each gets its own create call');
+{
+  const { getPanel, adapterFor, collectLinks, testPanel } = await import('../src/panels.js');
+  const { ensureAccount } = await import('../src/sync.js');
+  const lastId = async () => (await env.DB.prepare('SELECT MAX(id) id FROM panels').first()).id;
+  const R = 'https://reb.test:8000', M = 'http://marz.test', H = 'http://hidd.test';
+  const reb = fakes.addPanel(R, 'r.example.io', 'rebecca');
+  const marz = fakes.addPanel(M, 'm.example.io', 'marzban');
+  fakes.addPanel(H, 'h.example.io', 'none');
+  ok(panelBases(R + '/dashboard/').join() === R, 'dashboard address with a port gives the API root with that port');
+
+  await admin('/addpanel ربکا');
+  const rid = await lastId();
+  let p = await getPanel(env, rid);
+  ok(p.kind === 'auto' && p.label === 'ربکا' && lastText().includes(`PANEL_${rid}_CRED`), 'add without a type: type left to the test');
+  let threw = '';
+  try { adapterFor(env, p); } catch (e) { threw = e.message; }
+  ok(threw.includes('secret'), 'no secret yet: says so');
+  env[`PANEL_${rid}_CRED`] = JSON.stringify({ url: R + '/dashboard/', username: 'ra', password: 'Reb3ccaSecret' });
+  try { adapterFor(env, p); threw = ''; } catch (e) { threw = e.message; }
+  ok(threw.includes('/paneltest'), 'an auto panel cannot be used before its test: ' + threw);
+  await admin(`/paneltest ${rid}`);
+  p = await getPanel(env, rid);
+  ok(p.kind === 'rebecca' && p.state === 'testing', 'Rebecca detected and stored: ' + p.kind + ' ' + p.state);
+  ok(lastText().includes('rebecca') && lastText().includes('سالم است'), 'test reply names the type and passes: ' + lastText());
+  const made = reb.createLog[reb.createLog.length - 1];
+  ok(made.service_id === 4 && !('group_ids' in made) && !('hwid_limit' in made) && !('proxies' in made), 'Rebecca user made in a service: ' + JSON.stringify(made));
+  ok(!JSON.stringify(fakes.tg.messages).includes('Reb3ccaSecret') && !JSON.stringify(fakes.tg.messages).includes('reb.test'), 'bot never shows the panel password or address');
+
+  // a Rebecca admin with no usable service gets told how to set one
+  reb.services = [];
+  await admin(`/paneltest ${rid}`);
+  ok(lastText().includes('/panelgroups') && lastText().includes('سرویس'), 'no service: bot says how to set it: ' + lastText());
+  await admin(`/panelgroups ${rid} 9`);
+  await admin(`/paneltest ${rid}`);
+  ok(lastText().includes('سالم است') && reb.createLog[reb.createLog.length - 1].service_id === 9, 'service set by hand is used');
+  reb.services = [{ id: 4, name: 'main', has_hosts: true, broken: false }];
+
+  // accounts and configs on Rebecca: its v2rayNG answer is Xray JSON, plain links come from <sub>/v2ray
+  const tok = await signup('reb@example.com', { device: 'reb-phone' });
+  const uid = await userId('reb@example.com');
+  const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(uid).first();
+  const pa = await ensureAccount(env, user, p, { expire: Math.floor(Date.now() / 1000) + 86400, limit: 5 * GB, hwid: 2 });
+  ok(pa && pa.sub_path.startsWith(R + '/sub/'), 'Rebecca account has an absolute subscription link');
+  reb.subJson = true;
+  await env.DB.prepare("UPDATE panels SET state = 'active' WHERE id = ?").bind(rid).run();
+  const got = await collectLinks(env, uid, {});
+  ok(got.links.filter((l) => l.includes('r.example.io')).length === 3, 'configs read through <sub>/v2ray: ' + got.links.length);
+  const pgR = adapterFor(env, await getPanel(env, rid));
+  await pgR.modifyUser(pa.remote_username, { status: 'active', data_limit: GB, hwid_limit: 3 });
+  ok(!('hwid_limit' in reb.putBodies[reb.putBodies.length - 1]), 'PasarGuard-only fields are not sent to Rebecca');
+  ok(await pgR.deleteHwid(pa.remote_username, 'x') === false, 'no device list on Rebecca: nothing to delete');
+  ok(tok, 'user signed up');
+
+  // a Marzban panel added under the wrong type is corrected while it has no users
+  await admin('/addpanel pasarguard مرزبان');
+  const mid = await lastId();
+  env[`PANEL_${mid}_CRED`] = JSON.stringify({ url: M, username: 'ma', password: 'mp' });
+  await admin(`/paneltest ${mid}`);
+  p = await getPanel(env, mid);
+  ok(p.kind === 'marzban' && lastText().includes('خودکار تشخیص'), 'wrong type corrected to marzban: ' + p.kind);
+  const mm = marz.createLog[marz.createLog.length - 1];
+  ok(mm.proxies && 'vless' in mm.proxies && 'trojan' in mm.proxies && !('shadowsocks' in mm.proxies) && !('group_ids' in mm), 'Marzban user gets the panel protocols: ' + JSON.stringify(mm.proxies));
+
+  // a panel that already serves users keeps its type; the test says what it really is
+  await env.DB.prepare("UPDATE panels SET kind = 'pasarguard', state = 'active' WHERE id = ?").bind(rid).run();
+  const t = await testPanel(env, await getPanel(env, rid));
+  ok(!t.healthy && t.kind === 'rebecca' && t.error.includes('already serves users') && (await getPanel(env, rid)).kind === 'pasarguard', 'serving panel is not retyped behind the admin');
+  await env.DB.prepare("UPDATE panels SET kind = 'rebecca', state = 'disabled' WHERE id = ?").bind(rid).run();
+  await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(mid).run();
+
+  // something that is not in the family: a clear answer, not a crash
+  await admin('/addpanel دیگر');
+  const hid = await lastId();
+  env[`PANEL_${hid}_CRED`] = JSON.stringify({ url: H, username: 'h', password: 'h' });
+  await admin(`/paneltest ${hid}`);
+  ok(lastText().includes('does not answer like PasarGuard, Marzban or Rebecca') && !lastText().includes('hidd.test'), 'unknown panel: clear message without the address: ' + lastText());
+  env[`PANEL_${hid}_CRED`] = 'not json';
+  await admin(`/paneltest ${hid}`);
+  ok(lastText().includes('not valid JSON'), 'broken secret: says it is not valid JSON');
+  await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(hid).run();
+
+  // panel 1 (PasarGuard) is still recognised as PasarGuard
+  const t1 = await testPanel(env, await getPanel(env, 1));
+  ok(t1.kind === 'pasarguard' && !t1.kindChanged, 'PasarGuard still detected as PasarGuard');
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

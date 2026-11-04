@@ -302,7 +302,7 @@ export async function panelReport(env) {
   for (const p of await listPanels(env)) {
     if (p.state === 'disabled') { lines.push('', `#${p.id} ${p.label}: غیرفعال`); continue; }
     const t = await testPanel(env, p);
-    lines.push('', `#${p.id} ${p.label} (${p.kind}) — ${STATE_FA[p.state] || p.state}`);
+    lines.push('', `#${p.id} ${p.label} (${t.kind || p.kind}) — ${STATE_FA[p.state] || p.state}`);
     lines.push(t.login ? '✅ ورود به API موفق بود' : `❌ ورود ناموفق: ${t.error || ''}`);
     if (t.login) lines.push(t.create ? '✅ ساخت اکانت آزمایشی موفق بود' : `❌ ساخت اکانت ناموفق: ${t.error || ''}`);
     if (t.create) lines.push(t.configs ? `✅ لینک ساب کار می‌کند: ${t.configs} کانفیگ` : '⚠️ لینک ساب خالی است؛ در پنل برای این گروه Inbound/Host فعال کن.');
@@ -440,14 +440,17 @@ async function onMessage(env, msg, opts = {}) {
       const n = (await first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active'", p.id)).c;
       lines.push(`#${p.id} ${p.label} (${p.kind}) — ${STATE_FA[p.state] || p.state}${p.state === 'rollout' ? ` ${p.rollout_percent}%` : ''} · سلامت ${p.health} · ${n} کاربر فعال${p.version ? ` · نسخه ${p.version}` : ''}`);
     }
-    lines.push('', 'افزودن: /addpanel pasarguard نام', 'تست: /paneltest شماره · ورود تدریجی: /rollout شماره درصد', 'گروه‌ها: /panelgroups شماره 1,2 · خارج‌کردن: /drainpanel شماره');
+    lines.push('', 'افزودن: /addpanel نام (نوع خودکار)', 'تست: /paneltest شماره · ورود تدریجی: /rollout شماره درصد', 'گروه‌ها: /panelgroups شماره 1,2 · خارج‌کردن: /drainpanel شماره');
     return say(lines.join('\n'));
   }
   if (cmd === '/addpanel') {
-    const [, kind, ...labelParts] = text.split(/\s+/);
-    const label = labelParts.join(' ').trim();
-    const k = String(kind || '').toLowerCase();
-    if (!label || !['pasarguard', 'marzban', 'hiddify'].includes(k)) return say('شکل درست: /addpanel pasarguard نام‌دلخواه\n(marzban و hiddify هم پذیرفته می‌شوند؛ آداپتورشان در مرحله‌ی بعد اضافه می‌شود)');
+    // /addpanel نام  (type found by /paneltest)  or  /addpanel rebecca|marzban|pasarguard نام
+    const { KINDS } = await import('./panels.js');
+    const [, word, ...rest] = text.split(/\s+/);
+    const given = String(first || '').toLowerCase();
+    const k = KINDS.includes(given) ? given : 'auto';
+    const label = (k === given ? rest : [word, ...rest]).join(' ').trim();
+    if (!label) return say('شکل درست: /addpanel نام‌دلخواه\nنوع پنل (PasarGuard، Marzban یا Rebecca) موقع /paneltest خودکار تشخیص داده می‌شود.\nاگر خواستی نوع را خودت بگو: /addpanel rebecca نام');
     const { addPanel } = await import('./panels.js');
     const p = await addPanel(env, k, label);
     await audit(env, chatId, 'panel.add', 'panel', p.id, `${k} ${label}`);
@@ -456,7 +459,8 @@ async function onMessage(env, msg, opts = {}) {
       '',
       `۱) در داشبورد Cloudflare ← Workers ← cloudgold ← Settings ← Variables and Secrets یک Secret با نام ${p.cred_ref} بساز، با این شکل:`,
       '{"url":"https://...","username":"...","password":"..."}',
-      '(یا {"url":"https://...","api_key":"..."})',
+      '(url همان آدرس داشبورد پنل است، با پورت اگر دارد، مثل https://panel.example.com:8000/dashboard/)',
+      '(برای PasarGuard با کلید API: {"url":"https://...","api_key":"..."})',
       'رمز را هرگز در این چت ننویس.',
       `۲) بعد بزن: /paneltest ${p.id}`,
       `۳) اگر سالم بود: /rollout ${p.id} 10 (ده درصد کاربران)، بعد کم‌کم تا 100`,
@@ -471,8 +475,9 @@ async function onMessage(env, msg, opts = {}) {
       await say('⏳ در حال تست پنل...');
       const t = await testPanel(env, panel);
       await audit(env, chatId, 'panel.test', 'panel', panel.id, t.healthy ? 'سالم' : 'ناسالم');
-      return say(t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\nبرای شروع: /rollout ${panel.id} 10`
-        : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}`);
+      const kindLine = t.kind ? `نوع پنل: ${t.kind}${t.kindChanged ? ' (خودکار تشخیص داده و ثبت شد)' : ''}\n` : '';
+      return say(kindLine + (t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\nبرای شروع: /rollout ${panel.id} 10`
+        : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}${t.kind === 'rebecca' && !t.create ? `\nدر Rebecca هر کاربر باید یک سرویس (Service) داشته باشد. شماره‌ی سرویس را بده: /panelgroups ${panel.id} شماره` : ''}`));
     }
     if (cmd === '/panelgroups') {
       const ids = String(parts[2] || '').split(',').map((x) => parseInt(x, 10)).filter((n) => n > 0);

@@ -115,7 +115,7 @@ async function panel(env, id) {
       `سلامت: ${p.health} · ${n} کاربر فعال${p.version ? ` · نسخه ${p.version}` : ''}`, '',
       'ورود تدریجی = چند درصد کاربران روی این پنل هم اکانت بگیرند.'].join('\n'),
     kb: [
-      [x('🧪 تست پنل', `/paneltest ${p.id}`), b('👥 گروه‌ها', `m:w:groups:${p.id}`)],
+      [x('🧪 تست پنل', `/paneltest ${p.id}`), b('👥 گروه‌ها / سرویس', `m:w:groups:${p.id}`)],
       [x('10%', `/rollout ${p.id} 10`), x('25%', `/rollout ${p.id} 25`), x('50%', `/rollout ${p.id} 50`), x('100%', `/rollout ${p.id} 100`)],
       [x('🚪 خارج‌کردن پنل', `/drainpanel ${p.id}`)],
       [b('🔙 پنل‌ها', 'm:pa'), HOME],
@@ -208,8 +208,8 @@ async function ask(env, kind, args) {
     return [`/plan ${id} ${args[1]}`, `p:${id}`, `✏️ پلن #${id}: ${PLAN_HINT[args[1]] || args[1]} را بنویس:`];
   }
   if (kind === 'newplan') return ['/newplan', 'pl', '➕ پلن جدید را این‌طوری بنویس:\nنام|روز|گیگ|دستگاه|قیمت\n\nمثال:\nسه ماهه|90|0|2|399000\n(گیگ یا دستگاه 0 = نامحدود)'];
-  if (kind === 'addpanel') return ['/addpanel pasarguard', 'pa', '➕ یک نام برای پنل جدید (PasarGuard) بنویس، مثلاً: آلمان ۲'];
-  if (kind === 'groups') return [`/panelgroups ${parseInt(args[0], 10)}`, `pp:${parseInt(args[0], 10)}`, '👥 شماره‌ی گروه‌های پنل را با کاما بنویس (مثلاً 1,2):'];
+  if (kind === 'addpanel') return ['/addpanel auto', 'pa', '➕ یک نام برای پنل جدید بنویس، مثلاً: آلمان ۲\nنوع پنل (PasarGuard، Marzban یا Rebecca) موقع تست خودکار تشخیص داده می‌شود.'];
+  if (kind === 'groups') return [`/panelgroups ${parseInt(args[0], 10)}`, `pp:${parseInt(args[0], 10)}`, '👥 شماره‌ی گروه‌های پنل را با کاما بنویس (مثلاً 1,2).\nبرای Rebecca فقط شماره‌ی یک سرویس (Service) را بنویس:'];
   if (kind === 'coupon') return ['/coupon', 'cp', '🏷 کد جدید را این‌طوری بنویس:\nکد درصد [تعداد] [روز] [شماره‌پلن]\n\nمثال: YALDA 20 100 7\n(یعنی ۲۰٪، ۱۰۰ بار، ۷ روز)'];
   if (kind === 'set' && args[0] in SETTING_DEFAULTS) {
     const back = ['card_number', 'card_holder'].includes(args[0]) ? 'pay' : `sk:${args[0]}`;
