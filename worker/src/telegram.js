@@ -291,7 +291,7 @@ async function onConfirm(env, cq, yes) {
     else {
       const { provision } = await import('./billing.js');
       try {
-        await provision(env, u, plan);
+        await provision(env, u, plan, { source: 'gift' });
         await audit(env, chatId, 'user.grant', 'user', u.id, `پلن #${plan.id}`);
         result = `پلن ${plan.name} به ${u.email} داده شد.`;
       } catch (e) {
@@ -643,7 +643,7 @@ async function onMessage(env, msg, opts = {}) {
     const u = await first(env, 'SELECT * FROM users WHERE email = ?', (email || '').toLowerCase());
     if (!u || !plan) return say('شکل درست: /grant email@example.com شماره‌پلن  (شماره‌ها در /plans)');
     const { provision } = await import('./billing.js');
-    try { await provision(env, u, plan); } catch (e) { return say('⚠️ ساخت اکانت روی پنل انجام نشد:\n' + e.message + '\n\nبرای عیب‌یابی /panel را بزن.'); }
+    try { await provision(env, u, plan, { source: 'gift' }); } catch (e) { return say('⚠️ ساخت اکانت روی پنل انجام نشد:\n' + e.message + '\n\nبرای عیب‌یابی /panel را بزن.'); }
     await audit(env, chatId, 'user.grant', 'user', u.id, `پلن #${plan.id}`);
     return say(`✅ پلن ${plan.name} به ${email} داده شد.`);
   }

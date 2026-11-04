@@ -125,11 +125,13 @@ void main() {
     expect(link.botUrl, contains('t.me/PleatDevBot?start=L${link.nonce}'));
     final tgId = 700000000 + Random().nextInt(1 << 20);
     final uname = 'pleat_${Random().nextInt(1 << 30)}';
-    Future<String> codeFor(String nonce) async {
+    Future<String> codeFor(String nonce, {int? id, String? name}) async {
       final c = HttpClient();
       final rq = await c.postUrl(Uri.parse('$live/dev/tg-open'));
       rq.headers.contentType = ContentType.json;
-      rq.write('{"nonce":"$nonce","id":$tgId,"username":"$uname"}');
+      rq.write(
+        '{"nonce":"$nonce","id":${id ?? tgId},"username":"${name ?? uname}"}',
+      );
       final body = await (await rq.close()).transform(utf8.decoder).join();
       c.close();
       return RegExp(r'<code>(\d{6})</code>').firstMatch(body)!.group(1)!;
@@ -161,6 +163,34 @@ void main() {
       isNull,
     );
     expect(app.signedIn, isTrue);
+
+    step('profile: Gmail as a backup login, package list');
+    expect(app.me.value!.telegramVerified, isTrue);
+    expect(app.email, isEmpty);
+    expect(await app.setEmail('$uname@gmail.com', 'wrong-pass'), isNotNull);
+    expect(await app.setEmail('$uname@gmail.com', 'tg-password-1'), isNull);
+    expect(app.email, '$uname@gmail.com');
+    await app.loadPackages();
+    expect(app.packages.value, isEmpty);
+    await app.signOut();
+    expect(await app.signIn('$uname@gmail.com', 'tg-password-1'), isNull);
+    await app.signOut();
+
+    step('profile: an email account verifies its Telegram');
+    final mail2 = 'pleat${Random().nextInt(1 << 30)}@example.com';
+    expect(await app.signIn(mail2, 'password-123', create: true), isNull);
+    expect(app.me.value!.telegramVerified, isFalse);
+    final ln = await app.telegramLinkStart();
+    final id2 = tgId + 1, name2 = '${uname}_2';
+    await app.telegramLinkVerify(
+      ln.nonce,
+      await codeFor(ln.nonce, id: id2, name: name2),
+    );
+    expect(app.me.value!.telegramVerified, isTrue);
+    expect(app.me.value!.telegramUsername, name2);
+    expect(app.login, '@$name2');
+    await app.signOut();
+    expect(await app.signIn('@$name2', 'password-123'), isNull);
     await app.signOut();
 
     debugPrint(log.join('\n'));

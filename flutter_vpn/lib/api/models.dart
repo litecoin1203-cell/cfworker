@@ -24,7 +24,8 @@ class Subscription {
       dataLimitBytes = _int(j['data_limit_bytes']),
       usedBytes = _int(j['used_bytes']),
       usedPercent = _intOrNull(j['used_percent']),
-      deviceLimit = _int(j['device_limit']);
+      deviceLimit = _int(j['device_limit']),
+      periodDays = _intOrNull(j['period_days']);
 
   final bool active;
 
@@ -38,6 +39,9 @@ class Subscription {
   final int dataLimitBytes, usedBytes;
   final int? usedPercent;
   final int deviceLimit;
+
+  /// Length of the running package in days, for the time ring.
+  final int? periodDays;
 
   String get statusLine => switch (status) {
     'active' => 'Active',
@@ -56,6 +60,12 @@ class Me {
       login = _str(j['login']).isNotEmpty ? _str(j['login']) : _str(j['email']),
       telegramName = j['telegram'] is Map
           ? _str((j['telegram'] as Map)['name'])
+          : '',
+      telegramUsername = j['telegram'] is Map
+          ? _str((j['telegram'] as Map)['username'])
+          : '',
+      telegramId = j['telegram'] is Map
+          ? _str((j['telegram'] as Map)['id'])
           : '',
       wallet = _int(j['wallet_balance']),
       referralCode = _str(j['referral_code']),
@@ -78,11 +88,73 @@ class Me {
   /// The name on their Telegram account, when they signed up with Telegram.
   final String telegramName;
 
+  /// Without "@"; '' when the Telegram account has no username.
+  final String telegramUsername;
+
+  /// Numeric Telegram id; '' until Telegram is verified.
+  final String telegramId;
+  bool get telegramVerified => telegramId.isNotEmpty;
+
   /// Toman.
   final int wallet;
   final String referralCode;
   final bool trialAvailable;
   final Subscription? subscription;
+}
+
+/// One package from `GET /me/packages`: bought, a free trial, given by
+/// support, or an account brought over from before.
+class Package {
+  Package.fromJson(Map<String, dynamic> j)
+    : id = _int(j['id']),
+      source = _str(j['source']),
+      current = j['current'] == true,
+      name = _str(j['name']),
+      orderId = _intOrNull(j['order_id']),
+      purchasedAt = _date(j['purchased_at']),
+      activatedAt = _date(j['activated_at']),
+      expiresAt = _date(j['expires_at']),
+      endedAt = _date(j['ended_at']),
+      endReason = j['end_reason'] as String?,
+      days = _intOrNull(j['days']),
+      dataLimitBytes = _int(j['data_limit_bytes']),
+      usedBytes = _intOrNull(j['used_bytes']),
+      amountToman = _intOrNull(j['amount_toman']),
+      method = _str(j['method']);
+
+  final int id;
+
+  /// order | trial | gift | panel
+  final String source;
+  final bool current;
+  final String name;
+  final int? orderId;
+  final DateTime? purchasedAt, activatedAt, expiresAt, endedAt;
+
+  /// renewed | quota | expired | admin
+  final String? endReason;
+  final int? days;
+  final int dataLimitBytes;
+  final int? usedBytes, amountToman;
+  final String method;
+
+  String get sourceLabel => switch (source) {
+    'order' => 'Bought',
+    'trial' => 'Free trial',
+    'gift' => 'Gift from support',
+    _ => 'Existing account',
+  };
+
+  String get stateLabel {
+    if (current) return 'Running';
+    return switch (endReason) {
+      'renewed' => 'Renewed',
+      'quota' => 'Used up',
+      'expired' => 'Expired',
+      'admin' => 'Replaced',
+      _ => 'Ended',
+    };
+  }
 }
 
 class PlanInfo {

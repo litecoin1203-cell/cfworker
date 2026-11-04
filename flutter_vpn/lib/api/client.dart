@@ -79,7 +79,7 @@ class TokenStore {
   /// What the account screens showed last, so the next launch shows it at
   /// once and refreshes it in the background. Kept in the Keystore, like
   /// the tokens, because it is the account's own data.
-  static const cacheKeys = ['me', 'plans', 'devices', 'ranks'];
+  static const cacheKeys = ['me', 'plans', 'devices', 'ranks', 'photo'];
 
   /// A cache is a convenience: when the Keystore can't be read or
   /// written, the app just loads from the Worker as before.
@@ -130,7 +130,7 @@ class ApiClient {
 
   /// Contract version, not Pleat's own: 1.9 tells the Worker this client
   /// never wants a raw subscription address (see `centralApp`).
-  static const appVersion = '1.9.0 (Pleat 1.2.11)';
+  static const appVersion = '1.9.0 (Pleat 1.2.12)';
 
   final TokenStore tokens;
   final List<String> _bases;
@@ -388,6 +388,7 @@ class ApiClient {
         'Too many wrong codes. Tap Start in the bot again for a new one.',
     'signup_expired':
         'Sign-up took too long. Tap Continue with Telegram again.',
+    'telegram_linked': 'Your Telegram account is already verified.',
     'telegram_taken':
         'This Telegram account already has an account. Sign in instead.',
     'telegram_unavailable':

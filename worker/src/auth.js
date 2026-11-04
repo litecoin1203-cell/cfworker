@@ -172,13 +172,14 @@ async function botUsername(env) {
   return botName;
 }
 
-export async function tgStart(env) {
+// linkUserId: a signed-in email account asking to verify its Telegram (profile screen); otherwise a sign-in
+export async function tgStart(env, linkUserId = null) {
   const bot = await botUsername(env);
   if (!bot) throw err(503, 'telegram_unavailable', 'Telegram sign-in is not available right now. Try again later or use email.');
   const nonce = randomHex(16);
   const now = nowSec();
   await run(env, 'DELETE FROM tg_logins WHERE expires_at < ?', now - 3600);
-  await insert(env, 'tg_logins', { nonce_hash: await nonceHash(env, nonce), created_at: now, expires_at: now + LINK_SEC });
+  await insert(env, 'tg_logins', { nonce_hash: await nonceHash(env, nonce), created_at: now, expires_at: now + LINK_SEC, link_user_id: linkUserId });
   return json({
     nonce, bot_username: bot, expires_in: LINK_SEC,
     bot_url: `https://t.me/${bot}?start=L${nonce}`,
@@ -197,6 +198,10 @@ export async function tgIssueCode(env, nonce, from) {
   if (!row || row.used || row.expires_at < now) return { text: expired };
   if (row.tg_id && String(row.tg_id) !== String(from.id)) return { text: 'This sign-in link was already opened by another Telegram account.' };
   if (row.codes_sent >= MAX_CODES) return { text: 'Too many codes for this link. Go back to the app and start again.' };
+  if (row.link_user_id) {
+    const owner = await first(env, 'SELECT id FROM users WHERE tg_id = ?', from.id);
+    if (owner && owner.id !== row.link_user_id) return { text: 'This Telegram account already belongs to another Pleat account. Use a different Telegram account, or log in with this one.' };
+  }
   const code = sixDigits();
   const username = /^[A-Za-z][A-Za-z0-9_]{3,31}$/.test(from.username || '') ? from.username.toLowerCase() : null;
   const name = [from.first_name, from.last_name].filter(Boolean).join(' ').slice(0, 64);
@@ -205,6 +210,7 @@ export async function tgIssueCode(env, nonce, from) {
       codes_sent = codes_sent + 1, attempts = 0 WHERE nonce_hash = ? AND used = 0 AND codes_sent < ? AND (tg_id IS NULL OR tg_id = ?)`,
     from.id, username, name, await codeHash(env, nonce, code), now + CODE_SEC, h, MAX_CODES, from.id);
   if (!r.meta.changes) return { text: expired };
+  if (row.link_user_id) return { text: `Your Pleat verification code:\n\n<code>${code}</code>\n\nType it in the app to verify this Telegram account. It works for 5 minutes. Never share this code with anyone.`, html: true };
   return { text: `Your Pleat sign-in code:\n\n<code>${code}</code>\n\nType it in the app. It works for 5 minutes. Never share this code with anyone.`, html: true };
 }
 
@@ -214,18 +220,22 @@ async function setTgUsername(env, userId, tgId, username, name) {
   await run(env, 'UPDATE users SET tg_username = ?, tg_name = ? WHERE id = ?', username, name || '', userId);
 }
 
-export async function tgVerify(env, body, headers) {
+// Checks the code typed for a link and uses the link up. linkUserId null = a sign-in link, else the account that
+// asked to verify its Telegram: a link of one kind never passes as the other.
+async function useCode(env, body, linkUserId) {
   const nonce = String(body.nonce || '');
   const code = String(body.code || '').replace(/\D/g, '');
   const wrong = () => err(400, 'bad_code', 'The code is wrong or has expired.', 'code');
   if (!NONCE_RE.test(nonce) || code.length !== 6) throw wrong();
   const h = await nonceHash(env, nonce);
   const now = nowSec();
+  const owner = linkUserId == null ? 'link_user_id IS NULL' : 'link_user_id = ?';
+  const ownerArgs = linkUserId == null ? [] : [linkUserId];
   // count the try first (atomically), so parallel guesses can't get more than 5
-  const c = await run(env, `UPDATE tg_logins SET attempts = attempts + 1 WHERE nonce_hash = ? AND used = 0 AND code_hash IS NOT NULL
-      AND code_expires_at >= ? AND attempts < ?`, h, now, MAX_TRIES);
+  const c = await run(env, `UPDATE tg_logins SET attempts = attempts + 1 WHERE nonce_hash = ? AND ${owner} AND used = 0 AND code_hash IS NOT NULL
+      AND code_expires_at >= ? AND attempts < ?`, h, ...ownerArgs, now, MAX_TRIES);
   if (!c.meta.changes) {
-    const row = await first(env, 'SELECT attempts, code_hash FROM tg_logins WHERE nonce_hash = ?', h);
+    const row = await first(env, `SELECT attempts, code_hash FROM tg_logins WHERE nonce_hash = ? AND ${owner}`, h, ...ownerArgs);
     if (row && !row.code_hash) throw err(409, 'code_not_sent', 'Open the bot in Telegram and tap Start to get your code.');
     if (row && row.attempts >= MAX_TRIES) throw err(429, 'too_many_tries', 'Too many wrong codes. Tap Start in the bot again for a new code.');
     throw wrong();
@@ -234,7 +244,12 @@ export async function tgVerify(env, body, headers) {
   if (!(await safeEqual(row.code_hash, await codeHash(env, nonce, code)))) throw wrong();
   const u = await run(env, 'UPDATE tg_logins SET used = 1 WHERE nonce_hash = ? AND used = 0', h);
   if (!u.meta.changes) throw wrong();
+  return row;
+}
 
+export async function tgVerify(env, body, headers) {
+  const row = await useCode(env, body, null);
+  const now = nowSec();
   const user = await first(env, 'SELECT * FROM users WHERE tg_id = ?', row.tg_id);
   if (user) {
     if (!user.is_active) throw err(403, 'account_disabled', 'این حساب غیرفعال شده است.');
@@ -277,4 +292,72 @@ export async function tgRegister(env, body, headers) {
 export function userLabel(u) {
   if (u && u.tg_id) return u.tg_username ? '@' + u.tg_username : 'TG ' + u.tg_id;
   return u ? u.email : '';
+}
+
+// ---------------- Profile: verify Telegram, backup email ----------------
+// An account made with email verifies a Telegram account from the profile: POST /me/telegram/start gives a link
+// like a sign-in (it opens the same bot, which sends a 6-digit code), POST /me/telegram/verify attaches it. That
+// Telegram account then logs in to this account too (with the code, or @username + the same password).
+export async function tgLinkStart(env, user) {
+  if (user.tg_id) throw err(409, 'telegram_linked', 'Your Telegram account is already verified.');
+  return tgStart(env, user.id);
+}
+
+export async function tgLinkVerify(env, user, body) {
+  if (user.tg_id) throw err(409, 'telegram_linked', 'Your Telegram account is already verified.');
+  const row = await useCode(env, body, user.id);
+  const taken = () => err(409, 'telegram_taken', 'This Telegram account already belongs to another Pleat account.');
+  const other = await first(env, 'SELECT id FROM users WHERE tg_id = ?', row.tg_id);
+  if (other && other.id !== user.id) throw taken();
+  try {
+    const r = await run(env, 'UPDATE users SET tg_id = ? WHERE id = ? AND tg_id IS NULL', row.tg_id, user.id);
+    if (!r.meta.changes) throw err(409, 'telegram_linked', 'Your Telegram account is already verified.');
+  } catch (e) {
+    if (/UNIQUE/i.test(String(e && e.message))) throw taken(); // the same Telegram linked elsewhere at the same moment
+    throw e;
+  }
+  await setTgUsername(env, user.id, row.tg_id, row.tg_username, row.tg_name);
+  const fresh = await first(env, 'SELECT * FROM users WHERE id = ?', user.id);
+  return json(profileOut(fresh));
+}
+
+// The Gmail (or any email) a person adds as a backup way to log in. The password is asked again, because this
+// changes how the account can be entered. "" removes it (only for accounts that have Telegram to log in with).
+export async function setEmail(env, user, body) {
+  if (!(await verifyPassword(body.password || '', user.password_hash, env.SECRET_KEY))) {
+    throw err(400, 'wrong_password', 'The password is wrong.', 'password');
+  }
+  const raw = String(body.email ?? '').trim();
+  let email;
+  if (!raw) {
+    if (!user.tg_id) throw err(422, 'invalid_input', 'Verify your Telegram account before removing your email.', 'email');
+    email = tgEmail(user.tg_id);
+  } else {
+    try { email = cleanEmail(raw); } catch (e) { throw err(422, 'invalid_input', 'Enter a real email address.', 'email'); }
+    if (email.endsWith('@' + TG_DOMAIN)) throw err(422, 'invalid_input', 'Enter a real email address.', 'email');
+  }
+  if (email !== user.email) {
+    const taken = () => err(409, 'email_taken', 'This email is already used by another account.', 'email');
+    if (await first(env, 'SELECT id FROM users WHERE email = ? AND id != ?', email, user.id)) throw taken();
+    try {
+      await run(env, 'UPDATE users SET email = ? WHERE id = ?', email, user.id);
+    } catch (e) {
+      if (/UNIQUE/i.test(String(e && e.message))) throw taken();
+      throw e;
+    }
+  }
+  const fresh = await first(env, 'SELECT * FROM users WHERE id = ?', user.id);
+  return json(profileOut(fresh));
+}
+
+// The identity part of GET /me. A Telegram account's made-up address is never shown: email is '' until the
+// person adds a real one.
+export function profileOut(u) {
+  const realEmail = u.email && !u.email.endsWith('@' + TG_DOMAIN) ? u.email : '';
+  return {
+    id: u.id, email: realEmail,
+    login: u.tg_id ? (u.tg_username ? '@' + u.tg_username : String(u.tg_id)) : u.email,
+    telegram: u.tg_id ? { id: String(u.tg_id), username: u.tg_username || null, name: u.tg_name || '' } : null,
+    telegram_verified: !!u.tg_id,
+  };
 }

@@ -184,8 +184,13 @@ class _LoginScreenState extends State<LoginScreen> {
 /// Telegram account that opens the link, the code goes in here, and a new
 /// account then sets its app password. Later sign-ins can use the
 /// @username (or the numeric Telegram id) and that password.
+///
+/// With [link] it verifies the Telegram account of a signed-in email
+/// account instead (from Profile): same bot and code, then it pops with
+/// true.
 class TelegramLoginScreen extends StatefulWidget {
-  const TelegramLoginScreen({super.key});
+  const TelegramLoginScreen({super.key, this.link = false});
+  final bool link;
 
   @override
   State<TelegramLoginScreen> createState() => _TelegramLoginScreenState();
@@ -236,7 +241,10 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen> {
   }
 
   Future<void> _newLink() => _run(() async {
-    final link = await AppScope.read(context).telegramStart();
+    final app = AppScope.read(context);
+    final link = widget.link
+        ? await app.telegramLinkStart()
+        : await app.telegramStart();
     if (!mounted) return;
     setState(() {
       _link = link;
@@ -262,6 +270,11 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen> {
       return;
     }
     await _run(() async {
+      if (widget.link) {
+        await AppScope.read(context).telegramLinkVerify(link.nonce, code);
+        if (mounted) Navigator.of(context).pop(true);
+        return;
+      }
       final signup = await AppScope.read(context)
           .telegramVerify(link.nonce, code);
       if (!mounted) return;
@@ -420,7 +433,10 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen> {
   Widget _codeStep() => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      _header(PIcon.lock, 'Sign in with Telegram'),
+      _header(
+        PIcon.lock,
+        widget.link ? 'Verify your Telegram' : 'Sign in with Telegram',
+      ),
       const SizedBox(height: 16),
       Text(
         '1. Open Telegram and tap Start in our bot.\n'
@@ -437,7 +453,10 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen> {
       _field(_code, '6-digit code', digits: true, onDone: _verify),
       _errorLine(),
       const SizedBox(height: 16),
-      PillButton(label: _busy ? 'Checking…' : 'Continue', onTap: _verify),
+      PillButton(
+        label: _busy ? 'Checking…' : (widget.link ? 'Verify' : 'Continue'),
+        onTap: _verify,
+      ),
       const SizedBox(height: 4),
       Row(
         children: [
@@ -446,7 +465,9 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen> {
         ],
       ),
       Text(
-        'Can’t open Telegram? Go back and use your email instead.',
+        widget.link
+            ? 'After this you can also log in with your Telegram username.'
+            : 'Can’t open Telegram? Go back and use your email instead.',
         style: PType.small(),
       ),
     ],

@@ -126,6 +126,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   final plans = Remote<List<PlanInfo>>();
   final servers = Remote<List<Exit>>();
   final devices = Remote<List<Device>>();
+  final packages = Remote<List<Package>>();
+
+  /// The Telegram profile picture, through the Worker; null shows the
+  /// initial.
+  Uint8List? photo;
   AppConfig config = const AppConfig.empty();
   Map<String, Rank> _ranks = const {};
 
@@ -372,6 +377,67 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return value;
   });
 
+  Future<void> loadPackages() => _fetch(packages, () async {
+    final data = await api.get('/me/packages');
+    return [
+      for (final p in data as List)
+        Package.fromJson((p as Map).cast<String, dynamic>()),
+    ];
+  });
+
+  /// The picture only changes when the person changes it on Telegram, so
+  /// it's fetched once per run and kept for the next one.
+  Future<void> loadPhoto() async {
+    if (!(me.value?.telegramVerified ?? false)) return;
+    try {
+      final raw = await api.tokens.cached('photo');
+      final cached = raw == null ? null : jsonDecode(raw);
+      if (photo == null && cached is String && cached.isNotEmpty) {
+        photo = base64Decode(cached);
+        notifyListeners();
+      }
+      final data = await api.get('/me/photo');
+      final b64 = data is Map ? data['photo'] as String? : null;
+      api.tokens.cache('photo', b64 ?? '');
+      photo = b64 == null || b64.isEmpty ? null : base64Decode(b64);
+      notifyListeners();
+    } on ApiError {
+      // The initial stays.
+    } on FormatException {
+      photo = null;
+    }
+  }
+
+  /// Verify Telegram on an email account: the same bot and 6-digit code as
+  /// a Telegram sign-in, attached to this account.
+  Future<TelegramStart> telegramLinkStart() async {
+    final data = await api.post('/me/telegram/start');
+    return TelegramStart(
+      nonce: data['nonce'] as String,
+      botUrl: data['bot_url'] as String,
+      appUrl: (data['app_url'] as String?) ?? '',
+    );
+  }
+
+  /// Errors come back as [ApiError].
+  Future<void> telegramLinkVerify(String nonce, String code) async {
+    await api.post('/me/telegram/verify', {'nonce': nonce, 'code': code});
+    await loadMe();
+    unawaited(loadPhoto());
+  }
+
+  /// Adds, changes or (with '') removes the backup email. Returns the error
+  /// to show, or null.
+  Future<String?> setEmail(String email, String password) async {
+    try {
+      await api.post('/me/email', {'email': email, 'password': password});
+      await loadMe();
+      return null;
+    } on ApiError catch (e) {
+      return e.code == 'wrong_password' ? 'The password is wrong.' : e.message;
+    }
+  }
+
   Future<void> loadServers() async {
     final before = {for (final e in exits) e.id: e};
     await _fetch(servers, () async {
@@ -462,6 +528,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> refreshAccount() async {
     // In parallel: the Worker may take a while on each, waiting on panels.
     await Future.wait([loadPublic(), loadMe(), loadDevices(), loadServers()]);
+    unawaited(loadPhoto());
   }
 
   // ---- account --------------------------------------------------------
@@ -582,6 +649,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     me.value = null;
     servers.value = null;
     devices.value = null;
+    packages.value = null;
+    photo = null;
     phase = Phase.idle;
     connectedAt = null;
     notifyListeners();

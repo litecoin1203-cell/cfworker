@@ -6,6 +6,7 @@ import 'package:pleat/design/widgets.dart';
 import 'package:pleat/main.dart';
 import 'package:pleat/screens/checkout.dart';
 import 'package:pleat/screens/onboarding.dart';
+import 'package:pleat/screens/profile.dart';
 import 'package:pleat/screens/shell.dart';
 import 'package:pleat/state/app_state.dart';
 import 'package:pleat/state/exits.dart';
@@ -621,5 +622,53 @@ void main() {
     expect(fail, contains('Link: trojan name:443'));
     expect(fail, isNot(contains('example.com')));
     await tester.pump(const Duration(seconds: 10));
+  });
+
+  testWidgets('Profile: the name opens it; Telegram, Gmail, rings, packages', (
+    tester,
+  ) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, tunnel: FakeTunnel());
+    // the greeting (name) opens Profile, like the picture
+    await tester.tap(find.textContaining(', Ali'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(ProfileScreen), findsOneWidget);
+    expect(api.calls, contains('GET /me/packages'));
+    expect(find.text('Verify your Telegram'), findsOneWidget);
+    expect(find.text('ali@example.com'), findsWidgets);
+    // the rings count up to what is left: 50 GiB plan in the fake = 46.6 GiB,
+    // 41 GB used -> 8.4 GiB left
+    expect(find.text('8.4'), findsOneWidget);
+    expect(find.text('12 days left'), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('Packages'), 200);
+    expect(find.text('Free trial  ·  5.0 GB'), findsOneWidget);
+    expect(
+      find.textContaining('Bought Nov 22  ·  Activated Nov 22, 2026'),
+      findsOneWidget,
+    );
+    expect(find.text('RUNNING'), findsOneWidget);
+
+    // verify Telegram with the bot's code
+    await tester.scrollUntilVisible(find.text('VERIFY'), -200);
+    await tester.tap(find.text('VERIFY'));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Verify your Telegram'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), '123456');
+    await tester.tap(find.text('VERIFY'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(app.me.value!.telegramVerified, isTrue);
+    expect(find.byType(ProfileScreen), findsOneWidget);
+    await tester.scrollUntilVisible(find.text('VERIFIED'), -200);
+    expect(find.text('VERIFIED'), findsOneWidget);
+    expect(find.text('Telegram  @ali_vpn'), findsOneWidget);
+    expect(find.text('Backup login · optional'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
   });
 }
