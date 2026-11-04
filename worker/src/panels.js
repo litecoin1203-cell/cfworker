@@ -2,7 +2,7 @@
 // which panels a user is on, and what the app sees, is decided here. Nothing that leaves this file for the app
 // carries a panel's name, address, id or count: configs are renamed and merged into one list.
 import { first, all, run, insert } from './db.js';
-import { nowSec, err } from './util.js';
+import { nowSec, err, seal, openSealed } from './util.js';
 import { PasarGuard, PasarGuardError, decodeSub } from './pasarguard.js';
 import { Marzban, Rebecca, detectKind } from './marzban.js';
 
@@ -13,12 +13,25 @@ const SERVING = ['active', 'rollout'];
 const ADAPTERS = { pasarguard: PasarGuard, marzban: Marzban, rebecca: Rebecca };
 export const KINDS = ['auto', ...Object.keys(ADAPTERS)];
 
-// Credentials of a panel, from its Workers Secret. PASARGUARD = the original PASARGUARD_* secrets (panel 1);
-// PANEL_<id>_CRED holds JSON {"url", "username", "password"} or {"url", "api_key"}. null = not set or unreadable.
-export function credOf(env, panel) {
+// Credentials of a panel. PASARGUARD = the original PASARGUARD_* secrets (panel 1). Other panels: what the
+// admin gave the bot (/panelcred, sealed in D1 under settings key panel_cred_<id>), else the Workers Secret
+// PANEL_<id>_CRED, JSON {"url", "username", "password"} or {"url", "api_key"}. null = not set or unreadable.
+export const credKey = (id) => `panel_cred_${id}`;
+const credPurpose = (id) => `panel-cred:${id}`;
+const _opened = new Map(); // sealed text -> cred, per isolate (decrypting is cheap, this just skips it)
+
+export async function credOf(env, panel) {
   if (panel.cred_ref === 'PASARGUARD') {
     if (!env.PASARGUARD_URL) return null;
     return { url: env.PASARGUARD_URL, username: env.PASARGUARD_USERNAME, password: env.PASARGUARD_PASSWORD, api_key: env.PASARGUARD_API_KEY };
+  }
+  const sealed = (await first(env, 'SELECT value FROM settings WHERE key = ?', credKey(panel.id)))?.value;
+  if (sealed) {
+    if (_opened.has(sealed)) return _opened.get(sealed);
+    try {
+      const c = JSON.parse((await openSealed(env.SECRET_KEY, credPurpose(panel.id), sealed)) || 'null');
+      if (c && c.url) { _opened.set(sealed, c); return c; }
+    } catch (e) { /* unreadable: fall back to the Workers Secret */ }
   }
   const raw = env[panel.cred_ref];
   if (!raw) return null;
@@ -28,15 +41,48 @@ export function credOf(env, panel) {
   } catch (e) { return null; }
 }
 
+// What the admin typed: "address username password" (space or new line between) or the JSON form.
+// {cred} or {error}. The values are never repeated in a reply.
+export function parseCred(text) {
+  const t = String(text || '').trim();
+  let c = null;
+  if (t.startsWith('{')) {
+    try { c = JSON.parse(t); } catch (e) { return { error: 'json' }; }
+  } else {
+    const [url, username, ...rest] = t.split(/\s+/);
+    c = rest.length ? { url, username, password: rest.join(' ') } : null;
+  }
+  if (!c || !c.url || !(c.api_key || (c.username && c.password))) return { error: 'parts' };
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(c.url) ? c.url : 'https://' + c.url); } catch (e) { return { error: 'url' }; }
+  if (!/^https?:$/.test(u.protocol) || !u.hostname.includes('.')) return { error: 'url' };
+  const out = { url: u.href };
+  if (c.api_key) out.api_key = String(c.api_key);
+  else { out.username = String(c.username); out.password = String(c.password); }
+  return { cred: out };
+}
+
+export async function savePanelCred(env, panel, cred) {
+  const sealed = await seal(env.SECRET_KEY, credPurpose(panel.id), JSON.stringify(cred));
+  await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', credKey(panel.id), sealed);
+}
+
+// where a panel's login comes from, for the bot: 'bot' | 'secret' | 'env' | null
+export async function credSource(env, panel) {
+  if (panel.cred_ref === 'PASARGUARD') return env.PASARGUARD_URL ? 'env' : null;
+  if (await first(env, 'SELECT 1 x FROM settings WHERE key = ?', credKey(panel.id))) return 'bot';
+  return env[panel.cred_ref] ? 'secret' : null;
+}
+
 export function options(panel) {
   try { return JSON.parse(panel.options_json || '{}') || {}; } catch (e) { return {}; }
 }
 
 // The adapter for a panel. kind 'auto' (and any unknown kind) gives the shared API client, enough to log in
 // and detect the real type; such a panel cannot take users until /paneltest has set its kind.
-export function adapterFor(env, panel, { probe = false } = {}) {
-  const cred = credOf(env, panel);
-  if (!cred) throw new PasarGuardError(`secret ${panel.cred_ref} is not set or is not valid JSON with a "url"`, 0);
+export async function adapterFor(env, panel, { probe = false } = {}) {
+  const cred = await credOf(env, panel);
+  if (!cred) throw new PasarGuardError(`login for this panel is not set: send it with /panelcred ${panel.id} (or Workers Secret ${panel.cred_ref}, JSON with a "url")`, 0);
   const Cls = ADAPTERS[panel.kind];
   if (Cls) return new Cls(env, cred);
   if (probe) return new PasarGuard(env, cred);
@@ -49,7 +95,7 @@ export function adapterFor(env, panel, { probe = false } = {}) {
 // {kind, changed, error}
 export async function detectPanelKind(env, panel) {
   let found;
-  try { found = await detectKind(adapterFor(env, panel, { probe: true })); }
+  try { found = await detectKind(await adapterFor(env, panel, { probe: true })); }
   catch (e) {
     if (!(e instanceof PasarGuardError)) throw e;
     const notFamily = e.status === 404 || e.status === 405;
@@ -156,7 +202,7 @@ export async function collectLinks(env, userId, fwd = {}) {
   let reached = 0, deviceLimit = false, missing = 0;
   for (const a of accounts) {
     let raw;
-    const pg = (() => { try { return adapterFor(env, panelOfAccount(a)); } catch (e) { return null; } })();
+    const pg = await adapterFor(env, panelOfAccount(a)).catch(() => null);
     if (!pg) continue;
     try { raw = await pg.subscriptionRaw(a.sub_path, fwd); }
     catch (e) { continue; } // an unreachable panel only removes its own configs
@@ -227,7 +273,7 @@ export async function testPanel(env, panel) {
       out.kindChanged = true;
       panel = { ...panel, kind: det.kind };
     }
-    pg = adapterFor(env, panel);
+    pg = await adapterFor(env, panel);
     if (!pg.apiKey) await pg._login();
     out.login = true;
     out.version = await pg.version();

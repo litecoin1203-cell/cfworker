@@ -9,6 +9,9 @@ const fa = (n) => Number(n || 0).toLocaleString('en-US');
 const b = (text, data) => ({ text, callback_data: String(data).slice(0, 64) });
 const HOME = b('🏠 منوی اصلی', 'm:home');
 const WAIT_SECONDS = 600;
+export const CRED_PROMPT = ['🔐 آدرس پنل، یوزرنیم و رمز ادمین را در یک پیام بفرست، با فاصله یا هر کدام در یک خط:',
+  'https://panel.example.com:8000/dashboard/', 'admin', 'رمز', '',
+  'پیامت بلافاصله از چت پاک می‌شود و رمز به‌صورت رمزنگاری‌شده ذخیره می‌شود.'].join('\n');
 
 export const backKb = (back) => ({ inline_keyboard: [back && back !== 'home' ? [b('🔙 برگشت', 'm:' + back), HOME] : [HOME]] });
 
@@ -20,7 +23,7 @@ export const userKb = (uid) => ({ inline_keyboard: [
 
 // ---------------- "write your answer" state ----------------
 // One question at a time (one admin chat): the next plain-text message becomes "<cmd> <text>".
-async function setWait(env, cmd, back, secret) {
+export async function setWait(env, cmd, back, secret) {
   await setSetting(env, 'bot_wait', JSON.stringify({ cmd, back, secret: !!secret, exp: nowSec() + WAIT_SECONDS }));
 }
 
@@ -117,6 +120,7 @@ async function panel(env, id) {
     kb: [
       [x('🧪 تست پنل', `/paneltest ${p.id}`), b('👥 گروه‌ها / سرویس', `m:w:groups:${p.id}`)],
       [x('10%', `/rollout ${p.id} 10`), x('25%', `/rollout ${p.id} 25`), x('50%', `/rollout ${p.id} 50`), x('100%', `/rollout ${p.id} 100`)],
+      [b('🔐 ورود پنل (آدرس، یوزر، رمز)', `m:w:panelcred:${p.id}`)],
       [x('🚪 خارج‌کردن پنل', `/drainpanel ${p.id}`)],
       [b('🔙 پنل‌ها', 'm:pa'), HOME],
     ],
@@ -209,6 +213,10 @@ async function ask(env, kind, args) {
   }
   if (kind === 'newplan') return ['/newplan', 'pl', '➕ پلن جدید را این‌طوری بنویس:\nنام|روز|گیگ|دستگاه|قیمت\n\nمثال:\nسه ماهه|90|0|2|399000\n(گیگ یا دستگاه 0 = نامحدود)'];
   if (kind === 'addpanel') return ['/addpanel auto', 'pa', '➕ یک نام برای پنل جدید بنویس، مثلاً: آلمان ۲\nنوع پنل (PasarGuard، Marzban یا Rebecca) موقع تست خودکار تشخیص داده می‌شود.'];
+  if (kind === 'panelcred') {
+    const id = parseInt(args[0], 10);
+    return [`/panelcred ${id}`, `pp:${id}`, CRED_PROMPT, true];
+  }
   if (kind === 'groups') return [`/panelgroups ${parseInt(args[0], 10)}`, `pp:${parseInt(args[0], 10)}`, '👥 شماره‌ی گروه‌های پنل را با کاما بنویس (مثلاً 1,2).\nبرای Rebecca فقط شماره‌ی یک سرویس (Service) را بنویس:'];
   if (kind === 'coupon') return ['/coupon', 'cp', '🏷 کد جدید را این‌طوری بنویس:\nکد درصد [تعداد] [روز] [شماره‌پلن]\n\nمثال: YALDA 20 100 7\n(یعنی ۲۰٪، ۱۰۰ بار، ۷ روز)'];
   if (kind === 'set' && args[0] in SETTING_DEFAULTS) {

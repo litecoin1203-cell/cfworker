@@ -152,3 +152,28 @@ export function cleanEmail(v) {
   if (v.length > 254 || !EMAIL_RE.test(v)) throw err(422, 'invalid_input', 'یک ایمیل درست وارد کن.', 'email');
   return v;
 }
+
+// ---------------- sealed values (secrets kept in D1) ----------------
+// AES-GCM with a key derived (HKDF) from SECRET_KEY for one purpose. What is stored ("s1.<iv>.<data>") is useless
+// without the Worker's SECRET_KEY: a database export or backup does not reveal it. Changing SECRET_KEY makes
+// sealed values unreadable (openSealed gives null), so they must then be entered again.
+async function sealKey(secret, purpose) {
+  const base = await crypto.subtle.importKey('raw', enc.encode(String(secret || '')), 'HKDF', false, ['deriveKey']);
+  return crypto.subtle.deriveKey({ name: 'HKDF', hash: 'SHA-256', salt: enc.encode('cloudgold-seal-v1'), info: enc.encode(purpose) },
+    base, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+}
+export async function seal(secret, purpose, text) {
+  if (!secret) throw new Error('SECRET_KEY is not set');
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: enc.encode(purpose) }, await sealKey(secret, purpose), enc.encode(text));
+  return `s1.${b64urlFromBytes(iv)}.${b64urlFromBytes(new Uint8Array(data))}`;
+}
+export async function openSealed(secret, purpose, sealed) {
+  const parts = String(sealed || '').split('.');
+  if (parts.length !== 3 || parts[0] !== 's1' || !secret) return null;
+  try {
+    const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: bytesFromB64url(parts[1]), additionalData: enc.encode(purpose) },
+      await sealKey(secret, purpose), bytesFromB64url(parts[2]));
+    return dec.decode(plain);
+  } catch (e) { return null; }
+}

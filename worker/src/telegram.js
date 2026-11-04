@@ -272,7 +272,7 @@ export async function linkCheck(env, u, panel, username) {
   const { adapterFor } = await import('./panels.js');
   const { parseExpire } = await import('./pasarguard.js');
   let remote;
-  try { remote = await adapterFor(env, panel).getUser(username); }
+  try { remote = await (await adapterFor(env, panel)).getUser(username); }
   catch (e) { return { error: `پنل #${panel.id} جواب نداد: ${e.message}` }; }
   if (!remote) return { error: `کاربری با یوزرنیم ${username} روی پنل #${panel.id} (${panel.label}) پیدا نشد.` };
   if (!remote.subscription_url) return { error: 'پنل برای این کاربر لینک ساب نداد.' };
@@ -309,7 +309,7 @@ export async function panelReport(env) {
     if (t.version) lines.push(`نسخه‌ی پنل: ${t.version}`);
     if (t.sameHost === true) lines.push('⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است؛ آدرس پنل داخل کانفیگ‌ها دیده می‌شود. برای نودها دامنه‌ی جدا بگذار.');
     if (t.sameHost === false) lines.push('✅ دامنه‌ی نودها با دامنه‌ی پنل فرق دارد.');
-    if (!t.login && p.cred_ref !== 'PASARGUARD') lines.push(`راه حل: Secret با نام ${p.cred_ref} را در داشبورد Cloudflare بررسی کن.`);
+    if (!t.login && p.cred_ref !== 'PASARGUARD') lines.push(`راه حل: آدرس/یوزر/رمز را دوباره بده: /panelcred ${p.id}`);
   }
   return lines.join('\n');
 }
@@ -326,7 +326,7 @@ export async function backupJson(env) {
   // subscription links contain the panel address, which never goes into a chat
   out.tables.subscriptions = out.tables.subscriptions.map(({ sub_url, ...x }) => x);
   out.tables.panel_accounts = out.tables.panel_accounts.map(({ sub_path, ...x }) => x);
-  out.tables.settings = out.tables.settings.filter((x) => x.key !== 'tg_webhook_sig' && x.key !== 'bot_wait');
+  out.tables.settings = out.tables.settings.filter((x) => x.key !== 'tg_webhook_sig' && x.key !== 'bot_wait' && !x.key.startsWith('panel_cred_'));
   return JSON.stringify(out);
 }
 
@@ -410,6 +410,11 @@ async function onMessage(env, msg, opts = {}) {
       return onMessage(env, { chat: msg.chat, from: msg.from, text: `${w.cmd} ${text}` }, { kb: menu.backKb(w.back) });
     }
   }
+  // a panel login typed after its question expired: it must not stay in the chat
+  if (text && !text.startsWith('/') && /https?:\/\/\S+\s+\S+\s+\S+/i.test(text) && text.split(/\s+/).length <= 6) {
+    if (msg.message_id) await tg(env, 'deleteMessage', { chat_id: chatId, message_id: msg.message_id }).catch(() => {});
+    return say('این پیام شبیه آدرس و رمز پنل بود و پاک شد، ولی ذخیره نشد (سؤالش منقضی شده بود). از دکمه‌ی «🔐 ورود پنل» یا /panelcred شماره‌پنل دوباره شروع کن.');
+  }
 
   // the admin pasted a bank SMS: find the card order and confirm it
   if (text && !text.startsWith('/')) {
@@ -440,7 +445,7 @@ async function onMessage(env, msg, opts = {}) {
       const n = (await first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active'", p.id)).c;
       lines.push(`#${p.id} ${p.label} (${p.kind}) — ${STATE_FA[p.state] || p.state}${p.state === 'rollout' ? ` ${p.rollout_percent}%` : ''} · سلامت ${p.health} · ${n} کاربر فعال${p.version ? ` · نسخه ${p.version}` : ''}`);
     }
-    lines.push('', 'افزودن: /addpanel نام (نوع خودکار)', 'تست: /paneltest شماره · ورود تدریجی: /rollout شماره درصد', 'گروه‌ها: /panelgroups شماره 1,2 · خارج‌کردن: /drainpanel شماره');
+    lines.push('', 'افزودن: /addpanel نام (نوع خودکار) · ورود پنل: /panelcred شماره', 'تست: /paneltest شماره · ورود تدریجی: /rollout شماره درصد', 'گروه‌ها: /panelgroups شماره 1,2 · خارج‌کردن: /drainpanel شماره');
     return say(lines.join('\n'));
   }
   if (cmd === '/addpanel') {
@@ -454,17 +459,34 @@ async function onMessage(env, msg, opts = {}) {
     const { addPanel } = await import('./panels.js');
     const p = await addPanel(env, k, label);
     await audit(env, chatId, 'panel.add', 'panel', p.id, `${k} ${label}`);
-    return say([
-      `✅ پنل #${p.id} (${p.label}) ثبت شد؛ هنوز به هیچ کاربری داده نمی‌شود.`,
-      '',
-      `۱) در داشبورد Cloudflare ← Workers ← cloudgold ← Settings ← Variables and Secrets یک Secret با نام ${p.cred_ref} بساز، با این شکل:`,
-      '{"url":"https://...","username":"...","password":"..."}',
-      '(url همان آدرس داشبورد پنل است، با پورت اگر دارد، مثل https://panel.example.com:8000/dashboard/)',
-      '(برای PasarGuard با کلید API: {"url":"https://...","api_key":"..."})',
-      'رمز را هرگز در این چت ننویس.',
-      `۲) بعد بزن: /paneltest ${p.id}`,
-      `۳) اگر سالم بود: /rollout ${p.id} 10 (ده درصد کاربران)، بعد کم‌کم تا 100`,
-    ].join('\n'));
+    const menu = await import('./telegram-menu.js');
+    await menu.setWait(env, `/panelcred ${p.id}`, `pp:${p.id}`, true);
+    return say([`✅ پنل #${p.id} (${p.label}) ثبت شد؛ هنوز به هیچ کاربری داده نمی‌شود.`, '', menu.CRED_PROMPT, '',
+      'بعد از ذخیره، پنل خودکار تست می‌شود.'].join('\n'));
+  }
+  if (cmd === '/panelcred') {
+    // the message carries a password: it leaves the chat before anything else happens
+    if (msg.message_id && text.split(/\s+/).length > 2) await tg(env, 'deleteMessage', { chat_id: chatId, message_id: msg.message_id }).catch(() => {});
+    const parts = text.split(/\s+/);
+    const { getPanel, parseCred, savePanelCred, testPanel } = await import('./panels.js');
+    const panel = await getPanel(env, parseInt(parts[1], 10));
+    if (!panel) return say('شکل درست: /panelcred شماره‌پنل (لیست: /panels)');
+    if (panel.cred_ref === 'PASARGUARD') return say('ورود پنل ۱ از Secretهای PASARGUARD_* خوانده می‌شود و از اینجا عوض نمی‌شود.');
+    const body = text.replace(/^\/panelcred(@\w+)?\s+\S+\s*/i, '');
+    const menu = await import('./telegram-menu.js');
+    if (!body) {
+      await menu.setWait(env, `/panelcred ${panel.id}`, `pp:${panel.id}`, true);
+      return say(menu.CRED_PROMPT);
+    }
+    const { cred, error } = parseCred(body);
+    if (error) {
+      await menu.setWait(env, `/panelcred ${panel.id}`, `pp:${panel.id}`, true);
+      return say(`❌ ${{ url: 'آدرس پنل درست نیست.', json: 'JSON درست نیست.' }[error] || 'باید سه چیز باشد: آدرس، یوزرنیم، رمز.'} دوباره بفرست:\n\n${menu.CRED_PROMPT}`);
+    }
+    await savePanelCred(env, panel, cred);
+    await audit(env, chatId, 'panel.cred', 'panel', panel.id, 'ورود پنل عوض شد');
+    await say(`🔐 ورود پنل #${panel.id} ذخیره شد (رمزنگاری‌شده). پیامت پاک شد.\n⏳ در حال تست پنل...`);
+    return onMessage(env, { chat: msg.chat, from: msg.from, text: `/paneltest ${panel.id} silent` }, opts);
   }
   if (cmd === '/paneltest' || cmd === '/rollout' || cmd === '/drainpanel' || cmd === '/panelgroups') {
     const parts = text.split(/\s+/);
@@ -472,7 +494,7 @@ async function onMessage(env, msg, opts = {}) {
     const panel = await getPanel(env, parseInt(parts[1], 10));
     if (!panel) return say('پنل پیدا نشد. لیست: /panels');
     if (cmd === '/paneltest') {
-      await say('⏳ در حال تست پنل...');
+      if (parts[2] !== 'silent') await say('⏳ در حال تست پنل...');
       const t = await testPanel(env, panel);
       await audit(env, chatId, 'panel.test', 'panel', panel.id, t.healthy ? 'سالم' : 'ناسالم');
       const kindLine = t.kind ? `نوع پنل: ${t.kind}${t.kindChanged ? ' (خودکار تشخیص داده و ثبت شد)' : ''}\n` : '';

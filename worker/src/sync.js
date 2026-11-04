@@ -108,7 +108,7 @@ export async function applyAccount(env, pa) {
   const panel = await getPanel(env, pa.panel_id);
   if (!panel) return false;
   try {
-    const pg = adapterFor(env, panel);
+    const pg = await adapterFor(env, panel);
     if (pa.desired === 'active') {
       await pg.modifyUser(pa.remote_username, { status: 'active', data_limit: pa.desired_limit_bytes || 0, expire: pa.desired_expire || 0, data_limit_reset_strategy: 'no_reset' });
     } else {
@@ -142,7 +142,7 @@ export async function refreshUser(env, userId) {
   for (const a of accounts) {
     if (a.panel_state === 'disabled') continue;
     try {
-      const u = await adapterFor(env, { id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref }).getUser(a.remote_username);
+      const u = await (await adapterFor(env, { id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref })).getUser(a.remote_username);
       if (!u) { missing++; continue; }
       reached++;
       await observe(env, a, { used: parseInt(u.used_traffic || 0, 10) || 0, expire: parseExpire(u.expire), data_limit: parseInt(u.data_limit || 0, 10) || 0 });
@@ -159,7 +159,7 @@ export async function refreshUser(env, userId) {
 // Create (or re-activate) this user's account on one panel with the logical subscription's expiry and remaining
 // data. Returns the account row; throws PasarGuardError when the panel refuses.
 export async function ensureAccount(env, user, panel, { expire, limit, hwid } = {}) {
-  const pg = adapterFor(env, panel);
+  const pg = await adapterFor(env, panel);
   let pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
   const now = nowSec();
   if (pa && (await pg.getUser(pa.remote_username))) return pa;
@@ -198,7 +198,7 @@ export async function ensureAccount(env, user, panel, { expire, limit, hwid } = 
 // remote = the panel's user record, read just before. Returns {replaced, disabled}: the user's previous account
 // on that panel (if any) is switched off on the panel, never deleted.
 export async function linkAccount(env, user, panel, remote) {
-  const pg = adapterFor(env, panel);
+  const pg = await adapterFor(env, panel);
   const subPath = pg.absoluteSubUrl(remote.subscription_url || '');
   if (!subPath) throw new PasarGuardError('panel returned no subscription link for this user', 0);
   const now = nowSec();
@@ -286,7 +286,7 @@ async function syncPage(env) {
   const touched = new Set();
   let wrapped = false;
   try {
-    const page = await adapterFor(env, panel).listUsage(offset, PAGE);
+    const page = await (await adapterFor(env, panel)).listUsage(offset, PAGE);
     const names = page.users.map((u) => u.username);
     const byName = Object.fromEntries(page.users.map((u) => [u.username, u]));
     for (let i = 0; i < names.length; i += 90) { // D1 caps bound parameters per query
