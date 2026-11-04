@@ -1878,5 +1878,17 @@ section('no typing: commands in bot messages become buttons, a menu button stays
   ok(left.length === 0, 'no bot message asks to type a command: ' + (left[0] || '').slice(0, 200));
 }
 
+section('panel test names the config types and flags ones the app cannot use');
+{
+  const { linkKinds } = await import('../src/panels.js');
+  const vm = 'vmess://' + btoa(JSON.stringify({ v: '2', ps: 'x', add: 'a.example', port: '443', id: 'u', net: 'ws', tls: 'tls' }));
+  const k = linkKinds(['vless://u@a.example:443?security=reality&type=tcp#a', 'vless://u@b.example:443?security=tls&type=xhttp#b', 'ss://YWVzOnB3@c.example:1#c', vm, 'hysteria2://p@d.example:443#d', 'wireguard://k@e.example:51820#e', 'tuic://u@f.example:443#f']);
+  ok(k.counts['vless·reality·tcp'] === 1 && k.counts['vless·tls·xhttp'] === 1 && k.counts.shadowsocks === 1 && k.counts['vmess·tls·ws'] === 1, 'types counted: ' + JSON.stringify(k.counts));
+  ok(k.unusable === 1, 'only tuic flagged as not usable; hysteria2 and wireguard run in the app');
+  ok(k.counts['hysteria2'] === 1 && k.counts['wireguard'] === 1, 'hysteria2 and wireguard counted by name');
+  await admin('/paneltest 1');
+  ok(lastText().includes('نوع کانفیگ‌ها:') && lastText().includes('vless·reality·tcp') && !lastText().includes('پشتیبانی نمی‌کند'), 'paneltest shows the types: ' + lastText());
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

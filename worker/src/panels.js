@@ -177,6 +177,33 @@ function withRemark(link, name) {
   return link.split('#')[0] + '#' + encodeURIComponent(name);
 }
 
+// What kinds of configs a panel serves, for the admin ("vless·reality·tcp ×6"). Pleat's core takes vless,
+// vmess, trojan and shadowsocks; anything else (hysteria2, wireguard, tuic...) is counted as unusable.
+export const APP_SCHEMES = ['vless', 'vmess', 'trojan', 'ss', 'hysteria2', 'hy2', 'wireguard', 'wg'];
+export function linkKinds(links) {
+  const counts = {};
+  let unusable = 0;
+  for (const link of links) {
+    const scheme = link.split('://', 1)[0].toLowerCase();
+    let net = '', sec = '';
+    if (scheme === 'vmess') {
+      try {
+        let raw = link.split('://')[1];
+        raw += '='.repeat((4 - (raw.length % 4)) % 4);
+        const j = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')));
+        net = j.net || 'tcp'; sec = j.tls || 'none';
+      } catch (e) { /* counted as plain vmess */ }
+    } else if (!['ss', 'hysteria2', 'hy2', 'wireguard', 'wg'].includes(scheme)) {
+      const q = new URLSearchParams((link.split('?')[1] || '').split('#')[0]);
+      net = q.get('type') || 'tcp'; sec = q.get('security') || 'none';
+    }
+    if (!APP_SCHEMES.includes(scheme)) unusable++;
+    const key = [scheme === 'ss' ? 'shadowsocks' : scheme, sec && sec !== 'none' ? sec : '', net].filter(Boolean).join('·');
+    counts[key] = (counts[key] || 0) + 1;
+  }
+  return { counts, unusable };
+}
+
 // Panel remarks can name the panel or the provider, so every config is renamed to its country and a number
 // ("🇩🇪 DE 2"); identical configs from two panels appear once.
 export function unify(links) {
@@ -262,7 +289,7 @@ export async function addPanel(env, kind, label) {
 // panel's own host, which the app then cannot avoid seeing inside the configs.
 // The panel's type is detected first; kind = what was found, kindChanged = the stored type was corrected.
 export async function testPanel(env, panel) {
-  const out = { login: false, create: false, configs: 0, version: null, sameHost: null, error: null, kind: null, kindChanged: false };
+  const out = { login: false, create: false, configs: 0, version: null, sameHost: null, error: null, kind: null, kindChanged: false, kinds: null };
   let pg;
   try {
     const det = await detectPanelKind(env, panel);
@@ -284,6 +311,7 @@ export async function testPanel(env, panel) {
     try {
       const links = u.subscription_url ? await pg.subscriptionLinks(u.subscription_url) : [];
       out.configs = links.length;
+      out.kinds = linkKinds(links);
       const hosts = pg.panelHosts();
       const nodeHosts = links.map((l) => { try { return new URL(l.replace(/^[a-z0-9+.-]+:\/\//i, 'http://')).hostname.toLowerCase(); } catch (e) { return ''; } }).filter(Boolean);
       if (nodeHosts.length) out.sameHost = nodeHosts.some((h) => hosts.includes(h));

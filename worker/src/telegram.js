@@ -562,11 +562,12 @@ async function onMessage(env, msg, opts = {}) {
       if (parts[2] !== 'silent') await say('⏳ در حال تست پنل...');
       const t = await testPanel(env, panel);
       await audit(env, chatId, 'panel.test', 'panel', panel.id, t.healthy ? 'سالم' : 'ناسالم');
+      const typesLine = t.kinds && t.configs ? `\nنوع کانفیگ‌ها: ${Object.entries(t.kinds.counts).map(([k, n]) => `${k} ×${n}`).join('، ')}${t.kinds.unusable ? `\n⚠️ ${t.kinds.unusable} کانفیگ از نوعی است که اپ Pleat پشتیبانی نمی‌کند (اپ vless، vmess، trojan، shadowsocks، hysteria2 و wireguard را می‌شناسد) و در اپ نشان داده نمی‌شود.` : ''}` : '';
       const kindLine = t.kind ? `نوع پنل: ${t.kind}${t.kindChanged ? ' (خودکار تشخیص داده و ثبت شد)' : ''}\n` : '';
       const go = t.healthy ? { reply_markup: { inline_keyboard: [
         [{ text: '🚀 ۱۰٪ کاربران', callback_data: `m:x:pp:${panel.id}|/rollout ${panel.id} 10` }, { text: '🚀 همه‌ی کاربران', callback_data: `m:x:pp:${panel.id}|/rollout ${panel.id} 100` }],
         [{ text: '🗂 صفحه‌ی پنل', callback_data: `m:pp:${panel.id}` }]] } } : undefined;
-      return say(kindLine + (t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\nبرای شروع یکی از دکمه‌ها را بزن (یا بنویس: /rollout ${panel.id} 10)`
+      return say(kindLine + (t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\n${typesLine}\nبرای شروع یکی از دکمه‌ها را بزن (یا بنویس: /rollout ${panel.id} 10)`
         : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}${t.kind === 'rebecca' && !t.create ? `\nدر Rebecca هر کاربر باید یک سرویس (Service) داشته باشد. شماره‌ی سرویس را بده: /panelgroups ${panel.id} شماره` : ''}`), go);
     }
     if (cmd === '/panelgroups') {
