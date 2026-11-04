@@ -98,6 +98,30 @@ class Tunnel {
     }
   }
 
+  /// One exit tested alone with the core logging everything: the delay or
+  /// the core's reason, how long it took, and the log's last lines with
+  /// addresses, keys and ids blanked on the phone. Null without an engine.
+  Future<({int? ms, String? error, int took, String log})?> trace(
+    String config,
+  ) async {
+    if (!await available()) return null;
+    try {
+      final r = await _method.invokeMethod<Map<Object?, Object?>>('trace', {
+        'config': config,
+      });
+      if (r == null) return null;
+      final ms = r['ms'];
+      return (
+        ms: ms is int && ms > 0 ? ms : null,
+        error: r['error'] as String?,
+        took: (r['took'] as int?) ?? 0,
+        log: (r['log'] as String?) ?? '',
+      );
+    } on PlatformException catch (e) {
+      return (ms: null, error: e.code, took: 0, log: '');
+    }
+  }
+
   /// Download speed in kbit/s through a throw-away core running [config]
   /// (about 1 MB on the phone's own network); -1 when nothing came
   /// through, null without an engine.

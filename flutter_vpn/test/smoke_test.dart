@@ -607,4 +607,19 @@ void main() {
     expect(app.exits.where((e) => e.measured == null), isEmpty);
     await tester.pump(const Duration(seconds: 10));
   });
+
+  testWidgets('one exit alone with its core log, for support', (tester) async {
+    final tunnel = FakeTunnel()..pings = {'de1.example.com': 60};
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    final de = app.exits.firstWhere((e) => e.server.link.contains('de1'));
+    final us = app.exits.firstWhere((e) => e.server.link.contains('us1'));
+    final ok = (await app.traceExit(de.id))!;
+    expect(ok, contains('Result: OK 60 ms'));
+    expect(ok, contains('[Info] core log line'));
+    final fail = (await app.traceExit(us.id))!;
+    expect(fail, contains('Result: FAIL'));
+    expect(fail, contains('Link: trojan name:443'));
+    expect(fail, isNot(contains('example.com')));
+    await tester.pump(const Duration(seconds: 10));
+  });
 }

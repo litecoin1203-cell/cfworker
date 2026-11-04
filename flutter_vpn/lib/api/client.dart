@@ -130,7 +130,7 @@ class ApiClient {
 
   /// Contract version, not Pleat's own: 1.9 tells the Worker this client
   /// never wants a raw subscription address (see `centralApp`).
-  static const appVersion = '1.9.0 (Pleat 1.2.9)';
+  static const appVersion = '1.9.0 (Pleat 1.2.10)';
 
   final TokenStore tokens;
   final List<String> _bases;

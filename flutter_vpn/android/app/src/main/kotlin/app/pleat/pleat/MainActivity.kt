@@ -96,6 +96,18 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                     }
+                    "trace" -> {
+                        val config = call.argument<String>("config")
+                        if (config == null) {
+                            result.success(null)
+                            return@setMethodCallHandler
+                        }
+                        // One exit alone, with the core's own log, for the person to send us.
+                        background(result, mapOf("ms" to -1, "error" to "trace failed", "log" to "")) {
+                            Engine.init(this)
+                            trace(config)
+                        }
+                    }
                     "speed" -> {
                         val config = call.argument<String>("config")
                         if (config == null) {
@@ -253,6 +265,44 @@ class MainActivity : FlutterActivity() {
     }
 
     /** The core's errors name the server; never show an address or a host. */
+    /**
+     * Tests one exit like "ping" with the core logging everything to a file,
+     * and returns the delay or the core's reason plus the log's last lines,
+     * with addresses, keys and ids blanked.
+     */
+    private fun trace(config: String): Map<String, Any?> {
+        val file = java.io.File(cacheDir, "trace.log")
+        file.delete()
+        val json = org.json.JSONObject(config)
+        json.put(
+            "log",
+            org.json.JSONObject()
+                .put("loglevel", "debug")
+                .put("error", file.absolutePath)
+                .put("access", "none")
+                .put("dnsLog", true)
+        )
+        val started = System.currentTimeMillis()
+        var error: String? = null
+        val ms = try {
+            libv2ray.Libv2ray.measureOutboundDelay(json.toString(), Engine.TEST_URL).toInt()
+        } catch (e: Exception) {
+            error = blank(e.message.orEmpty().ifEmpty { e.javaClass.simpleName }).take(400)
+            -1
+        }
+        val took = System.currentTimeMillis() - started
+        val lines = try { file.readLines() } catch (e: Exception) { emptyList() }
+        file.delete()
+        val log = lines.takeLast(150).joinToString("\n") { secretless(blank(it)).take(300) }
+        return mapOf("ms" to ms, "error" to error, "took" to took.toInt(), "log" to log)
+    }
+
+    /** UUIDs and base64 keys out of a log line. */
+    private fun secretless(text: String): String = text
+        .replace(Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"), "<id>")
+        .replace(Regex("[A-Za-z0-9+/_-]{40,}={0,2}"), "<key>")
+        .replace(Regex("\\b[0-9a-fA-F]{64}\\b"), "<key>")
+
     private fun blank(text: String): String = text
         .replace(Regex("\\[[0-9a-fA-F:]+\\](:\\d+)?"), "…")
         .replace(Regex("\\b\\d{1,3}(\\.\\d{1,3}){3}(:\\d+)?\\b"), "…")

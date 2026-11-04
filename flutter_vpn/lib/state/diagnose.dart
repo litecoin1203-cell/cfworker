@@ -5,6 +5,9 @@
 /// native side blanks them before the text reaches Dart.
 library;
 
+import 'dart:convert';
+
+import '../api/models.dart';
 import 'exits.dart';
 import 'xray_config.dart';
 
@@ -286,3 +289,91 @@ String report(
   }
   return b.toString();
 }
+
+/// Query keys whose values say how an exit is set up without naming the
+/// server or holding a secret; every other value shows only as "set".
+const _shapeKeys = {
+  'type',
+  'security',
+  'encryption',
+  'flow',
+  'fp',
+  'alpn',
+  'mode',
+  'headerType',
+  'mtu',
+  'reserved',
+  'allowedips',
+  'keepalive',
+  'insecure',
+  'allowInsecure',
+  'obfs',
+  'packetEncoding',
+};
+
+/// A share link with nothing that names the server or opens it: scheme,
+/// whether the host is a name or an IP, the port, and each setting (secrets
+/// and names only as "set"), so two exits can be compared field by field.
+String linkShape(String link) {
+  final i = link.indexOf('://');
+  if (i <= 0) return 'not a link';
+  final scheme = link.substring(0, i).toLowerCase();
+  if (scheme == 'vmess') {
+    try {
+      var raw = link.substring(i + 3).split('#').first.trim();
+      raw = raw.replaceAll('-', '+').replaceAll('_', '/');
+      raw += '=' * ((4 - raw.length % 4) % 4);
+      final j = jsonDecode(utf8.decode(base64.decode(raw)));
+      if (j is! Map) return 'vmess (unreadable)';
+      final ep = endpointOf(link);
+      final parts = <String>[
+        'vmess',
+        if (ep != null) '${_hostKind(ep.host)}:${ep.port}',
+        for (final k in ['net', 'tls', 'type', 'fp', 'alpn', 'scy', 'aid'])
+          if ('${j[k] ?? ''}'.isNotEmpty) '$k=${j[k]}',
+        for (final k in ['host', 'path', 'sni'])
+          if ('${j[k] ?? ''}'.isNotEmpty) '$k=set',
+      ];
+      return parts.join(' ');
+    } on FormatException {
+      return 'vmess (unreadable)';
+    }
+  }
+  final ep = endpointOf(link);
+  final body = link.split('#').first;
+  final q = body.contains('?') ? body.substring(body.indexOf('?') + 1) : '';
+  final parts = <String>[
+    scheme,
+    if (ep != null) '${_hostKind(ep.host)}:${ep.port}',
+  ];
+  for (final pair in q.split('&')) {
+    final eq = pair.indexOf('=');
+    if (eq <= 0) continue;
+    final k = pair.substring(0, eq);
+    var v = pair.substring(eq + 1);
+    try {
+      v = Uri.decodeComponent(v.replaceAll('+', '%2B'));
+    } on ArgumentError {
+      // shown as sent
+    }
+    if (v.isEmpty) {
+      parts.add('$k=');
+    } else if (_shapeKeys.contains(k)) {
+      parts.add('$k=$v');
+    } else if (k == 'address' || k == 'ip') {
+      // the tunnel's own address: only its family and prefix
+      parts.add(
+        '$k=${v.split(',').map((a) => '${a.contains(':') ? 'v6' : 'v4'}/${a.contains('/') ? a.split('/').last : '?'}').join(',')}',
+      );
+    } else {
+      parts.add('$k=set');
+    }
+  }
+  return parts.join(' ');
+}
+
+String _hostKind(String host) => host.contains(':')
+    ? 'ipv6'
+    : RegExp(r'^\d{1,3}(\.\d{1,3}){3}$').hasMatch(host)
+    ? 'ipv4'
+    : 'name';

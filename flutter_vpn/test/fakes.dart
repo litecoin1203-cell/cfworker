@@ -294,6 +294,14 @@ class FakeTunnel extends Tunnel {
     return (ms: null, error: 'context deadline exceeded');
   }
 
+  @override
+  Future<({int? ms, String? error, int took, String log})?> trace(
+    String config,
+  ) async {
+    final r = await probe(config);
+    return (ms: r.ms, error: r.error, took: 1200, log: '[Info] core log line');
+  }
+
   /// Download speed per outbound address in kbit/s; a missing entry is
   /// -1 (nothing came through).
   Map<String, int> speeds = {};

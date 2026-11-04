@@ -1064,6 +1064,36 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _report(results);
   }
 
+  /// One exit tested alone (nothing else running beside it) with the core's
+  /// full log: plain text for the person to send us, with no server
+  /// address, key or id in it. Null when a test run is going or there is
+  /// no engine.
+  Future<String?> traceExit(String id) async {
+    final e = exitById(id);
+    if (e == null || testing || _testRun != null) return null;
+    final String config;
+    try {
+      config = xrayConfig(e.server.link, forTest: true);
+    } on FormatException catch (x) {
+      return '${e.label} · ${linkShape(e.server.link)}\nunsupported: ${x.message}';
+    }
+    final r = await tunnel.trace(config);
+    if (r == null) return null;
+    final b = StringBuffer()
+      ..writeln('Pleat exit trace · ${ApiClient.appVersion}')
+      ..writeln('${e.label} · ${e.protocol} · ${transportOf(e.server.link)}')
+      ..writeln('Link: ${linkShape(e.server.link)}')
+      ..writeln(
+        r.ms != null
+            ? 'Result: OK ${r.ms} ms (alone, ${r.took} ms in all)'
+            : 'Result: FAIL after ${r.took} ms: ${r.error ?? 'no answer'}',
+      )
+      ..writeln()
+      ..writeln('Core log:')
+      ..write(r.log.isEmpty ? '(the core wrote nothing)' : r.log);
+    return b.toString();
+  }
+
   /// Tap on an exit's flag: its ping and download speed now, kept on the
   /// phone for this network and shared with people on the same operator.
   /// The person asked, so the download runs on a metered network too.
