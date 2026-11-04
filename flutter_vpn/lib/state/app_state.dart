@@ -131,6 +131,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// The Telegram profile picture, through the Worker; null shows the
   /// initial.
   Uint8List? photo;
+
+  /// Set right after a pick, so the new character shows before /me is
+  /// read again. '' means the pick was cleared.
+  String? _pickedAvatar;
+
+  /// The Pleat character to show for this person, or '' for none.
+  String get avatarId => _pickedAvatar ?? me.value?.avatar ?? '';
   AppConfig config = const AppConfig.empty();
   Map<String, Rank> _ranks = const {};
 
@@ -428,6 +435,19 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Adds, changes or (with '') removes the backup email. Returns the error
   /// to show, or null.
+  /// Pick a Pleat character as the profile picture; '' goes back to the
+  /// Telegram photo or the initial. Returns an error to show, or null.
+  Future<String?> setAvatar(String id) async {
+    try {
+      final data = await api.post('/me/avatar', {'avatar': id});
+      _pickedAvatar = data is Map ? (data['avatar'] as String? ?? '') : id;
+      notifyListeners();
+      return null;
+    } on ApiError catch (e) {
+      return e.message;
+    }
+  }
+
   Future<String?> setEmail(String email, String password) async {
     try {
       await api.post('/me/email', {'email': email, 'password': password});
@@ -651,6 +671,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     devices.value = null;
     packages.value = null;
     photo = null;
+    _pickedAvatar = null;
     phase = Phase.idle;
     connectedAt = null;
     notifyListeners();
