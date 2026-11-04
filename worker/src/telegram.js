@@ -218,6 +218,17 @@ async function onConfirm(env, cq, yes) {
       result = `پنل #${panel.id} (${panel.label}) از لیست خارج شد. مصرفش یک بار دیگر خوانده می‌شود، بعد اکانت‌هایش خاموش و پنل غیرفعال می‌شود. تاریخچه‌ی مصرف پاک نمی‌شود.`;
     }
   }
+  if (row.action === 'panel_kind') {
+    const { getPanel } = await import('./panels.js');
+    const panel = await getPanel(env, payload.panel_id);
+    if (!panel) result = 'پنل پیدا نشد';
+    else if (panel.id === 1) result = 'پنل #۱ را نمی‌توان تغییر داد.';
+    else {
+      await run(env, 'UPDATE panels SET kind = ? WHERE id = ?', payload.kind, panel.id);
+      await audit(env, chatId, 'panel.kind', 'panel', panel.id, `نوع → ${payload.kind}`);
+      result = `نوع پنل #${panel.id} به ${payload.kind} تغییر کرد. قبل از ورود تدریجی، /paneltest ${panel.id} را بزن.`;
+    }
+  }
   if (row.action === 'grant') {
     const u = await first(env, 'SELECT * FROM users WHERE id = ?', payload.user_id);
     const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', payload.plan_id);
@@ -440,14 +451,14 @@ async function onMessage(env, msg, opts = {}) {
       const n = (await first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active'", p.id)).c;
       lines.push(`#${p.id} ${p.label} (${p.kind}) — ${STATE_FA[p.state] || p.state}${p.state === 'rollout' ? ` ${p.rollout_percent}%` : ''} · سلامت ${p.health} · ${n} کاربر فعال${p.version ? ` · نسخه ${p.version}` : ''}`);
     }
-    lines.push('', 'افزودن: /addpanel pasarguard نام', 'تست: /paneltest شماره · ورود تدریجی: /rollout شماره درصد', 'گروه‌ها: /panelgroups شماره 1,2 · خارج‌کردن: /drainpanel شماره');
+    lines.push('', 'افزودن: /addpanel pasarguard نام', 'تست: /paneltest شماره · ورود تدریجی: /rollout شماره درصد', 'گروه‌ها: /panelgroups شماره 1,2 · خارج‌کردن: /drainpanel شماره', 'نوع پنل: /panelkind شماره rebecca · سرویس Rebecca: /panelservice شماره service_id');
     return say(lines.join('\n'));
   }
   if (cmd === '/addpanel') {
     const [, kind, ...labelParts] = text.split(/\s+/);
     const label = labelParts.join(' ').trim();
     const k = String(kind || '').toLowerCase();
-    if (!label || !['pasarguard', 'marzban', 'hiddify'].includes(k)) return say('شکل درست: /addpanel pasarguard نام‌دلخواه\n(marzban و hiddify هم پذیرفته می‌شوند؛ آداپتورشان در مرحله‌ی بعد اضافه می‌شود)');
+    if (!label || !['pasarguard', 'marzban', 'hiddify', 'rebecca'].includes(k)) return say('شکل درست: /addpanel pasarguard نام‌دلخواه\n(marzban و hiddify هم پذیرفته می‌شوند؛ آداپتورشان در مرحله‌ی بعد اضافه می‌شود. rebecca آداپتور خودش را دارد)');
     const { addPanel } = await import('./panels.js');
     const p = await addPanel(env, k, label);
     await audit(env, chatId, 'panel.add', 'panel', p.id, `${k} ${label}`);
@@ -496,6 +507,28 @@ async function onMessage(env, msg, opts = {}) {
       return askConfirm(env, chatId, 'drain_panel', { panel_id: panel.id },
         `پنل #${panel.id} (${panel.label}) از لیست سرورها خارج و بعد غیرفعال شود؟ کاربرانش روی پنل‌های دیگر می‌مانند و مصرفشان حفظ می‌شود.`);
     }
+  }
+
+  // Switch an existing panel to the Rebecca adapter, or set its Rebecca
+  // service_id by hand. Panel 1 can never be changed: it stays Pasarguard.
+  if (cmd === '/panelkind' || cmd === '/panelservice') {
+    const parts = text.split(/\s+/);
+    const { getPanel, options } = await import('./panels.js');
+    const panel = await getPanel(env, parseInt(parts[1], 10));
+    if (!panel) return say('پنل پیدا نشد. لیست: /panels');
+    if (panel.id === 1) return say('پنل #۱ را نمی‌توان تغییر داد؛ پنل ۱ همان Pasarguard می‌ماند.');
+    if (cmd === '/panelkind') {
+      const kind = String(parts[2] || '').toLowerCase();
+      if (kind !== 'rebecca') return say('شکل درست: /panelkind شماره rebecca');
+      if (panel.kind === 'rebecca') return say(`پنل #${panel.id} همین الان هم rebecca است.`);
+      return askConfirm(env, chatId, 'panel_kind', { panel_id: panel.id, kind },
+        `نوع پنل #${panel.id} (${panel.label}) به rebecca تغییر کند؟ اکانت‌های موجودش دست نمی‌خورند، ولی تست و ساخت اکانت بعدی با آداپتور Rebecca انجام می‌شود.`);
+    }
+    const serviceId = parseInt(parts[2], 10);
+    if (!Number.isFinite(serviceId) || serviceId <= 0) return say('شکل درست: /panelservice شماره service_id (یک عدد مثبت)');
+    await run(env, 'UPDATE panels SET options_json = ? WHERE id = ?', JSON.stringify({ ...options(panel), service_id: serviceId }), panel.id);
+    await audit(env, chatId, 'panel.service', 'panel', panel.id, `service_id ${serviceId}`);
+    return say(`✅ سرویس Rebecca پنل #${panel.id}: ${serviceId}. حالا /paneltest ${panel.id} را بزن.`);
   }
 
   if (cmd === '/find' || cmd === '/user') {
