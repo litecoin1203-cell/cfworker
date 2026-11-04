@@ -8,6 +8,7 @@ import '../design/widgets.dart';
 import '../state/app_state.dart';
 import '../state/diagnose.dart';
 import '../state/exits.dart';
+import 'states.dart';
 import 'store_kit.dart';
 
 /// Connection check: runs each step Pleat needs, in order, and shows how
@@ -331,9 +332,58 @@ class _ExitResult extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
               ),
+            _TraceLink(exit.id),
           ],
         ],
       ),
     );
   }
+}
+
+/// Tests this one exit alone with the core's full log and copies the
+/// result (no addresses, keys or ids) for support.
+class _TraceLink extends StatefulWidget {
+  const _TraceLink(this.id);
+  final String id;
+
+  @override
+  State<_TraceLink> createState() => _TraceLinkState();
+}
+
+class _TraceLinkState extends State<_TraceLink> {
+  bool _running = false;
+
+  Future<void> _trace() async {
+    final app = AppScope.read(context);
+    setState(() => _running = true);
+    final text = await app.traceExit(widget.id);
+    if (!mounted) return;
+    setState(() => _running = false);
+    if (text == null) {
+      showNote(context, 'Wait for the check to finish, then try again.');
+      return;
+    }
+    copyText(
+      context,
+      text,
+      'Core log copied. It has no addresses, keys or account details.',
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(top: 4),
+    child: GestureDetector(
+      onTap: _running ? null : _trace,
+      child: Text(
+        _running
+            ? 'Testing alone with the core log…'
+            : 'Test alone + copy core log',
+        style: PType.small(color: PColors.blue).copyWith(
+          fontWeight: FontWeight.w700,
+          decoration: _running ? null : TextDecoration.underline,
+        ),
+      ),
+    ),
+  );
 }

@@ -2005,5 +2005,17 @@ section('sign up and log in with Telegram (6-digit code from the bot)');
   delete env.TELEGRAM_BOT_USERNAME;
 }
 
+section('panel info rows dressed as configs are not servers');
+{
+  const { unify, isPlaceholder } = await import('../src/panels.js');
+  const info = 'vless://00000000-0000-4000-8000-000000000000@127.0.0.1:1?security=tls&type=ws&sni=&fp=#0%20B%20%2F%20%E2%88%9E';
+  const vmInfo = 'vmess://' + btoa(JSON.stringify({ v: '2', ps: 'expired', add: '0.0.0.0', port: '1', id: 'u' }));
+  const real = 'vless://00000000-0000-4000-8000-000000000000@n.example.com:8451?security=tls&type=ws#%F0%9F%87%A6%F0%9F%87%B2%20Armenia';
+  ok(isPlaceholder(info) && isPlaceholder(vmInfo) && isPlaceholder('trojan://p@[::1]:443#x'), 'loopback / port 1 rows are placeholders');
+  ok(!isPlaceholder(real) && !isPlaceholder('wireguard://k@5.6.7.8:965?publickey=p#x') && !isPlaceholder('ss://YWVzOnB3@1.2.3.4:8388#x'), 'real exits are kept');
+  const out = unify([info, vmInfo, real]);
+  ok(out.length === 1 && decodeURIComponent(out[0].split('#')[1]).includes('AM 1'), 'only the real exit is listed: ' + out.map((l) => l.split('#')[1]).join(','));
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -206,11 +206,33 @@ export function linkKinds(links) {
 
 // Panel remarks can name the panel or the provider, so every config is renamed to its country and a number
 // ("🇩🇪 DE 2"); identical configs from two panels appear once.
+// Panels add info rows dressed as configs ("0 B / ∞ | ∞ روز" at 127.0.0.1:1, an expired-plan notice, ...):
+// they go nowhere, so the app would list them as servers that always fail.
+export function isPlaceholder(link) {
+  let host = '', port = '';
+  try {
+    if (/^vmess:\/\//i.test(link)) {
+      let raw = link.slice(8).split('#')[0].trim().replace(/-/g, '+').replace(/_/g, '/');
+      raw += '='.repeat((4 - (raw.length % 4)) % 4);
+      const j = JSON.parse(atob(raw));
+      host = String(j.add || ''); port = String(j.port || '');
+    } else {
+      const rest = link.replace(/^[a-z0-9+.-]+:\/\//i, '').split('#')[0].split('?')[0].split('/')[0];
+      const hp = rest.slice(rest.lastIndexOf('@') + 1);
+      const m = hp.match(/^\[(.*)\]:(\d*)$/) || hp.match(/^(.*):(\d*)$/);
+      if (m) { host = m[1]; port = m[2]; } else host = hp;
+    }
+  } catch (e) { return false; }
+  host = host.toLowerCase();
+  return /^127\./.test(host) || host === '0.0.0.0' || host === 'localhost' || host === '::1' || host === '::' || (port !== '' && Number(port) <= 1);
+}
+
 export function unify(links) {
   const seen = new Set();
   const perCc = {};
   const out = [];
   for (const link of links) {
+    if (isPlaceholder(link)) continue;
     const key = link.split('#')[0];
     if (seen.has(key)) continue;
     seen.add(key);

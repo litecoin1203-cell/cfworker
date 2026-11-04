@@ -130,4 +130,33 @@ void main() {
     expect(f.first.title, 'Nothing answers from this network');
     expect(f.first.body, contains('Wi-Fi'));
   });
+
+  test('link shape: settings to compare, nothing that names or opens a server', () {
+    final wg = linkShape(
+      'wireguard://cHJpdmF0ZQ%3D%3D@wg.example.com:51820?address=10.8.0.2%2F32'
+      '&publickey=c2VydmVy&reserved=0%2C0%2C0&allowedips=0.0.0.0%2F0&mtu=1420'
+      '&keepalive=25&dns=1.1.1.1#DE%207',
+    );
+    expect(
+      wg,
+      'wireguard name:51820 address=v4/32 publickey=set reserved=0,0,0 '
+      'allowedips=0.0.0.0/0 mtu=1420 keepalive=25 dns=set',
+    );
+    expect(wg, isNot(contains('example')));
+    expect(wg, isNot(contains('c2VydmVy')));
+    expect(
+      linkShape('wireguard://k@5.6.7.8:443?publickey=p#x'),
+      'wireguard ipv4:443 publickey=set',
+    );
+    final vl = linkShape(
+      'vless://0b8c1e2a-1111-4222-8333-444455556666@de1.example.com:443'
+      '?security=tls&type=ws&path=%2Fws&host=cdn.example.com&sni=cdn.example.com&alpn=h2%2Chttp%2F1.1&fp=chrome#x',
+    );
+    expect(
+      vl,
+      'vless name:443 security=tls type=ws path=set host=set sni=set '
+      'alpn=h2,http/1.1 fp=chrome',
+    );
+    expect(vl, isNot(contains('0b8c1e2a')));
+  });
 }

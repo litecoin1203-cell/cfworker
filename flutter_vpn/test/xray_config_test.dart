@@ -184,7 +184,7 @@ void main() {
     final s = o['settings'] as Map;
     expect(s['secretKey'], 'cGl2YXRla2V5cHJpdmF0ZWtleXByaXZhdGVrZXk/AA=');
     expect(s['address'], ['10.8.0.2/32']);
-    expect(s['mtu'], 1380);
+    expect(s['mtu'], 1280, reason: 'capped: 1380 from the link is too big');
     expect(s['reserved'], [1, 2, 3]);
     expect(s['noKernelTun'], true);
     final peer = (s['peers'] as List).single as Map;
