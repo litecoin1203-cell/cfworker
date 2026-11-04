@@ -444,6 +444,13 @@ async function onMessage(env, msg, opts = {}) {
     for (const p of rows) {
       const n = (await first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active'", p.id)).c;
       lines.push(`#${p.id} ${p.label} (${p.kind}) — ${STATE_FA[p.state] || p.state}${p.state === 'rollout' ? ` ${p.rollout_percent}%` : ''} · سلامت ${p.health} · ${n} کاربر فعال${p.version ? ` · نسخه ${p.version}` : ''}`);
+      if (['active', 'rollout'].includes(p.state)) {
+        const { panelProgress, createError } = await import('./sync.js');
+        const g = await panelProgress(env, p);
+        if (g.want > g.have) lines.push(`   ⏳ اکانت‌سازی: ${g.have} از ${g.want} کاربر`);
+        const ce = await createError(env, p.id);
+        if (ce) lines.push(`   ⚠️ ساخت اکانت رد شد: ${ce.msg.slice(0, 120)}`);
+      }
     }
     lines.push('', 'افزودن: /addpanel نام (نوع خودکار) · ورود پنل: /panelcred شماره', 'تست: /paneltest شماره · ورود تدریجی: /rollout شماره درصد', 'گروه‌ها: /panelgroups شماره 1,2 · خارج‌کردن: /drainpanel شماره');
     return say(lines.join('\n'));
@@ -492,14 +499,22 @@ async function onMessage(env, msg, opts = {}) {
     const parts = text.split(/\s+/);
     const { getPanel, testPanel, setRollout, listPanels } = await import('./panels.js');
     const panel = await getPanel(env, parseInt(parts[1], 10));
-    if (!panel) return say('پنل پیدا نشد. لیست: /panels');
+    if (!panel) {
+      // tapping a command inside a bot message sends only the command word, without the panel number
+      const rows = (await listPanels(env)).map((p) => `#${p.id} ${p.label} (${p.kind})`).join('\n');
+      const how = { '/paneltest': 'شماره', '/rollout': 'شماره درصد', '/drainpanel': 'شماره', '/panelgroups': 'شماره 1,2' }[cmd];
+      return say(`شماره‌ی پنل را هم بنویس: ${cmd} ${how}\nمثلاً: ${cmd} 2${cmd === '/rollout' ? ' 10' : ''}\n\n${rows}\n\nیا از منوی /menu ← پنل‌ها دکمه‌ها را بزن.`);
+    }
     if (cmd === '/paneltest') {
       if (parts[2] !== 'silent') await say('⏳ در حال تست پنل...');
       const t = await testPanel(env, panel);
       await audit(env, chatId, 'panel.test', 'panel', panel.id, t.healthy ? 'سالم' : 'ناسالم');
       const kindLine = t.kind ? `نوع پنل: ${t.kind}${t.kindChanged ? ' (خودکار تشخیص داده و ثبت شد)' : ''}\n` : '';
-      return say(kindLine + (t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\nبرای شروع: /rollout ${panel.id} 10`
-        : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}${t.kind === 'rebecca' && !t.create ? `\nدر Rebecca هر کاربر باید یک سرویس (Service) داشته باشد. شماره‌ی سرویس را بده: /panelgroups ${panel.id} شماره` : ''}`));
+      const go = t.healthy ? { reply_markup: { inline_keyboard: [
+        [{ text: '🚀 ۱۰٪ کاربران', callback_data: `m:x:pp:${panel.id}|/rollout ${panel.id} 10` }, { text: '🚀 همه‌ی کاربران', callback_data: `m:x:pp:${panel.id}|/rollout ${panel.id} 100` }],
+        [{ text: '🗂 صفحه‌ی پنل', callback_data: `m:pp:${panel.id}` }]] } } : undefined;
+      return say(kindLine + (t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\nبرای شروع یکی از دکمه‌ها را بزن (یا بنویس: /rollout ${panel.id} 10)`
+        : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}${t.kind === 'rebecca' && !t.create ? `\nدر Rebecca هر کاربر باید یک سرویس (Service) داشته باشد. شماره‌ی سرویس را بده: /panelgroups ${panel.id} شماره` : ''}`), go);
     }
     if (cmd === '/panelgroups') {
       const ids = String(parts[2] || '').split(',').map((x) => parseInt(x, 10)).filter((n) => n > 0);
@@ -514,7 +529,9 @@ async function onMessage(env, msg, opts = {}) {
       if (!['testing', 'rollout', 'active'].includes(panel.state)) return say('اول پنل را تست کن: /paneltest ' + panel.id);
       const p = await setRollout(env, panel, pct);
       await audit(env, chatId, 'panel.rollout', 'panel', panel.id, `${pct}%`);
-      return say(`✅ پنل #${p.id}: ${STATE_FA[p.state]} ${p.rollout_percent}%. اکانت کاربران کم‌کم در هر دقیقه ساخته می‌شود.`);
+      const { panelProgress } = await import('./sync.js');
+      const g = await panelProgress(env, p);
+      return say(`✅ پنل #${p.id}: ${STATE_FA[p.state]} ${p.rollout_percent}%.\n${g.want ? `${g.have} از ${g.want} کاربر الان روی این پنل اکانت دارند. بقیه با باز کردن اپ فوراً، یا در پس‌زمینه هر دقیقه چند نفر، اکانت می‌گیرند و کانفیگ‌های این پنل به لیستشان اضافه می‌شود. پیشرفت: /panels` : 'فعلاً کاربری با اشتراک فعال در این سهم نیست.'}`);
     }
     if (cmd === '/drainpanel') {
       if (['draining', 'disabled'].includes(panel.state)) return say('این پنل قبلاً خارج شده است.');

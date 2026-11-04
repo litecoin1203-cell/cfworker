@@ -1787,5 +1787,74 @@ section('panel login given to the bot: message deleted, stored sealed, panel tes
   await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(id).run();
 }
 
+section('a new panel reaches existing users: at once when the app loads servers, in the background, with progress and errors in the bot');
+{
+  const { getPanel } = await import('../src/panels.js');
+  const { panelProgress } = await import('../src/sync.js');
+  const N = 'http://newp.test';
+  const np = fakes.addPanel(N, 'nn.example.net', 'pasarguard');
+  const lastId = async () => (await env.DB.prepare('SELECT MAX(id) id FROM panels').first()).id;
+  const tokA = await signup('na@example.com', { device: 'na-phone' });
+  await signup('nb@example.com', { device: 'nb-phone' });
+  await admin(`/grant na@example.com ${tenGb.id}`);
+  await admin(`/grant nb@example.com ${tenGb.id}`);
+  await admin('/addpanel pasarguard تازه');
+  const id = await lastId();
+  await tgWebhook({ message: { chat: { id: 12345 }, message_id: 9100, text: `${N} admin9 pass9pass` } });
+  const healthy = fakes.tg.messages[fakes.tg.messages.length - 1];
+  ok(healthy.text.includes('سالم است') && JSON.stringify(healthy.reply_markup).includes(`/rollout ${id} 10`), 'healthy test offers rollout buttons');
+
+  // a tapped "/rollout" arrives without the number
+  await admin('/rollout');
+  ok(lastText().includes('شماره‌ی پنل را هم بنویس') && lastText().includes(`#${id}`), 'command without a panel number explains and lists panels: ' + lastText());
+
+  await admin(`/rollout ${id} 100`);
+  ok(/0 از \d+ کاربر/.test(lastText()), 'rollout reply says how many users already have the panel: ' + lastText());
+  const p = await getPanel(env, id);
+  const before = await panelProgress(env, p);
+  ok(before.want >= 2 && before.have === 0, 'progress counts users with a running plan: ' + JSON.stringify(before));
+  await admin('/panels');
+  ok(lastText().includes(`اکانت‌سازی: 0 از ${before.want}`), '/panels shows the progress');
+
+  // the app loads servers: the user's account on the new panel is made now and its configs are in this answer
+  const r = await call('GET', '/api/v1/vpn/servers', { token: tokA });
+  ok(r.status === 200 && Object.values(np.users).some((u) => (u.note || '').endsWith('· na@example.com')), 'account made on the new panel at app load');
+  ok(JSON.stringify(r.data).includes('nn.example.net'), 'new panel configs are in the same server list');
+  const mid = await panelProgress(env, p);
+  ok(mid.have === 1, 'progress moved: ' + JSON.stringify(mid));
+
+  // the background job picks up the rest
+  await syncRounds(4);
+  const after = await panelProgress(env, p);
+  ok(after.have === after.want, 'background job finished the rest: ' + JSON.stringify(after));
+
+  // a panel that refuses: admin told once, the app does not wait on it, the bot shows the error
+  const np2 = fakes.addPanel('http://newq.test', 'nq.example.net', 'pasarguard');
+  await admin('/addpanel pasarguard خراب');
+  const qid = await lastId();
+  await tgWebhook({ message: { chat: { id: 12345 }, message_id: 9101, text: `http://newq.test admin8 pass8pass` } });
+  await admin(`/rollout ${qid} 100`);
+  np2.failCreate = 'Admin users limit reached';
+  const msgs = fakes.tg.messages.length;
+  const tries = np2.createLog.length;
+  const r2 = await call('GET', '/api/v1/vpn/servers', { token: tokA });
+  ok(r2.status === 200 && JSON.stringify(r2.data).includes('nn.example.net'), 'a refusing panel does not break the list');
+  const warn = fakes.tg.messages.slice(msgs).filter((m) => m.text.includes(`پنل #${qid}`) && m.text.includes('Admin users limit reached'));
+  ok(warn.length === 1, 'admin told once about the refusing panel: ' + warn.length);
+  const tried = np2.createLog.length;
+  ok(tried > tries, 'the app tried the new panel once');
+  await call('GET', '/api/v1/vpn/servers', { token: tokA });
+  ok(np2.createLog.length === tried, 'the app does not retry a refusing panel right away');
+  await syncRounds(2);
+  ok(fakes.tg.messages.slice(msgs).filter((m) => m.text.includes(`پنل #${qid}`) && m.text.includes('ساخته نمی‌شود')).length === 1, 'no repeated warnings within hours');
+  await admin('/panels');
+  ok(lastText().includes('ساخت اکانت رد شد') && lastText().includes('Admin users limit reached'), '/panels shows the refusal');
+  np2.failCreate = null;
+  await syncRounds(2);
+  await admin('/panels');
+  ok(!lastText().includes('ساخت اکانت رد شد'), 'error cleared once creates work again');
+  for (const x of [id, qid]) await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(x).run();
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
