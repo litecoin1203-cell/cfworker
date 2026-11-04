@@ -254,7 +254,7 @@ void main() {
       'vmess_ws': 'vmess://$vmess',
       'ss': 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#x',
       'hysteria2': 'hysteria2://pw@hy.example.com:443,20000-30000/?sni=hy.example.com&obfs=salamander&obfs-password=ob#x',
-      'hysteria2_plain': 'hy2://pw@1.2.3.4:8443?insecure=1#x',
+      'hysteria2_plain': 'hy2://pw@1.2.3.4:8443?pinSHA256=0000000000000000000000000000000000000000000000000000000000000000#x',
       'wireguard':
           'wireguard://${Uri.encodeComponent('AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=')}@wg.example.com:51820'
           '?address=10.8.0.2%2F32&publickey=AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI%3D&reserved=0%2C0%2C0&mtu=1420&keepalive=25#x',
