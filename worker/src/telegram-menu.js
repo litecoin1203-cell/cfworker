@@ -58,10 +58,10 @@ async function home(env) {
 
 async function users(env) {
   const count = (await first(env, 'SELECT COUNT(*) c FROM users')).c;
-  const rows = await all(env, 'SELECT id, email FROM users ORDER BY id DESC LIMIT 8');
+  const rows = await all(env, 'SELECT id, email, tg_id, tg_username FROM users ORDER BY id DESC LIMIT 8');
   return {
     text: `👤 کاربران — ${fa(count)} نفر\n\nآخرین ثبت‌نام‌ها پایین هستند. برای بقیه «جستجو» را بزن.`,
-    kb: [[b('🔎 جستجو با ایمیل', 'm:w:find')], ...rows.map((u) => [b(u.email.slice(0, 40), `m:u:${u.id}`)]), [HOME]],
+    kb: [[b('🔎 جستجوی کاربر', 'm:w:find')], ...rows.map((u) => [b((u.tg_id ? (u.tg_username ? '@' + u.tg_username : 'TG ' + u.tg_id) : u.email).slice(0, 40), `m:u:${u.id}`)]), [HOME]],
   };
 }
 
@@ -195,7 +195,7 @@ const PLAN_HINT = { price: 'قیمت به تومان', old: 'قیمت قبلی (
   devices: 'تعداد دستگاه، 0 = نامحدود', trial: 'روزهای تست رایگان، 0 = ندارد', name: 'نام پلن', badge: 'نشان (مثلاً پیشنهاد ویژه)' };
 
 async function ask(env, kind, args) {
-  if (kind === 'find') return ['/find', 'usr', '📧 ایمیل کاربر را بنویس:'];
+  if (kind === 'find') return ['/find', 'usr', '🔎 ایمیل، یوزرنیم تلگرام (@...) یا آیدی عددی تلگرام کاربر را بنویس:'];
   if (kind === 'reset') {
     const u = await first(env, 'SELECT email FROM users WHERE id = ?', parseInt(args[0], 10));
     if (!u) return null;

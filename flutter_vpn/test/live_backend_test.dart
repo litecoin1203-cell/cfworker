@@ -1,6 +1,7 @@
 // Runs the real client and app state against a running Worker:
 //   node --experimental-sqlite worker/test/dev_server.mjs
 //   flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1:8787
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
@@ -118,6 +119,49 @@ void main() {
     expect(app.signedIn, isFalse);
     log.add('-- authed call after sign out');
     await expectLater(api.get('/me'), throwsA(isA<ApiError>()));
+
+    step('Telegram: code from the bot, then the app password');
+    final link = await app.telegramStart();
+    expect(link.botUrl, contains('t.me/PleatDevBot?start=L${link.nonce}'));
+    final tgId = 700000000 + Random().nextInt(1 << 20);
+    final uname = 'pleat_${Random().nextInt(1 << 30)}';
+    Future<String> codeFor(String nonce) async {
+      final c = HttpClient();
+      final rq = await c.postUrl(Uri.parse('$live/dev/tg-open'));
+      rq.headers.contentType = ContentType.json;
+      rq.write('{"nonce":"$nonce","id":$tgId,"username":"$uname"}');
+      final body = await (await rq.close()).transform(utf8.decoder).join();
+      c.close();
+      return RegExp(r'<code>(\d{6})</code>').firstMatch(body)!.group(1)!;
+    }
+
+    await expectLater(
+      app.telegramVerify(link.nonce, '000000'),
+      throwsA(isA<ApiError>()),
+    );
+    final signup = await app.telegramVerify(
+      link.nonce,
+      await codeFor(link.nonce),
+    );
+    expect(signup, isNotNull);
+    expect(signup!.login, '@$uname');
+    expect(await app.telegramRegister(signup, 'tg-password-1'), isNull);
+    expect(app.signedIn, isTrue);
+    expect(app.login, '@$uname');
+    await app.signOut();
+
+    step('Telegram: later sign-ins with @username, id, or the bot again');
+    expect(await app.signIn('@$uname', 'tg-password-1'), isNull);
+    await app.signOut();
+    expect(await app.signIn('$tgId', 'tg-password-1'), isNull);
+    await app.signOut();
+    final again = await app.telegramStart();
+    expect(
+      await app.telegramVerify(again.nonce, await codeFor(again.nonce)),
+      isNull,
+    );
+    expect(app.signedIn, isTrue);
+    await app.signOut();
 
     debugPrint(log.join('\n'));
   }, skip: live.isEmpty ? 'set --dart-define=LIVE_API' : false);

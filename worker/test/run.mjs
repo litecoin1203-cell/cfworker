@@ -1890,5 +1890,120 @@ section('panel test names the config types and flags ones the app cannot use');
   ok(lastText().includes('نوع کانفیگ‌ها:') && lastText().includes('vless·reality·tcp') && !lastText().includes('پشتیبانی نمی‌کند'), 'paneltest shows the types: ' + lastText());
 }
 
+section('sign up and log in with Telegram (6-digit code from the bot)');
+{
+  env.TELEGRAM_BOT_USERNAME = 'PleatBot';
+  const tgUser = (id, username, first_name = 'Sara') => ({ id, is_bot: false, username, first_name });
+  const openLink = (nonce, from) => tgWebhook({ message: { chat: { id: from.id, type: 'private' }, from, text: '/start L' + nonce } });
+  const lastCode = () => { const t = fakes.tg.messages[fakes.tg.messages.length - 1]; const m = /<code>(\d{6})<\/code>/.exec(t.text || ''); return m && m[1]; };
+  const start = async () => (await call('POST', '/api/v1/auth/tg/start')).data;
+
+  const s1 = await start();
+  ok(/^[a-f0-9]{32}$/.test(s1.nonce) && s1.bot_url === `https://t.me/PleatBot?start=L${s1.nonce}`, 'start gives a nonce and the bot link');
+  const early = await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s1.nonce, code: '123456' } });
+  ok(early.status === 409 && early.data.detail.code === 'code_not_sent', 'no code before the bot was opened');
+
+  const sara = tgUser(777001, 'Sara_K');
+  await openLink(s1.nonce, sara);
+  const code1 = lastCode();
+  ok(code1 && fakes.tg.messages[fakes.tg.messages.length - 1].chat_id === 777001 && fakes.tg.messages[fakes.tg.messages.length - 1].parse_mode === 'HTML', 'bot sends a 6-digit code to the Telegram user: ' + code1);
+  const row = await env.DB.prepare('SELECT * FROM tg_logins').first();
+  ok(row && !JSON.stringify(row).includes(s1.nonce) && !JSON.stringify(row).includes(code1), 'nonce and code are stored only as hashes');
+
+  // someone else opening the same link gets nothing
+  const n0 = fakes.tg.messages.length;
+  await openLink(s1.nonce, tgUser(999, 'thief'));
+  ok(fakes.tg.messages.length === n0 + 1 && !lastCode() && lastText().includes('another Telegram account'), 'second Telegram account cannot take the link');
+
+  const wrongCode = code1 === '000000' ? '111111' : '000000';
+  const w = await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s1.nonce, code: wrongCode } });
+  ok(w.status === 400 && w.data.detail.code === 'bad_code', 'wrong code rejected');
+  const otherNonce = (await start()).nonce;
+  ok((await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: otherNonce, code: code1 } })).status >= 400, 'code only works with its own nonce');
+
+  const v = await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s1.nonce, code: code1 } });
+  ok(v.status === 200 && v.data.need_password === true && v.data.signup_token && v.data.login === '@sara_k', 'new Telegram user is asked for a password: ' + JSON.stringify(v.data));
+  ok((await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s1.nonce, code: code1 } })).status === 400, 'code cannot be used twice');
+  const weak = await call('POST', '/api/v1/auth/tg/register', { json: { signup_token: v.data.signup_token, password: 'short' } });
+  ok(weak.status === 422, 'weak password rejected');
+  const reg = await call('POST', '/api/v1/auth/tg/register', { json: { signup_token: v.data.signup_token, password: 'tg-pass-123', device_id: 'tg-dev' } });
+  ok(reg.status === 201 && reg.data.access_token, 'account created with Telegram');
+  const again = await call('POST', '/api/v1/auth/tg/register', { json: { signup_token: v.data.signup_token, password: 'tg-pass-123' } });
+  ok(again.status === 409 && again.data.detail.code === 'telegram_taken', 'one account per Telegram account');
+  const me = (await call('GET', '/api/v1/me', { token: reg.data.access_token })).data;
+  ok(me.login === '@sara_k' && me.telegram.id === '777001' && me.email === '', 'me shows the Telegram login: ' + JSON.stringify({ login: me.login, telegram: me.telegram }));
+
+  // later logins: @username, username without @, numeric id, any case
+  for (const l of ['@sara_k', 'Sara_K', '777001', '@SARA_K']) {
+    const r = await call('POST', '/api/v1/auth/login', { json: { login: l, password: 'tg-pass-123' } });
+    ok(r.status === 200 && r.data.access_token, 'login with ' + l);
+  }
+  ok((await call('POST', '/api/v1/auth/login', { json: { login: '@sara_k', password: 'wrong-pass' } })).status === 401, 'wrong password with username rejected');
+  ok((await call('POST', '/api/v1/auth/register', { json: { email: 'tg777001@telegram.local', password: 'password123' } })).status === 422, 'nobody can take a Telegram address by email');
+
+  // Telegram button again on an existing account logs straight in, and a renamed username follows the person
+  const s2 = await start();
+  await openLink(s2.nonce, tgUser(777001, 'sara_new'));
+  const v2 = await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s2.nonce, code: lastCode() } });
+  ok(v2.status === 200 && v2.data.access_token && !v2.data.need_password && v2.data.login === '@sara_new', 'existing account logs in with the code alone');
+  ok((await call('POST', '/api/v1/auth/login', { json: { login: '@sara_new', password: 'tg-pass-123' } })).status === 200, 'new username works');
+  ok((await call('POST', '/api/v1/auth/login', { json: { login: '@sara_k', password: 'tg-pass-123' } })).status === 401, 'old username no longer works');
+
+  // someone else now has the old username on Telegram: it moves to them
+  const s3 = await start();
+  await openLink(s3.nonce, tgUser(888002, 'sara_new', 'Other'));
+  const v3 = await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s3.nonce, code: lastCode() } });
+  const reg3 = await call('POST', '/api/v1/auth/tg/register', { json: { signup_token: v3.data.signup_token, password: 'other-pass-1' } });
+  ok(reg3.status === 201, 'second Telegram user signs up');
+  const r3 = await call('POST', '/api/v1/auth/login', { json: { login: '@sara_new', password: 'other-pass-1' } });
+  ok(r3.status === 200, 'username belongs to whoever has it now on Telegram');
+  ok((await call('POST', '/api/v1/auth/login', { json: { login: '777001', password: 'tg-pass-123' } })).status === 200, 'first user still logs in with the numeric id');
+
+  // no username: the numeric id is the login
+  const s4 = await start();
+  await openLink(s4.nonce, { id: 555003, is_bot: false, first_name: 'NoName' });
+  const v4 = await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s4.nonce, code: lastCode() } });
+  ok(v4.data.login === '555003', 'no username -> numeric id is the login');
+
+  // guessing: 5 wrong tries, then the code is dead even if the 6th is right
+  const s5 = await start();
+  await openLink(s5.nonce, tgUser(666004, 'guess_me'));
+  const good5 = lastCode();
+  const bad5 = good5 === '000000' ? '111111' : '000000';
+  for (let i = 0; i < 5; i++) await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s5.nonce, code: bad5 } });
+  const sixth = await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s5.nonce, code: good5 } });
+  ok(sixth.status === 429 && sixth.data.detail.code === 'too_many_tries', 'after 5 wrong codes the right one is refused');
+  // tapping Start again sends a fresh code (max 5 per link)
+  await openLink(s5.nonce, tgUser(666004, 'guess_me'));
+  ok((await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s5.nonce, code: lastCode() } })).status === 200, 'a fresh code from the bot works');
+
+  // expired link
+  const s6 = await start();
+  await env.DB.prepare('UPDATE tg_logins SET expires_at = 1').run();
+  await openLink(s6.nonce, tgUser(666005, 'late_one'));
+  ok(!lastCode() && lastText().includes('expired'), 'expired link gives no code');
+  await env.DB.prepare('UPDATE tg_logins SET code_expires_at = 1').run();
+  ok((await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s4.nonce, code: '123456' } })).status === 400, 'expired code refused');
+
+  // bot: a stranger opening the bot directly is told how to sign in; the admin's own sign-in link works too
+  await tgWebhook({ message: { chat: { id: 4242, type: 'private' }, from: tgUser(4242, 'stranger'), text: '/start' } });
+  ok(lastText().includes('Continue with Telegram'), 'stranger /start explains sign-in');
+  const s7 = await start();
+  await tgWebhook({ message: { chat: { id: 12345, type: 'private' }, from: { id: 12345, username: 'ali_admin' }, text: '/start L' + s7.nonce } });
+  ok(!!lastCode(), 'admin can sign in to the app with Telegram too');
+  // group chats never get codes
+  const s8 = await start();
+  const ng = fakes.tg.messages.length;
+  await tgWebhook({ message: { chat: { id: -100, type: 'group' }, from: tgUser(31, 'grp'), text: '/start L' + s8.nonce } });
+  ok(fakes.tg.messages.length === ng, 'no code in a group chat');
+
+  // admin finds Telegram users by @username or id
+  await admin('/find @sara_new');
+  ok(lastText().includes('تلگرام: @sara_new') && lastText().includes('888002'), 'admin /find by @username');
+  await admin('/find 777001');
+  ok(lastText().includes('آیدی 777001'), 'admin /find by numeric id');
+  delete env.TELEGRAM_BOT_USERNAME;
+}
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
