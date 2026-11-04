@@ -410,7 +410,7 @@ section('telegram button menu');
   ok(since(n).some((c) => c.method === 'sendMessage' && kbData(c).includes('m:usr')), '/start opens the menu for the admin');
   n = fakes.tg.calls.length;
   await say('/help');
-  ok(sent(n).some((m) => m.text.includes('/menu') && m.text.includes('/grant')), '/help still lists the text commands');
+  ok(since(n).some((c) => c.method === 'sendMessage' && kbData(c).includes('m:usr')), '/help opens the button menu');
 
   // navigation edits the same message
   n = fakes.tg.calls.length;
@@ -1678,7 +1678,8 @@ section('any panel type: Rebecca, Marzban and PasarGuard are detected on /panelt
   // a Rebecca admin with no usable service gets told how to set one
   reb.services = [];
   await admin(`/paneltest ${rid}`);
-  ok(lastText().includes('/panelgroups') && lastText().includes('سرویس'), 'no service: bot says how to set it: ' + lastText());
+  const lastKb = () => JSON.stringify(fakes.tg.messages[fakes.tg.messages.length - 1].reply_markup || {});
+  ok(lastKb().includes(`m:w:groups:${rid}`) && lastText().includes('سرویس') && !lastText().includes('/panelgroups'), 'no service: a button asks for the service: ' + lastText());
   await admin(`/panelgroups ${rid} 9`);
   await admin(`/paneltest ${rid}`);
   ok(lastText().includes('سالم است') && reb.createLog[reb.createLog.length - 1].service_id === 9, 'service set by hand is used');
@@ -1725,7 +1726,7 @@ section('any panel type: Rebecca, Marzban and PasarGuard are detected on /panelt
   ok(lastText().includes('does not answer like PasarGuard, Marzban or Rebecca') && !lastText().includes('hidd.test'), 'unknown panel: clear message without the address: ' + lastText());
   env[`PANEL_${hid}_CRED`] = 'not json';
   await admin(`/paneltest ${hid}`);
-  ok(lastText().includes(`/panelcred ${hid}`), 'broken secret: says how to give the login');
+  ok(JSON.stringify(fakes.tg.messages[fakes.tg.messages.length - 1].reply_markup || {}).includes(`m:w:panelcred:${hid}`), 'broken secret: a button asks for the login');
   await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(hid).run();
 
   // panel 1 (PasarGuard) is still recognised as PasarGuard
@@ -1785,6 +1786,96 @@ section('panel login given to the bot: message deleted, stored sealed, panel tes
   const { backupJson } = await import('../src/telegram.js');
   ok(!(await backupJson(env)).includes('panel_cred_'), 'sealed logins are not in the backup');
   await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(id).run();
+}
+
+section('a new panel reaches existing users: at once when the app loads servers, in the background, with progress and errors in the bot');
+{
+  const { getPanel } = await import('../src/panels.js');
+  const { panelProgress } = await import('../src/sync.js');
+  const N = 'http://newp.test';
+  const np = fakes.addPanel(N, 'nn.example.net', 'pasarguard');
+  const lastId = async () => (await env.DB.prepare('SELECT MAX(id) id FROM panels').first()).id;
+  const tokA = await signup('na@example.com', { device: 'na-phone' });
+  await signup('nb@example.com', { device: 'nb-phone' });
+  await admin(`/grant na@example.com ${tenGb.id}`);
+  await admin(`/grant nb@example.com ${tenGb.id}`);
+  await admin('/addpanel pasarguard تازه');
+  const id = await lastId();
+  await tgWebhook({ message: { chat: { id: 12345 }, message_id: 9100, text: `${N} admin9 pass9pass` } });
+  const healthy = fakes.tg.messages[fakes.tg.messages.length - 1];
+  ok(healthy.text.includes('سالم است') && JSON.stringify(healthy.reply_markup).includes(`/rollout ${id} 10`), 'healthy test offers rollout buttons');
+
+  // a tapped "/rollout" arrives without the number
+  await admin('/rollout');
+  ok(lastText().includes('شماره‌ی پنل را هم بنویس') && lastText().includes(`#${id}`), 'command without a panel number explains and lists panels: ' + lastText());
+
+  await admin(`/rollout ${id} 100`);
+  ok(/0 از \d+ کاربر/.test(lastText()), 'rollout reply says how many users already have the panel: ' + lastText());
+  const p = await getPanel(env, id);
+  const before = await panelProgress(env, p);
+  ok(before.want >= 2 && before.have === 0, 'progress counts users with a running plan: ' + JSON.stringify(before));
+  await admin('/panels');
+  ok(lastText().includes(`اکانت‌سازی: 0 از ${before.want}`), '/panels shows the progress');
+
+  // the app loads servers: the user's account on the new panel is made now and its configs are in this answer
+  const r = await call('GET', '/api/v1/vpn/servers', { token: tokA });
+  ok(r.status === 200 && Object.values(np.users).some((u) => (u.note || '').endsWith('· na@example.com')), 'account made on the new panel at app load');
+  ok(JSON.stringify(r.data).includes('nn.example.net'), 'new panel configs are in the same server list');
+  const mid = await panelProgress(env, p);
+  ok(mid.have === 1, 'progress moved: ' + JSON.stringify(mid));
+
+  // the background job picks up the rest
+  await syncRounds(4);
+  const after = await panelProgress(env, p);
+  ok(after.have === after.want, 'background job finished the rest: ' + JSON.stringify(after));
+
+  // a panel that refuses: admin told once, the app does not wait on it, the bot shows the error
+  const np2 = fakes.addPanel('http://newq.test', 'nq.example.net', 'pasarguard');
+  await admin('/addpanel pasarguard خراب');
+  const qid = await lastId();
+  await tgWebhook({ message: { chat: { id: 12345 }, message_id: 9101, text: `http://newq.test admin8 pass8pass` } });
+  await admin(`/rollout ${qid} 100`);
+  np2.failCreate = 'Admin users limit reached';
+  const msgs = fakes.tg.messages.length;
+  const tries = np2.createLog.length;
+  const r2 = await call('GET', '/api/v1/vpn/servers', { token: tokA });
+  ok(r2.status === 200 && JSON.stringify(r2.data).includes('nn.example.net'), 'a refusing panel does not break the list');
+  const warn = fakes.tg.messages.slice(msgs).filter((m) => m.text.includes(`پنل #${qid}`) && m.text.includes('Admin users limit reached'));
+  ok(warn.length === 1, 'admin told once about the refusing panel: ' + warn.length);
+  const tried = np2.createLog.length;
+  ok(tried > tries, 'the app tried the new panel once');
+  await call('GET', '/api/v1/vpn/servers', { token: tokA });
+  ok(np2.createLog.length === tried, 'the app does not retry a refusing panel right away');
+  await syncRounds(2);
+  ok(fakes.tg.messages.slice(msgs).filter((m) => m.text.includes(`پنل #${qid}`) && m.text.includes('ساخته نمی‌شود')).length === 1, 'no repeated warnings within hours');
+  await admin('/panels');
+  ok(lastText().includes('ساخت اکانت رد شد') && lastText().includes('Admin users limit reached'), '/panels shows the refusal');
+  np2.failCreate = null;
+  await syncRounds(2);
+  await admin('/panels');
+  ok(!lastText().includes('ساخت اکانت رد شد'), 'error cleared once creates work again');
+  for (const x of [id, qid]) await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(x).run();
+}
+
+section('no typing: commands in bot messages become buttons, a menu button stays under the chat');
+{
+  const { buttonize } = await import('../src/telegram.js');
+  const b = buttonize('برای شروع: /rollout 2 10 یا /paneltest 2. شکل درست: /addpanel نام', undefined);
+  ok(!/\/[a-z]/.test(b.text) && b.text.includes('«🚀 پنل #2 برای 10٪ کاربران»'), 'command text replaced by the button name: ' + b.text);
+  const data = b.reply_markup.inline_keyboard.flat().map((x) => x.callback_data);
+  ok(data.includes('m:x:home|/rollout 2 10') && data.includes('m:x:home|/paneltest 2') && data.includes('m:w:addpanel'), 'each command has its button: ' + data.join());
+  const keep = buttonize('ok /panels', { inline_keyboard: [[{ text: 'a', callback_data: 'm:home' }]] });
+  ok(keep.reply_markup.inline_keyboard[0][0].callback_data === 'm:home' && keep.reply_markup.inline_keyboard.length === 2, 'existing buttons kept, new ones added');
+  ok(buttonize('https://p.example.com:8000/dashboard/ and /api/x').text.includes('/dashboard/'), 'addresses are left alone');
+  const n = fakes.tg.calls.length;
+  await admin('/start');
+  ok(fakes.tg.calls.slice(n).some((c) => c.method === 'sendMessage' && c.body.reply_markup && c.body.reply_markup.keyboard && c.body.reply_markup.keyboard[0][0].text === '🏠 منو'), '/start puts the menu button under the chat');
+  const m = fakes.tg.calls.length;
+  await admin('🏠 منو');
+  ok(fakes.tg.calls.slice(m).some((c) => c.method === 'sendMessage' && JSON.stringify(c.body.reply_markup || {}).includes('m:usr')), 'the menu button opens the menu');
+  // every message the bot sent in this whole run: no "/command" the admin would have to type
+  const left = fakes.tg.messages.map((x) => x.text || '').filter((t) => /(^|[\s(:،«])\/(panels?|paneltest|rollout|drainpanel|panelcred|panelgroups|addpanel|find|grant|set|plan|plans|newplan|coupons?|delcoupon|backup|google|carriers|rate|sms|wallets|stats|settings|menu|help)\b/.test(t));
+  ok(left.length === 0, 'no bot message asks to type a command: ' + (left[0] || '').slice(0, 200));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

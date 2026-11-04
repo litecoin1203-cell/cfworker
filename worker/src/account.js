@@ -4,7 +4,7 @@ import { json, err, nowSec } from './util.js';
 import { PasarGuard, PasarGuardError } from './pasarguard.js';
 import { provision } from './billing.js';
 import { collectLinks, flagToCc } from './panels.js';
-import { refreshUser, usedBytes } from './sync.js';
+import { refreshUser, usedBytes, ensureMissingFor } from './sync.js';
 import { cryptoEnabled } from './nowpayments.js';
 import { enabledCoins, coinOut } from './coins.js';
 import { notifyAdmin } from './telegram.js';
@@ -183,6 +183,8 @@ export async function vpnSub(env, user, request) {
 }
 
 async function unifiedLinks(env, user, fwd) {
+  // a panel added since this user's last visit: their account there is made now, so its configs come at once
+  try { await ensureMissingFor(env, user.id); } catch (e) { /* the cron job makes it later */ }
   const r = await collectLinks(env, user.id, fwd);
   if (!r.accounts) throw err(404, 'no_servers', 'برای اشتراک شما هنوز سروری تعریف نشده است.');
   if (r.deviceLimit && !r.links.length) throw err(403, 'device_limit', 'این اشتراک روی حداکثر تعداد گوشی استفاده شده است.');

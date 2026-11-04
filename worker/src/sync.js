@@ -17,7 +17,10 @@ import { adapterFor, getPanel, listPanels, panelsFor, recordHealth, accountsOf, 
 
 export const PAGE = 200;            // users read per panel request
 const PUSH_PER_RUN = 15;            // pending panel writes per cron run
-const CREATE_PER_RUN = 3;           // missing panel accounts created per cron run
+const CREATE_PER_RUN = 8;           // missing panel accounts created per cron run (fewer when pushes used the budget)
+const SUBREQ_BUDGET = 44;           // of the 50 a Free-plan run may make; a create costs up to about 4
+const ERR_NOTIFY_EVERY = 6 * 3600;  // the admin hears about one panel refusing new accounts at most this often
+const QUIET_AFTER_ERROR = 600;      // after a refused create, the app does not wait on that panel for 10 minutes
 const MB = 1024 * 1024;
 
 // how far a panel's own data_limit may drift from the ideal before it is rewritten (fewer panel writes)
@@ -317,31 +320,97 @@ async function finishDrain(env, panel) {
   await run(env, "UPDATE panels SET state = 'disabled', disabled_at = ? WHERE id = ? AND state = 'draining'", nowSec(), panel.id);
 }
 
+// A panel that refused to create an account: remembered (settings panel_err_<id>) for the bot and for the app
+// path, and told to the admin once every few hours. A success clears it.
+export async function noteCreateError(env, panel, e) {
+  const key = `panel_err_${panel.id}`;
+  const now = nowSec();
+  let prev = null;
+  try { prev = JSON.parse((await first(env, 'SELECT value FROM settings WHERE key = ?', key))?.value || 'null'); } catch (x) { /* rewritten below */ }
+  const msg = String(e && e.message ? e.message : e).slice(0, 300);
+  const notify = !prev || !prev.notified_at || now - prev.notified_at >= ERR_NOTIFY_EVERY;
+  await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key,
+    JSON.stringify({ msg, at: now, notified_at: notify ? now : prev.notified_at }));
+  if (notify) {
+    try {
+      const { notifyAdmin } = await import('./telegram.js');
+      await notifyAdmin(env, `⚠️ روی پنل #${panel.id} (${panel.label || ''}) برای کاربران اکانت ساخته نمی‌شود، پس کانفیگ‌هایش به آن‌ها نمی‌رسد.
+
+خطای پنل:
+${msg}
+
+بعد از رفع مشکل خودکار ادامه پیدا می‌کند. تست: /paneltest ${panel.id}`);
+    } catch (x) { /* the error stays visible in /panels */ }
+  }
+}
+async function clearCreateError(env, panel) {
+  await run(env, 'DELETE FROM settings WHERE key = ?', `panel_err_${panel.id}`);
+}
+export async function createError(env, panelId) {
+  try { return JSON.parse((await first(env, 'SELECT value FROM settings WHERE key = ?', `panel_err_${panelId}`))?.value || 'null'); }
+  catch (e) { return null; }
+}
+
+// One missing account for this subscription on this panel, with what is left of the plan. true = made.
+async function createFor(env, s, panel) {
+  const left = s.data_limit_bytes > 0 ? Math.max(1, s.data_limit_bytes - s.used_bytes) : 0;
+  try {
+    await ensureAccount(env, { id: s.user_id, email: s.email }, panel, { expire: s.expires_at, limit: left });
+  } catch (e) {
+    await recordHealth(env, panel.id, false);
+    await noteCreateError(env, panel, e);
+    return false;
+  }
+  await clearCreateError(env, panel);
+  return true;
+}
+
 // Users with a running subscription who are missing an account on a panel they belong to (a new panel being
 // rolled out, or users of a removed panel). A few per run.
-async function createMissing(env) {
+async function createMissing(env, max = CREATE_PER_RUN) {
   const panels = (await listPanels(env)).filter((p) => ['active', 'rollout'].includes(p.state));
   let made = 0;
   for (const panel of panels) {
-    if (made >= CREATE_PER_RUN) break;
+    if (made >= max) break;
     const rows = await all(env, `SELECT s.*, u.email FROM subscriptions s JOIN users u ON u.id = s.user_id
       WHERE s.state = 'active' AND s.period_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM panel_accounts a WHERE a.user_id = s.user_id AND a.panel_id = ?)
       ORDER BY s.user_id LIMIT 50`, panel.id);
     for (const s of rows) {
-      if (made >= CREATE_PER_RUN) break;
+      if (made >= max) break;
       const mine = await panelsFor(env, s.user_id);
       if (!mine.some((p) => p.id === panel.id)) continue;
-      const left = s.data_limit_bytes > 0 ? Math.max(1, s.data_limit_bytes - s.used_bytes) : 0;
-      try {
-        await ensureAccount(env, { id: s.user_id, email: s.email }, panel, { expire: s.expires_at, limit: left });
-        made++;
-      } catch (e) {
-        await recordHealth(env, panel.id, false);
-        break; // this panel refuses now; try it again next run
-      }
+      if (await createFor(env, s, panel)) made++;
+      else break; // this panel refuses now; try it again next run
     }
   }
   return made;
+}
+
+// The app is asking for this user's servers: make the user's missing account on a new panel now, so its
+// configs are in this very answer. At most one panel per request, and never a panel that is unhealthy or
+// refused a create in the last minutes (the app must not wait on a broken panel).
+export async function ensureMissingFor(env, userId) {
+  const s = await first(env, `SELECT s.*, u.email FROM subscriptions s JOIN users u ON u.id = s.user_id
+    WHERE s.user_id = ? AND s.state = 'active' AND s.period_id IS NOT NULL`, userId);
+  if (!s || (s.expires_at && s.expires_at <= nowSec())) return false;
+  const have = new Set((await all(env, 'SELECT panel_id FROM panel_accounts WHERE user_id = ?', userId)).map((r) => r.panel_id));
+  for (const panel of await panelsFor(env, userId)) {
+    if (have.has(panel.id) || panel.fail_streak >= 3) continue;
+    const e = await createError(env, panel.id);
+    if (e && nowSec() - e.at < QUIET_AFTER_ERROR) continue;
+    return createFor(env, s, panel);
+  }
+  return false;
+}
+
+// For the bot: how many of the users this panel should serve already have their account on it.
+export async function panelProgress(env, panel) {
+  const subs = await all(env, `SELECT user_id FROM subscriptions WHERE state = 'active' AND period_id IS NOT NULL`);
+  const { bucketOf } = await import('./panels.js');
+  const want = panel.state === 'active' ? subs : panel.state === 'rollout' ? subs.filter((r) => bucketOf(r.user_id, panel.id) < panel.rollout_percent) : [];
+  if (!want.length) return { want: 0, have: 0 };
+  const has = new Set((await all(env, "SELECT user_id FROM panel_accounts WHERE panel_id = ? AND desired = 'active'", panel.id)).map((r) => r.user_id));
+  return { want: want.length, have: want.filter((r) => has.has(r.user_id)).length };
 }
 
 // One cron slice. Returns what it did (for tests and logs).
@@ -352,7 +421,8 @@ export async function runSync(env) {
   // expiry needs no panel reading
   const due = await all(env, "SELECT user_id FROM subscriptions WHERE state = 'active' AND expires_at IS NOT NULL AND expires_at <= ? LIMIT 50", nowSec());
   for (const r of due) { await evaluate(env, r.user_id); out.expired++; }
-  out.pushed = (await pushPending(env)).done;
-  out.created = await createMissing(env);
+  const push = await pushPending(env);
+  out.pushed = push.done;
+  out.created = await createMissing(env, Math.max(2, Math.min(CREATE_PER_RUN, Math.floor((SUBREQ_BUDGET - push.tried) / 4))));
   return out;
 }
