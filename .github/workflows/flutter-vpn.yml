@@ -124,7 +124,11 @@ jobs:
           aapt=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
           "$aapt" dump badging "$apk" | grep -E "^(package|minSdkVersion|sdkVersion|targetSdkVersion|native-code)"
           unzip -l "$apk" | grep -E "lib/[^/]+/lib(hev-socks5-tunnel|gojni|flutter)\.so" | awk '{print $4}'
+      # Pull requests only need to prove the app builds; uploading their APKs fills the account's artifact
+      # storage (when it is full, every upload fails and turns the check red). Get an APK from a push or a
+      # manual run (workflow_dispatch) instead.
       - uses: actions/upload-artifact@v4
+        if: github.event_name != 'pull_request'
         with:
           name: pleat-apk
           path: flutter_vpn/build/app/outputs/flutter-apk/app-release.apk
