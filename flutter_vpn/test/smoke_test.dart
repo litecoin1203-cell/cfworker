@@ -573,4 +573,38 @@ void main() {
     expect(app.me.value, isNull);
     expect(api.authedCalls, isEmpty);
   });
+
+  testWidgets('a full check during a quick run still tests every exit', (
+    tester,
+  ) async {
+    // more exits than the six tested at once, so a quick run leaves some
+    FakeApi.extraServers = [
+      for (var i = 3; i < 15; i++)
+        {
+          'index': i,
+          'name': 'FI $i',
+          'country_code': 'FI',
+          'protocol': 'vless',
+          'link': 'vless://u@fi$i.example.com:443?type=tcp#x',
+        },
+    ];
+    addTearDown(() => FakeApi.extraServers = []);
+    final tunnel = FakeTunnel()
+      ..pings = {
+        for (var i = 3; i < 15; i++) 'fi$i.example.com': 100,
+        'nl1.example.com': 240,
+        'de1.example.com': 60,
+      };
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    for (final e in app.exits) {
+      e.measured = null;
+    }
+    // smart connect's quick run is going when the Connection check starts
+    final quick = app.testAll(enough: 1);
+    final full = app.testAll();
+    await Future.wait([quick, full]);
+    expect(app.exits, isNotEmpty);
+    expect(app.exits.where((e) => e.measured == null), isEmpty);
+    await tester.pump(const Duration(seconds: 10));
+  });
 }
