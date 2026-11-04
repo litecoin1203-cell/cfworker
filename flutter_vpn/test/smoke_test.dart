@@ -639,10 +639,10 @@ void main() {
     expect(api.calls, contains('GET /me/packages'));
     expect(find.text('Verify your Telegram'), findsOneWidget);
     expect(find.text('ali@example.com'), findsWidgets);
-    // the rings count up to what is left: 50 GiB plan in the fake = 46.6 GiB,
+    // the numbers count up to what is left: 50 GB in the fake = 46.6 GiB,
     // 41 GB used -> 8.4 GiB left
-    expect(find.text('8.4'), findsOneWidget);
-    expect(find.text('12 days left'), findsOneWidget);
+    expect(find.text('8.4 GB'), findsOneWidget);
+    expect(find.text('12 of 30'), findsOneWidget);
     await tester.scrollUntilVisible(find.text('Packages'), 200);
     expect(find.text('Free trial  ·  5.0 GB'), findsOneWidget);
     expect(

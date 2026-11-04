@@ -895,7 +895,6 @@ class _UsageCard extends StatelessWidget {
         : (sub.dataLimitBytes == 0 ? 0.0 : left / sub.dataLimitBytes);
     final days = sub.daysLeft ?? 0;
     final period = (sub.periodDays ?? 0) > 0 ? sub.periodDays! : 30;
-    final timeFrac = sub.unlimitedTime ? 1.0 : (days / period).clamp(0.0, 1.0);
     final stopped = !sub.active;
     return SurfaceCard(
       padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
@@ -918,59 +917,16 @@ class _UsageCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          _Rings(
+          const SizedBox(height: 14),
+          _PleatsAndDots(
             dataFrac: dataFrac,
-            timeFrac: timeFrac,
             leftGb: sub.unlimitedData ? null : left / _gib,
             limitGb: sub.dataLimitBytes / _gib,
             days: sub.unlimitedTime ? null : days,
+            period: period,
+            ends: sub.expiresAt,
             reduce: app.reduceMotion || PMotion.reduced(context),
             muted: stopped,
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        _dot(PColors.blue),
-                        const SizedBox(width: 6),
-                        Text('DATA', style: PType.tab()),
-                      ],
-                    ),
-                    const SizedBox(height: 3),
-                    Text(
-                      sub.unlimitedData
-                          ? 'No data cap'
-                          : '${_gb(sub.usedBytes)} GB used',
-                      style: PType.small(),
-                    ),
-                  ],
-                ),
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Row(
-                    children: [
-                      _dot(PColors.navy),
-                      const SizedBox(width: 6),
-                      Text('TIME', style: PType.tab()),
-                    ],
-                  ),
-                  const SizedBox(height: 3),
-                  Text(
-                    sub.unlimitedTime || sub.expiresAt == null
-                        ? 'No end date'
-                        : 'Ends ${_day(sub.expiresAt!)}',
-                    style: PType.small(),
-                  ),
-                ],
-              ),
-            ],
           ),
           const SizedBox(height: 14),
           PillButton(
@@ -984,41 +940,42 @@ class _UsageCard extends StatelessWidget {
       ),
     );
   }
-
-  static Widget _dot(Color c) => Container(
-    width: 8,
-    height: 8,
-    decoration: BoxDecoration(color: c, shape: BoxShape.circle),
-  );
 }
 
-/// Twin rings: outer = data left, inner = days left. Both sweep in from
-/// zero and the numbers count up with them.
-class _Rings extends StatefulWidget {
-  const _Rings({
+/// Data and days, the way Ali picked (style 4): slanted pleats rise for
+/// the data left, and each day of the package is a dot (navy = still
+/// ahead). Numbers count up with them; Reduce motion shows the end state.
+class _PleatsAndDots extends StatefulWidget {
+  const _PleatsAndDots({
     required this.dataFrac,
-    required this.timeFrac,
     required this.leftGb,
     required this.limitGb,
     required this.days,
+    required this.period,
+    required this.ends,
     required this.reduce,
     required this.muted,
   });
-  final double dataFrac, timeFrac, limitGb;
+  final double dataFrac, limitGb;
 
   /// null = no data cap / no end date.
   final double? leftGb;
   final int? days;
+  final int period;
+  final DateTime? ends;
   final bool reduce, muted;
 
   @override
-  State<_Rings> createState() => _RingsState();
+  State<_PleatsAndDots> createState() => _PleatsAndDotsState();
 }
 
-class _RingsState extends State<_Rings> with SingleTickerProviderStateMixin {
+class _PleatsAndDotsState extends State<_PleatsAndDots>
+    with SingleTickerProviderStateMixin {
+  static const _pleats = 20;
+  static const _maxDots = 60;
   late final _c = AnimationController(
     vsync: this,
-    duration: const Duration(milliseconds: 1500),
+    duration: const Duration(milliseconds: 1800),
   );
 
   @override
@@ -1028,9 +985,9 @@ class _RingsState extends State<_Rings> with SingleTickerProviderStateMixin {
   }
 
   @override
-  void didUpdateWidget(_Rings old) {
+  void didUpdateWidget(_PleatsAndDots old) {
     super.didUpdateWidget(old);
-    if (old.dataFrac != widget.dataFrac || old.timeFrac != widget.timeFrac) {
+    if (old.dataFrac != widget.dataFrac || old.days != widget.days) {
       widget.reduce ? _c.value = 1 : _c.forward(from: 0);
     }
   }
@@ -1041,102 +998,164 @@ class _RingsState extends State<_Rings> with SingleTickerProviderStateMixin {
     super.dispose();
   }
 
+  /// 0..1 progress of one item that starts at [start] (0..1 of the run)
+  /// and takes [span] of it.
+  double _at(double start, double span) =>
+      ((_c.value - start) / span).clamp(0.0, 1.0);
+
   @override
   Widget build(BuildContext context) {
     final w = widget;
-    final label = [
-      w.leftGb == null
-          ? 'No data cap'
-          : '${w.leftGb!.toStringAsFixed(1)} GB left of ${w.limitGb.toStringAsFixed(0)}',
-      w.days == null ? 'no end date' : '${w.days} days left',
-    ].join(', ');
+    // a long package gets one dot per few days, so the grid stays small
+    final perDot = (w.period / _maxDots).ceil().clamp(1, 1 << 20);
+    final dots = (w.period / perDot).ceil();
+    final aheadDots = w.days == null ? dots : (w.days! / perDot).ceil();
+    final lit = (w.dataFrac * _pleats).round();
+    final blue = w.muted ? PColors.muted : PColors.blue;
+    final deep = w.muted ? PColors.muted : PColors.pressed;
+    final navy = w.muted ? PColors.ice : PColors.navy;
     return Semantics(
-      label: label,
+      label: [
+        w.leftGb == null
+            ? 'No data cap'
+            : '${w.leftGb!.toStringAsFixed(1)} GB left of ${w.limitGb.toStringAsFixed(0)}',
+        w.days == null ? 'no end date' : '${w.days} of ${w.period} days left',
+      ].join(', '),
       excludeSemantics: true,
       child: AnimatedBuilder(
         animation: _c,
         builder: (context, _) {
-          final data = Curves.easeOutCubic.transform(_c.value);
-          final time = Curves.easeOutCubic.transform(
-            ((_c.value - 0.15) / 0.85).clamp(0.0, 1.0),
-          );
-          return SizedBox(
-            width: 230,
-            height: 230,
-            child: CustomPaint(
-              painter: _RingPainter(
-                data: w.dataFrac * data,
-                time: w.timeFrac * time,
-                muted: w.muted,
+          final count = Curves.easeOutCubic.transform(_at(0, 0.8));
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _bigRow(
+                'DATA LEFT',
+                w.leftGb == null ? '∞' : (w.leftGb! * count).toStringAsFixed(1),
+                w.leftGb == null ? '' : ' GB',
+                w.leftGb == null
+                    ? 'No data cap'
+                    : 'of ${w.limitGb.toStringAsFixed(0)} GB',
               ),
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
+              const SizedBox(height: 14),
+              SizedBox(
+                height: 60,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.end,
                   children: [
-                    Text(
-                      w.leftGb == null
-                          ? '∞'
-                          : (w.leftGb! * data).toStringAsFixed(1),
-                      style: PType.display(44),
-                    ),
-                    const SizedBox(height: 6),
-                    Text(
-                      w.leftGb == null
-                          ? 'NO DATA CAP'
-                          : 'GB LEFT OF ${w.limitGb.toStringAsFixed(0)}',
-                      style: PType.tab(),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      w.days == null
-                          ? 'No end date'
-                          : '${(w.days! * time).round()} days left',
-                      style: PType.small(color: PColors.navy)
-                          .copyWith(fontWeight: FontWeight.w700),
-                    ),
+                    for (var i = 0; i < _pleats; i++) ...[
+                      if (i > 0) const SizedBox(width: 5),
+                      Expanded(
+                        child: Transform(
+                          alignment: Alignment.bottomCenter,
+                          transform: Matrix4.skewX(-0.21)
+                            ..scaleByDouble(
+                              1,
+                              i < lit
+                                  ? 0.35 +
+                                        0.65 *
+                                            Curves.easeOutBack.transform(
+                                              _at(i * 0.025, 0.3),
+                                            )
+                                  : 0.35,
+                              1,
+                              1,
+                            ),
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              color: i < lit && _at(i * 0.025, 0.3) > 0
+                                  ? (i.isOdd ? blue : deep)
+                                  : PColors.mist,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: const SizedBox.expand(),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
-            ),
+              const SizedBox(height: 18),
+              const Divider(height: 1, thickness: 1.2, color: PColors.field),
+              const SizedBox(height: 16),
+              _bigRow(
+                'DAYS LEFT',
+                w.days == null ? '∞' : '${(w.days! * count).round()}',
+                w.days == null ? '' : ' of ${w.period}',
+                w.days == null || w.ends == null
+                    ? 'No end date'
+                    : 'Ends ${_day(w.ends!, year: false)}',
+              ),
+              const SizedBox(height: 14),
+              LayoutBuilder(
+                builder: (context, box) {
+                  const cols = 10, gap = 7.0;
+                  final size = (box.maxWidth - gap * (cols - 1)) / cols;
+                  return Wrap(
+                    spacing: gap,
+                    runSpacing: gap,
+                    children: [
+                      for (var i = 0; i < dots; i++)
+                        () {
+                          final t = _at(0.15 + i * (0.5 / dots), 0.25);
+                          final ahead = i >= dots - aheadDots;
+                          return Transform.scale(
+                            scale: 0.4 + 0.6 * Curves.easeOutBack.transform(t),
+                            child: Container(
+                              width: size,
+                              height: size,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: t == 0
+                                    ? PColors.field
+                                    : (ahead ? navy : PColors.mist),
+                              ),
+                            ),
+                          );
+                        }(),
+                    ],
+                  );
+                },
+              ),
+              if (perDot > 1) ...[
+                const SizedBox(height: 8),
+                Text('Each dot is $perDot days.', style: PType.meta()),
+              ],
+            ],
           );
         },
       ),
     );
   }
-}
 
-class _RingPainter extends CustomPainter {
-  _RingPainter({required this.data, required this.time, required this.muted});
-  final double data, time;
-  final bool muted;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final c = size.center(Offset.zero);
-    void ring(double r, double stroke, Color track, Color fill, double frac) {
-      final p = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = stroke
-        ..strokeCap = StrokeCap.round;
-      canvas.drawCircle(c, r, p..color = track);
-      if (frac <= 0) return;
-      canvas.drawArc(
-        Rect.fromCircle(center: c, radius: r),
-        -1.5707963,
-        6.2831853 * frac.clamp(0.0, 1.0),
-        false,
-        p..color = fill,
-      );
-    }
-
-    final r = size.shortestSide / 2;
-    ring(r - 9, 16, PColors.mist, muted ? PColors.muted : PColors.blue, data);
-    ring(r - 33, 11, PColors.field, muted ? PColors.ice : PColors.navy, time);
-  }
-
-  @override
-  bool shouldRepaint(_RingPainter old) =>
-      old.data != data || old.time != time || old.muted != muted;
+  Widget _bigRow(String label, String number, String unit, String side) => Row(
+    crossAxisAlignment: CrossAxisAlignment.end,
+    children: [
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: PType.tab()),
+            const SizedBox(height: 8),
+            Text.rich(
+              TextSpan(
+                children: [
+                  TextSpan(text: number, style: PType.display(44)),
+                  TextSpan(
+                    text: unit,
+                    style: PType.body(color: PColors.muted)
+                        .copyWith(fontSize: 18, fontWeight: FontWeight.w600),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      Text(side, style: PType.meta()),
+    ],
+  );
 }
 
 /// 4. Every package, newest first: when it was bought and when it started.
