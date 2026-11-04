@@ -1145,7 +1145,7 @@ let tenGb;
 section('bot: add, test and roll out panels (with admin log)');
 {
   await admin('/addpanel pasarguard پنل دوم');
-  ok(lastText().includes('PANEL_2_CRED') && !lastText().includes('pass2'), 'add panel names the secret to create, never asks for the password in chat');
+  ok(lastText().includes('یوزرنیم و رمز') && lastText().includes('پاک می‌شود') && !lastText().includes('pass2'), 'add panel asks for the login in a message that is deleted');
   await admin('/addpanel pasarguard پنل سوم');
   await admin('/rollout 2 100');
   ok(lastText().includes('اول پنل را تست کن'), 'an untested panel cannot take users');
@@ -1644,6 +1644,147 @@ section('carriers: speed per network, own servers only, people count');
   const bm = fakes.tg.messages.length;
   await tgWebhook({ message: { chat: { id: 12345, type: 'private' }, from: { id: 12345 }, text: '/carriers' } });
   ok(fakes.tg.messages.slice(bm).some((m) => m.text.includes('رایتل') && m.text.includes('DE 1')), '/carriers lists best servers per carrier');
+}
+
+section('any panel type: Rebecca, Marzban and PasarGuard are detected on /paneltest and each gets its own create call');
+{
+  const { getPanel, adapterFor, collectLinks, testPanel } = await import('../src/panels.js');
+  const { ensureAccount } = await import('../src/sync.js');
+  const lastId = async () => (await env.DB.prepare('SELECT MAX(id) id FROM panels').first()).id;
+  const R = 'https://reb.test:8000', M = 'http://marz.test', H = 'http://hidd.test';
+  const reb = fakes.addPanel(R, 'r.example.io', 'rebecca');
+  const marz = fakes.addPanel(M, 'm.example.io', 'marzban');
+  fakes.addPanel(H, 'h.example.io', 'none');
+  ok(panelBases(R + '/dashboard/').join() === R, 'dashboard address with a port gives the API root with that port');
+
+  await admin('/addpanel ربکا');
+  const rid = await lastId();
+  let p = await getPanel(env, rid);
+  ok(p.kind === 'auto' && p.label === 'ربکا', 'add without a type: type left to the test');
+  let threw = '';
+  try { await adapterFor(env, p); } catch (e) { threw = e.message; }
+  ok(threw.includes(`/panelcred ${rid}`), 'no login yet: says how to give it: ' + threw);
+  env[`PANEL_${rid}_CRED`] = JSON.stringify({ url: R + '/dashboard/', username: 'ra', password: 'Reb3ccaSecret' });
+  try { await adapterFor(env, p); threw = ''; } catch (e) { threw = e.message; }
+  ok(threw.includes('/paneltest'), 'an auto panel cannot be used before its test: ' + threw);
+  await admin(`/paneltest ${rid}`);
+  p = await getPanel(env, rid);
+  ok(p.kind === 'rebecca' && p.state === 'testing', 'Rebecca detected and stored: ' + p.kind + ' ' + p.state);
+  ok(lastText().includes('rebecca') && lastText().includes('سالم است'), 'test reply names the type and passes: ' + lastText());
+  const made = reb.createLog[reb.createLog.length - 1];
+  ok(made.service_id === 4 && !('group_ids' in made) && !('hwid_limit' in made) && !('proxies' in made), 'Rebecca user made in a service: ' + JSON.stringify(made));
+  ok(!JSON.stringify(fakes.tg.messages).includes('Reb3ccaSecret') && !JSON.stringify(fakes.tg.messages).includes('reb.test'), 'bot never shows the panel password or address');
+
+  // a Rebecca admin with no usable service gets told how to set one
+  reb.services = [];
+  await admin(`/paneltest ${rid}`);
+  ok(lastText().includes('/panelgroups') && lastText().includes('سرویس'), 'no service: bot says how to set it: ' + lastText());
+  await admin(`/panelgroups ${rid} 9`);
+  await admin(`/paneltest ${rid}`);
+  ok(lastText().includes('سالم است') && reb.createLog[reb.createLog.length - 1].service_id === 9, 'service set by hand is used');
+  reb.services = [{ id: 4, name: 'main', has_hosts: true, broken: false }];
+
+  // accounts and configs on Rebecca: its v2rayNG answer is Xray JSON, plain links come from <sub>/v2ray
+  const tok = await signup('reb@example.com', { device: 'reb-phone' });
+  const uid = await userId('reb@example.com');
+  const user = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(uid).first();
+  const pa = await ensureAccount(env, user, p, { expire: Math.floor(Date.now() / 1000) + 86400, limit: 5 * GB, hwid: 2 });
+  ok(pa && pa.sub_path.startsWith(R + '/sub/'), 'Rebecca account has an absolute subscription link');
+  reb.subJson = true;
+  await env.DB.prepare("UPDATE panels SET state = 'active' WHERE id = ?").bind(rid).run();
+  const got = await collectLinks(env, uid, {});
+  ok(got.links.filter((l) => l.includes('r.example.io')).length === 3, 'configs read through <sub>/v2ray: ' + got.links.length);
+  const pgR = await adapterFor(env, await getPanel(env, rid));
+  await pgR.modifyUser(pa.remote_username, { status: 'active', data_limit: GB, hwid_limit: 3 });
+  ok(!('hwid_limit' in reb.putBodies[reb.putBodies.length - 1]), 'PasarGuard-only fields are not sent to Rebecca');
+  ok(await pgR.deleteHwid(pa.remote_username, 'x') === false, 'no device list on Rebecca: nothing to delete');
+  ok(tok, 'user signed up');
+
+  // a Marzban panel added under the wrong type is corrected while it has no users
+  await admin('/addpanel pasarguard مرزبان');
+  const mid = await lastId();
+  env[`PANEL_${mid}_CRED`] = JSON.stringify({ url: M, username: 'ma', password: 'mp' });
+  await admin(`/paneltest ${mid}`);
+  p = await getPanel(env, mid);
+  ok(p.kind === 'marzban' && lastText().includes('خودکار تشخیص'), 'wrong type corrected to marzban: ' + p.kind);
+  const mm = marz.createLog[marz.createLog.length - 1];
+  ok(mm.proxies && 'vless' in mm.proxies && 'trojan' in mm.proxies && !('shadowsocks' in mm.proxies) && !('group_ids' in mm), 'Marzban user gets the panel protocols: ' + JSON.stringify(mm.proxies));
+
+  // a panel that already serves users keeps its type; the test says what it really is
+  await env.DB.prepare("UPDATE panels SET kind = 'pasarguard', state = 'active' WHERE id = ?").bind(rid).run();
+  const t = await testPanel(env, await getPanel(env, rid));
+  ok(!t.healthy && t.kind === 'rebecca' && t.error.includes('already serves users') && (await getPanel(env, rid)).kind === 'pasarguard', 'serving panel is not retyped behind the admin');
+  await env.DB.prepare("UPDATE panels SET kind = 'rebecca', state = 'disabled' WHERE id = ?").bind(rid).run();
+  await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(mid).run();
+
+  // something that is not in the family: a clear answer, not a crash
+  await admin('/addpanel دیگر');
+  const hid = await lastId();
+  env[`PANEL_${hid}_CRED`] = JSON.stringify({ url: H, username: 'h', password: 'h' });
+  await admin(`/paneltest ${hid}`);
+  ok(lastText().includes('does not answer like PasarGuard, Marzban or Rebecca') && !lastText().includes('hidd.test'), 'unknown panel: clear message without the address: ' + lastText());
+  env[`PANEL_${hid}_CRED`] = 'not json';
+  await admin(`/paneltest ${hid}`);
+  ok(lastText().includes(`/panelcred ${hid}`), 'broken secret: says how to give the login');
+  await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(hid).run();
+
+  // panel 1 (PasarGuard) is still recognised as PasarGuard
+  const t1 = await testPanel(env, await getPanel(env, 1));
+  ok(t1.kind === 'pasarguard' && !t1.kindChanged, 'PasarGuard still detected as PasarGuard');
+}
+
+section('panel login given to the bot: message deleted, stored sealed, panel tested at once');
+{
+  const { getPanel, adapterFor, credSource } = await import('../src/panels.js');
+  const { seal, openSealed } = await import('../src/util.js');
+  const R2 = 'https://reb2.test:8000';
+  const reb2 = fakes.addPanel(R2, 'r2.example.io', 'rebecca');
+  const PW = 'Sup3rS3cretPw';
+  const adminMsg = (text, id) => tgWebhook({ message: { chat: { id: 12345 }, message_id: id, text } });
+  const lastId = async () => (await env.DB.prepare('SELECT MAX(id) id FROM panels').first()).id;
+  const deleted = (id) => fakes.tg.calls.some((c) => c.method === 'deleteMessage' && c.body.message_id === id);
+  const sealedOf = async (id) => (await env.DB.prepare('SELECT value FROM settings WHERE key = ?').bind(`panel_cred_${id}`).first())?.value;
+
+  await admin('/addpanel ربکا دو');
+  const id = await lastId();
+  ok(lastText().includes('یوزرنیم و رمز'), 'add asks for the login right away');
+  await adminMsg(`${R2}/dashboard/\nadmin2\n${PW}`, 9001);
+  ok(deleted(9001), 'the message with the password is deleted from the chat');
+  const sealed = await sealedOf(id);
+  ok(sealed && sealed.startsWith('s1.') && !sealed.includes(PW) && !sealed.includes('reb2'), 'stored sealed, no password or address in clear');
+  const p = await getPanel(env, id);
+  ok(p.kind === 'rebecca' && p.state === 'testing' && lastText().includes('سالم است'), 'tested and typed right after saving: ' + lastText());
+  ok(reb2.createLog.length === 1, 'the test made its throw-away user on that panel');
+  ok(!JSON.stringify(fakes.tg.messages).includes(PW) && !JSON.stringify(fakes.tg.messages).includes('reb2.test'), 'no reply repeats the password or address');
+  ok(await credSource(env, p) === 'bot', 'login source is the bot');
+  const log = await env.DB.prepare("SELECT summary AS detail FROM admin_audit WHERE action = 'panel.cred' ORDER BY id DESC").first();
+  ok(log && !String(log.detail).includes(PW), 'audit row without the password');
+
+  // the bot's login wins over an old Workers Secret; with another SECRET_KEY it cannot be read
+  env[`PANEL_${id}_CRED`] = JSON.stringify({ url: 'http://other.test', username: 'x', password: 'y' });
+  ok((await adapterFor(env, p)).bases[0] === R2, 'bot login is used before the Workers Secret');
+  ok(await openSealed('another-key-entirely-0123456789', `panel-cred:${id}`, sealed) === null, 'another SECRET_KEY cannot open it');
+  ok(await openSealed(env.SECRET_KEY, 'panel-cred:999', sealed) === null, 'a sealed login moved to another panel does not open');
+  ok(await openSealed(env.SECRET_KEY, 'x', await seal(env.SECRET_KEY, 'x', 'hi')) === 'hi', 'seal round trip');
+  delete env[`PANEL_${id}_CRED`];
+
+  // direct command, with a mistake first
+  await adminMsg(`/panelcred ${id} notaurl admin2`, 9002);
+  ok(deleted(9002) && lastText().includes('دوباره بفرست') && (await sealedOf(id)) === sealed, 'bad input: deleted, asked again, nothing changed');
+  await adminMsg(`${R2} admin2 ${PW}2`, 9003);
+  ok(deleted(9003) && (await sealedOf(id)) !== sealed && lastText().includes('سالم است'), 'answer to the re-ask is saved and tested');
+  await adminMsg(`/panelcred ${id} ${R2} admin2 ${PW}`, 9004);
+  ok(deleted(9004) && lastText().includes('سالم است'), 'one-line /panelcred works and is deleted');
+  await admin('/panelcred 1 http://x.test a b');
+  ok(lastText().includes('PASARGUARD_'), 'panel 1 keeps its own secrets');
+
+  // a login typed after its question expired is still removed from the chat
+  await adminMsg(`${R2} admin2 ${PW}`, 9005);
+  ok(deleted(9005) && lastText().includes('ذخیره نشد'), 'stray login message is deleted and not saved');
+
+  const { backupJson } = await import('../src/telegram.js');
+  ok(!(await backupJson(env)).includes('panel_cred_'), 'sealed logins are not in the backup');
+  await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(id).run();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

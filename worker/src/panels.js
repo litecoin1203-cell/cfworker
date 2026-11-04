@@ -2,19 +2,36 @@
 // which panels a user is on, and what the app sees, is decided here. Nothing that leaves this file for the app
 // carries a panel's name, address, id or count: configs are renamed and merged into one list.
 import { first, all, run, insert } from './db.js';
-import { nowSec, err } from './util.js';
+import { nowSec, err, seal, openSealed } from './util.js';
 import { PasarGuard, PasarGuardError, decodeSub } from './pasarguard.js';
+import { Marzban, Rebecca, detectKind } from './marzban.js';
 
 // states whose configs users get; draining/disabled panels are already out of the list
 const SERVING = ['active', 'rollout'];
-export const KINDS = ['pasarguard', 'marzban', 'hiddify'];
+// One adapter class per panel type. Adding a type = one class with the PasarGuard methods (see marzban.js) and
+// one line here; detectKind (marzban.js) learns to recognise it. 'auto' = not known yet: /paneltest finds out.
+const ADAPTERS = { pasarguard: PasarGuard, marzban: Marzban, rebecca: Rebecca };
+export const KINDS = ['auto', ...Object.keys(ADAPTERS)];
 
-// Credentials of a panel, from its Workers Secret. PASARGUARD = the original PASARGUARD_* secrets (panel 1);
-// PANEL_<id>_CRED holds JSON {"url", "username", "password"} or {"url", "api_key"}. null = not set or unreadable.
-export function credOf(env, panel) {
+// Credentials of a panel. PASARGUARD = the original PASARGUARD_* secrets (panel 1). Other panels: what the
+// admin gave the bot (/panelcred, sealed in D1 under settings key panel_cred_<id>), else the Workers Secret
+// PANEL_<id>_CRED, JSON {"url", "username", "password"} or {"url", "api_key"}. null = not set or unreadable.
+export const credKey = (id) => `panel_cred_${id}`;
+const credPurpose = (id) => `panel-cred:${id}`;
+const _opened = new Map(); // sealed text -> cred, per isolate (decrypting is cheap, this just skips it)
+
+export async function credOf(env, panel) {
   if (panel.cred_ref === 'PASARGUARD') {
     if (!env.PASARGUARD_URL) return null;
     return { url: env.PASARGUARD_URL, username: env.PASARGUARD_USERNAME, password: env.PASARGUARD_PASSWORD, api_key: env.PASARGUARD_API_KEY };
+  }
+  const sealed = (await first(env, 'SELECT value FROM settings WHERE key = ?', credKey(panel.id)))?.value;
+  if (sealed) {
+    if (_opened.has(sealed)) return _opened.get(sealed);
+    try {
+      const c = JSON.parse((await openSealed(env.SECRET_KEY, credPurpose(panel.id), sealed)) || 'null');
+      if (c && c.url) { _opened.set(sealed, c); return c; }
+    } catch (e) { /* unreadable: fall back to the Workers Secret */ }
   }
   const raw = env[panel.cred_ref];
   if (!raw) return null;
@@ -24,16 +41,73 @@ export function credOf(env, panel) {
   } catch (e) { return null; }
 }
 
+// What the admin typed: "address username password" (space or new line between) or the JSON form.
+// {cred} or {error}. The values are never repeated in a reply.
+export function parseCred(text) {
+  const t = String(text || '').trim();
+  let c = null;
+  if (t.startsWith('{')) {
+    try { c = JSON.parse(t); } catch (e) { return { error: 'json' }; }
+  } else {
+    const [url, username, ...rest] = t.split(/\s+/);
+    c = rest.length ? { url, username, password: rest.join(' ') } : null;
+  }
+  if (!c || !c.url || !(c.api_key || (c.username && c.password))) return { error: 'parts' };
+  let u;
+  try { u = new URL(/^https?:\/\//i.test(c.url) ? c.url : 'https://' + c.url); } catch (e) { return { error: 'url' }; }
+  if (!/^https?:$/.test(u.protocol) || !u.hostname.includes('.')) return { error: 'url' };
+  const out = { url: u.href };
+  if (c.api_key) out.api_key = String(c.api_key);
+  else { out.username = String(c.username); out.password = String(c.password); }
+  return { cred: out };
+}
+
+export async function savePanelCred(env, panel, cred) {
+  const sealed = await seal(env.SECRET_KEY, credPurpose(panel.id), JSON.stringify(cred));
+  await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', credKey(panel.id), sealed);
+}
+
+// where a panel's login comes from, for the bot: 'bot' | 'secret' | 'env' | null
+export async function credSource(env, panel) {
+  if (panel.cred_ref === 'PASARGUARD') return env.PASARGUARD_URL ? 'env' : null;
+  if (await first(env, 'SELECT 1 x FROM settings WHERE key = ?', credKey(panel.id))) return 'bot';
+  return env[panel.cred_ref] ? 'secret' : null;
+}
+
 export function options(panel) {
   try { return JSON.parse(panel.options_json || '{}') || {}; } catch (e) { return {}; }
 }
 
-// The adapter for a panel. Marzban and Hiddify adapters arrive in stage 5; until then such a panel cannot be used.
-export function adapterFor(env, panel) {
-  const cred = credOf(env, panel);
-  if (!cred) throw new PasarGuardError(`secret ${panel.cred_ref} is not set`, 0);
-  if (panel.kind === 'pasarguard') return new PasarGuard(env, cred);
-  throw new PasarGuardError(`no adapter for panel type ${panel.kind} yet`, 0);
+// The adapter for a panel. kind 'auto' (and any unknown kind) gives the shared API client, enough to log in
+// and detect the real type; such a panel cannot take users until /paneltest has set its kind.
+export async function adapterFor(env, panel, { probe = false } = {}) {
+  const cred = await credOf(env, panel);
+  if (!cred) throw new PasarGuardError(`login for this panel is not set: send it with /panelcred ${panel.id} (or Workers Secret ${panel.cred_ref}, JSON with a "url")`, 0);
+  const Cls = ADAPTERS[panel.kind];
+  if (Cls) return new Cls(env, cred);
+  if (probe) return new PasarGuard(env, cred);
+  if (panel.kind === 'auto') throw new PasarGuardError(`panel type not known yet: run /paneltest ${panel.id}`, 0);
+  throw new PasarGuardError(`no adapter for panel type ${panel.kind}`, 0);
+}
+
+// The panel's real type, learnt from the panel itself. A panel that has no users yet is corrected on the spot
+// (e.g. a Rebecca panel added as pasarguard); a panel already serving users keeps its type and only reports.
+// {kind, changed, error}
+export async function detectPanelKind(env, panel) {
+  let found;
+  try { found = await detectKind(await adapterFor(env, panel, { probe: true })); }
+  catch (e) {
+    if (!(e instanceof PasarGuardError)) throw e;
+    const notFamily = e.status === 404 || e.status === 405;
+    return { kind: null, changed: false, error: notFamily ? `${e.message}. This address does not answer like PasarGuard, Marzban or Rebecca (no /api/admin/token); check the url in the secret (Hiddify is not supported yet)` : e.message };
+  }
+  if (!found.kind) return { kind: null, changed: false, error: `logged in, but could not tell the panel type (${found.detail})` };
+  if (found.kind === panel.kind) return { kind: found.kind, changed: false, error: null };
+  if (panel.kind === 'auto' || ['new', 'testing'].includes(panel.state)) {
+    await run(env, 'UPDATE panels SET kind = ? WHERE id = ?', found.kind, panel.id);
+    return { kind: found.kind, changed: true, error: null };
+  }
+  return { kind: found.kind, changed: false, error: null };
 }
 
 export const getPanel = (env, id) => first(env, 'SELECT * FROM panels WHERE id = ?', id);
@@ -128,7 +202,7 @@ export async function collectLinks(env, userId, fwd = {}) {
   let reached = 0, deviceLimit = false, missing = 0;
   for (const a of accounts) {
     let raw;
-    const pg = (() => { try { return adapterFor(env, panelOfAccount(a)); } catch (e) { return null; } })();
+    const pg = await adapterFor(env, panelOfAccount(a)).catch(() => null);
     if (!pg) continue;
     try { raw = await pg.subscriptionRaw(a.sub_path, fwd); }
     catch (e) { continue; } // an unreachable panel only removes its own configs
@@ -137,7 +211,7 @@ export async function collectLinks(env, userId, fwd = {}) {
     // here; its explicit /links format does, with the same device check.
     if (!found.length && ![403, 404, 429].includes(raw.status)) {
       try {
-        const alt = await pg.subscriptionRaw(a.sub_path.replace(/\/+$/, '') + '/links', fwd);
+        const alt = await pg.subscriptionRaw(pg.linksUrl(a.sub_path), fwd);
         if (alt.status === 403 || alt.status === 429 || (alt.status >= 200 && alt.status < 300)) raw = alt;
         found = raw.status >= 200 && raw.status < 300 ? decodeSub(raw.text) : [];
       } catch (e) { /* keep the first answer */ }
@@ -153,7 +227,11 @@ export async function collectLinks(env, userId, fwd = {}) {
 
 // Groups new accounts go into: panel 1 keeps the pg_group_ids setting, other panels use options.group_ids;
 // empty = every group this admin may use.
+// Panels without groups (Marzban) get []. Rebecca calls them services and takes exactly one.
 export async function groupIdsFor(env, panel, pg) {
+  if (!pg.usesGroups) return [];
+  const word = pg.kind === 'rebecca' ? 'services' : 'groups';
+  const howTo = panel.id === 1 ? '/set pg_group_ids 1' : `/panelgroups ${panel.id} 1`;
   let ids = [];
   if (panel.id === 1) {
     const raw = String((await first(env, "SELECT value FROM settings WHERE key = 'pg_group_ids'"))?.value || '').trim();
@@ -165,10 +243,10 @@ export async function groupIdsFor(env, panel, pg) {
   if (ids.length) return ids;
   try { ids = await pg.listGroupIds(); }
   catch (e) {
-    throw new PasarGuardError(`could not read panel groups (${e.message}). Set them by hand: /set pg_group_ids 1`, e.status || 0, e.detail);
+    throw new PasarGuardError(`could not read panel ${word} (${e.message}). Set them by hand: ${howTo}`, e.status || 0, e.detail);
   }
-  if (!ids.length) throw new PasarGuardError('panel has no enabled groups for this admin. Create one, then /set pg_group_ids <id>', 0);
-  return ids;
+  if (!ids.length) throw new PasarGuardError(`panel has no usable ${word} for this admin. Create one (with hosts), then ${howTo}`, 0);
+  return pg.kind === 'rebecca' ? ids.slice(0, 1) : ids;
 }
 
 // ---------------- registry changes (admin bot) ----------------
@@ -182,11 +260,20 @@ export async function addPanel(env, kind, label) {
 // Health test before a panel takes users: log in, create and delete a throw-away user, read its configs.
 // Reports facts only (never the address or the user name). sameHost = the node hosts in the configs are the
 // panel's own host, which the app then cannot avoid seeing inside the configs.
+// The panel's type is detected first; kind = what was found, kindChanged = the stored type was corrected.
 export async function testPanel(env, panel) {
-  const out = { login: false, create: false, configs: 0, version: null, sameHost: null, error: null };
+  const out = { login: false, create: false, configs: 0, version: null, sameHost: null, error: null, kind: null, kindChanged: false };
   let pg;
   try {
-    pg = adapterFor(env, panel);
+    const det = await detectPanelKind(env, panel);
+    out.kind = det.kind;
+    if (det.error) throw new PasarGuardError(det.error, 0);
+    if (det.kind !== panel.kind) {
+      if (!det.changed) throw new PasarGuardError(`this panel answers like ${det.kind}, but it is registered as ${panel.kind} and already serves users`, 0);
+      out.kindChanged = true;
+      panel = { ...panel, kind: det.kind };
+    }
+    pg = await adapterFor(env, panel);
     if (!pg.apiKey) await pg._login();
     out.login = true;
     out.version = await pg.version();

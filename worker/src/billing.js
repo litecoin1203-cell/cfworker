@@ -47,7 +47,7 @@ export async function provision(env, user, plan, opts = {}) {
   let firstError = null;
   for (const panel of targets) {
     try {
-      const pg = adapterFor(env, panel);
+      const pg = await adapterFor(env, panel);
       // panel 1 keeps its own device limit (HWID); newer panels leave devices to the control plane
       const hwid = panel.id === 1 ? plan.device_limit || null : null;
       let pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
