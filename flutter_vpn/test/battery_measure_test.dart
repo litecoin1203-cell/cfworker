@@ -77,7 +77,7 @@ void _report(String net, String key, Object value) =>
     print('MEASURE $net $key=$value');
 
 /// A test that then lets the network reports it queued go out: since
-/// 1.2.15 the app measures when it comes back on screen, and the Worker
+/// 1.2.16 the app measures when it comes back on screen, and the Worker
 /// takes one report per 9 s.
 void _t(String name, Future<void> Function(WidgetTester) body) =>
     testWidgets(name, (tester) async {
