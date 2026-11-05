@@ -9,14 +9,6 @@ import 'state/app_state.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  SystemChrome.setSystemUIOverlayStyle(
-    const SystemUiOverlayStyle(
-      statusBarColor: Colors.transparent,
-      statusBarIconBrightness: Brightness.dark,
-      systemNavigationBarColor: Colors.white,
-      systemNavigationBarIconBrightness: Brightness.dark,
-    ),
-  );
   final prefs = await SharedPreferences.getInstance();
   final tokens = TokenStore();
   await tokens.load();
@@ -29,12 +21,73 @@ Future<void> main() async {
   runApp(PleatApp(state: state));
 }
 
-class PleatApp extends StatelessWidget {
+class PleatApp extends StatefulWidget {
   const PleatApp({super.key, required this.state});
   final AppState state;
 
   @override
+  State<PleatApp> createState() => _PleatAppState();
+}
+
+/// Holds the Day / Night palette. Every widget reads its colours from
+/// [PColors] while it builds, so a switch swaps the palette and asks the
+/// whole tree to build again, in place: the screen you are on stays open.
+class _PleatAppState extends State<PleatApp> with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    widget.state.addListener(_sync);
+    _apply(_wanted(), rebuild: false);
+  }
+
+  @override
+  void dispose() {
+    widget.state.removeListener(_sync);
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangePlatformBrightness() => _sync();
+
+  PPalette _wanted() => PThemes.resolve(
+    widget.state.theme,
+    WidgetsBinding.instance.platformDispatcher.platformBrightness,
+  );
+
+  void _sync() {
+    final next = _wanted();
+    if (!identical(next, PColors.current)) _apply(next);
+  }
+
+  void _apply(PPalette p, {bool rebuild = true}) {
+    PColors.current = p;
+    final dark = p.isDark;
+    SystemChrome.setSystemUIOverlayStyle(
+      SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+        statusBarBrightness: dark ? Brightness.dark : Brightness.light,
+        systemNavigationBarColor: p.surface,
+        systemNavigationBarIconBrightness: dark
+            ? Brightness.light
+            : Brightness.dark,
+      ),
+    );
+    if (!rebuild || !mounted) return;
+    setState(() {});
+    void mark(Element e) {
+      e.markNeedsBuild();
+      e.visitChildren(mark);
+    }
+
+    (context as Element).visitChildren(mark);
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final state = widget.state;
     return AppScope(
       state: state,
       child: MaterialApp(
@@ -63,7 +116,9 @@ class PleatApp extends StatelessWidget {
 ThemeData pleatTheme() {
   final base = ThemeData(
     useMaterial3: true,
+    brightness: PColors.current.brightness,
     colorScheme: ColorScheme.fromSeed(
+      brightness: PColors.current.brightness,
       seedColor: PColors.blue,
       primary: PColors.blue,
       surface: PColors.surface,

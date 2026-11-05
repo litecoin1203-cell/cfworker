@@ -73,7 +73,7 @@ class LocationDetail extends StatelessWidget {
                   onTap: () => Navigator.of(context).pop(),
                   label: 'Back',
                   color: PColors.ink,
-                  background: Colors.white,
+                  background: PColors.surface,
                 ),
                 const Spacer(),
                 RoundIcon(
@@ -84,7 +84,7 @@ class LocationDetail extends StatelessWidget {
                       : 'Save ${exit.title} ${exit.label}',
                   filled: saved,
                   color: saved ? PColors.blue : PColors.ink,
-                  background: Colors.white,
+                  background: PColors.surface,
                 ),
               ],
             ),
@@ -145,8 +145,8 @@ class LocationDetail extends StatelessWidget {
             bottom: 0,
             top: photoH + 8,
             child: Container(
-              decoration: const BoxDecoration(
-                color: Colors.white,
+              decoration: BoxDecoration(
+                color: PColors.surface,
                 borderRadius: BorderRadius.vertical(
                   top: Radius.circular(PRadius.sheet),
                 ),

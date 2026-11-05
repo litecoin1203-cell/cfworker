@@ -201,7 +201,7 @@ class _Header extends StatelessWidget {
                       ),
                     ),
                   ] else ...[
-                    const PIconView(PIcon.pin, size: 14, color: PColors.muted),
+                    PIconView(PIcon.pin, size: 14, color: PColors.muted),
                     const SizedBox(width: 4),
                     Text(
                       app.servers.loading ? 'Loading exits…' : 'No exit yet',
@@ -263,14 +263,16 @@ class _Tabs extends StatelessWidget {
                               PIconView(
                                 icon,
                                 size: 20,
-                                color: t == value ? PColors.blue : PColors.ink,
+                                color: t == value
+                                    ? PColors.accentInk
+                                    : PColors.ink,
                               ),
                               const SizedBox(width: 8),
                               AnimatedDefaultTextStyle(
                                 duration: d,
                                 style: PType.small(
                                   color: t == value
-                                      ? PColors.blue
+                                      ? PColors.accentInk
                                       : PColors.ink,
                                 ).copyWith(fontWeight: FontWeight.w700),
                                 child: Text(label),
@@ -514,7 +516,7 @@ class _StageLine extends StatelessWidget {
         margin: const EdgeInsets.only(top: 2, bottom: 18),
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: PColors.surface,
           borderRadius: BorderRadius.circular(PRadius.pill),
           boxShadow: PShadow.soft(),
         ),

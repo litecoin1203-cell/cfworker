@@ -51,14 +51,15 @@ class PIconView extends StatelessWidget {
     this.icon, {
     super.key,
     this.size = 24,
-    this.color = PColors.ink,
+    Color? color,
     this.filled = false,
     this.semanticLabel,
-  });
+  }) : _color = color;
 
   final PIcon icon;
   final double size;
-  final Color color;
+  final Color? _color;
+  Color get color => _color ?? PColors.ink;
   final bool filled;
   final String? semanticLabel;
 

@@ -196,7 +196,7 @@ class MethodTile extends StatelessWidget {
                 },
           label: title,
           radius: 26,
-          color: Colors.white,
+          color: PColors.surface,
           child: AnimatedContainer(
             duration: d,
             padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
@@ -220,7 +220,7 @@ class MethodTile extends StatelessWidget {
                   child: PIconView(
                     icon,
                     size: 20,
-                    color: on ? Colors.white : PColors.blue,
+                    color: on ? PColors.onAccent : PColors.accentInk,
                   ),
                 ),
                 const SizedBox(width: 14),
@@ -238,7 +238,7 @@ class MethodTile extends StatelessWidget {
                   duration: d,
                   scale: on ? 1 : 0,
                   curve: Curves.easeOutBack,
-                  child: const PIconView(PIcon.check, color: PColors.blue),
+                  child: PIconView(PIcon.check, color: PColors.accentInk),
                 ),
               ],
             ),
@@ -333,7 +333,7 @@ class PaySteps extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: i < at
                       ? PColors.blue
-                      : (i == at ? Colors.white : PColors.mist),
+                      : (i == at ? PColors.surface : PColors.mist),
                   shape: BoxShape.circle,
                   border: i == at
                       ? Border.all(color: PColors.blue, width: 2)
@@ -341,15 +341,11 @@ class PaySteps extends StatelessWidget {
                 ),
                 alignment: Alignment.center,
                 child: i < at
-                    ? const PIconView(
-                        PIcon.check,
-                        size: 14,
-                        color: Colors.white,
-                      )
+                    ? PIconView(PIcon.check, size: 14, color: PColors.onAccent)
                     : Text(
                         '${i + 1}',
                         style: PType.meta(
-                          color: i == at ? PColors.blue : PColors.muted,
+                          color: i == at ? PColors.accentInk : PColors.muted,
                         ),
                       ),
               ),

@@ -92,14 +92,16 @@ class _WalletScreenState extends State<WalletScreen> {
                       }),
                       label: toman(v),
                       radius: 22,
-                      color: _preset == v ? PColors.blue : Colors.white,
+                      color: _preset == v ? PColors.blue : PColors.surface,
                       child: SizedBox(
                         height: 52,
                         child: Center(
                           child: Text(
                             grouped(v),
                             style: PType.h3(
-                              color: _preset == v ? Colors.white : PColors.ink,
+                              color: _preset == v
+                                  ? PColors.onAccent
+                                  : PColors.ink,
                             ).copyWith(fontSize: 15),
                           ),
                         ),
@@ -263,7 +265,9 @@ class _OrdersScreenState extends State<OrdersScreen> {
                     child: PIconView(
                       o.status == 'paid' ? PIcon.check : PIcon.ticket,
                       size: 20,
-                      color: o.status == 'paid' ? Colors.white : PColors.blue,
+                      color: o.status == 'paid'
+                          ? PColors.onAccent
+                          : PColors.accentInk,
                     ),
                   ),
                   const SizedBox(width: 14),
@@ -366,7 +370,7 @@ class _InviteScreenState extends State<InviteScreen> {
         PillButton(
           label: 'Copy code',
           icon: PIcon.copy,
-          color: Colors.white,
+          color: PColors.surface,
           textColor: PColors.ink,
           onTap: code.isEmpty
               ? null

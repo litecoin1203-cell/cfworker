@@ -124,8 +124,8 @@ Future<void> showNotices(BuildContext context) {
     barrierColor: PColors.navy.withValues(alpha: 0.28),
     isScrollControlled: true,
     builder: (context) => Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
+      decoration: BoxDecoration(
+        color: PColors.surface,
         borderRadius: BorderRadius.vertical(
           top: Radius.circular(PRadius.sheet),
         ),
@@ -181,7 +181,7 @@ Future<void> showNotices(BuildContext context) {
                     Container(
                       width: 44,
                       height: 44,
-                      decoration: const BoxDecoration(
+                      decoration: BoxDecoration(
                         color: PColors.mist,
                         shape: BoxShape.circle,
                       ),
@@ -189,7 +189,9 @@ Future<void> showNotices(BuildContext context) {
                       child: PIconView(
                         notices[i].alert ? PIcon.bolt : PIcon.info,
                         size: 20,
-                        color: notices[i].alert ? PColors.navy : PColors.blue,
+                        color: notices[i].alert
+                            ? PColors.navy
+                            : PColors.accentInk,
                       ),
                     ),
                     const SizedBox(width: 14),

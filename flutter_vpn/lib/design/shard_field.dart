@@ -43,17 +43,18 @@ class ShardSpec {
 class ShardScene {
   const ShardScene({
     required this.layout,
-    this.mix = PColors.planes,
+    List<Color>? mix,
     this.focus = const Offset(0.5, 0.42),
     this.lean = 0,
     this.pull = 0,
     this.rest = 0,
     this.armed = 1,
     this.alert = 0,
-  });
+  }) : _mix = mix;
 
   final List<ShardSpec> layout;
-  final List<Color> mix;
+  final List<Color>? _mix;
+  List<Color> get mix => _mix ?? PColors.planes;
 
   /// Where handshake pulls the shards to (the connect control).
   final Offset focus;

@@ -272,7 +272,7 @@ class _OrbitScene extends StatelessWidget {
                 width: d + 22,
                 height: d + 22,
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: PColors.surface,
                   shape: BoxShape.circle,
                   boxShadow: PShadow.soft(),
                 ),

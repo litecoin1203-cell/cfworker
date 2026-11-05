@@ -159,7 +159,7 @@ class _PillLabel extends StatelessWidget {
         opacity: o,
         child: Text(
           text.toUpperCase(),
-          style: PType.button(color: dropped ? PColors.alert : Colors.white)
+          style: PType.button(color: dropped ? PColors.alert : PColors.onAccent)
               .copyWith(fontSize: 14),
         ),
       ),
@@ -168,6 +168,9 @@ class _PillLabel extends StatelessWidget {
 }
 
 class _ControlPainter extends CustomPainter {
+  /// Repaints when Day and Night switch.
+  final PPalette palette = PColors.current;
+
   _ControlPainter({
     required this.m,
     required this.spin,
@@ -193,7 +196,7 @@ class _ControlPainter extends CustomPainter {
     final rr = RRect.fromRectAndRadius(rect, Radius.circular(h / 2));
 
     final fill = dropped
-        ? Colors.white
+        ? PColors.surface
         : Color.lerp(
             Color.lerp(PColors.blue, PColors.navy, b),
             PColors.navy,
@@ -298,6 +301,7 @@ class _ControlPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_ControlPainter old) =>
+      old.palette != palette ||
       old.m != m ||
       old.spin != spin ||
       old.check != check ||

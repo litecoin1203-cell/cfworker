@@ -341,12 +341,13 @@ class _Chip extends StatelessWidget {
     required this.label,
     required this.on,
     required this.onTap,
-    this.color = PColors.blue,
-  });
+    Color? color,
+  }) : _color = color;
   final String label;
   final bool on;
   final VoidCallback onTap;
-  final Color color;
+  final Color? _color;
+  Color get color => _color ?? PColors.blue;
 
   @override
   Widget build(BuildContext context) {
@@ -354,12 +355,12 @@ class _Chip extends StatelessWidget {
       onTap: onTap,
       label: label,
       radius: PRadius.pill,
-      color: on ? color : Colors.white,
+      color: on ? color : PColors.surface,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
         child: Text(
           label,
-          style: PType.small(color: on ? Colors.white : PColors.ink)
+          style: PType.small(color: on ? PColors.onAccent : PColors.ink)
               .copyWith(fontWeight: FontWeight.w700),
         ),
       ),

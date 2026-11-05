@@ -254,7 +254,7 @@ class _CardPayScreenState extends State<CardPayScreen>
                     if (odd)
                       TextSpan(
                         text: amount.substring(amount.length - 3),
-                        style: const TextStyle(color: PColors.blue),
+                        style: TextStyle(color: PColors.accentInk),
                       ),
                     TextSpan(
                       text: '  toman',
@@ -302,14 +302,14 @@ class _CardPayScreenState extends State<CardPayScreen>
           label: _sending
               ? 'Sending…'
               : (c.auto ? 'Send receipt (optional)' : 'Send receipt photo'),
-          color: c.auto ? Colors.white : PColors.blue,
-          textColor: c.auto ? PColors.ink : Colors.white,
+          color: c.auto ? PColors.surface : PColors.blue,
+          textColor: c.auto ? PColors.ink : PColors.onAccent,
           onTap: _sending ? null : _send,
         ),
         const SizedBox(height: 10),
         PillButton(
           label: 'Cancel order',
-          color: Colors.white,
+          color: PColors.surface,
           textColor: PColors.ink,
           onTap: _cancel,
         ),
@@ -339,8 +339,8 @@ Future<bool> confirmSheet(
     backgroundColor: Colors.transparent,
     barrierColor: PColors.navy.withValues(alpha: 0.28),
     builder: (context) => Container(
-      decoration: const BoxDecoration(
-        color: Colors.white,
+      decoration: BoxDecoration(
+        color: PColors.surface,
         borderRadius: BorderRadius.vertical(
           top: Radius.circular(PRadius.sheet),
         ),

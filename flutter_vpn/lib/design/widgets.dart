@@ -91,15 +91,16 @@ class SurfaceCard extends StatelessWidget {
     this.onTap,
     this.label,
     this.padding = const EdgeInsets.all(20),
-    this.color = PColors.surface,
+    Color? color,
     this.radius = PRadius.card,
-  });
+  }) : _color = color;
 
   final Widget child;
   final VoidCallback? onTap;
   final String? label;
   final EdgeInsetsGeometry padding;
-  final Color color;
+  final Color? _color;
+  Color get color => _color ?? PColors.surface;
   final double radius;
 
   @override
@@ -136,17 +137,20 @@ class PillButton extends StatelessWidget {
     required this.label,
     required this.onTap,
     this.icon,
-    this.color = PColors.blue,
-    this.textColor = Colors.white,
+    Color? color,
+    Color? textColor,
     this.height = 54,
     this.expand = true,
-  });
+  }) : _textColor = textColor,
+       _color = color;
 
   final String label;
   final VoidCallback? onTap;
   final PIcon? icon;
-  final Color color;
-  final Color textColor;
+  final Color? _color;
+  Color get color => _color ?? PColors.blue;
+  final Color? _textColor;
+  Color get textColor => _textColor ?? PColors.onAccent;
   final double height;
   final bool expand;
 
@@ -210,7 +214,7 @@ class PillSearch extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 18),
       child: Row(
         children: [
-          const PIconView(PIcon.search, size: 20, color: PColors.muted),
+          PIconView(PIcon.search, size: 20, color: PColors.muted),
           const SizedBox(width: 12),
           Expanded(
             child: TextField(
@@ -251,7 +255,7 @@ class FrostedSlab extends StatelessWidget {
         filter: ImageFilter.blur(sigmaX: 18, sigmaY: 18),
         child: Container(
           padding: padding,
-          color: Colors.white.withValues(alpha: 0.72),
+          color: PColors.surface.withValues(alpha: 0.72),
           child: child,
         ),
       ),
@@ -379,7 +383,7 @@ class _PToggleState extends State<PToggle> with SingleTickerProviderStateMixin {
                               width: thumb,
                               height: 24,
                               decoration: BoxDecoration(
-                                color: Colors.white,
+                                color: PColors.surface,
                                 borderRadius: BorderRadius.circular(12),
                                 boxShadow: [
                                   BoxShadow(
@@ -395,7 +399,7 @@ class _PToggleState extends State<PToggle> with SingleTickerProviderStateMixin {
                                 child: PIconView(
                                   PIcon.check,
                                   size: 14,
-                                  color: PColors.blue,
+                                  color: PColors.accentInk,
                                 ),
                               ),
                             ),
@@ -421,16 +425,17 @@ class RoundIcon extends StatelessWidget {
     super.key,
     required this.onTap,
     required this.label,
-    this.color = PColors.ink,
+    Color? color,
     this.background,
     this.filled = false,
     this.badge = false,
-  });
+  }) : _color = color;
 
   final PIcon icon;
   final VoidCallback onTap;
   final String label;
-  final Color color;
+  final Color? _color;
+  Color get color => _color ?? PColors.ink;
   final Color? background;
   final bool filled;
   final bool badge;
@@ -458,7 +463,7 @@ class RoundIcon extends StatelessWidget {
                   decoration: BoxDecoration(
                     color: PColors.blue,
                     shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 1.5),
+                    border: Border.all(color: PColors.surface, width: 1.5),
                   ),
                 ),
               ),
@@ -589,7 +594,9 @@ class UnavailableNote extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ink = onDark ? PColors.ice : PColors.muted;
+    final ink = onDark
+        ? PColors.onDeep.withValues(alpha: 0.8)
+        : PColors.muted;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [

@@ -73,9 +73,7 @@ class _LoginScreenState extends State<LoginScreen> {
               height: 300 + top,
               child: Stack(
                 children: [
-                  const Positioned.fill(
-                    child: CustomPaint(painter: _CutHeader()),
-                  ),
+                  Positioned.fill(child: CustomPaint(painter: _CutHeader())),
                   Positioned(
                     left: 28,
                     top: top + 130,
@@ -88,7 +86,7 @@ class _LoginScreenState extends State<LoginScreen> {
                   Positioned(
                     right: 34,
                     top: top + 64,
-                    child: const PleatMark(size: 56, colors: MarkColors.onDark),
+                    child: PleatMark(size: 56, colors: MarkColors.onDark),
                   ),
                 ],
               ),
@@ -350,12 +348,9 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen> {
       Container(
         width: 48,
         height: 48,
-        decoration: const BoxDecoration(
-          color: PColors.mist,
-          shape: BoxShape.circle,
-        ),
+        decoration: BoxDecoration(color: PColors.mist, shape: BoxShape.circle),
         alignment: Alignment.center,
-        child: PIconView(icon, color: PColors.blue),
+        child: PIconView(icon, color: PColors.accentInk),
       ),
       const SizedBox(width: 14),
       Expanded(child: Text(title, style: PType.h2())),
@@ -424,7 +419,7 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
       child: Text(
         text,
-        style: PType.small(color: PColors.blue)
+        style: PType.small(color: PColors.accentInk)
             .copyWith(fontWeight: FontWeight.w700),
       ),
     ),
@@ -507,7 +502,10 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen> {
 /// The reference's login header, rebuilt: a navy plane cut on the
 /// diagonal, a blue plane crossing it, an ice sliver where they fold.
 class _CutHeader extends CustomPainter {
-  const _CutHeader();
+  /// Repaints when Day and Night switch.
+  final PPalette palette = PColors.current;
+
+  _CutHeader();
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -542,5 +540,5 @@ class _CutHeader extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_CutHeader old) => false;
+  bool shouldRepaint(_CutHeader old) => old.palette != palette || false;
 }

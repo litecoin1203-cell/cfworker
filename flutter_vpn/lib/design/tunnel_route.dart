@@ -55,11 +55,14 @@ class TunnelRoute<T> extends PageRouteBuilder<T> {
 }
 
 class _TunnelPainter extends CustomPainter {
+  /// Repaints when Day and Night switch.
+  final PPalette palette = PColors.current;
+
   _TunnelPainter(this.t, this.origin);
   final double t;
   final Offset origin;
 
-  static const _colors = [
+  static List<Color> get _colors => [
     PColors.mist,
     PColors.ice,
     PColors.blue,
@@ -93,7 +96,8 @@ class _TunnelPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_TunnelPainter old) => old.t != t;
+  bool shouldRepaint(_TunnelPainter old) =>
+      old.palette != palette || old.t != t;
 }
 
 /// Plain route without Material's default transition: a short fade.

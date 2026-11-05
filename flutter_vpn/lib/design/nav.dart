@@ -82,7 +82,7 @@ class _PleatNavState extends State<PleatNav>
                 top: lift,
                 child: DecoratedBox(
                   decoration: BoxDecoration(
-                    color: Colors.white,
+                    color: PColors.surface,
                     borderRadius: const BorderRadius.vertical(
                       top: Radius.circular(PRadius.card),
                     ),
@@ -107,8 +107,8 @@ class _PleatNavState extends State<PleatNav>
                     child: Container(
                       width: circle + 14,
                       height: circle + 14,
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
+                      decoration: BoxDecoration(
+                        color: PColors.surface,
                         shape: BoxShape.circle,
                       ),
                       alignment: Alignment.center,
@@ -126,7 +126,7 @@ class _PleatNavState extends State<PleatNav>
                           child: PIconView(
                             widget.items[widget.index].icon,
                             key: ValueKey(widget.index),
-                            color: Colors.white,
+                            color: PColors.onAccent,
                           ),
                         ),
                       ),
@@ -175,10 +175,11 @@ class _PleatNavState extends State<PleatNav>
             const SizedBox(height: 5),
             AnimatedDefaultTextStyle(
               duration: PMotion.quick,
-              style: PType.meta(color: active ? PColors.blue : PColors.muted)
-                  .copyWith(
-                    fontWeight: active ? FontWeight.w700 : FontWeight.w600,
-                  ),
+              style:
+                  PType.meta(color: active ? PColors.accentInk : PColors.muted)
+                      .copyWith(
+                        fontWeight: active ? FontWeight.w700 : FontWeight.w600,
+                      ),
               child: Text(item.label, maxLines: 1),
             ),
           ],
