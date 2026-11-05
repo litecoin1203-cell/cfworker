@@ -445,10 +445,9 @@ section('telegram button menu');
   n = fakes.tg.calls.length;
   await say('ali@example.com');
   const card = since(n).find((c) => c.method === 'sendMessage' && c.body.text.includes('👤 ali@example.com'));
-  ok(card && kbData(card).some((d) => d.startsWith('m:ug:')) && kbData(card).some((d) => d.startsWith('m:w:reset:')), 'search answer shows the user card with grant / password buttons');
-  n = fakes.tg.calls.length;
-  await say('ali@example.com');
-  ok(!sent(n).some((m) => m.text.includes('👤')), 'an answer is used once; the next text is not a search');
+  ok(card && kbData(card).some((d) => d.startsWith('m:ug:')) && kbData(card).some((d) => d.startsWith('m:usec:')), 'search answer shows the user card with grant / security buttons');
+  const openSession = async () => !!(await env.DB.prepare('SELECT 1 x FROM bot_session').first());
+  ok(!(await openSession()), 'an answer is used once; the question is gone after it');
 
   // text /find gets the same buttons
   n = fakes.tg.calls.length;
@@ -466,16 +465,14 @@ section('telegram button menu');
   // cancel drops the question
   await tap('m:w:find');
   await tap('m:cancel:usr');
-  n = fakes.tg.calls.length;
-  await say('ali@example.com');
-  ok(!sent(n).some((m) => m.text.includes('👤')), 'cancel clears the question');
+  ok(!(await openSession()), 'cancel clears the question');
 
   // an old question expires
   await tap('m:w:find');
   await env.DB.prepare('UPDATE bot_session SET expires_at = 1').run();
   n = fakes.tg.calls.length;
-  await say('ali@example.com');
-  ok(!sent(n).some((m) => m.text.includes('👤')), 'an expired question is ignored');
+  await say('nobody-here@example.com');
+  ok(!sent(n).some((m) => m.text.includes('👤')) && !(await openSession()), 'an expired question is ignored (the text is only a lookup)');
 
   // plans: edit a field and switch a plan off/on
   const p = await env.DB.prepare('SELECT * FROM plans ORDER BY id LIMIT 1').first();
@@ -2263,6 +2260,8 @@ section('panel info rows dressed as configs are not servers');
   ok(out.length === 1 && decodeURIComponent(out[0].split('#')[1]).includes('AM 1'), 'only the real exit is listed: ' + out.map((l) => l.split('#')[1]).join(','));
 }
 
+const STAGE2_ACTIONS = ['user.add_days', 'user.add_gb', 'user.reset_usage', 'user.pause', 'user.end', 'user.plan_name', 'user.wallet', 'user.device_remove',
+  'user.logout_all', 'user.block', 'user.unlink_tg', 'user.avatar_reset', 'user.email', 'user.delete', 'user.create'];
 section('admin panel stage 1: routes, screens, undo, forms, audit, query budget');
 {
   const menu = await import('../src/telegram-menu.js');
@@ -2306,12 +2305,12 @@ section('admin panel stage 1: routes, screens, undo, forms, audit, query budget'
   // pagination: 8 per page with a next button, and the next page continues
   for (let i = 0; i < 10; i++) await signup(`page${i}@example.com`);
   const p1 = await menu.renderScreen(env, 'usr');
-  const nextBtn = flat(p1.kb).find((x) => x.startsWith('m:usr:b'));
+  const nextBtn = flat(p1.kb).find((x) => x.startsWith('m:usr:all:b'));
   const ids1 = flat(p1.kb).filter((x) => /^m:u:\d+$/.test(x));
   ok(ids1.length === 8 && !!nextBtn, 'users list pages 8 at a time with a next button');
   const p2 = await menu.renderScreen(env, nextBtn.slice(2));
   const ids2 = flat(p2.kb).filter((x) => /^m:u:\d+$/.test(x));
-  ok(ids2.length > 0 && !ids2.some((x) => ids1.includes(x)) && flat(p2.kb).some((x) => x.startsWith('m:usr:a')), 'the next page has new rows and a previous button');
+  ok(ids2.length > 0 && !ids2.some((x) => ids1.includes(x)) && flat(p2.kb).some((x) => x.startsWith('m:usr:all:a')), 'the next page has new rows and a previous button');
 
   // a non-admin reaches nothing, on any route
   const auditBefore = (await env.DB.prepare('SELECT COUNT(*) c FROM admin_audit').first()).c;
@@ -2399,8 +2398,8 @@ section('admin panel stage 1: routes, screens, undo, forms, audit, query budget'
   }
   await acts.runAction(env, '12345', 'coupon.delete', { code: 'UNDOME' });
   const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
-  const missing = Object.keys(acts.ACTIONS).filter((a) => !logged.has(a));
-  ok(!missing.length, 'every admin action has written an audit row: missing ' + missing.join(','));
+  const missing = Object.keys(acts.ACTIONS).filter((a) => !logged.has(a) && !STAGE2_ACTIONS.includes(a));
+  ok(!missing.length, 'every stage 1 admin action has written an audit row: missing ' + missing.join(','));
   ok(Object.values(acts.ACTIONS).every((a) => ['money', 'destructive', 'reversible'].includes(a.risk)), 'every action has a risk level');
   ok(Object.values(menu.ROUTES).every((r) => r.kind === 'screen' || r.risk), 'every action route has a risk level');
   const secretLeak = (await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE summary LIKE '%menu-pass-123%' OR summary LIKE '%brandnewpass%' OR undo_json LIKE '%password%'").first()).c;
@@ -2423,7 +2422,7 @@ section('admin panel stage 1: routes, screens, undo, forms, audit, query budget'
   const over = [];
   let maxQ = 0;
   const lastUser = await realPrepare("SELECT MAX(id) m FROM users WHERE email LIKE 'bulk%'").first();
-  const budgetScreens = [...seen].filter((d) => !/^(u|un):/.test(d) && d !== 'un').concat([`usr:b${lastUser.m}`]);
+  const budgetScreens = [...seen].filter((d) => !/^un:|^u:\d+:live$/.test(d) && d !== 'un').concat([`usr:b${lastUser.m}`, `usr:act:b${lastUser.m}`, `usr:none`]);
   for (const d of budgetScreens) {
     q = 0;
     await menu.renderScreen(env, d);
@@ -2434,6 +2433,294 @@ section('admin panel stage 1: routes, screens, undo, forms, audit, query budget'
   console.log('    most D1 statements on one screen: ' + maxQ);
   ok(maxQ > 0 && !over.length, `≤6 D1 statements on each of ${budgetScreens.length} screens with 1000 users: ` + over.join(' '));
   await env.DB.prepare("DELETE FROM users WHERE email LIKE 'bulk%@example.com'").run();
+}
+
+section('admin panel stage 2: users (card, subscription, wallet, devices, security, delete)');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const A = { chat: { id: 12345 } };
+  let mid = 3000;
+  const tap = (data, text = 'menu') => tgWebhook({ callback_query: { id: 's2-' + (mid++), data, message: { ...A, message_id: 950, text } } });
+  const say = (text, extra = {}) => tgWebhook({ message: { ...A, text, message_id: mid++, ...extra } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const kbOf = (c) => flat(c && c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard);
+  const acks = (n) => since(n).filter((c) => c.method === 'answerCallbackQuery').map((c) => c.body.text || '');
+  const undoOf = (n) => { const e = since(n).filter((c) => c.method === 'editMessageText').pop(); return kbOf(e).find((d) => d.startsWith('m:undo:')); };
+  const confirmTok = (n) => { const c = since(n).filter((x) => x.method === 'sendMessage' && /مطمئنی/.test(x.body.text)).pop(); const d = kbOf(c).find((x) => x.startsWith('cf:')); return c && d ? { text: c.body.text, yes: d } : null; };
+  const sub = (id) => env.DB.prepare('SELECT * FROM subscriptions WHERE user_id = ?').bind(id).first();
+  const urow = (id) => env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
+  const near = (a, b, tol = 64 * 1024 * 1024) => Math.abs(a - b) <= tol;
+
+  const active = (await env.DB.prepare("SELECT id FROM panels WHERE state IN ('active','rollout') ORDER BY id").all()).results.map((r) => r.id);
+  ok(active.includes(1) && active.includes(2), 'panels 1 and 2 take users: ' + active.join());
+  const tok = await signup('s2@example.com', { device: 's2-phone' });
+  await admin(`/grant s2@example.com ${tenGb.id}`);
+  const id = await userId('s2@example.com');
+  const a = panelUser(fakes.pg, 's2@example.com'), b2 = panelUser(pg2, 's2@example.com');
+  ok(a && b2 && a.data_limit === 10 * GB && b2.data_limit === 10 * GB, 'the user has an account on both panels');
+
+  // the card: facts only, no links, no panel ids
+  const card = await menu.renderScreen(env, `u:${id}`);
+  ok(card.text.includes('s2@example.com') && card.text.includes(tenGb.name) && card.text.includes('کیف پول') && card.text.includes('دستگاه') && card.text.startsWith('🏠 منو'), 'card: email, plan, wallet, devices, breadcrumbs');
+  ok(!/:\/\/|tok_|[0-9a-f]{8}-[0-9a-f]{4}-/.test(card.text) && !card.text.includes(a.username), 'card shows no link, token, UUID or panel username');
+  const subScr = await menu.renderScreen(env, `us:${id}`);
+  ok(['m:ud:', 'm:ugb:', 'm:urs:', 'm:upz:', 'm:upl:', 'm:uend:', 'm:f:adddays:', 'm:f:addgb:'].every((p) => flat(subScr.kb).some((d) => d.startsWith(p))), 'subscription screen has days / GB / reset / pause / plan / end');
+
+  // + days reaches both panels (same evaluate / pushPending path), undo puts it back once
+  const exp0 = (await sub(id)).expires_at;
+  let n = fakes.tg.calls.length;
+  await tap(`m:ud:${id}:7`);
+  const exp1 = (await sub(id)).expires_at;
+  ok(exp1 === exp0 + 7 * 86400, '+7 days on the subscription');
+  ok(near(a.expire, exp1, 5) && near(b2.expire, exp1, 5), '+7 days reaches both panels: ' + [a.expire - exp0, b2.expire - exp0]);
+  const undo1 = undoOf(n);
+  ok(!!undo1, 'the card comes back with an undo button');
+  await tap(undo1);
+  ok((await sub(id)).expires_at === exp0 && near(a.expire, exp0, 5) && near(b2.expire, exp0, 5), 'undo puts the old expiry back on both panels');
+  n = fakes.tg.calls.length;
+  await tap(undo1);
+  ok(acks(n).some((t) => t.includes('دیگر برگشت‌پذیر نیست')) && (await sub(id)).expires_at === exp0, 'undo works once only');
+
+  // + GB reaches both panels
+  n = fakes.tg.calls.length;
+  await tap(`m:ugb:${id}:5`);
+  ok((await sub(id)).data_limit_bytes === 15 * GB && a.data_limit === 15 * GB && b2.data_limit === 15 * GB, '+5 GB on the subscription and both panels: ' + [a.data_limit / GB, b2.data_limit / GB]);
+  await tap(undoOf(n));
+  ok((await sub(id)).data_limit_bytes === 10 * GB && a.data_limit === 10 * GB && b2.data_limit === 10 * GB, 'undo +GB: 10 GB again everywhere');
+  await tap(`m:ugb:${id}:5`); // keep 15 GB for the rest
+
+  // custom days through the form
+  await tap(`m:f:adddays:${id}`);
+  await say('12');
+  await tap('m:fok:adddays');
+  ok((await sub(id)).expires_at === exp0 + 12 * 86400 && near(b2.expire, exp0 + 12 * 86400, 5), 'custom days from the form reach the panels');
+
+  // reset usage: money, asks first; zeroes the ledger and every panel gets the full limit again
+  a.used_traffic = 3 * GB; b2.used_traffic = 2 * GB;
+  await syncRounds(3);
+  ok((await sub(id)).used_bytes === 5 * GB, 'usage summed before the reset: ' + (await sub(id)).used_bytes / GB);
+  n = fakes.tg.calls.length;
+  await tap(`m:urs:${id}`);
+  let cf = confirmTok(n);
+  ok(cf && (await sub(id)).used_bytes === 5 * GB, 'reset asks "are you sure?" first and changes nothing yet');
+  await tap(cf.yes, cf.text);
+  const s0 = await sub(id);
+  const ctr = (await env.DB.prepare('SELECT SUM(accounted_bytes) t FROM usage_counters WHERE period_id = ?').bind(s0.period_id).first()).t;
+  ok(s0.used_bytes === 0 && ctr === 0, 'reset zeroes the subscription and the ledger');
+  ok(near(a.data_limit, 3 * GB + 15 * GB) && near(b2.data_limit, 2 * GB + 15 * GB), 'panels follow: each = what it already counted + the full 15 GB: ' + [a.data_limit / GB, b2.data_limit / GB]);
+  a.used_traffic = 4 * GB; await syncRounds(2);
+  ok((await sub(id)).used_bytes === 1 * GB, 'new usage after the reset counts from zero: ' + (await sub(id)).used_bytes / GB);
+
+  // pause / resume
+  n = fakes.tg.calls.length;
+  await tap(`m:upz:${id}:1`);
+  ok((await sub(id)).state === 'stopped' && a.status === 'disabled' && b2.status === 'disabled', 'pause switches off both panels');
+  await tap(undoOf(n));
+  ok((await sub(id)).state === 'active' && a.status === 'active' && b2.status === 'active', 'undo pause: both panels on again');
+
+  // plan name only
+  const lim = (await sub(id)).data_limit_bytes;
+  n = fakes.tg.calls.length;
+  await tap(`m:upn:${id}:0`);
+  ok((await sub(id)).plan_id === null && (await sub(id)).data_limit_bytes === lim, 'plan name removed, limit untouched');
+  await tap(undoOf(n));
+  ok((await sub(id)).plan_id === tenGb.id, 'undo: plan name back');
+
+  // wallet: form -> summary -> confirm (one-time) -> walletApply
+  const bal0 = (await urow(id)).wallet_balance;
+  await tap(`m:f:wadd:${id}`);
+  await tap('m:fa:0:50000');
+  await tap('m:fa:1:هدیه');
+  n = fakes.tg.calls.length;
+  await tap('m:fok:wadd');
+  cf = confirmTok(n);
+  ok(cf && cf.text.includes('50,000') && (await urow(id)).wallet_balance === bal0, 'credit asks "are you sure?" with the amount, nothing changes yet');
+  n = fakes.tg.calls.length;
+  await tap('m:fok:wadd');
+  ok(!confirmTok(n), 'a second tap on the form button asks nothing again');
+  await tap(cf.yes, cf.text);
+  await tap(cf.yes, cf.text);
+  const tx = (await env.DB.prepare("SELECT COUNT(*) c FROM wallet_tx WHERE user_id = ? AND reason = 'admin_credit'").bind(id).first()).c;
+  ok((await urow(id)).wallet_balance === bal0 + 50000 && tx === 1, 'double-tap credits once: ' + [(await urow(id)).wallet_balance, tx]);
+  const note = (await env.DB.prepare("SELECT note FROM wallet_tx WHERE user_id = ? AND reason = 'admin_credit'").bind(id).first()).note;
+  ok(note === 'هدیه', 'the reason is stored in the wallet history');
+  await tap(`m:f:wsub:${id}`);
+  await say('900000');
+  ok(String(fakes.tg.calls.slice(-1)[0].body.text).includes('دلیل'), 'debit asks for a reason after the amount');
+  await say('اصلاح اشتباه');
+  n = fakes.tg.calls.length;
+  await tap('m:fok:wsub');
+  cf = confirmTok(n);
+  n = fakes.tg.calls.length;
+  await tap(cf.yes, cf.text);
+  ok((await urow(id)).wallet_balance === bal0 + 50000 && since(n).some((c) => /موجودی کافی نیست/.test(c.body.text || '')), 'a debit below zero is refused, balance unchanged');
+  await tap(`m:f:wsub:${id}`); await say('20000'); await say('اصلاح اشتباه');
+  n = fakes.tg.calls.length; await tap('m:fok:wsub'); cf = confirmTok(n); await tap(cf.yes, cf.text);
+  ok((await urow(id)).wallet_balance === bal0 + 30000, 'a debit within the balance works');
+  const wscr = await menu.renderScreen(env, `uw:${id}`);
+  ok(wscr.text.includes('شارژ مدیر') && wscr.text.includes('کسر مدیر') && wscr.text.includes('هدیه'), 'wallet screen lists the history');
+  const walletTxt = await env.DB.prepare("SELECT summary FROM admin_audit WHERE action = 'user.wallet' ORDER BY id DESC LIMIT 1").first();
+  ok(walletTxt && walletTxt.summary.includes('اصلاح اشتباه') && !(await env.DB.prepare("SELECT undo_json FROM admin_audit WHERE action = 'user.wallet' AND undo_json IS NOT NULL").first()), 'money changes are logged and have no undo');
+
+  // devices
+  const dscr = await menu.renderScreen(env, `udv:${id}`);
+  const dbtn = flat(dscr.kb).find((d) => d.startsWith(`m:udd:${id}:`));
+  ok(!!dbtn, 'devices screen lists the phone');
+  await tap(dbtn);
+  ok((await env.DB.prepare('SELECT COUNT(*) c FROM devices WHERE user_id = ?').bind(id).first()).c === 0, 'remove one device');
+
+  // logout all
+  const before = await call('GET', '/api/v1/me', { token: tok });
+  await tap(`m:ulo:${id}`);
+  ok(before.status === 200 && (await call('GET', '/api/v1/me', { token: tok })).status === 401, 'logout all ends the old session');
+
+  // block: no login, no refresh, panels off; unblock through undo
+  const login = await call('POST', '/api/v1/auth/login', { json: { email: 's2@example.com', password: 'password123', device_id: 's2-phone' } });
+  n = fakes.tg.calls.length;
+  await tap(`m:ublk:${id}:1`);
+  ok((await urow(id)).is_active === 0 && a.status === 'disabled' && b2.status === 'disabled', 'block: account off and both panels off');
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 's2@example.com', password: 'password123' } })).status === 403, 'a blocked user cannot log in');
+  const rf = await call('POST', '/api/v1/auth/refresh', { json: { refresh_token: login.data.refresh_token } });
+  ok(rf.status >= 400 && rf.status < 500, 'a blocked user cannot refresh: ' + rf.status);
+  ok((await call('GET', '/api/v1/me', { token: login.data.access_token })).status >= 400, 'a blocked user\'s access token stops working');
+  const blockUndo = undoOf(n);
+  await syncRounds(2);
+  ok(a.status === 'disabled' && b2.status === 'disabled', 'the sync job keeps a blocked user off');
+  ok(flat((await menu.renderScreen(env, 'usr:blk')).kb).includes(`m:u:${id}`), 'the «مسدود» filter lists the user');
+  await tap(blockUndo);
+  ok((await urow(id)).is_active === 1 && a.status === 'active' && b2.status === 'active', 'unblock (undo): account and panels on again');
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 's2@example.com', password: 'password123' } })).status === 200, 'login works again after unblock');
+  ok(flat((await menu.renderScreen(env, 'usr:act')).kb).includes(`m:u:${id}`), 'the «فعال» filter lists the user');
+
+  // email edit: checked and unique
+  await tap(`m:f:email:${id}`);
+  n = fakes.tg.calls.length;
+  await say('ali@example.com');
+  ok(since(n).some((c) => /حساب دیگری/.test(c.body.text || '')), 'a taken email is refused');
+  await say('s2new@example.com');
+  await tap('m:fok:email');
+  ok((await urow(id)).email === 's2new@example.com', 'email changed');
+
+  // avatar reset with undo
+  await env.DB.prepare("UPDATE users SET avatar = 'fox' WHERE id = ?").bind(id).run();
+  n = fakes.tg.calls.length;
+  await tap(`m:uav:${id}`);
+  ok((await urow(id)).avatar === null, 'avatar reset');
+  await tap(undoOf(n));
+  ok((await urow(id)).avatar === 'fox', 'undo: avatar back');
+
+  // unlink Telegram: destructive, warns when no other login is left
+  await env.DB.prepare("UPDATE users SET tg_id = 880077, tg_username = 's2tg' WHERE id = ?").bind(id).run();
+  n = fakes.tg.calls.length;
+  await tap(`m:utg:${id}`);
+  cf = confirmTok(n);
+  ok(cf && cf.text.includes('@s2tg') && !cf.text.includes('هیچ راهی'), 'unlink asks first (email login stays)');
+  await tap(cf.yes, cf.text);
+  ok((await urow(id)).tg_id === null, 'Telegram unlinked');
+  const tgOnly = await env.DB.prepare("INSERT INTO users (email, password_hash, referral_code, created_at, tg_id, tg_username) VALUES ('tg880078@telegram.local', 'x', 'TGONLY1', 1, 880078, 'only_tg') RETURNING id").first();
+  n = fakes.tg.calls.length;
+  await tap(`m:utg:${tgOnly.id}`);
+  ok(confirmTok(n) && confirmTok(n).text.includes('هیچ راهی برای ورود نمی‌ماند'), 'a Telegram-only account gets the "no login left" warning');
+
+  // type to open: email, @username, user id, #order
+  n = fakes.tg.calls.length;
+  await say('s2new@example.com');
+  ok(since(n).some((c) => c.method === 'sendMessage' && c.body.text.includes('s2new@example.com') && kbOf(c).includes(`m:us:${id}`)), 'typing an email opens the card');
+  n = fakes.tg.calls.length;
+  await say('@only_tg');
+  ok(since(n).some((c) => c.method === 'sendMessage' && kbOf(c).includes(`m:us:${tgOnly.id}`)), 'typing @username opens the card');
+  n = fakes.tg.calls.length;
+  await say(String(id));
+  ok(since(n).some((c) => c.method === 'sendMessage' && kbOf(c).includes(`m:us:${id}`)), 'typing a user id opens the card');
+  const anyOrder = await env.DB.prepare('SELECT id, user_id FROM orders ORDER BY id LIMIT 1').first();
+  n = fakes.tg.calls.length;
+  await say('#' + anyOrder.id);
+  ok(since(n).some((c) => c.method === 'sendMessage' && c.body.text.includes(`سفارش #${anyOrder.id}`) && kbOf(c).includes(`m:u:${anyOrder.user_id}`)), 'typing #order opens the order');
+  n = fakes.tg.calls.length;
+  await say('/find ' + id);
+  ok(since(n).some((c) => c.method === 'sendMessage' && kbOf(c).includes(`m:us:${id}`)), '/find also takes a user id');
+  const oscr = await menu.renderScreen(env, `uo:${anyOrder.user_id}`);
+  ok(flat(oscr.kb).includes(`m:o:${anyOrder.id}`), 'per-user orders list');
+
+  // end subscription: destructive, both panels off as expired
+  n = fakes.tg.calls.length;
+  await tap(`m:uend:${id}`);
+  cf = confirmTok(n);
+  ok(cf && (await sub(id)).state === 'active', 'end asks first');
+  n = fakes.tg.calls.length;
+  await tap(cf.yes, cf.text);
+  const se = await sub(id);
+  ok(se.state === 'stopped' && se.stop_reason === 'expired' && a.status === 'disabled' && b2.status === 'disabled', 'end: stopped as expired on both panels');
+  ok(since(n).some((c) => c.method === 'editMessageText' && kbOf(c).includes(`m:u:${id}`)), 'the result has a way back to the card');
+  await tap(`m:ud:${id}:30`);
+  ok((await sub(id)).state === 'active' && a.status === 'active' && b2.status === 'active', '+30 days on an ended subscription switches it back on');
+
+  // soft delete: panels off, email + Telegram freed, orders and wallet history kept
+  const txBefore = (await env.DB.prepare('SELECT COUNT(*) c FROM wallet_tx WHERE user_id = ?').bind(id).first()).c;
+  n = fakes.tg.calls.length;
+  await tap(`m:udel:${id}`);
+  cf = confirmTok(n);
+  ok(cf && cf.text.includes('برگشت ندارد') && cf.text.includes('اکانت پنل') && cf.text.includes('حساب‌رسی'), 'delete asks with what it affects');
+  await tap(cf.yes, cf.text);
+  const del = await urow(id);
+  ok(del.email === `deleted+${id}@invalid` && del.is_active === 0 && del.tg_id === null, 'deleted: email rewritten, account off');
+  ok((await env.DB.prepare("SELECT COUNT(*) c FROM panel_accounts WHERE user_id = ? AND desired != 'removed'").bind(id).first()).c === 0, 'every panel account is marked removed');
+  ok((await env.DB.prepare('SELECT COUNT(*) c FROM wallet_tx WHERE user_id = ?').bind(id).first()).c === txBefore, 'wallet history kept');
+  const again = await call('POST', '/api/v1/auth/register', { json: { email: 's2new@example.com', password: 'password123', device_id: 'new-phone' } });
+  ok(again.status === 200 || again.status === 201, 'the email is free for a new sign-up: ' + again.status);
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: `deleted+${id}@invalid`, password: 'password123' } })).status >= 400, 'the deleted account cannot log in');
+  const delSec = await menu.renderScreen(env, `usec:${id}`);
+  ok(!flat(delSec.kb).some((d) => /^m:(udel|ublk|w:reset):/.test(d)), 'a deleted user has no more account buttons');
+
+  // manual user: email + password, the password message is deleted and never stored in clear
+  await tap('m:f:newuser');
+  await say('manual@example.com');
+  ok((await env.DB.prepare('SELECT secret FROM bot_session').first()).secret === 1, 'the password step marks the next message secret');
+  n = fakes.tg.calls.length;
+  await say('manualpass1', { message_id: 4242 });
+  ok(since(n).some((c) => c.method === 'deleteMessage' && c.body.message_id === 4242), 'the password message is deleted');
+  ok(!since(n).some((c) => String(c.body.text || '').includes('manualpass1')), 'the password is never echoed');
+  const sess = await env.DB.prepare('SELECT data_json FROM bot_session').first();
+  ok(sess && !sess.data_json.includes('manualpass1') && sess.data_json.includes('pbkdf2$'), 'only the hash waits in the session');
+  n = fakes.tg.calls.length;
+  await tap('m:fok:newuser');
+  const mu = await env.DB.prepare("SELECT id FROM users WHERE email = 'manual@example.com'").first();
+  ok(mu && (await call('POST', '/api/v1/auth/login', { json: { email: 'manual@example.com', password: 'manualpass1' } })).status === 200, 'manual user created and can log in');
+  ok(mu && since(n).some((c) => c.method === 'editMessageText' && kbOf(c).includes(`m:us:${mu.id}`)), 'the new user\'s card opens');
+  ok(mu && flat((await menu.renderScreen(env, 'usr:none')).kb).includes(`m:u:${mu.id}`), 'the «بی‌پلن» filter lists the new user');
+  ok(!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE summary LIKE '%manualpass1%' OR undo_json LIKE '%manualpass1%' OR undo_json LIKE '%pbkdf2%'").first()), 'no password or hash in the admin log');
+
+  // every button on every user screen is a known route within 64 bytes, and each screen has back + home
+  const big = await env.DB.prepare("INSERT INTO users (id, email, password_hash, referral_code, created_at, avatar, tg_id) VALUES (999999999, 'big@example.com', 'x', 'BIGID1', 1, 'cat', 990001) RETURNING id").first();
+  await env.DB.prepare('INSERT INTO devices (user_id, device_id, model, last_seen) VALUES (?, ?, ?, ?)').bind(big.id, 'd'.repeat(60), 'Very Long Phone Model Name Here', 1).run();
+  const bad = [], noNav = [];
+  for (const d of ['u', 'us', 'upl', 'uw', 'udv', 'usec', 'uo'].map((k) => `${k}:${big.id}`).concat([`u:${big.id}:live`, `us:${mu ? mu.id : 1}`])) {
+    const scr = await menu.renderScreen(env, d);
+    for (const x of flat(scr.kb)) if (!menu.routeOf(x) || new TextEncoder().encode(x).length > 64) bad.push(`${d} -> ${x}`);
+    const last = flat([scr.kb[scr.kb.length - 1]]);
+    if (!last.includes('m:home') || last.length < 2 || !scr.text.startsWith('🏠 منو')) noNav.push(d);
+  }
+  ok(!bad.length, 'user screen buttons resolve within 64 bytes: ' + bad.slice(0, 4).join(' | '));
+  ok(!noNav.length, 'user screens have breadcrumbs, back and home: ' + noNav.join(' '));
+  ok(['adddays', 'addgb', 'wadd', 'wsub', 'email'].every((f) => menu.routeOf(`m:f:${f}:${big.id}`)), 'every per-user form has a route');
+
+  // query budget for the user screens (the live refresh excluded)
+  const realPrepare = env.DB.prepare;
+  let q = 0, maxQ = 0;
+  const over = [];
+  env.DB.prepare = (sql) => { q++; return realPrepare(sql); };
+  for (const d of ['u', 'us', 'upl', 'uw', 'udv', 'usec', 'uo'].map((k) => `${k}:${big.id}`).concat([`o:${anyOrder.id}`, 'usr:exp', 'usr:blk'])) {
+    q = 0; await menu.renderScreen(env, d); maxQ = Math.max(maxQ, q); if (q > 6) over.push(`${d}=${q}`);
+  }
+  env.DB.prepare = realPrepare;
+  console.log('    most D1 statements on one user screen: ' + maxQ);
+  ok(!over.length, 'user screens use ≤6 D1 statements: ' + over.join(' '));
+
+  const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x));
+  ok(!missing.length, 'every admin action has written an audit row: missing ' + missing.join(','));
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

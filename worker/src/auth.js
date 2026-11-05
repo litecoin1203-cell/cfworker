@@ -64,7 +64,7 @@ export async function register(env, body, headers) {
   return json(await makeTokens(env, user), 201);
 }
 
-async function newUserFields(env, body) {
+export async function newUserFields(env, body) {
   let referredBy = null;
   if (body.referral_code) {
     const r = await first(env, 'SELECT id FROM users WHERE referral_code = ?', String(body.referral_code).trim().toUpperCase());

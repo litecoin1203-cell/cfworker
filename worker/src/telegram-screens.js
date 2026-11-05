@@ -71,26 +71,186 @@ export async function inbox(env) {
 // ---------------- users ----------------
 const who = (u) => (u.tg_id ? (u.tg_username ? '@' + u.tg_username : 'TG ' + u.tg_id) : u.email).slice(0, 40);
 
-export async function users(env, cursor) {
-  const count = (await first(env, 'SELECT COUNT(*) c FROM users')).c;
-  const pg = await page(env, { select: 'id, email, tg_id, tg_username, is_active', from: 'users', cursor });
+const GB = 1024 ** 3;
+const DELETED = /^deleted\+\d+@invalid$/;
+const TG_MAIL = /@telegram\.local$/;
+const ymd = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+const gb = (n) => (n / GB).toFixed(n >= 10 * GB ? 1 : 2);
+
+// list filters: what each shows (deleted accounts only under "all", marked 🗑)
+export const USER_FILTERS = {
+  all: { label: 'همه', where: () => '1 = 1' },
+  act: { label: 'فعال', where: (now) => `is_active = 1 AND id IN (SELECT user_id FROM subscriptions WHERE state = 'active' AND (expires_at IS NULL OR expires_at > ${now}))` },
+  exp: { label: 'تمام‌شده', where: (now) => `email NOT LIKE 'deleted+%' AND id IN (SELECT user_id FROM subscriptions WHERE period_id IS NOT NULL AND (state = 'stopped' OR (expires_at IS NOT NULL AND expires_at <= ${now})))` },
+  none: { label: 'بی‌پلن', where: () => "email NOT LIKE 'deleted+%' AND id NOT IN (SELECT user_id FROM subscriptions WHERE period_id IS NOT NULL)" },
+  blk: { label: 'مسدود', where: () => "is_active = 0 AND email NOT LIKE 'deleted+%'" },
+};
+
+// usr[:filter][:cursor] (an old "usr:b123" button is the "all" list)
+export async function users(env, a0, a1) {
+  const filter = USER_FILTERS[a0] ? a0 : 'all';
+  const cursor = USER_FILTERS[a0] ? a1 : a0;
+  const where = USER_FILTERS[filter].where(nowSec());
+  const count = (await first(env, `SELECT COUNT(*) c FROM users WHERE ${where}`)).c;
+  const pg = await page(env, { select: 'id, email, tg_id, tg_username, is_active', from: 'users', where, cursor });
+  const tabs = Object.entries(USER_FILTERS).map(([k, f]) => b(`${k === filter ? '✅ ' : ''}${f.label}`, `m:usr:${k}`));
+  const mark = (u) => (DELETED.test(u.email) ? '🗑 ' : u.is_active ? '' : '⛔️ ');
   return {
-    text: `${crumb('👤 کاربران')}\n\n${fa(count)} کاربر · جدیدترها اول. برای پیدا کردن یک نفر «جستجو» را بزن.`,
-    kb: [[b('🔎 جستجوی کاربر', 'm:w:find')], ...pg.rows.map((u) => [b(`${u.is_active ? '' : '⛔️ '}${who(u)}`, `m:u:${u.id}`)]), ...pageRow('usr', pg), nav('home')],
+    text: `${crumb('👤 کاربران')}\n\n${fa(count)} کاربر در «${USER_FILTERS[filter].label}» · جدیدترها اول.\nبرای پیدا کردن یک نفر «جستجو» را بزن، یا ایمیل، @یوزرنیم یا آیدی را همین‌جا بفرست.`,
+    kb: [tabs.slice(0, 3), tabs.slice(3), [b('🔎 جستجوی کاربر', 'm:w:find'), b('➕ کاربر دستی', 'm:f:newuser')],
+      ...pg.rows.map((u) => [b(`${mark(u)}${who(u)}`, `m:u:${u.id}`)]), ...pageRow(`usr:${filter}`, pg), nav('home')],
   };
 }
 
 export const userKb = (uid) => ({ inline_keyboard: [
-  [b('🎁 دادن پلن', `m:ug:${uid}`), b('🔑 تغییر رمز', `m:w:reset:${uid}`)],
-  [b('🔗 وصل اکانت پنل', `m:w:link:${uid}`), b('📶 تجربه اتصال', `m:un:${uid}`)],
-  [b('🔄 به‌روزرسانی', `m:u:${uid}`), b('📜 تاریخچه', `m:hist:user:${uid}`)],
+  [b('📅 اشتراک', `m:us:${uid}`), b('💰 کیف پول', `m:uw:${uid}`)],
+  [b('📱 دستگاه‌ها', `m:udv:${uid}`), b('🛡 امنیت و حساب', `m:usec:${uid}`)],
+  [b('🎁 دادن پلن', `m:ug:${uid}`), b('🔗 وصل اکانت پنل', `m:w:link:${uid}`)],
+  [b('🧾 سفارش‌ها', `m:uo:${uid}`), b('📶 تجربه اتصال', `m:un:${uid}`)],
+  [b('🔄 زنده از پنل', `m:u:${uid}:live`), b('📜 تاریخچه', `m:hist:user:${uid}`)],
   [b('🔙 کاربران', 'm:usr'), HOME],
 ] });
 
-export async function userCard(env, id) {
-  const u = await first(env, 'SELECT * FROM users WHERE id = ?', id);
+// One user, from the database only (a few queries); "live" first reads every panel for fresh usage.
+async function userFacts(env, id) {
+  return first(env, `SELECT u.*, s.state, s.stop_reason, s.expires_at, s.data_limit_bytes, s.used_bytes, s.period_id, s.plan_id, p.name plan_name,
+      (SELECT COUNT(*) FROM devices WHERE user_id = u.id) devs, (SELECT COUNT(*) FROM orders WHERE user_id = u.id) ords
+    FROM users u LEFT JOIN subscriptions s ON s.user_id = u.id LEFT JOIN plans p ON p.id = s.plan_id WHERE u.id = ?`, id);
+}
+const STOP_FA = { quota: 'حجم تمام شد', expired: 'زمان تمام شد', admin: 'قطع به دست مدیر' };
+function subLines(u, now = nowSec()) {
+  if (!u.period_id) return ['📦 اشتراک: ندارد'];
+  const live = u.state === 'active' && (!u.expires_at || u.expires_at > now);
+  return [
+    `📦 پلن: ${u.plan_name || '— (بدون پلن)'} · ${live ? '🟢 فعال' : `🔴 ${STOP_FA[u.stop_reason] || (u.expires_at && u.expires_at <= now ? 'زمان تمام شد' : 'متوقف')}`}`,
+    `📅 زمان: ${u.expires_at ? (u.expires_at > now ? `${Math.ceil((u.expires_at - now) / 86400)} روز (تا ${ymd(u.expires_at)})` : `تمام شده (${ymd(u.expires_at)})`) : 'نامحدود'}`,
+    `📊 حجم: ${gb(u.used_bytes || 0)} از ${u.data_limit_bytes ? gb(u.data_limit_bytes) + ' گیگ' : 'نامحدود'}`,
+  ];
+}
+const accountLine = (u) => (DELETED.test(u.email) ? '🗑 حذف‌شده' : u.is_active ? '✅ فعال' : '⛔️ مسدود');
+
+export async function userCard(env, id, mode) {
+  if (mode === 'live') { try { const { refreshUser } = await import('./sync.js'); await refreshUser(env, id); } catch (e) { /* show what is stored */ } }
+  const u = await userFacts(env, id);
   if (!u) return { text: crumb('👤 کاربران') + '\n\nکاربر پیدا نشد.', kb: [nav('usr')] };
-  return { text: `${crumb('👤 کاربران', who(u))}\n\n${await userInfo(env, u)}`, kb: userKb(u.id).inline_keyboard };
+  const pas = await all(env, 'SELECT a.desired, p.label FROM panel_accounts a JOIN panels p ON p.id = a.panel_id WHERE a.user_id = ? ORDER BY a.panel_id', u.id);
+  const { userNetLine } = await import('./netstats.js');
+  const nets = await userNetLine(env, u.id);
+  const lines = [crumb('👤 کاربران', who(u)), '',
+    `👤 ${TG_MAIL.test(u.email) ? 'ایمیل: ندارد (فقط تلگرام)' : u.email} · #${u.id}`,
+    ...(u.tg_id ? [`📨 تلگرام: ${u.tg_username ? '@' + u.tg_username : '(بدون یوزرنیم)'} · آیدی ${u.tg_id}${u.tg_name ? ` · ${u.tg_name}` : ''}`] : []),
+    `حساب: ${accountLine(u)}`, '',
+    ...subLines(u),
+    `💰 کیف پول: ${fa(u.wallet_balance)} تومان`,
+    `📱 دستگاه: ${fa(u.devs)} · 🧾 سفارش: ${fa(u.ords)}`,
+    `🗂 پنل‌ها: ${pas.map((a) => `${a.label}${a.desired === 'active' ? '' : ' (خاموش)'}`).join('، ') || '—'}`,
+    `📶 اپراتورها: ${nets || 'هنوز گزارشی نیامده'}`,
+    ...(mode === 'live' ? [] : ['', 'عددها از آخرین خواندن پنل‌هاست؛ برای عدد همین لحظه «🔄 زنده از پنل» را بزن.'])];
+  return { text: lines.join('\n'), kb: userKb(u.id).inline_keyboard };
+}
+
+const missing = (title) => ({ text: crumb('👤 کاربران', title) + '\n\nکاربر پیدا نشد.', kb: [nav('usr')] });
+
+// 📅 subscription: days, data, reset, pause, end, plan name
+export async function userSub(env, id) {
+  const u = await userFacts(env, id);
+  if (!u) return missing('📅 اشتراک');
+  const base = [crumb('👤 کاربران', who(u), '📅 اشتراک'), ''];
+  if (!u.period_id) {
+    return { text: [...base, 'این کاربر اشتراک ندارد. یک پلن بده یا اکانتی که روی پنل دارد را وصل کن.'].join('\n'),
+      kb: [[b('🎁 دادن پلن', `m:ug:${id}`), b('🔗 وصل اکانت پنل', `m:w:link:${id}`)], nav(`u:${id}`)] };
+  }
+  const paused = u.state === 'stopped' && u.stop_reason === 'admin';
+  return {
+    text: [...base, ...subLines(u), '',
+      'روز و حجم روی همه‌ی پنل‌ها با هم عوض می‌شود. «ریست مصرف» مصرف این دوره را صفر می‌کند. «تغییر نام پلن» فقط اسمی را که اپ نشان می‌دهد عوض می‌کند.'].join('\n'),
+    kb: [
+      ...(u.expires_at ? [[b('➕ 7 روز', `m:ud:${id}:7`), b('➕ 30 روز', `m:ud:${id}:30`), b('➕ 90 روز', `m:ud:${id}:90`), b('➕ دلخواه', `m:f:adddays:${id}`)]] : []),
+      ...(u.data_limit_bytes ? [[b('➕ 5 گیگ', `m:ugb:${id}:5`), b('➕ 10 گیگ', `m:ugb:${id}:10`), b('➕ 50 گیگ', `m:ugb:${id}:50`), b('➕ دلخواه', `m:f:addgb:${id}`)]] : []),
+      [b('🔄 ریست مصرف', `m:urs:${id}`), paused ? b('▶️ وصل دوباره', `m:upz:${id}:0`) : b('⏸ قطع موقت', `m:upz:${id}:1`)],
+      [b('📦 تغییر نام پلن', `m:upl:${id}`), b('🎁 تمدید با پلن', `m:ug:${id}`)],
+      [b('⏹ پایان اشتراک', `m:uend:${id}`)],
+      nav(`u:${id}`),
+    ],
+  };
+}
+
+export async function userPlanPick(env, id) {
+  const u = await first(env, 'SELECT id, email, tg_id, tg_username FROM users WHERE id = ?', id);
+  if (!u) return missing('📦 پلن');
+  const rows = await all(env, 'SELECT id, name, duration_days, data_limit_gb FROM plans WHERE archived = 0 ORDER BY sort, id LIMIT 12');
+  return {
+    text: `${crumb('👤 کاربران', who(u), '📦 نام پلن')}\n\nاپ این کاربر کدام پلن را نشان دهد؟ حجم و زمانش عوض نمی‌شود.`,
+    kb: [...rows.map((p) => [b(`${p.name} (${p.duration_days} روز، ${p.data_limit_gb || 'نامحدود'} گیگ)`.slice(0, 60), `m:upn:${id}:${p.id}`)]),
+      [b('— بدون پلن —', `m:upn:${id}:0`)], nav(`us:${id}`)],
+  };
+}
+
+const TX_FA = { admin_credit: 'شارژ مدیر', admin_debit: 'کسر مدیر', referral: 'پاداش دعوت', topup: 'شارژ', purchase: 'خرید', refund: 'بازگشت' };
+// 💰 wallet: balance, credit / debit, history (8 per page)
+export async function userWallet(env, id, cursor) {
+  const u = await first(env, 'SELECT id, email, tg_id, tg_username, wallet_balance FROM users WHERE id = ?', id);
+  if (!u) return missing('💰 کیف پول');
+  const pg = await page(env, { from: 'wallet_tx', where: 'user_id = ?', args: [id], cursor });
+  const lines = pg.rows.map((t) => `${ymd(t.created_at)} · ${t.amount > 0 ? '+' : ''}${fa(t.amount)} · ${TX_FA[t.reason] || t.reason}${t.note ? ` · ${String(t.note).slice(0, 40)}` : ''}`);
+  return {
+    text: [crumb('👤 کاربران', who(u), '💰 کیف پول'), '', `موجودی: ${fa(u.wallet_balance)} تومان`, '', ...(lines.length ? lines : ['تراکنشی نیست.'])].join('\n'),
+    kb: [[b('➕ شارژ', `m:f:wadd:${id}`), b('➖ کسر', `m:f:wsub:${id}`)], ...pageRow(`uw:${id}`, pg), nav(`u:${id}`)],
+  };
+}
+
+// 📱 devices
+export async function userDevices(env, id) {
+  const u = await first(env, 'SELECT id, email, tg_id, tg_username FROM users WHERE id = ?', id);
+  if (!u) return missing('📱 دستگاه‌ها');
+  const rows = await all(env, 'SELECT id, device_id, model, last_seen FROM devices WHERE user_id = ? ORDER BY last_seen DESC LIMIT 10', id);
+  return {
+    text: [crumb('👤 کاربران', who(u), '📱 دستگاه‌ها'), '', rows.length ? 'روی 🗑 بزن تا دستگاه حذف شود (دفعه‌ی بعد که وصل شود دوباره ثبت می‌شود).' : 'دستگاهی ثبت نشده.'].join('\n'),
+    kb: [...rows.map((d) => [b(`🗑 ${String(d.model || d.device_id).slice(0, 28)} · ${ymd(d.last_seen)}`, `m:udd:${id}:${d.id}`)]), nav(`u:${id}`)],
+  };
+}
+
+// 🛡 security and account
+export async function userSecurity(env, id) {
+  const u = await first(env, 'SELECT * FROM users WHERE id = ?', id);
+  if (!u) return missing('🛡 امنیت');
+  const deleted = DELETED.test(u.email);
+  const rows = deleted ? [] : [
+    [b('🔑 تغییر رمز', `m:w:reset:${id}`), b('🚪 خروج از همه‌ی دستگاه‌ها', `m:ulo:${id}`)],
+    [u.is_active ? b('⛔️ مسدود کن', `m:ublk:${id}:1`) : b('✅ آزاد کن', `m:ublk:${id}:0`), b('✏️ تغییر ایمیل', `m:f:email:${id}`)],
+    [...(u.avatar ? [b('🖼 برگرداندن آواتار', `m:uav:${id}`)] : []), ...(u.tg_id ? [b('📨 جداکردن تلگرام', `m:utg:${id}`)] : [])],
+    [b('🗑 حذف کاربر', `m:udel:${id}`)],
+  ].filter((r) => r.length);
+  return {
+    text: [crumb('👤 کاربران', who(u), '🛡 امنیت و حساب'), '', `حساب: ${accountLine(u)}`, `آواتار: ${u.avatar || 'پیش‌فرض / عکس تلگرام'}`,
+      `ورود: ${TG_MAIL.test(u.email) ? 'فقط با تلگرام' : 'ایمیل + رمز'}${u.tg_id && !TG_MAIL.test(u.email) ? ' و تلگرام' : ''}`, '',
+      'مسدود = نمی‌تواند وارد شود و همه‌ی پنل‌هایش خاموش می‌شود. حذف = مسدود + آزاد شدن ایمیل و تلگرام؛ سفارش‌ها و کیف پول برای حساب‌رسی می‌ماند.'].join('\n'),
+    kb: [...rows, nav(`u:${id}`)],
+  };
+}
+
+const ORDER_FA = { pending: '⏳ منتظر پرداخت', review: '🧾 منتظر بررسی', paid: '✅ پرداخت‌شده', rejected: '❌ رد شده', expired: '⌛️ منقضی', settling: '⚙️ در حال فعال‌سازی', cancelled: '🚫 لغو' };
+// 🧾 one user's orders
+export async function userOrders(env, id, cursor) {
+  const u = await first(env, 'SELECT id, email, tg_id, tg_username FROM users WHERE id = ?', id);
+  if (!u) return missing('🧾 سفارش‌ها');
+  const pg = await page(env, { select: 'id, amount_toman, status, method, created_at', from: 'orders', where: 'user_id = ?', args: [id], cursor });
+  return {
+    text: [crumb('👤 کاربران', who(u), '🧾 سفارش‌ها'), '', pg.rows.length ? 'روی هر سفارش بزن تا جزئیاتش را ببینی.' : 'سفارشی نیست.'].join('\n'),
+    kb: [...pg.rows.map((o) => [b(`#${o.id} · ${fa(o.amount_toman)} ت · ${ORDER_FA[o.status] || o.status} · ${ymd(o.created_at)}`, `m:o:${o.id}`)]), ...pageRow(`uo:${id}`, pg), nav(`u:${id}`)],
+  };
+}
+
+export async function order(env, id) {
+  const o = await first(env, `SELECT o.*, u.email, u.tg_id, u.tg_username, p.name plan_name FROM orders o JOIN users u ON u.id = o.user_id
+    LEFT JOIN plans p ON p.id = COALESCE(o.plan_id, o.activate_plan_id) WHERE o.id = ?`, id);
+  if (!o) return { text: crumb('🧾 سفارش') + '\n\nسفارش پیدا نشد.', kb: [nav('usr')] };
+  const what = o.kind === 'plan' ? `پلن ${o.plan_name || ''}` : o.activate_plan_id ? `شارژ + فعال‌سازی ${o.plan_name || ''}` : 'شارژ کیف پول';
+  return {
+    text: [crumb('🧾 سفارش', `#${o.id}`), '', `🧾 سفارش #${o.id} — ${what}`, `👤 ${who(o)}`, `مبلغ: ${fa(o.amount_toman)} تومان${o.coin_amount ? ` (${o.coin_amount} ${String(o.coin || '').toUpperCase()})` : ''}`,
+      `روش: ${o.method || '-'} · وضعیت: ${ORDER_FA[o.status] || o.status}`, `ثبت: ${ymd(o.created_at)}`, `شماره پیگیری: ${o.receipt_ref || o.txid || '-'}`].join('\n'),
+    kb: [[b('👤 کارت کاربر', `m:u:${o.user_id}`)], nav(`uo:${o.user_id}`)],
+  };
 }
 
 // who connects through which operator: the overview (no id) or one user's networks and servers

@@ -12,10 +12,10 @@
 // Taking it is one DELETE ... RETURNING, so an answer is never used twice, and a form remembers the last
 // message id it consumed so a message Telegram delivers twice does not move the form two steps.
 import { first, all, run } from './db.js';
-import { nowSec } from './util.js';
+import { nowSec, hashPassword } from './util.js';
 import { tg, runAdminCommand, askConfirm } from './telegram.js';
 import * as S from './telegram-screens.js';
-import { runAction, undoAction } from './admin-actions.js';
+import { runAction, undoAction, checkEmail } from './admin-actions.js';
 
 const { b, HOME, nav } = S;
 const fa = S.fa;
@@ -90,14 +90,71 @@ export const FORMS = {
     summary: (d) => [`کد: ${d.code}`, `تخفیف: ${d.percent}٪`, `تعداد: ${unlimited(d.uses)}`, `اعتبار: ${d.days ? fa(d.days) + ' روز' : 'همیشه'}`, `پلن: ${d.planId ? '#' + d.planId : 'همه'}`],
     done: () => 'cp',
   },
+
+  // ---- one user (the user id comes from the button: m:f:<form>:<uid>) ----
+  adddays: {
+    title: '➕ روز دلخواه', ok: '✅ انجام شود', back: (d) => `us:${d.userId}`, action: 'user.add_days',
+    steps: [{ key: 'days', ask: 'چند روز به این اشتراک اضافه شود؟', hint: 'یک عدد از 1 تا 3650 بنویس.', parse: int(1, 3650), suggest: [opt('15', 15), opt('60', 60), opt('180', 180), opt('365', 365)] }],
+    summary: (d) => [`کاربر: #${d.userId}`, `روز اضافه: ${fa(d.days)}`],
+    done: (r, d) => `us:${d.userId}`,
+  },
+  addgb: {
+    title: '➕ حجم دلخواه', ok: '✅ انجام شود', back: (d) => `us:${d.userId}`, action: 'user.add_gb',
+    steps: [{ key: 'gb', ask: 'چند گیگ به این اشتراک اضافه شود؟', hint: 'یک عدد از 1 تا 100000 بنویس.', parse: int(1, 100000), suggest: [opt('20', 20), opt('100', 100), opt('200', 200)] }],
+    summary: (d) => [`کاربر: #${d.userId}`, `حجم اضافه: ${fa(d.gb)} گیگ`],
+    done: (r, d) => `us:${d.userId}`,
+  },
+  wadd: walletForm(1),
+  wsub: walletForm(-1),
+  email: {
+    title: '✏️ تغییر ایمیل', ok: '✅ انجام شود', back: (d) => `usec:${d.userId}`, action: 'user.email',
+    steps: [{ key: 'email', ask: 'ایمیل جدید این کاربر را بنویس:', hint: 'این ایمیل درست نیست.', parse: emailParse }],
+    summary: (d) => [`کاربر: #${d.userId}`, `ایمیل جدید: ${d.email}`],
+    done: (r, d) => `usec:${d.userId}`,
+  },
+  newuser: {
+    title: '➕ کاربر دستی', back: 'usr', action: 'user.create', ok: '✅ ساخته شود',
+    steps: [
+      { key: 'email', ask: 'ایمیل کاربر جدید را بنویس:', hint: 'این ایمیل درست نیست.', parse: emailParse },
+      { key: 'hash', secret: true, ask: 'یک رمز برای او بنویس (حداقل ۸ کاراکتر).\nپیامت بلافاصله از چت پاک می‌شود و فقط به‌صورت هش ذخیره می‌شود.', hint: 'رمز باید ۸ تا ۱۲۸ کاراکتر باشد.',
+        parse: async (v, env) => { const t = String(v || ''); return t.length >= 8 && t.length <= 128 ? hashPassword(t, env.SECRET_KEY) : null; } },
+    ],
+    summary: (d) => [`ایمیل: ${d.email}`, 'رمز: ••••••••'],
+    done: (r) => `u:${r.targetId}`,
+  },
 };
+
+// a real, free email; a taken or invalid one gets its own message
+async function emailParse(v, env) {
+  const e = await checkEmail(env, v);
+  return e.error ? { error: e.error } : e.email;
+}
+
+// credit (+1) or debit (-1): amount, then a reason that goes into the wallet history; money -> asks once more
+function walletForm(sign) {
+  return {
+    title: sign > 0 ? '➕ شارژ کیف پول' : '➖ کسر از کیف پول', back: (d) => `uw:${d.userId}`, action: 'user.wallet', confirm: 'u_wallet', ok: '✅ ادامه',
+    steps: [
+      { key: 'amount', ask: `چند تومان ${sign > 0 ? 'شارژ' : 'کسر'} شود؟`, hint: 'فقط عدد بنویس، به تومان (مثلاً 50000).', parse: int(1, 1e10),
+        suggest: [opt('10,000', 10000), opt('50,000', 50000), opt('100,000', 100000), opt('200,000', 200000)] },
+      { key: 'note', ask: 'دلیلش را بنویس (در تاریخچه‌ی کیف پول می‌ماند):', hint: 'دلیل باید ۲ تا ۲۰۰ حرف باشد.',
+        parse: (v) => { const t = String(v || '').trim(); return t.length >= 2 && t.length <= 200 ? t : null; },
+        suggest: sign > 0 ? [opt('جبران قطعی', 'جبران قطعی'), opt('هدیه', 'هدیه'), opt('اصلاح اشتباه', 'اصلاح اشتباه')] : [opt('اصلاح اشتباه', 'اصلاح اشتباه'), opt('بازگشت وجه', 'بازگشت وجه')] },
+    ],
+    summary: (d) => [`کاربر: #${d.userId}`, `${sign > 0 ? 'شارژ' : 'کسر'}: ${fa(d.amount)} تومان`, `دلیل: ${d.note}`],
+    args: (d) => ({ userId: d.userId, amount: sign * d.amount, note: d.note }),
+    done: (r, d) => `uw:${d.userId}`,
+  };
+}
+const backOf = (f, d) => (typeof f.back === 'function' ? f.back(d || {}) : f.back);
+const secretAt = (f, step) => !!(f.steps[step] && f.steps[step].secret);
 
 async function formScreen(env, name, s, note) {
   const f = FORMS[name];
-  const cancel = [b('❌ انصراف', `m:cancel:${f.back}`)];
+  const cancel = [b('❌ انصراف', `m:cancel:${backOf(f, s.data)}`)];
   if (s.step >= f.steps.length) {
     return { text: [`${f.title} — بازبینی`, '', ...f.summary(s.data), '', 'درست است؟'].join('\n'),
-      kb: [[b('✅ ساخته شود', `m:fok:${name}`)], cancel] };
+      kb: [[b(f.ok || '✅ ساخته شود', `m:fok:${name}`)], cancel] };
   }
   const st = f.steps[s.step];
   const sug = typeof st.suggest === 'function' ? await st.suggest(env) : st.suggest || [];
@@ -115,12 +172,13 @@ async function formAnswer(env, adminId, s, value, msgId) {
   if (s.step >= f.steps.length) { await putBack(env, adminId, s); return formScreen(env, s.flow, s); }
   const st = f.steps[s.step];
   const v = await st.parse(value, env);
-  if (v === null || v === undefined) {
+  if (v === null || v === undefined || (typeof v === 'object' && v.error)) {
     await putBack(env, adminId, s);
-    return formScreen(env, s.flow, s, '❌ ' + (v === undefined && st.taken ? st.taken : st.hint));
+    return formScreen(env, s.flow, s, '❌ ' + (v && v.error ? v.error : v === undefined && st.taken ? st.taken : st.hint));
   }
   s.data[st.key] = v;
   s.step += 1;
+  s.secret = secretAt(f, s.step); // the next answer is a password: telegram.js deletes it from the chat
   await putBack(env, adminId, s);
   return formScreen(env, s.flow, s);
 }
@@ -137,8 +195,15 @@ export async function formText(env, chatId, s, text, msg) {
 const SCREENS = {
   home: (env) => S.home(env),
   in: (env) => S.inbox(env),
-  usr: (env, a) => S.users(env, a[0]),
-  u: (env, a) => S.userCard(env, parseInt(a[0], 10)),
+  usr: (env, a) => S.users(env, a[0], a[1]),
+  u: (env, a) => S.userCard(env, parseInt(a[0], 10), a[1]),
+  us: (env, a) => S.userSub(env, parseInt(a[0], 10)),
+  upl: (env, a) => S.userPlanPick(env, parseInt(a[0], 10)),
+  uw: (env, a) => S.userWallet(env, parseInt(a[0], 10), a[1]),
+  udv: (env, a) => S.userDevices(env, parseInt(a[0], 10)),
+  usec: (env, a) => S.userSecurity(env, parseInt(a[0], 10)),
+  uo: (env, a) => S.userOrders(env, parseInt(a[0], 10), a[1]),
+  o: (env, a) => S.order(env, parseInt(a[0], 10)),
   un: (env, a) => S.userNets(env, parseInt(a[0], 10) || 0),
   pl: (env) => S.plans(env),
   p: (env, a) => S.plan(env, parseInt(a[0], 10)),
@@ -163,7 +228,41 @@ const SCREENS = {
 const ACTION_RISK = {
   x: 'command', w: 'ask', f: 'form', fa: 'form', fok: 'form', cancel: 'read', ord: 'read',
   ug: 'read', ugp: 'money', pt: 'reversible', cd: 'destructive', sv: 'reversible', undo: 'reversible',
+  // one user (stage 2)
+  ud: 'reversible', ugb: 'reversible', upz: 'reversible', upn: 'reversible', ulo: 'reversible', ublk: 'reversible', uav: 'reversible',
+  udd: 'reversible', urs: 'money', uend: 'destructive', utg: 'destructive', udel: 'destructive',
 };
+// reversible user buttons: route -> [action, args from the button, the screen the card comes back on]
+const USER_TAPS = {
+  ud: (a) => ['user.add_days', { userId: a[0], days: a[1] }, `us:${a[0]}`],
+  ugb: (a) => ['user.add_gb', { userId: a[0], gb: a[1] }, `us:${a[0]}`],
+  upz: (a) => ['user.pause', { userId: a[0], on: a[1] }, `us:${a[0]}`],
+  upn: (a) => ['user.plan_name', { userId: a[0], planId: a[1] }, `us:${a[0]}`],
+  ulo: (a) => ['user.logout_all', { userId: a[0] }, `usec:${a[0]}`],
+  ublk: (a) => ['user.block', { userId: a[0], on: a[1] }, `usec:${a[0]}`],
+  uav: (a) => ['user.avatar_reset', { userId: a[0] }, `usec:${a[0]}`],
+  udd: (a) => ['user.device_remove', { userId: a[0], deviceId: a[1] }, `udv:${a[0]}`],
+};
+const GiB = 1024 ** 3;
+// money / destructive user buttons: the "are you sure?" question, with what it affects
+async function userQuestion(env, route, id) {
+  const u = await first(env, `SELECT u.*, s.used_bytes, s.period_id, s.expires_at,
+      (SELECT COUNT(*) FROM panel_accounts WHERE user_id = u.id AND desired != 'removed') pas, (SELECT COUNT(*) FROM orders WHERE user_id = u.id) ords
+    FROM users u LEFT JOIN subscriptions s ON s.user_id = u.id WHERE u.id = ?`, id);
+  if (!u) return null;
+  const name = u.tg_username ? `${u.email} (@${u.tg_username})` : u.email;
+  if (route === 'urs') return ['u_reset', `مصرف این دوره‌ی ${name} (${((u.used_bytes || 0) / GiB).toFixed(2)} گیگ) صفر شود؟ همه‌ی پنل‌ها دوباره سقف کامل حجم را می‌گیرند. این کار برگشت ندارد.`];
+  if (route === 'uend') return ['u_end', `اشتراک ${name} همین الان تمام شود؟ هر ${fa(u.pas)} اکانت پنلش خاموش می‌شود. برای برگرداندن باید دوباره روز اضافه کنی یا پلن بدهی.`];
+  if (route === 'utg') {
+    const tgOnly = /@telegram\.local$/.test(u.email);
+    return ['u_tg', `تلگرام ${u.tg_username ? '@' + u.tg_username : u.tg_id} از حساب ${name} جدا شود؟${tgOnly ? '\n⚠️ این حساب ایمیل و رمز ندارد؛ بعد از جداکردن هیچ راهی برای ورود نمی‌ماند (مگر با «✏️ تغییر ایمیل» و «🔑 تغییر رمز»).' : ' بعد از آن فقط با ایمیل و رمز وارد می‌شود.'}`];
+  }
+  if (route === 'udel') {
+    return ['u_del', [`کاربر ${name} حذف شود؟ این کار برگشت ندارد:`, `• ${fa(u.pas)} اکانت پنل خاموش و پاک می‌شود`, '• از همه‌ی دستگاه‌ها خارج می‌شود و دیگر نمی‌تواند وارد شود',
+      '• ایمیل و تلگرامش آزاد می‌شود (می‌تواند دوباره ثبت‌نام کند)', `• ${fa(u.ords)} سفارش و تاریخچه‌ی کیف پول (موجودی ${fa(u.wallet_balance)} تومان) برای حساب‌رسی می‌ماند`].join('\n')];
+  }
+  return null;
+}
 export const ROUTES = Object.fromEntries([
   ...Object.keys(SCREENS).map((k) => [k, { kind: 'screen' }]),
   ...Object.entries(ACTION_RISK).map(([k, risk]) => [k, { kind: 'action', risk }]),
@@ -260,7 +359,7 @@ async function cardWithUndo(env, cq, data, r) {
   const scr = await renderScreen(env, data);
   return show(env, cq, { text: scr.text, kb: [...undoRows(r), ...scr.kb] });
 }
-const UNDO_BACK = { plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, coupon: () => 'cp' };
+const UNDO_BACK = { user: (id) => `u:${id}`, plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, coupon: () => 'cp' };
 
 // onCallback in telegram.js has already checked that the tap came from the admin in their private chat.
 export async function onMenu(env, cq) {
@@ -283,7 +382,7 @@ export async function onMenu(env, cq) {
   if (route === 'w') {
     const q = await ASK[args[0]](env, args.slice(1));
     if (!q) {
-      if (FORMS[args[0]]) return startForm(env, cq, args[0], ack); // old "new plan / new code" buttons open the form
+      if (FORMS[args[0]]) return startForm(env, cq, args[0], ack, args[1]); // old "new plan / new code" buttons open the form
       return ack('پیدا نشد');
     }
     const [cmd, back, prompt, secret] = q;
@@ -291,7 +390,7 @@ export async function onMenu(env, cq) {
     await show(env, cq, { text: prompt + '\n\n(تا ۱۰ دقیقه منتظر جوابت هستم)', kb: [[b('❌ انصراف', `m:cancel:${back}`)]] });
     return ack('');
   }
-  if (route === 'f') return startForm(env, cq, args[0], ack);
+  if (route === 'f') return startForm(env, cq, args[0], ack, args[1]);
   if (route === 'fa') {
     const s = await takeSession(env, chatId);
     if (!s || !FORMS[s.flow]) { await ack('این فرم منقضی شده', true); return showScreen(env, cq, 'home'); }
@@ -306,13 +405,19 @@ export async function onMenu(env, cq) {
     if (!f || s.flow !== args[0] || s.step < f.steps.length) {
       if (s) await putBack(env, chatId, s);
       await ack('این فرم منقضی یا ناقص است', true);
-      return showScreen(env, cq, f ? f.back : 'home');
+      return showScreen(env, cq, f ? backOf(f, s.data) : 'home');
     }
     const { _msg, ...d } = s.data;
-    const r = await runAction(env, chatId, f.action, d);
-    if (!r.ok) { await ack(r.error, true); return showScreen(env, cq, f.back); }
+    const a = f.args ? f.args(d) : d;
+    if (f.confirm) { // money: one more "are you sure?" (one-time token), then the action runs from telegram.js
+      await askConfirm(env, chatId, f.confirm, a, [`${f.title}`, ...f.summary(d)].join('\n'));
+      await ack('');
+      return showScreen(env, cq, backOf(f, d));
+    }
+    const r = await runAction(env, chatId, f.action, a);
+    if (!r.ok) { await ack(r.error, true); return showScreen(env, cq, backOf(f, d)); }
     await ack(r.text.slice(0, 190));
-    return cardWithUndo(env, cq, f.done(r), r);
+    return cardWithUndo(env, cq, f.done(r, d), r);
   }
   if (route === 'cancel') {
     await takeSession(env, chatId);
@@ -361,6 +466,19 @@ export async function onMenu(env, cq) {
     await ack('✅ ' + S.AUTO_FA[val]);
     return cardWithUndo(env, cq, 'pay', r);
   }
+  if (USER_TAPS[route]) {
+    const [action, a, back] = USER_TAPS[route](args);
+    const r = await runAction(env, chatId, action, a);
+    if (!r.ok) { await ack(r.error, true); return showScreen(env, cq, back); }
+    await ack(r.text);
+    return cardWithUndo(env, cq, back, r);
+  }
+  if (['urs', 'uend', 'utg', 'udel'].includes(route)) {
+    const q = await userQuestion(env, route, int(0));
+    if (!q) return ack('کاربر پیدا نشد');
+    await askConfirm(env, chatId, q[0], { user_id: int(0) }, q[1]);
+    return ack('');
+  }
   if (route === 'undo') {
     const r = await undoAction(env, chatId, int(0));
     if (!r.ok) { await ack(r.error, true); return showScreen(env, cq, 'sys.log'); }
@@ -372,10 +490,16 @@ export async function onMenu(env, cq) {
   return showScreen(env, cq, 'home');
 }
 
-async function startForm(env, cq, name, ack) {
+async function startForm(env, cq, name, ack, uid) {
   const f = FORMS[name];
   if (!f) return ack('پیدا نشد');
-  const s = { flow: name, step: 0, data: {}, back: f.back };
+  const data = {};
+  if (typeof f.back === 'function') { // a per-user form needs a user that exists
+    const id = parseInt(uid, 10);
+    if (!(id > 0) || !(await first(env, 'SELECT 1 x FROM users WHERE id = ?', id))) return ack('کاربر پیدا نشد');
+    data.userId = id;
+  }
+  const s = { flow: name, step: 0, data, back: backOf(f, data), secret: secretAt(f, 0) };
   await setSession(env, cq.message?.chat?.id, s);
   await show(env, cq, await formScreen(env, name, s));
   return ack('');

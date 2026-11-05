@@ -438,7 +438,7 @@ async function createMissing(env, max = CREATE_PER_RUN) {
   for (const panel of panels) {
     if (made >= max) break;
     const rows = await all(env, `SELECT s.*, u.email FROM subscriptions s JOIN users u ON u.id = s.user_id
-      WHERE s.state = 'active' AND s.period_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM panel_accounts a WHERE a.user_id = s.user_id AND a.panel_id = ?)
+      WHERE s.state = 'active' AND u.is_active = 1 AND s.period_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM panel_accounts a WHERE a.user_id = s.user_id AND a.panel_id = ?)
       ORDER BY s.user_id LIMIT 50`, panel.id);
     for (const s of rows) {
       if (made >= max) break;

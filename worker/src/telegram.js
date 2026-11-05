@@ -220,10 +220,11 @@ async function onCallback(env, cq) {
 }
 
 // photo receipts are edited through their caption, text notices (crypto, retry) through their text
-async function editStatus(env, cq, text) {
+async function editStatus(env, cq, text, markup) {
   const m = cq.message || {};
-  if (m.photo) return tg(env, 'editMessageCaption', { chat_id: m.chat.id, message_id: m.message_id, caption: text });
-  return tg(env, 'editMessageText', { chat_id: m.chat.id, message_id: m.message_id, text: (m.text ? m.text + '\n\n' : '') + text, disable_web_page_preview: true });
+  const kb = markup ? { reply_markup: markup } : {};
+  if (m.photo) return tg(env, 'editMessageCaption', { chat_id: m.chat.id, message_id: m.message_id, caption: text, ...kb });
+  return tg(env, 'editMessageText', { chat_id: m.chat.id, message_id: m.message_id, text: (m.text ? m.text + '\n\n' : '') + text, disable_web_page_preview: true, ...kb });
 }
 
 // ---------------- webhook registration ----------------
@@ -289,13 +290,22 @@ async function onConfirm(env, cq, yes) {
   if (!yes) { await editStatus(env, cq, '❌ لغو شد.'); return ack('لغو شد'); }
   const payload = JSON.parse(row.payload_json || '{}');
   // every confirmed change goes through the actions layer (same checks, same admin log as everywhere else)
-  const ACTION = { drain_panel: 'panel.drain', grant: 'user.grant', link: 'user.link', del_coupon: 'coupon.delete' };
+  const ACTION = { drain_panel: 'panel.drain', grant: 'user.grant', link: 'user.link', del_coupon: 'coupon.delete',
+    u_reset: 'user.reset_usage', u_end: 'user.end', u_tg: 'user.unlink_tg', u_del: 'user.delete', u_wallet: 'user.wallet' };
   const ARGS = {
     drain_panel: () => ({ panelId: payload.panel_id }),
     grant: () => ({ userId: payload.user_id, planId: payload.plan_id }),
     link: () => ({ userId: payload.user_id, panelId: payload.panel_id, username: payload.username, planId: planStr }),
     del_coupon: () => ({ code: payload.code }),
+    u_reset: () => ({ userId: payload.user_id }),
+    u_end: () => ({ userId: payload.user_id }),
+    u_tg: () => ({ userId: payload.user_id }),
+    u_del: () => ({ userId: payload.user_id }),
+    u_wallet: () => ({ userId: payload.userId, amount: payload.amount, note: payload.note }),
   };
+  // a user change comes back with a way to the card it came from
+  const uid = payload.user_id || payload.userId;
+  const back = row.action.startsWith('u_') && uid ? { inline_keyboard: [[{ text: row.action === 'u_wallet' ? '💰 کیف پول' : '👤 کارت کاربر', callback_data: row.action === 'u_wallet' ? `m:uw:${uid}` : `m:u:${uid}` }, { text: '🏠 منوی اصلی', callback_data: 'm:home' }]] } : undefined;
   if (!ACTION[row.action]) return ack('پیدا نشد');
   let r;
   try { r = await runAction(env, chatId, ACTION[row.action], ARGS[row.action]()); } catch (e) {
@@ -303,12 +313,12 @@ async function onConfirm(env, cq, yes) {
     return ack('انجام نشد');
   }
   if (!r.ok) {
-    if (row.action === 'link') { await editStatus(env, cq, r.error); return ack('انجام نشد'); }
+    if (row.action === 'link' || back) { await editStatus(env, cq, r.error, back); return ack('انجام نشد'); }
     await editStatus(env, cq, '✅ ' + r.error);
     return ack('انجام شد');
   }
   const result = r.text;
-  await editStatus(env, cq, '✅ ' + result);
+  await editStatus(env, cq, '✅ ' + result, back);
   return ack('انجام شد');
 }
 
@@ -496,6 +506,13 @@ async function onMessage(env, msg, opts = {}) {
     }
   }
 
+  // an email, @username, Telegram id, user id or #order typed on its own opens that card
+  if (text && !text.startsWith('/') && LOOKUP.test(text)) {
+    const scr = await lookupCard(env, text, false);
+    if (!scr) return say('🔎 کاربر یا سفارشی با این مشخصات پیدا نشد.', { reply_markup: { inline_keyboard: [[{ text: '👤 کاربران', callback_data: 'm:usr' }, { text: '🏠 منوی اصلی', callback_data: 'm:home' }]] } });
+    return say(scr.text, { reply_markup: { inline_keyboard: scr.kb } });
+  }
+
   if (cmd === '/panel') {
     await say('⏳ در حال تست پنل...');
     return say(await panelReport(env));
@@ -606,11 +623,9 @@ async function onMessage(env, msg, opts = {}) {
   }
 
   if (cmd === '/find' || cmd === '/user') {
-    const { findUserByLogin } = await import('./auth.js');
-    const u = await findUserByLogin(env, text.split(/\s+/)[1] || '').catch(() => null);
-    if (!u) return say('کاربری با این ایمیل / یوزرنیم تلگرام / آیدی عددی نیست.');
-    const { userKb } = await import('./telegram-menu.js');
-    return say(await userInfo(env, u), { reply_markup: userKb(u.id) });
+    const scr = await lookupCard(env, text.split(/\s+/)[1] || '', true);
+    if (!scr) return say('کاربری با این ایمیل / یوزرنیم تلگرام / آیدی عددی / شماره‌ی کاربر نیست.');
+    return say(scr.text, { reply_markup: { inline_keyboard: scr.kb } });
   }
   if (cmd === '/reset') {
     const [, email, pass] = text.split(/\s+/);
@@ -760,6 +775,21 @@ async function onMessage(env, msg, opts = {}) {
   if (cmd === '/stats') {
     return say(await statsText(env));
   }
+}
+
+// What can be typed to open a card: #order, email, @username, a number (Telegram id first, then user id).
+const LOOKUP = /^(#\d{1,12}|@[A-Za-z][A-Za-z0-9_]{3,31}|\d{1,20}|[^@\s]+@[^@\s]+\.[^@\s]+)$/;
+async function lookupCard(env, raw, live) {
+  const v = String(raw || '').trim();
+  const S = await import('./telegram-screens.js');
+  if (/^#\d{1,12}$/.test(v)) {
+    const o = await first(env, 'SELECT id FROM orders WHERE id = ?', parseInt(v.slice(1), 10));
+    return o ? S.order(env, o.id) : null;
+  }
+  const { findUserByLogin } = await import('./auth.js');
+  let u = await findUserByLogin(env, v).catch(() => null);
+  if (!u && /^\d{1,12}$/.test(v)) u = await first(env, 'SELECT id FROM users WHERE id = ?', parseInt(v, 10));
+  return u ? S.userCard(env, u.id, live ? 'live' : undefined) : null;
 }
 
 // What /find and the user card show: wallet, plan, time and data left, read live from the panels.

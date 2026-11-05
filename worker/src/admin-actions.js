@@ -228,6 +228,329 @@ export const ACTIONS = {
   },
 };
 
+// ---------------- users (stage 2): subscription, wallet, devices, security ----------------
+// Every subscription change is written to the control plane (subscriptions, the current period, each panel
+// account's desired_* with dirty = 1) and then pushed by the same evaluate()/pushPending() path the grant and the
+// sync job use, so every panel follows and none is written to directly. A forced recompute (applied_limit = -1)
+// makes evaluate() rewrite each panel's limit even when the change is smaller than its tolerance.
+const GB = 1024 ** 3;
+const DAY = 86400;
+export const DELETED_EMAIL = (id) => `deleted+${id}@invalid`;
+export const isDeleted = (u) => /^deleted\+\d+@invalid$/.test(String(u && u.email));
+
+const userRow = (env, userId) => first(env, 'SELECT * FROM users WHERE id = ?', parseInt(userId, 10));
+const subRow = (env, userId) => first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', parseInt(userId, 10));
+async function settle(env, userId) {
+  const { evaluate, pushPending } = await import('./sync.js');
+  await evaluate(env, userId);
+  await pushPending(env, { userId });
+}
+const st = (env, sql, ...args) => env.DB.prepare(sql).bind(...args);
+// stopped accounts come back only for a user who is not blocked
+const reviveAccounts = (env, userId) => st(env, `UPDATE panel_accounts SET desired = 'active', applied_limit_bytes = -1, dirty = 1, attempts = 0
+  WHERE user_id = ? AND desired = 'stopped' AND EXISTS (SELECT 1 FROM users WHERE id = ? AND is_active = 1)`, userId, userId);
+const stopAccounts = (env, userId) => st(env, "UPDATE panel_accounts SET desired = 'stopped', dirty = 1, attempts = 0 WHERE user_id = ? AND desired = 'active'", userId);
+const forceLimits = (env, userId) => st(env, "UPDATE panel_accounts SET applied_limit_bytes = -1 WHERE user_id = ? AND desired = 'active'", userId);
+// a period that was closed by expiry or quota is opened again when the reason goes away
+const reopen = (env, sub) => [
+  st(env, "UPDATE subscriptions SET state = 'active', stop_reason = NULL WHERE id = ?", sub.id),
+  st(env, 'UPDATE sub_periods SET ended_at = NULL, end_reason = NULL, final_used_bytes = NULL WHERE id = ?', sub.period_id),
+  reviveAccounts(env, sub.user_id),
+];
+const needSub = (sub) => (!sub || !sub.period_id ? fail('این کاربر اشتراک ندارد. اول از «🎁 دادن پلن» برایش پلن بگذار.') : null);
+const ymd = (t) => (t ? new Date(t * 1000).toISOString().slice(0, 10) : 'نامحدود');
+const isOn = (v) => v === true || v === '1' || v === 1;
+
+Object.assign(ACTIONS, {
+  'user.add_days': {
+    risk: 'reversible', target: 'user',
+    async apply(env, { userId, days }) {
+      days = parseInt(days, 10);
+      if (!(days >= 1 && days <= 3650)) return fail('تعداد روز باید بین 1 و 3650 باشد.');
+      const sub = await subRow(env, userId);
+      const no = needSub(sub); if (no) return no;
+      if (!sub.expires_at) return fail('زمان این اشتراک نامحدود است.');
+      const exp = Math.max(sub.expires_at, nowSec()) + days * DAY;
+      const stmts = [
+        st(env, 'UPDATE subscriptions SET expires_at = ?, period_days = COALESCE(period_days, 0) + ? WHERE id = ?', exp, days, sub.id),
+        st(env, 'UPDATE sub_periods SET expires_at = ? WHERE id = ?', exp, sub.period_id),
+        st(env, "UPDATE panel_accounts SET desired_expire = ?, dirty = 1, attempts = 0 WHERE user_id = ? AND desired IN ('active', 'stopped')", exp, sub.user_id),
+      ];
+      if (sub.state === 'stopped' && sub.stop_reason === 'expired') stmts.push(...reopen(env, sub));
+      await env.DB.batch(stmts);
+      await settle(env, sub.user_id);
+      return { targetId: sub.user_id, summary: `+${days} روز · انقضا ${ymd(sub.expires_at)} → ${ymd(exp)}`,
+        undo: { userId: sub.user_id, expires: sub.expires_at, days }, text: `✅ ${days} روز اضافه شد (تا ${ymd(exp)}).` };
+    },
+    async undo(env, u) {
+      const sub = await subRow(env, u.userId);
+      if (!sub || !sub.period_id) return false;
+      await env.DB.batch([
+        st(env, 'UPDATE subscriptions SET expires_at = ?, period_days = MAX(0, COALESCE(period_days, 0) - ?) WHERE id = ?', u.expires, u.days, sub.id),
+        st(env, 'UPDATE sub_periods SET expires_at = ? WHERE id = ?', u.expires, sub.period_id),
+        st(env, "UPDATE panel_accounts SET desired_expire = ?, dirty = 1, attempts = 0 WHERE user_id = ? AND desired IN ('active', 'stopped')", u.expires, sub.user_id),
+      ]);
+      await settle(env, sub.user_id); // stops it again if that time has already passed
+      return true;
+    },
+  },
+  'user.add_gb': {
+    risk: 'reversible', target: 'user',
+    async apply(env, { userId, gb }) {
+      gb = parseInt(gb, 10);
+      if (!(gb >= 1 && gb <= 100000)) return fail('حجم باید بین 1 و 100000 گیگ باشد.');
+      const sub = await subRow(env, userId);
+      const no = needSub(sub); if (no) return no;
+      if (!sub.data_limit_bytes) return fail('حجم این اشتراک نامحدود است.');
+      const limit = sub.data_limit_bytes + gb * GB;
+      const stmts = [
+        st(env, 'UPDATE subscriptions SET data_limit_bytes = ? WHERE id = ?', limit, sub.id),
+        st(env, 'UPDATE sub_periods SET limit_bytes = ? WHERE id = ?', limit, sub.period_id),
+        forceLimits(env, sub.user_id),
+      ];
+      if (sub.state === 'stopped' && sub.stop_reason === 'quota' && sub.used_bytes < limit) stmts.push(...reopen(env, sub));
+      await env.DB.batch(stmts);
+      await settle(env, sub.user_id);
+      return { targetId: sub.user_id, summary: `+${gb} گیگ · سقف ${(sub.data_limit_bytes / GB).toFixed(1)} → ${(limit / GB).toFixed(1)}`,
+        undo: { userId: sub.user_id, limit: sub.data_limit_bytes }, text: `✅ ${gb} گیگ اضافه شد.` };
+    },
+    async undo(env, u) {
+      const sub = await subRow(env, u.userId);
+      if (!sub || !sub.period_id) return false;
+      await env.DB.batch([
+        st(env, 'UPDATE subscriptions SET data_limit_bytes = ? WHERE id = ?', u.limit, sub.id),
+        st(env, 'UPDATE sub_periods SET limit_bytes = ? WHERE id = ?', u.limit, sub.period_id),
+        forceLimits(env, sub.user_id),
+      ]);
+      await settle(env, sub.user_id); // stops on quota if the old limit is already used
+      return true;
+    },
+  },
+  // usage of the current period goes back to zero; each counter keeps its last panel reading as the new start
+  'user.reset_usage': {
+    risk: 'money', target: 'user',
+    async apply(env, { userId }) {
+      const sub = await subRow(env, userId);
+      const no = needSub(sub); if (no) return no;
+      const stmts = [
+        st(env, 'UPDATE usage_counters SET accounted_bytes = 0 WHERE period_id = ?', sub.period_id),
+        st(env, 'UPDATE subscriptions SET used_bytes = 0, used_at = ? WHERE id = ?', nowSec(), sub.id),
+        forceLimits(env, sub.user_id),
+      ];
+      if (sub.state === 'stopped' && sub.stop_reason === 'quota') stmts.push(...reopen(env, sub));
+      await env.DB.batch(stmts);
+      await settle(env, sub.user_id);
+      return { targetId: sub.user_id, summary: `مصرف ${(sub.used_bytes / GB).toFixed(2)} گیگ → 0`, text: '✅ مصرف این دوره صفر شد؛ همه‌ی پنل‌ها دوباره سقف کامل را می‌گیرند.' };
+    },
+  },
+  'user.pause': {
+    risk: 'reversible', target: 'user',
+    async apply(env, { userId, on }) {
+      const sub = await subRow(env, userId);
+      const no = needSub(sub); if (no) return no;
+      const pause = isOn(on);
+      if (pause) {
+        if (sub.state !== 'active') return fail('این اشتراک همین الان فعال نیست.');
+        await env.DB.batch([st(env, "UPDATE subscriptions SET state = 'stopped', stop_reason = 'admin' WHERE id = ? AND state = 'active'", sub.id), stopAccounts(env, sub.user_id)]);
+      } else {
+        if (!(sub.state === 'stopped' && sub.stop_reason === 'admin')) return fail('این اشتراک قطع موقت نیست.');
+        await env.DB.batch([st(env, "UPDATE subscriptions SET state = 'active', stop_reason = NULL WHERE id = ?", sub.id), reviveAccounts(env, sub.user_id)]);
+      }
+      await settle(env, sub.user_id);
+      return { targetId: sub.user_id, summary: pause ? 'قطع موقت' : 'وصل دوباره', undo: { userId: sub.user_id, on: pause ? 0 : 1 },
+        text: pause ? '⏸ اشتراک قطع موقت شد؛ همه‌ی پنل‌ها خاموش می‌شوند.' : '▶️ اشتراک دوباره وصل شد.' };
+    },
+    async undo(env, u) {
+      const r = await ACTIONS['user.pause'].apply(env, { userId: u.userId, on: u.on });
+      return r.ok !== false;
+    },
+  },
+  'user.end': {
+    risk: 'destructive', target: 'user',
+    async apply(env, { userId }) {
+      const sub = await subRow(env, userId);
+      const no = needSub(sub); if (no) return no;
+      const now = nowSec();
+      await env.DB.batch([
+        st(env, "UPDATE subscriptions SET expires_at = ?, state = 'active', stop_reason = NULL WHERE id = ?", now, sub.id),
+        st(env, 'UPDATE sub_periods SET expires_at = ? WHERE id = ?', now, sub.period_id),
+        st(env, "UPDATE panel_accounts SET desired_expire = ? WHERE user_id = ? AND desired IN ('active', 'stopped')", now, sub.user_id),
+      ]);
+      await settle(env, sub.user_id); // stops it as expired: period closed, every panel switched off
+      return { targetId: sub.user_id, summary: `پایان اشتراک (انقضای قبلی ${ymd(sub.expires_at)})`, text: '⏹ اشتراک تمام شد و همه‌ی پنل‌ها خاموش می‌شوند.' };
+    },
+  },
+  'user.plan_name': {
+    risk: 'reversible', target: 'user',
+    async apply(env, { userId, planId }) {
+      const sub = await subRow(env, userId);
+      const no = needSub(sub); if (no) return no;
+      planId = parseInt(planId, 10) || null;
+      const plan = planId ? await first(env, 'SELECT id, name FROM plans WHERE id = ?', planId) : null;
+      if (planId && !plan) return fail('پلن پیدا نشد.');
+      await env.DB.batch([st(env, 'UPDATE subscriptions SET plan_id = ? WHERE id = ?', planId, sub.id), st(env, 'UPDATE sub_periods SET plan_id = ? WHERE id = ?', planId, sub.period_id)]);
+      return { targetId: sub.user_id, summary: `پلن #${sub.plan_id || '-'} → #${planId || '-'}`, undo: { userId: sub.user_id, planId: sub.plan_id || 0 },
+        text: plan ? `✅ پلن در اپ: ${plan.name} (حجم و زمان عوض نشد)` : '✅ پلن از اشتراک برداشته شد (حجم و زمان عوض نشد)' };
+    },
+    async undo(env, u) {
+      const r = await ACTIONS['user.plan_name'].apply(env, { userId: u.userId, planId: u.planId });
+      return r.ok !== false;
+    },
+  },
+  // admin_credit / admin_debit through walletApply (one atomic batch; never below zero)
+  'user.wallet': {
+    risk: 'money', target: 'user',
+    async apply(env, { userId, amount, note }) {
+      amount = parseInt(amount, 10);
+      note = String(note || '').trim().slice(0, 200);
+      if (!amount || Math.abs(amount) > 1e10) return fail('مبلغ درست نیست.');
+      if (!note) return fail('دلیل (یادداشت) لازم است.');
+      const u = await userRow(env, userId);
+      if (!u) return fail('کاربر پیدا نشد.');
+      const before = u.wallet_balance;
+      const { walletApply, BillingError } = await import('./billing.js');
+      let after;
+      try { after = await walletApply(env, u, amount, amount > 0 ? 'admin_credit' : 'admin_debit', null, note); } catch (e) {
+        if (e instanceof BillingError) return fail(`❌ موجودی کافی نیست (موجودی: ${fa(before)} تومان). کیف پول هیچ‌وقت منفی نمی‌شود.`);
+        throw e;
+      }
+      return { targetId: u.id, summary: `${amount > 0 ? '+' : ''}${fa(amount)} ت · ${fa(before)} → ${fa(after)} · ${note}`,
+        text: `${amount > 0 ? '➕ شارژ' : '➖ کسر'} ${fa(Math.abs(amount))} تومان انجام شد. موجودی: ${fa(after)} تومان.` };
+    },
+  },
+  'user.device_remove': {
+    risk: 'reversible', target: 'user',
+    async apply(env, { userId, deviceId }) {
+      const u = await userRow(env, userId);
+      const dev = await first(env, 'SELECT * FROM devices WHERE id = ? AND user_id = ?', parseInt(deviceId, 10), parseInt(userId, 10));
+      if (!u || !dev) return fail('این دستگاه پیدا نشد.');
+      const { removeDevice } = await import('./account.js');
+      await removeDevice(env, u, dev.id);
+      return { targetId: u.id, summary: `حذف دستگاه ${String(dev.model || dev.device_id).slice(0, 30)}`, text: '🗑 دستگاه حذف شد.' };
+    },
+  },
+  'user.logout_all': {
+    risk: 'reversible', target: 'user',
+    async apply(env, { userId }) {
+      const r = await run(env, 'UPDATE users SET token_version = token_version + 1 WHERE id = ?', parseInt(userId, 10));
+      if (!r.meta.changes) return fail('کاربر پیدا نشد.');
+      return { targetId: parseInt(userId, 10), summary: 'خروج از همه‌ی دستگاه‌ها', text: '🚪 از همه‌ی دستگاه‌ها خارج شد؛ باید دوباره وارد شود.' };
+    },
+  },
+  // blocked = no login, no refresh, and every panel account switched off (through the ledger)
+  'user.block': {
+    risk: 'reversible', target: 'user',
+    async apply(env, { userId, on }) {
+      const u = await userRow(env, userId);
+      if (!u) return fail('کاربر پیدا نشد.');
+      if (isDeleted(u)) return fail('این کاربر حذف شده است.');
+      const block = isOn(on);
+      if (block) {
+        if (!u.is_active) return fail('همین الان مسدود است.');
+        await env.DB.batch([st(env, 'UPDATE users SET is_active = 0, token_version = token_version + 1 WHERE id = ?', u.id), stopAccounts(env, u.id)]);
+      } else {
+        if (u.is_active) return fail('مسدود نیست.');
+        const sub = await subRow(env, u.id);
+        const stmts = [st(env, 'UPDATE users SET is_active = 1 WHERE id = ?', u.id)];
+        if (sub && sub.state === 'active') stmts.push(reviveAccounts(env, u.id));
+        await env.DB.batch(stmts);
+      }
+      await settle(env, u.id);
+      return { targetId: u.id, summary: block ? 'مسدود' : 'آزاد', undo: { userId: u.id, on: block ? 0 : 1 },
+        text: block ? '⛔️ مسدود شد: نمی‌تواند وارد شود و همه‌ی پنل‌هایش خاموش می‌شوند.' : '✅ آزاد شد.' };
+    },
+    async undo(env, u) {
+      const r = await ACTIONS['user.block'].apply(env, { userId: u.userId, on: u.on });
+      return r.ok !== false;
+    },
+  },
+  'user.unlink_tg': {
+    risk: 'destructive', target: 'user',
+    async apply(env, { userId }) {
+      const u = await userRow(env, userId);
+      if (!u || !u.tg_id) return fail('این کاربر تلگرام وصل‌شده ندارد.');
+      await run(env, "UPDATE users SET tg_id = NULL, tg_username = NULL, tg_name = '' WHERE id = ?", u.id);
+      return { targetId: u.id, summary: `جداکردن تلگرام ${u.tg_username ? '@' + u.tg_username : u.tg_id}`, text: '📨 تلگرام از این حساب جدا شد.' };
+    },
+  },
+  'user.avatar_reset': {
+    risk: 'reversible', target: 'user',
+    async apply(env, { userId }) {
+      const u = await userRow(env, userId);
+      if (!u) return fail('کاربر پیدا نشد.');
+      if (!u.avatar) return fail('این کاربر آواتار انتخاب نکرده است.');
+      await run(env, 'UPDATE users SET avatar = NULL WHERE id = ?', u.id);
+      return { targetId: u.id, summary: `آواتار ${u.avatar} → پیش‌فرض`, undo: { userId: u.id, avatar: u.avatar }, text: '🖼 آواتار برگردانده شد.' };
+    },
+    async undo(env, u) {
+      await run(env, 'UPDATE users SET avatar = ? WHERE id = ? AND avatar IS NULL', u.avatar, u.userId);
+      return true;
+    },
+  },
+  'user.email': {
+    risk: 'reversible', target: 'user',
+    async apply(env, { userId, email }) {
+      const u = await userRow(env, userId);
+      if (!u) return fail('کاربر پیدا نشد.');
+      if (isDeleted(u)) return fail('این کاربر حذف شده است.');
+      const e = await checkEmail(env, email);
+      if (e.error) return fail(e.error);
+      try { await run(env, 'UPDATE users SET email = ? WHERE id = ?', e.email, u.id); } catch (x) { return fail('این ایمیل همین الان برای حساب دیگری ثبت شد.'); }
+      return { targetId: u.id, summary: `${u.email} → ${e.email}`, undo: { userId: u.id, email: u.email }, text: `✅ ایمیل شد ${e.email}` };
+    },
+    async undo(env, u) {
+      if (await first(env, 'SELECT 1 x FROM users WHERE email = ?', u.email)) return false;
+      await run(env, 'UPDATE users SET email = ? WHERE id = ?', u.email, u.userId);
+      return true;
+    },
+  },
+  // soft delete: panels off, email and Telegram freed, sessions ended; orders and wallet history stay
+  'user.delete': {
+    risk: 'destructive', target: 'user',
+    async apply(env, { userId }) {
+      const u = await userRow(env, userId);
+      if (!u) return fail('کاربر پیدا نشد.');
+      if (isDeleted(u)) return fail('این کاربر قبلاً حذف شده است.');
+      await env.DB.batch([
+        st(env, `UPDATE users SET email = ?, tg_id = NULL, tg_username = NULL, tg_name = '', avatar = NULL, is_active = 0,
+          token_version = token_version + 1 WHERE id = ?`, DELETED_EMAIL(u.id), u.id),
+        st(env, "UPDATE subscriptions SET state = 'stopped', stop_reason = 'admin' WHERE user_id = ?", u.id),
+        st(env, "UPDATE sub_periods SET ended_at = ?, end_reason = 'admin' WHERE user_id = ? AND ended_at IS NULL", nowSec(), u.id),
+        st(env, "UPDATE panel_accounts SET desired = 'removed', dirty = 1, attempts = 0 WHERE user_id = ? AND desired != 'removed'", u.id),
+        st(env, 'DELETE FROM devices WHERE user_id = ?', u.id),
+      ]);
+      const { pushPending } = await import('./sync.js');
+      await pushPending(env, { userId: u.id });
+      return { targetId: u.id, summary: `حذف ${u.email}${u.tg_username ? ' @' + u.tg_username : ''}`,
+        text: `🗑 کاربر حذف شد. سفارش‌ها و تاریخچه‌ی کیف پولش (موجودی ${fa(u.wallet_balance)} تومان) برای حساب‌رسی می‌ماند.` };
+    },
+  },
+  // the password reaches here already hashed (the form hashes it the moment it is typed)
+  'user.create': {
+    risk: 'reversible', target: 'user',
+    async apply(env, { email, hash }) {
+      const e = await checkEmail(env, email);
+      if (e.error) return fail(e.error);
+      if (!/^pbkdf2\$/.test(String(hash || ''))) return fail('رمز درست نیست.');
+      const { newUserFields } = await import('./auth.js');
+      let id;
+      try { id = await insert(env, 'users', { email: e.email, password_hash: hash, ...(await newUserFields(env, {})) }); } catch (x) { return fail('این ایمیل همین الان ثبت شد.'); }
+      return { targetId: id, summary: `کاربر دستی ${e.email}`, text: `✅ کاربر ${e.email} ساخته شد. حالا می‌توانی برایش پلن بگذاری.` };
+    },
+  },
+});
+
+// a real, free email address (not a made-up Telegram one, not a deleted one)
+export async function checkEmail(env, raw) {
+  const { cleanEmail } = await import('./util.js');
+  const { TG_DOMAIN } = await import('./auth.js');
+  let email;
+  try { email = cleanEmail(raw); } catch (e) { return { error: 'این ایمیل درست نیست.' }; }
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email || '') || email.endsWith('@' + TG_DOMAIN) || email.endsWith('@invalid')) return { error: 'این ایمیل درست نیست.' };
+  if (await first(env, 'SELECT 1 x FROM users WHERE email = ?', email)) return { error: 'این ایمیل برای حساب دیگری ثبت شده است.' };
+  return { email };
+}
+
 export const riskOf = (name) => (ACTIONS[name] ? ACTIONS[name].risk : null);
 
 // Apply one action and log it. Returns {ok, text, auditId, undoable, ...what the action returned}, or
