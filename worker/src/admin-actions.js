@@ -42,8 +42,9 @@ export const ACTIONS = {
   'plan.toggle': {
     risk: 'reversible', target: 'plan',
     async apply(env, { id }) {
-      const p = await first(env, 'SELECT id, is_active FROM plans WHERE id = ?', parseInt(id, 10));
+      const p = await first(env, 'SELECT id, is_active, archived FROM plans WHERE id = ?', parseInt(id, 10));
       if (!p) return fail('پلن پیدا نشد.');
+      if (p.archived && !p.is_active) return fail('این پلن بایگانی است؛ اول «📤 برگرداندن از بایگانی» را بزن.');
       await run(env, 'UPDATE plans SET is_active = ? WHERE id = ?', p.is_active ? 0 : 1, p.id);
       return { targetId: p.id, summary: `is_active: ${p.is_active} → ${p.is_active ? 0 : 1}`, undo: { id: p.id, col: 'is_active', value: p.is_active },
         text: p.is_active ? '🔴 خاموش شد' : '🟢 روشن شد' };
@@ -77,7 +78,7 @@ export const ACTIONS = {
       val = String(val ?? '').trim();
       if (!(key in SETTING_DEFAULTS)) return fail(`کلید ناشناخته. کلیدها:\n${Object.keys(SETTING_DEFAULTS).join('\n')}`);
       const before = (await getSettings(env))[key];
-      let text = `✅ ${key} = ${val || '(خالی)'}`;
+      let text = `✅ ${key} = ${MASKED.has(key) && val ? '••• (مخفی)' : val || '(خالی)'}`;
       if (key === 'card_number' && val) {
         const { luhnOk, bankOf, cardDigits } = await import('./banks.js');
         if (!luhnOk(val)) return fail('❌ این شماره کارت درست نیست (۱۶ رقم و معتبر). دوباره از روی کارت بنویس.');
@@ -537,6 +538,193 @@ Object.assign(ACTIONS, {
       try { id = await insert(env, 'users', { email: e.email, password_hash: hash, ...(await newUserFields(env, {})) }); } catch (x) { return fail('این ایمیل همین الان ثبت شد.'); }
       return { targetId: id, summary: `کاربر دستی ${e.email}`, text: `✅ کاربر ${e.email} ساخته شد. حالا می‌توانی برایش پلن بگذاری.` };
     },
+  },
+});
+
+// ---------------- sales (stage 3): orders, plans, coupons ----------------
+// Money moves only through settle() (approve) and walletApply() (refund), the same paths the app and the
+// payment checkers use, so a double tap or two admins at once can never deliver or refund twice.
+const orderRow = (env, id) => first(env, 'SELECT * FROM orders WHERE id = ?', parseInt(id, 10));
+const ORDER_OPEN = ['pending', 'review', 'expired', 'rejected'];
+// an order put back after a reject/cancel must not take a transfer another order holds now
+const TXID_FREE = `(txid IS NULL OR NOT EXISTS (SELECT 1 FROM orders o2 WHERE o2.txid = orders.txid AND o2.id != orders.id
+  AND o2.status NOT IN ('rejected', 'cancelled')))`;
+export const REJECT_NOTE = (o) => (o.method === 'coin' ? 'واریز ارز دیجیتال پیدا نشد. اگر واریز کرده‌ای، هش تراکنش را دوباره بفرست یا با پشتیبانی تماس بگیر.'
+  : 'رسید تأیید نشد. اگر واریز کرده‌ای با پشتیبانی تماس بگیر.');
+// a plan someone bought, got, or a code points at stays (archived) so history keeps its name
+export const planUses = async (env, id) => (await first(env, `SELECT (SELECT COUNT(*) FROM orders WHERE plan_id = ?1 OR activate_plan_id = ?1)
+  + (SELECT COUNT(*) FROM subscriptions WHERE plan_id = ?1) + (SELECT COUNT(*) FROM sub_periods WHERE plan_id = ?1)
+  + (SELECT COUNT(*) FROM coupons WHERE plan_id = ?1) c`, id)).c;
+export const COUPON_FIELDS = { p: 'percent', u: 'max_uses', d: 'expires_at', l: 'plan_id' };
+
+Object.assign(ACTIONS, {
+  'order.approve': {
+    risk: 'money', target: 'order',
+    async apply(env, { orderId }) {
+      const o = await orderRow(env, orderId);
+      if (!o) return fail('سفارش پیدا نشد.');
+      if (o.status === 'paid') return fail('این سفارش قبلاً تأیید و فعال شده است.');
+      if (!ORDER_OPEN.includes(o.status)) return fail(`وضعیت این سفارش «${o.status}» است و تأیید نمی‌شود.`);
+      const { settle, BillingError } = await import('./billing.js');
+      try { await settle(env, o); } catch (e) {
+        return fail('⚠️ فعال نشد: ' + (e instanceof BillingError ? e.message : (e && e.message) || 'خطای ناشناخته'));
+      }
+      return { targetId: o.id, summary: `تأیید دستی · ${fa(o.amount_toman)} ت · ${o.method}`, text: `✅ سفارش #${o.id} تأیید و فعال شد.` };
+    },
+  },
+  'order.reject': {
+    risk: 'reversible', target: 'order',
+    async apply(env, { orderId }) {
+      const o = await orderRow(env, orderId);
+      if (!o) return fail('سفارش پیدا نشد.');
+      if (o.status === 'paid' || o.status === 'settling') return fail('این سفارش پرداخت و فعال شده؛ رد نمی‌شود. برای پس دادن پول «↩️ بازگشت به کیف پول» را بزن.');
+      if (!['pending', 'review', 'expired'].includes(o.status)) return fail(`وضعیت این سفارش «${o.status}» است.`);
+      const r = await run(env, "UPDATE orders SET status = 'rejected', admin_note = ? WHERE id = ? AND status IN ('pending', 'review', 'expired')", REJECT_NOTE(o), o.id);
+      if (!r.meta.changes) return fail('وضعیت سفارش همین الان عوض شد؛ دوباره نگاه کن.');
+      return { targetId: o.id, summary: `${o.status} → rejected`, undo: { orderId: o.id, status: o.status, note: o.admin_note ?? null }, text: `❌ سفارش #${o.id} رد شد.` };
+    },
+    async undo(env, u) {
+      const r = await run(env, `UPDATE orders SET status = ?, admin_note = ? WHERE id = ? AND status = 'rejected' AND ${TXID_FREE}`, u.status, u.note, u.orderId);
+      return !!r.meta.changes;
+    },
+  },
+  'order.cancel': {
+    risk: 'reversible', target: 'order',
+    async apply(env, { orderId }) {
+      const o = await orderRow(env, orderId);
+      if (!o) return fail('سفارش پیدا نشد.');
+      if (!ORDER_OPEN.includes(o.status)) return fail(o.status === 'paid' ? 'سفارش پرداخت‌شده لغو نمی‌شود.' : `وضعیت این سفارش «${o.status}» است.`);
+      const r = await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ? AND status IN ('pending', 'review', 'expired', 'rejected')", o.id);
+      if (!r.meta.changes) return fail('وضعیت سفارش همین الان عوض شد؛ دوباره نگاه کن.');
+      return { targetId: o.id, summary: `${o.status} → cancelled`, undo: { orderId: o.id, status: o.status }, text: `🚫 سفارش #${o.id} لغو شد.` };
+    },
+    async undo(env, u) {
+      if (!ORDER_OPEN.includes(u.status)) return false;
+      const r = await run(env, `UPDATE orders SET status = ? WHERE id = ? AND status = 'cancelled' AND ${TXID_FREE}`, u.status, u.orderId);
+      return !!r.meta.changes;
+    },
+  },
+  // once per order: wallet_tx is UNIQUE(order_id, reason), so a second try moves nothing and says so
+  'order.refund': {
+    risk: 'money', target: 'order',
+    async apply(env, { orderId }) {
+      const o = await orderRow(env, orderId);
+      if (!o) return fail('سفارش پیدا نشد.');
+      if (o.status !== 'paid') return fail('فقط سفارش پرداخت‌شده به کیف پول برمی‌گردد.');
+      if (o.kind === 'topup') return fail('این سفارش شارژ کیف پول است؛ پولش همین الان در کیف پول کاربر است.');
+      if (!(o.amount_toman > 0)) return fail('این سفارش مبلغی ندارد که برگردد.');
+      if (await first(env, "SELECT 1 x FROM wallet_tx WHERE order_id = ? AND reason = 'admin_refund'", o.id)) return fail('این سفارش قبلاً به کیف پول برگردانده شده است.');
+      const u = await userRow(env, o.user_id);
+      if (!u) return fail('کاربر این سفارش پیدا نشد.');
+      const { walletApply } = await import('./billing.js');
+      await walletApply(env, u, o.amount_toman, 'admin_refund', o.id, `بازگشت وجه سفارش #${o.id}`);
+      if (!u.wallet_applied) return fail('این سفارش قبلاً به کیف پول برگردانده شده است.');
+      return { targetId: o.id, summary: `+${fa(o.amount_toman)} ت به کیف پول #${u.id}`,
+        text: `↩️ ${fa(o.amount_toman)} تومان به کیف پول ${u.email} برگشت (موجودی: ${fa(u.wallet_balance)}). اشتراکش دست نخورد.` };
+    },
+  },
+
+  // ---- plans: order, copy, delete / archive ----
+  'plan.move': {
+    risk: 'reversible', target: 'plan',
+    async apply(env, { id, dir }) {
+      const rows = await all(env, 'SELECT id, sort FROM plans WHERE archived = 0 ORDER BY sort, id');
+      const i = rows.findIndex((r) => r.id === parseInt(id, 10));
+      if (i < 0) return fail('پلن پیدا نشد.');
+      const j = dir === 'u' ? i - 1 : i + 1;
+      if (j < 0 || j >= rows.length) return fail(dir === 'u' ? 'همین الان اولین پلن است.' : 'همین الان آخرین پلن است.');
+      const ids = rows.map((r) => r.id);
+      [ids[i], ids[j]] = [ids[j], ids[i]];
+      const before = Object.fromEntries(rows.map((r) => [r.id, r.sort]));
+      const stmts = ids.map((pid, k) => [pid, (k + 1) * 10]).filter(([pid, s]) => before[pid] !== s).map(([pid, s]) => st(env, 'UPDATE plans SET sort = ? WHERE id = ?', s, pid));
+      if (stmts.length) await env.DB.batch(stmts);
+      return { targetId: rows[i].id, summary: `جای ${i + 1} → ${j + 1}`, undo: { sorts: before }, text: dir === 'u' ? '⬆️ بالاتر رفت' : '⬇️ پایین‌تر رفت' };
+    },
+    async undo(env, u) {
+      const pairs = Object.entries(u.sorts || {});
+      if (!pairs.length) return false;
+      await env.DB.batch(pairs.map(([pid, s]) => st(env, 'UPDATE plans SET sort = ? WHERE id = ?', s, parseInt(pid, 10))));
+      return true;
+    },
+  },
+  'plan.copy': {
+    risk: 'reversible', target: 'plan',
+    async apply(env, { id }) {
+      const p = await first(env, 'SELECT * FROM plans WHERE id = ?', parseInt(id, 10));
+      if (!p) return fail('پلن پیدا نشد.');
+      const nid = await insert(env, 'plans', { name: `${p.name} (کپی)`.slice(0, 60), duration_days: p.duration_days, data_limit_gb: p.data_limit_gb, device_limit: p.device_limit,
+        price_toman: p.price_toman, old_price_toman: p.old_price_toman, badge: p.badge, description: p.description, trial_days: p.trial_days, sort: p.sort, is_active: 0, archived: 0 });
+      return { targetId: nid, summary: `کپی از #${p.id}`, undo: { planId: nid }, text: `📋 پلن #${nid} ساخته شد (خاموش). عوضش کن و بعد روشنش کن.` };
+    },
+    undo: (env, u) => ACTIONS['plan.create'].undo(env, u),
+  },
+  'plan.delete': {
+    risk: 'destructive', target: 'plan',
+    async apply(env, { id }) {
+      const p = await first(env, 'SELECT * FROM plans WHERE id = ?', parseInt(id, 10));
+      if (!p) return fail('پلن پیدا نشد.');
+      if (await planUses(env, p.id)) {
+        if (p.archived) return fail('این پلن قبلاً بایگانی شده است.');
+        await run(env, 'UPDATE plans SET archived = 1, is_active = 0 WHERE id = ?', p.id);
+        return { targetId: p.id, archived: true, summary: `بایگانی ${p.name}`, text: `🗄 پلن ${p.name} بایگانی شد: در اپ و لیست‌ها دیده نمی‌شود، ولی اسمش در سفارش‌ها و اشتراک‌های قبلی می‌ماند.` };
+      }
+      await run(env, 'DELETE FROM plans WHERE id = ?', p.id);
+      return { targetId: p.id, archived: false, summary: `حذف ${p.name}`, text: `🗑 پلن ${p.name} برای همیشه پاک شد (هیچ سفارش و اشتراکی نداشت).` };
+    },
+  },
+  'plan.unarchive': {
+    risk: 'reversible', target: 'plan',
+    async apply(env, { id }) {
+      const p = await first(env, 'SELECT id, name, archived FROM plans WHERE id = ?', parseInt(id, 10));
+      if (!p) return fail('پلن پیدا نشد.');
+      if (!p.archived) return fail('این پلن بایگانی نیست.');
+      await run(env, 'UPDATE plans SET archived = 0 WHERE id = ?', p.id);
+      return { targetId: p.id, summary: 'archived: 1 → 0', undo: { id: p.id }, text: `📤 پلن ${p.name} از بایگانی برگشت (هنوز خاموش است).` };
+    },
+    async undo(env, u) {
+      await run(env, 'UPDATE plans SET archived = 1, is_active = 0 WHERE id = ?', u.id);
+      return true;
+    },
+  },
+
+  // ---- coupons: edit one field, pause / resume ----
+  'coupon.set': {
+    risk: 'reversible', target: 'coupon',
+    async apply(env, { id, field, value }) {
+      const col = COUPON_FIELDS[field];
+      if (!col) return fail('فیلد ناشناخته.');
+      const c = await first(env, 'SELECT * FROM coupons WHERE id = ?', parseInt(id, 10));
+      if (!c) return fail('این کد پیدا نشد.');
+      const n = parseInt(value, 10);
+      let val;
+      if (col === 'percent') { if (!(n >= 1 && n <= 100)) return fail('درصد باید بین 1 و 100 باشد.'); val = n; }
+      if (col === 'max_uses') { if (!(n >= 0 && n <= 1e6)) return fail('تعداد باید 0 (نامحدود) یا بیشتر باشد.'); val = n; }
+      if (col === 'expires_at') { if (!(n >= 0 && n <= 3650)) return fail('روز باید بین 0 (همیشه) و 3650 باشد.'); val = n ? nowSec() + n * DAY : null; }
+      if (col === 'plan_id') {
+        if (!(n >= 0)) return fail('پلن درست نیست.');
+        if (n && !(await first(env, 'SELECT 1 x FROM plans WHERE id = ? AND archived = 0', n))) return fail('این پلن پیدا نشد یا بایگانی است.');
+        val = n || null;
+      }
+      await run(env, `UPDATE coupons SET ${col} = ? WHERE id = ?`, val, c.id);
+      const nice = (v) => (v == null ? '—' : col === 'expires_at' ? ymd(v) : String(v));
+      return { targetId: c.code, summary: `${col}: ${nice(c[col])} → ${nice(val)}`, undo: { id: c.id, col, value: c[col] ?? null }, text: `✅ کد ${c.code}: ${col} = ${nice(val)}` };
+    },
+    async undo(env, u) {
+      if (!Object.values(COUPON_FIELDS).includes(u.col) && u.col !== 'is_active') return false;
+      const r = await run(env, `UPDATE coupons SET ${u.col} = ? WHERE id = ?`, u.value, u.id);
+      return !!r.meta.changes;
+    },
+  },
+  'coupon.toggle': {
+    risk: 'reversible', target: 'coupon',
+    async apply(env, { id }) {
+      const c = await first(env, 'SELECT id, code, is_active FROM coupons WHERE id = ?', parseInt(id, 10));
+      if (!c) return fail('این کد پیدا نشد.');
+      await run(env, 'UPDATE coupons SET is_active = ? WHERE id = ?', c.is_active ? 0 : 1, c.id);
+      return { targetId: c.code, summary: `is_active: ${c.is_active} → ${c.is_active ? 0 : 1}`, undo: { id: c.id, col: 'is_active', value: c.is_active },
+        text: c.is_active ? `⏸ کد ${c.code} متوقف شد` : `▶️ کد ${c.code} دوباره فعال شد` };
+    },
+    undo: (env, u) => ACTIONS['coupon.set'].undo(env, u),
   },
 });
 

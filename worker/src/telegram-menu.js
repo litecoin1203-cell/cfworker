@@ -91,6 +91,11 @@ export const FORMS = {
     done: () => 'cp',
   },
 
+  // ---- one coupon (m:f:<form>:<couponId>): a typed value for one field ----
+  cpct: couponForm('p', '٪ درصد تخفیف', 'چند درصد تخفیف؟', 'عددی از 1 تا 100 بنویس.', int(1, 100), (v) => `${v}٪`),
+  cuses: couponForm('u', '🔢 تعداد استفاده', 'چند بار قابل استفاده باشد؟ (0 = نامحدود)', 'یک عدد بنویس (0 = نامحدود).', int(0, 1e6), unlimited),
+  cdays: couponForm('d', '⏳ مهلت', 'از امروز چند روز معتبر باشد؟ (0 = همیشه)', 'یک عدد از 0 تا 3650 بنویس.', int(0, 3650), (v) => (v ? `${fa(v)} روز` : 'همیشه')),
+
   // ---- one user (the user id comes from the button: m:f:<form>:<uid>) ----
   adddays: {
     title: '➕ روز دلخواه', ok: '✅ انجام شود', back: (d) => `us:${d.userId}`, action: 'user.add_days',
@@ -123,6 +128,16 @@ export const FORMS = {
     done: (r) => `u:${r.targetId}`,
   },
 };
+
+function couponForm(field, title, ask, hint, parse, show) {
+  return {
+    title, ok: '✅ انجام شود', param: 'couponId', back: (d) => `c:${d.couponId}`, action: 'coupon.set',
+    steps: [{ key: 'v', ask, hint, parse }],
+    summary: (d) => [`کد: #${d.couponId}`, `${title}: ${show(d.v)}`],
+    args: (d) => ({ id: d.couponId, field, value: d.v }),
+    done: (r, d) => `c:${d.couponId}`,
+  };
+}
 
 // a real, free email; a taken or invalid one gets its own message
 async function emailParse(v, env) {
@@ -204,13 +219,22 @@ const SCREENS = {
   usec: (env, a) => S.userSecurity(env, parseInt(a[0], 10)),
   uo: (env, a) => S.userOrders(env, parseInt(a[0], 10), a[1]),
   o: (env, a) => S.order(env, parseInt(a[0], 10)),
+  or: (env, a) => S.orders(env, a[0], a[1], a[2]),
   un: (env, a) => S.userNets(env, parseInt(a[0], 10) || 0),
   pl: (env) => S.plans(env),
   p: (env, a) => S.plan(env, parseInt(a[0], 10)),
+  pla: (env) => S.plansArchived(env),
   pa: (env) => S.panels(env),
   pp: (env, a) => S.panel(env, parseInt(a[0], 10)),
-  cp: (env) => S.coupons(env),
+  cp: (env, a) => S.coupons(env, a[0]),
+  c: (env, a) => S.coupon(env, parseInt(a[0], 10)),
+  cpl: (env, a) => S.couponPlanPick(env, parseInt(a[0], 10)),
+  cu: (env, a) => S.couponUses(env, parseInt(a[0], 10), a[1]),
+  ref: (env) => S.referral(env),
   pay: (env) => S.payments(env),
+  payset: (env) => S.paySettings(env),
+  snd: (env) => S.senders(env),
+  sms: (env, a) => S.smsLog(env, a[0], a[1]),
   set: (env) => S.settings(env, false),
   wl: (env) => S.settings(env, true),
   sk: (env, a) => S.settingKey(env, a[0]),
@@ -221,7 +245,6 @@ const SCREENS = {
   'sys.log': (env, a) => S.auditLog(env, a[0]),
   help: () => S.help(),
   hist: (env, a) => S.history(env, a[0], a[1], a[2]),
-  or: () => S.soon('🧾 سفارش‌ها و کیف پول'),
   bc: () => S.soon('📣 پیام همگانی'),
 };
 // action routes and how risky they are (see the top of this file)
@@ -231,6 +254,10 @@ const ACTION_RISK = {
   // one user (stage 2)
   ud: 'reversible', ugb: 'reversible', upz: 'reversible', upn: 'reversible', ulo: 'reversible', ublk: 'reversible', uav: 'reversible',
   udd: 'reversible', urs: 'money', uend: 'destructive', utg: 'destructive', udel: 'destructive',
+  // sales (stage 3)
+  oap: 'money', orf: 'money', orj: 'reversible', ocx: 'reversible', orc: 'read',
+  pmv: 'reversible', pcp: 'reversible', pua: 'reversible', pdl: 'destructive',
+  cs: 'reversible', ct: 'reversible', ss: 'reversible', sdel: 'reversible',
 };
 // reversible user buttons: route -> [action, args from the button, the screen the card comes back on]
 const USER_TAPS = {
@@ -242,6 +269,13 @@ const USER_TAPS = {
   ublk: (a) => ['user.block', { userId: a[0], on: a[1] }, `usec:${a[0]}`],
   uav: (a) => ['user.avatar_reset', { userId: a[0] }, `usec:${a[0]}`],
   udd: (a) => ['user.device_remove', { userId: a[0], deviceId: a[1] }, `udv:${a[0]}`],
+  // sales (stage 3)
+  orj: (a) => ['order.reject', { orderId: a[0] }, `o:${a[0]}`],
+  ocx: (a) => ['order.cancel', { orderId: a[0] }, `o:${a[0]}`],
+  pmv: (a) => ['plan.move', { id: a[0], dir: a[1] === 'u' ? 'u' : 'd' }, `p:${a[0]}`],
+  pua: (a) => ['plan.unarchive', { id: a[0] }, `p:${a[0]}`],
+  cs: (a) => ['coupon.set', { id: a[0], field: a[1], value: a[2] }, `c:${a[0]}`],
+  ct: (a) => ['coupon.toggle', { id: a[0] }, `c:${a[0]}`],
 };
 const GiB = 1024 ** 3;
 // money / destructive user buttons: the "are you sure?" question, with what it affects
@@ -286,10 +320,12 @@ export function routeOf(data) {
 
 // ---------------- questions the bot asks (one answer -> an old text command) ----------------
 const PLAN_HINT = { price: 'قیمت به تومان', old: 'قیمت قبلی (خط‌خورده) به تومان، 0 = ندارد', days: 'تعداد روز', gb: 'حجم به گیگ، 0 = نامحدود',
-  devices: 'تعداد دستگاه، 0 = نامحدود', trial: 'روزهای تست رایگان، 0 = ندارد', name: 'نام پلن', badge: 'نشان (مثلاً پیشنهاد ویژه)' };
+  devices: 'تعداد دستگاه، 0 = نامحدود', trial: 'روزهای تست رایگان، 0 = ندارد', name: 'نام پلن', badge: 'نشان (مثلاً پیشنهاد ویژه)',
+  desc: 'توضیح کوتاه پلن که در اپ زیر اسمش می‌آید' };
 
 const ASK = {
   find: async () => ['/find', 'usr', '🔎 ایمیل، یوزرنیم تلگرام (@...) یا آیدی عددی تلگرام کاربر را بنویس:'],
+  ofind: async () => ['/order', 'or', '🔎 شماره‌ی سفارش (مثلاً 125) یا کد پیگیری رسید / هش تراکنش را بنویس:'],
   reset: async (env, args) => {
     const u = await first(env, 'SELECT email FROM users WHERE id = ?', parseInt(args[0], 10));
     return u && [`/reset ${u.email}`, `u:${args[0]}`, `🔑 رمز جدید ${u.email} را بنویس (حداقل ۸ کاراکتر).\nپیامت بعد از خواندن پاک می‌شود.`, true];
@@ -311,7 +347,7 @@ const ASK = {
   set: async (env, args) => {
     const { SETTING_DEFAULTS } = await import('./db.js');
     if (!(args[0] in SETTING_DEFAULTS)) return null;
-    const back = ['card_number', 'card_holder'].includes(args[0]) ? 'pay' : `sk:${args[0]}`;
+    const back = ['card_number', 'card_holder'].includes(args[0]) ? 'pay' : args[0] === 'referral_percent' ? 'ref' : args[0] === 'sms_senders' ? 'snd' : `sk:${args[0]}`;
     return [`/set ${args[0]}`, back, `✏️ مقدار جدید «${S.KEY_FA[args[0]] || args[0]}» را بنویس:`];
   },
 };
@@ -359,7 +395,9 @@ async function cardWithUndo(env, cq, data, r) {
   const scr = await renderScreen(env, data);
   return show(env, cq, { text: scr.text, kb: [...undoRows(r), ...scr.kb] });
 }
-const UNDO_BACK = { user: (id) => `u:${id}`, plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, coupon: () => 'cp' };
+const UNDO_BACK = { user: (id) => `u:${id}`, plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, coupon: () => 'cp', order: (id) => `o:${id}` };
+// where a one-tap setting comes back to
+const SET_BACK = { referral_percent: 'ref' };
 
 // onCallback in telegram.js has already checked that the tap came from the admin in their private chat.
 export async function onMenu(env, cq) {
@@ -479,6 +517,65 @@ export async function onMenu(env, cq) {
     await askConfirm(env, chatId, q[0], { user_id: int(0) }, q[1]);
     return ack('');
   }
+  // ---- sales (stage 3) ----
+  if (route === 'oap' || route === 'orf') { // money: asks first; the action itself refuses a second delivery or refund
+    const o = await first(env, `SELECT o.id, o.status, o.kind, o.amount_toman, o.method, u.email, p.name plan_name,
+        (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'admin_refund') refunded
+      FROM orders o JOIN users u ON u.id = o.user_id LEFT JOIN plans p ON p.id = COALESCE(o.plan_id, o.activate_plan_id) WHERE o.id = ?`, int(0));
+    if (!o) return ack('سفارش پیدا نشد');
+    const what = o.kind === 'plan' ? `پلن ${o.plan_name || ''}` : 'شارژ کیف پول';
+    if (route === 'oap') {
+      if (!S.ORDER_OPEN.includes(o.status)) { await ack(o.status === 'paid' ? 'قبلاً تأیید و فعال شده' : 'این سفارش تأییدشدنی نیست', true); return showScreen(env, cq, `o:${o.id}`); }
+      await askConfirm(env, chatId, 'o_approve', { order_id: o.id }, `سفارش #${o.id} (${what}، ${fa(o.amount_toman)} تومان، ${o.email}) تأیید و همین الان فعال شود؟\nفقط وقتی بزن که پول را واقعاً گرفته‌ای.`);
+      return ack('');
+    }
+    if (o.status !== 'paid' || o.kind === 'topup' || o.refunded) { await ack(o.refunded ? 'قبلاً برگردانده شده' : 'این سفارش برگشت‌پذیر نیست', true); return showScreen(env, cq, `o:${o.id}`); }
+    await askConfirm(env, chatId, 'o_refund', { order_id: o.id }, `${fa(o.amount_toman)} تومانِ سفارش #${o.id} (${what}) به کیف پول ${o.email} برگردد؟\nاشتراکش قطع نمی‌شود؛ اگر لازم است، از کارت کاربر «⏹ پایان اشتراک» را بزن. این کار فقط یک بار انجام می‌شود.`);
+    return ack('');
+  }
+  if (route === 'orc') { // the receipt photo, as a new message under the card
+    const o = await first(env, 'SELECT id, receipt_file_id, receipt_ref, amount_toman FROM orders WHERE id = ?', int(0));
+    if (!o || !o.receipt_file_id) return ack('این سفارش عکس رسید ندارد');
+    await ack('');
+    return tg(env, 'sendPhoto', { chat_id: chatId, photo: o.receipt_file_id, caption: `🖼 رسید سفارش #${o.id} · ${fa(o.amount_toman)} تومان${o.receipt_ref ? ` · پیگیری ${o.receipt_ref}` : ''}`,
+      reply_markup: backKb(`o:${o.id}`) });
+  }
+  if (route === 'pcp') {
+    const r = await runAction(env, chatId, 'plan.copy', { id: int(0) });
+    if (!r.ok) return ack(r.error, true);
+    await ack(r.text);
+    return cardWithUndo(env, cq, `p:${r.targetId}`, r);
+  }
+  if (route === 'pdl') { // destructive: asks first and says whether it is deleted or archived
+    const p = await first(env, 'SELECT id, name, archived FROM plans WHERE id = ?', int(0));
+    if (!p) return ack('پلن پیدا نشد');
+    if (p.archived) return ack('این پلن قبلاً بایگانی شده', true);
+    const { planUses } = await import('./admin-actions.js');
+    const used = await planUses(env, p.id);
+    await askConfirm(env, chatId, 'del_plan', { plan_id: p.id }, used
+      ? `پلن «${p.name}» ${fa(used)} سفارش، اشتراک یا کد تخفیف دارد، پس پاک نمی‌شود و بایگانی می‌شود:\n• از اپ و از لیست «دادن پلن» برمی‌دارد\n• اسمش در سفارش‌ها و اشتراک‌های قبلی می‌ماند\n• اشتراک فعلی کسی قطع نمی‌شود\nبعداً از «🗄 بایگانی» برمی‌گردد.`
+      : `پلن «${p.name}» هیچ سفارش و اشتراکی ندارد و برای همیشه پاک می‌شود. این کار برگشت ندارد.`);
+    return ack('');
+  }
+  if (route === 'ss') { // a one-tap setting: only the choices on the screen are accepted
+    const [key, val] = args;
+    if (!S.SET_CHOICES[key] || !S.SET_CHOICES[key].includes(val)) return ack('');
+    const r = await runAction(env, chatId, 'setting.set', { key, val });
+    if (!r.ok) return ack(r.error, true);
+    await ack('✅ ' + (S.KEY_FA[key] || key) + ' = ' + val);
+    return cardWithUndo(env, cq, SET_BACK[key] || 'payset', r);
+  }
+  if (route === 'sdel') {
+    const { normSender } = await import('./sms.js');
+    const { getSettings } = await import('./db.js');
+    const snd = args.join(':');
+    const list = String((await getSettings(env)).sms_senders || '').split(',').filter(Boolean);
+    if (!list.includes(snd)) { await ack('این فرستنده در لیست نیست'); return showScreen(env, cq, 'snd'); }
+    const r = await runAction(env, chatId, 'setting.set', { key: 'sms_senders', val: list.filter((x) => x !== snd).map(normSender).join(',') });
+    if (!r.ok) return ack(r.error, true);
+    await ack('🗑 حذف شد؛ پیامک‌های این شماره دیگر خودکار تأیید نمی‌شوند');
+    return cardWithUndo(env, cq, 'snd', r);
+  }
   if (route === 'undo') {
     const r = await undoAction(env, chatId, int(0));
     if (!r.ok) { await ack(r.error, true); return showScreen(env, cq, 'sys.log'); }
@@ -494,10 +591,11 @@ async function startForm(env, cq, name, ack, uid) {
   const f = FORMS[name];
   if (!f) return ack('پیدا نشد');
   const data = {};
-  if (typeof f.back === 'function') { // a per-user form needs a user that exists
+  if (typeof f.back === 'function') { // a per-user (or per-coupon) form needs one that exists
     const id = parseInt(uid, 10);
-    if (!(id > 0) || !(await first(env, 'SELECT 1 x FROM users WHERE id = ?', id))) return ack('کاربر پیدا نشد');
-    data.userId = id;
+    const coupon = f.param === 'couponId';
+    if (!(id > 0) || !(await first(env, `SELECT 1 x FROM ${coupon ? 'coupons' : 'users'} WHERE id = ?`, id))) return ack(coupon ? 'این کد پیدا نشد' : 'کاربر پیدا نشد');
+    data[coupon ? 'couponId' : 'userId'] = id;
   }
   const s = { flow: name, step: 0, data, back: backOf(f, data), secret: secretAt(f, 0) };
   await setSession(env, cq.message?.chat?.id, s);

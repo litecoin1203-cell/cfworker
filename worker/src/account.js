@@ -53,7 +53,7 @@ function planOut(p) {
 }
 
 export async function plans(env) {
-  const rows = await all(env, 'SELECT * FROM plans WHERE is_active = 1 ORDER BY sort, id');
+  const rows = await all(env, 'SELECT * FROM plans WHERE is_active = 1 AND archived = 0 ORDER BY sort, id');
   return json(rows.map(planOut));
 }
 
@@ -290,7 +290,7 @@ export async function removeDevice(env, user, devId) {
 
 export async function startTrial(env, user, body, request) {
   const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', body.plan_id);
-  if (!plan || !plan.is_active || plan.trial_days <= 0) throw err(400, 'no_trial', 'این پلن تست رایگان ندارد.');
+  if (!plan || !plan.is_active || plan.archived || plan.trial_days <= 0) throw err(400, 'no_trial', 'این پلن تست رایگان ندارد.');
   if (!(await trialAvailable(env, user))) throw err(400, 'trial_used', 'تست رایگان را قبلاً استفاده کرده‌ای.');
   const deviceId = request.headers.get('x-device-id');
   if (deviceId) {

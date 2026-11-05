@@ -271,7 +271,7 @@ export async function askConfirm(env, chatId, action, payload, question) {
 async function askLinkConfirm(env, chatId, payload, check) {
   const token = [...crypto.getRandomValues(new Uint8Array(9))].map((b) => b.toString(16).padStart(2, '0')).join('');
   await insert(env, 'bot_confirm', { token, admin_id: String(chatId), action: 'link', payload_json: JSON.stringify(payload || {}), expires_at: nowSec() + 300 });
-  const plans = (await all(env, 'SELECT id, name, duration_days, data_limit_gb FROM plans WHERE is_active = 1 ORDER BY sort, id')).slice(0, 8);
+  const plans = (await all(env, 'SELECT id, name, duration_days, data_limit_gb FROM plans WHERE is_active = 1 AND archived = 0 ORDER BY sort, id')).slice(0, 8);
   const sid = check.suggestedPlanId;
   plans.sort((a, b) => (b.id === sid) - (a.id === sid));
   const rows = plans.map((p) => [{ text: `${p.id === sid ? '⭐ پیشنهادی: ' : '✅ '}${p.name} (${p.duration_days} روز، ${p.data_limit_gb || 'نامحدود'} گیگ)`.slice(0, 60), callback_data: `lp:${token}:${p.id}` }]);
@@ -291,7 +291,8 @@ async function onConfirm(env, cq, yes) {
   const payload = JSON.parse(row.payload_json || '{}');
   // every confirmed change goes through the actions layer (same checks, same admin log as everywhere else)
   const ACTION = { drain_panel: 'panel.drain', grant: 'user.grant', link: 'user.link', del_coupon: 'coupon.delete',
-    u_reset: 'user.reset_usage', u_end: 'user.end', u_tg: 'user.unlink_tg', u_del: 'user.delete', u_wallet: 'user.wallet' };
+    u_reset: 'user.reset_usage', u_end: 'user.end', u_tg: 'user.unlink_tg', u_del: 'user.delete', u_wallet: 'user.wallet',
+    o_approve: 'order.approve', o_refund: 'order.refund', del_plan: 'plan.delete' };
   const ARGS = {
     drain_panel: () => ({ panelId: payload.panel_id }),
     grant: () => ({ userId: payload.user_id, planId: payload.plan_id }),
@@ -302,10 +303,16 @@ async function onConfirm(env, cq, yes) {
     u_tg: () => ({ userId: payload.user_id }),
     u_del: () => ({ userId: payload.user_id }),
     u_wallet: () => ({ userId: payload.userId, amount: payload.amount, note: payload.note }),
+    o_approve: () => ({ orderId: payload.order_id }),
+    o_refund: () => ({ orderId: payload.order_id }),
+    del_plan: () => ({ id: payload.plan_id }),
   };
   // a user change comes back with a way to the card it came from
   const uid = payload.user_id || payload.userId;
-  const back = row.action.startsWith('u_') && uid ? { inline_keyboard: [[{ text: row.action === 'u_wallet' ? '💰 کیف پول' : '👤 کارت کاربر', callback_data: row.action === 'u_wallet' ? `m:uw:${uid}` : `m:u:${uid}` }, { text: '🏠 منوی اصلی', callback_data: 'm:home' }]] } : undefined;
+  const homeBtn = { text: '🏠 منوی اصلی', callback_data: 'm:home' };
+  let back = row.action.startsWith('u_') && uid ? { inline_keyboard: [[{ text: row.action === 'u_wallet' ? '💰 کیف پول' : '👤 کارت کاربر', callback_data: row.action === 'u_wallet' ? `m:uw:${uid}` : `m:u:${uid}` }, homeBtn]] } : undefined;
+  if (row.action.startsWith('o_') && payload.order_id) back = { inline_keyboard: [[{ text: '🧾 کارت سفارش', callback_data: `m:o:${payload.order_id}` }, homeBtn]] };
+  if (row.action === 'del_plan') back = { inline_keyboard: [[{ text: '📦 پلن‌ها', callback_data: 'm:pl' }, homeBtn]] };
   if (!ACTION[row.action]) return ack('پیدا نشد');
   let r;
   try { r = await runAction(env, chatId, ACTION[row.action], ARGS[row.action]()); } catch (e) {
@@ -622,6 +629,11 @@ async function onMessage(env, msg, opts = {}) {
     }
   }
 
+  if (cmd === '/order') { // the order search question (#id, a number, or a receipt / transfer code)
+    const S = await import('./telegram-screens.js');
+    const scr = await S.orderSearch(env, text.split(/\s+/).slice(1).join(' '));
+    return say(scr.text, { reply_markup: { inline_keyboard: scr.kb } });
+  }
   if (cmd === '/find' || cmd === '/user') {
     const scr = await lookupCard(env, text.split(/\s+/)[1] || '', true);
     if (!scr) return say('کاربری با این ایمیل / یوزرنیم تلگرام / آیدی عددی / شماره‌ی کاربر نیست.');

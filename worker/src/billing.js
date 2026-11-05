@@ -132,6 +132,7 @@ export async function walletApply(env, user, amount, reason, orderId, note) {
   ]);
   const fresh = await first(env, 'SELECT wallet_balance FROM users WHERE id = ?', user.id);
   user.wallet_balance = fresh.wallet_balance;
+  user.wallet_applied = !!tx.meta.changes; // false = this order+reason was already applied (nothing moved now)
   if (!tx.meta.changes) {
     const done = orderId != null && await first(env, 'SELECT 1 FROM wallet_tx WHERE order_id = ? AND reason = ?', orderId, reason);
     if (!done) throw new BillingError('insufficient_balance', 'موجودی کیف پول کافی نیست.');

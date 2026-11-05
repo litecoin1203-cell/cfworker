@@ -5,6 +5,7 @@ import { first, all, getSettings, SETTING_DEFAULTS } from './db.js';
 import { nowSec } from './util.js';
 import { statsText, userInfo, HELP, STATE_FA } from './telegram.js';
 import { canUndo } from './admin-actions.js';
+import { COINS, walletKey, coinById } from './coins.js';
 
 export const fa = (n) => Number(n || 0).toLocaleString('en-US');
 export const b = (text, data) => ({ text, callback_data: String(data).slice(0, 64) });
@@ -42,12 +43,15 @@ export const pageRow = (route, pg) => {
 export async function home(env) {
   const now = nowSec();
   const c = await first(env, `SELECT (SELECT COUNT(*) FROM users) users,
-    (SELECT COUNT(*) FROM subscriptions WHERE expires_at > ? OR expires_at IS NULL) active,
-    (SELECT COUNT(*) FROM orders WHERE status = 'review') review`, now);
+    (SELECT COUNT(*) FROM subscriptions WHERE expires_at > ?1 OR expires_at IS NULL) active,
+    (SELECT COUNT(*) FROM orders WHERE status = 'review') review,
+    (SELECT COUNT(*) FROM sms_log WHERE ${SMS_UNMATCHED} AND created_at > ?2) sms,
+    (SELECT COUNT(*) FROM settings WHERE key LIKE 'panel_err_%' AND value != '') perr`, now, now - SMS_DAYS * 86400);
+  const todo = c.review + c.sms + c.perr;
   return {
-    text: `🏠 مدیریت Cloud Gold\n\n👥 کاربران: ${fa(c.users)} · ✅ اشتراک فعال: ${fa(c.active)}\n🧾 رسید منتظر بررسی: ${fa(c.review)}\n\nیک بخش را انتخاب کن:`,
+    text: `🏠 مدیریت Cloud Gold\n\n👥 کاربران: ${fa(c.users)} · ✅ اشتراک فعال: ${fa(c.active)}\n🧾 رسید منتظر بررسی: ${fa(c.review)}${todo > c.review ? ` · کار دیگر: ${fa(todo - c.review)}` : ''}\n\nیک بخش را انتخاب کن:`,
     kb: [
-      [b(c.review ? `📥 کارهای منتظر (${c.review})` : '📥 کارهای منتظر ✅', 'm:in'), b('👤 کاربران', 'm:usr')],
+      [b(todo ? `📥 کارهای منتظر (${todo})` : '📥 کارهای منتظر ✅', 'm:in'), b('👤 کاربران', 'm:usr')],
       [b('📦 پلن‌ها', 'm:pl'), b('🧾 سفارش‌ها و کیف پول', 'm:or')],
       [b('🗂 پنل‌ها و سرورها', 'm:pa'), b('🏷 تخفیف و دعوت', 'm:cp')],
       [b('💳 روش‌های پرداخت', 'm:pay'), b('📱 اپ Pleat', 'm:app')],
@@ -57,14 +61,26 @@ export async function home(env) {
   };
 }
 
+// bank SMS that paid nothing (no order, two orders, or the delivery failed) in the last week
+const SMS_UNMATCHED = "result IN ('no_order', 'ambiguous', 'settle_failed')";
+const SMS_DAYS = 7;
+
 export async function inbox(env) {
   const c = await first(env, `SELECT (SELECT COUNT(*) FROM orders WHERE status = 'review') review,
-    (SELECT COUNT(*) FROM orders WHERE status = 'review' AND method = 'coin') coin,
-    (SELECT COUNT(*) FROM settings WHERE key LIKE 'panel_err_%' AND value != '') perr`);
+    (SELECT COUNT(*) FROM orders WHERE status = 'review' AND method = 'coin' AND txid IS NOT NULL) coin,
+    (SELECT COUNT(*) FROM sms_log WHERE ${SMS_UNMATCHED} AND created_at > ?) sms,
+    (SELECT COUNT(*) FROM settings WHERE key LIKE 'panel_err_%' AND value != '') perr`, nowSec() - SMS_DAYS * 86400);
+  const any = c.review + c.sms + c.perr;
   return {
-    text: [crumb('📥 کارهای منتظر'), '', `🧾 رسید منتظر بررسی: ${fa(c.review)}${c.coin ? ` (ارز دیجیتال: ${fa(c.coin)})` : ''}`,
-      `⚠️ پنلی که ساخت اکانت را رد کرده: ${fa(c.perr)}`, '', c.review ? 'رسیدها را با دکمه‌ی زیر ببین و تأیید یا رد کن.' : 'کاری منتظر تو نیست ✅'].join('\n'),
-    kb: [...(c.review ? [[b(`🧾 دیدن ${fa(c.review)} رسید`, 'm:ord')]] : []), ...(c.perr ? [[b('🗂 پنل‌ها', 'm:pa')]] : []), nav('home')],
+    text: [crumb('📥 کارهای منتظر'), '', `🧾 رسید منتظر بررسی: ${fa(c.review)}`, `💎 واریز ارز پیداشده (منتظر تأیید تو): ${fa(c.coin)}`,
+      `📨 پیامک بانکی بی‌سفارش یا ناموفق (${SMS_DAYS} روز): ${fa(c.sms)}`, `⚠️ پنلی که ساخت اکانت را رد کرده: ${fa(c.perr)}`, '',
+      any ? 'هر مورد را با دکمه‌اش باز کن.' : 'کاری منتظر تو نیست ✅'].join('\n'),
+    kb: [
+      ...(c.review ? [[b(`🧾 فرستادن ${fa(c.review)} رسید با دکمه`, 'm:ord'), b('📋 لیست رسیدها', 'm:or:rev')]] : []),
+      ...(c.coin ? [[b(`💎 ${fa(c.coin)} واریز ارز`, 'm:or:rev:coin')]] : []),
+      ...(c.sms ? [[b(`📨 ${fa(c.sms)} پیامک بی‌سفارش`, 'm:sms:un')]] : []),
+      ...(c.perr ? [[b('🗂 پنل‌ها', 'm:pa')]] : []),
+      nav('home')],
   };
 }
 
@@ -186,7 +202,7 @@ export async function userPlanPick(env, id) {
   };
 }
 
-const TX_FA = { admin_credit: 'شارژ مدیر', admin_debit: 'کسر مدیر', referral: 'پاداش دعوت', topup: 'شارژ', purchase: 'خرید', refund: 'بازگشت' };
+const TX_FA = { admin_credit: 'شارژ مدیر', admin_debit: 'کسر مدیر', referral: 'پاداش دعوت', topup: 'شارژ', purchase: 'خرید', refund: 'بازگشت', admin_refund: 'بازگشت وجه سفارش' };
 // 💰 wallet: balance, credit / debit, history (8 per page)
 export async function userWallet(env, id, cursor) {
   const u = await first(env, 'SELECT id, email, tg_id, tg_username, wallet_balance FROM users WHERE id = ?', id);
@@ -241,15 +257,80 @@ export async function userOrders(env, id, cursor) {
   };
 }
 
-export async function order(env, id) {
-  const o = await first(env, `SELECT o.*, u.email, u.tg_id, u.tg_username, p.name plan_name FROM orders o JOIN users u ON u.id = o.user_id
-    LEFT JOIN plans p ON p.id = COALESCE(o.plan_id, o.activate_plan_id) WHERE o.id = ?`, id);
-  if (!o) return { text: crumb('🧾 سفارش') + '\n\nسفارش پیدا نشد.', kb: [nav('usr')] };
-  const what = o.kind === 'plan' ? `پلن ${o.plan_name || ''}` : o.activate_plan_id ? `شارژ + فعال‌سازی ${o.plan_name || ''}` : 'شارژ کیف پول';
+// ---------------- orders (stage 3) ----------------
+export const ORDER_ST = {
+  rev: { label: 'بررسی', where: "status = 'review'" },
+  pend: { label: 'منتظر پرداخت', where: "status = 'pending'" },
+  paid: { label: 'پرداخت‌شده', where: "status = 'paid'" },
+  rej: { label: 'رد شده', where: "status = 'rejected'" },
+  all: { label: 'همه', where: '1 = 1' },
+};
+export const ORDER_MT = { all: 'همه', card: 'کارت', coin: 'ارز', wallet: 'کیف پول', crypto: 'درگاه' };
+const METHOD_FA = { card: '💳 کارت‌به‌کارت', coin: '💎 ارز دیجیتال', wallet: '👛 کیف پول', crypto: '🌐 درگاه ارزی' };
+
+// or[:status][:method][:cursor]
+export async function orders(env, a0, a1, a2) {
+  const st = ORDER_ST[a0] ? a0 : 'rev';
+  const mt = ORDER_MT[a1] ? a1 : 'all';
+  const cursor = ORDER_ST[a0] ? (ORDER_MT[a1] ? a2 : a1) : a0;
+  const where = ORDER_ST[st].where + (mt === 'all' ? '' : ' AND method = ?');
+  const args = mt === 'all' ? [] : [mt];
+  const c = await first(env, `SELECT COUNT(*) n, COALESCE(SUM(amount_toman), 0) sum FROM orders WHERE ${where}`, ...args);
+  const pg = await page(env, { select: 'id, amount_toman, status, method, created_at, kind', from: 'orders', where, args, cursor });
+  const sTabs = Object.entries(ORDER_ST).map(([k, f]) => b(`${k === st ? '✅ ' : ''}${f.label}`, `m:or:${k}:${mt}`));
+  const mTabs = Object.entries(ORDER_MT).map(([k, l]) => b(`${k === mt ? '✅ ' : ''}${l}`, `m:or:${st}:${k}`));
   return {
-    text: [crumb('🧾 سفارش', `#${o.id}`), '', `🧾 سفارش #${o.id} — ${what}`, `👤 ${who(o)}`, `مبلغ: ${fa(o.amount_toman)} تومان${o.coin_amount ? ` (${o.coin_amount} ${String(o.coin || '').toUpperCase()})` : ''}`,
-      `روش: ${o.method || '-'} · وضعیت: ${ORDER_FA[o.status] || o.status}`, `ثبت: ${ymd(o.created_at)}`, `شماره پیگیری: ${o.receipt_ref || o.txid || '-'}`].join('\n'),
-    kb: [[b('👤 کارت کاربر', `m:u:${o.user_id}`)], nav(`uo:${o.user_id}`)],
+    text: [crumb('🧾 سفارش‌ها و کیف پول'), '', `«${ORDER_ST[st].label}» · روش: ${ORDER_MT[mt]}`, `${fa(c.n)} سفارش · جمع ${fa(c.sum)} تومان`, '',
+      pg.rows.length ? 'روی هر سفارش بزن تا ببینی، تأیید یا رد کنی. برای پیدا کردن با شماره یا کد پیگیری «🔎 جستجو» را بزن.' : 'سفارشی در این فیلتر نیست.'].join('\n'),
+    kb: [sTabs.slice(0, 3), sTabs.slice(3), mTabs, [b('🔎 جستجوی سفارش', 'm:w:ofind')],
+      ...pg.rows.map((o) => [b(`#${o.id} · ${fa(o.amount_toman)} ت · ${ORDER_FA[o.status] || o.status} · ${ymd(o.created_at)}`, `m:o:${o.id}`)]),
+      ...pageRow(`or:${st}:${mt}`, pg), nav('home')],
+  };
+}
+
+// what the 🔎 question finds: #id or a number = the order id, anything else = its exact receipt/transfer code
+export async function orderSearch(env, raw) {
+  const q = String(raw || '').trim().slice(0, 120);
+  const id = /^#?\d{1,12}$/.test(q) ? parseInt(q.replace('#', ''), 10) : 0;
+  const rows = q ? await all(env, `SELECT id, amount_toman, status, created_at FROM orders WHERE id = ? OR receipt_ref = ? OR txid = ? ORDER BY id DESC LIMIT 8`, id, q, q) : [];
+  if (rows.length === 1) return order(env, rows[0].id);
+  return {
+    text: [crumb('🧾 سفارش‌ها', '🔎 جستجو'), '', rows.length ? `${rows.length} سفارش پیدا شد:` : 'سفارشی با این شماره یا کد پیگیری پیدا نشد.'].join('\n'),
+    kb: [...rows.map((o) => [b(`#${o.id} · ${fa(o.amount_toman)} ت · ${ORDER_FA[o.status] || o.status} · ${ymd(o.created_at)}`, `m:o:${o.id}`)]),
+      [b('🔎 جستجوی دوباره', 'm:w:ofind')], nav('or')],
+  };
+}
+
+export const ORDER_OPEN = ['pending', 'review', 'expired', 'rejected'];
+export async function order(env, id) {
+  const o = await first(env, `SELECT o.*, u.email, u.tg_id, u.tg_username, p.name plan_name, c.code coupon_code,
+      (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'admin_refund') refunded
+    FROM orders o JOIN users u ON u.id = o.user_id LEFT JOIN plans p ON p.id = COALESCE(o.plan_id, o.activate_plan_id)
+    LEFT JOIN coupons c ON c.id = o.coupon_id WHERE o.id = ?`, id);
+  if (!o) return { text: crumb('🧾 سفارش') + '\n\nسفارش پیدا نشد.', kb: [nav('or')] };
+  const what = o.kind === 'plan' ? `پلن ${o.plan_name || ''}` : o.activate_plan_id ? `شارژ + فعال‌سازی ${o.plan_name || ''}` : 'شارژ کیف پول';
+  const open = ORDER_OPEN.includes(o.status);
+  const canRefund = o.status === 'paid' && o.kind !== 'topup' && o.amount_toman > 0 && !o.refunded;
+  const acts = [
+    ...(open ? [b('✅ تأیید و فعال‌سازی', `m:oap:${o.id}`)] : []),
+    ...(['pending', 'review', 'expired'].includes(o.status) ? [b('❌ رد', `m:orj:${o.id}`)] : []),
+    ...(open ? [b('🚫 لغو', `m:ocx:${o.id}`)] : []),
+  ];
+  return {
+    text: [crumb('🧾 سفارش‌ها', `#${o.id}`), '', `🧾 سفارش #${o.id} — ${what}`, `👤 ${who(o)}`,
+      `مبلغ: ${fa(o.amount_toman)} تومان${o.list_price_toman && o.list_price_toman !== o.amount_toman ? ` (قیمت اصلی ${fa(o.list_price_toman)})` : ''}${o.coin_amount ? ` (${o.coin_amount} ${String(o.coin || '').toUpperCase()})` : ''}`,
+      `روش: ${METHOD_FA[o.method] || o.method || '-'} · وضعیت: ${ORDER_FA[o.status] || o.status}`,
+      ...(o.coupon_code ? [`🏷 کد تخفیف: ${o.coupon_code}`] : []),
+      `ثبت: ${ymd(o.created_at)}${o.paid_at ? ` · پرداخت: ${ymd(o.paid_at)}` : ''}`, `شماره پیگیری: ${o.receipt_ref || o.txid || '-'}`,
+      ...(o.admin_note ? [`📝 یادداشت برای کاربر: ${String(o.admin_note).slice(0, 120)}`] : []),
+      ...(o.refunded ? ['↩️ مبلغش به کیف پول برگشت داده شده.'] : [])].join('\n'),
+    kb: [
+      ...(acts.length ? [acts] : []),
+      ...(canRefund ? [[b('↩️ بازگشت پول به کیف پول', `m:orf:${o.id}`)]] : []),
+      ...(o.receipt_file_id ? [[b('🖼 عکس رسید', `m:orc:${o.id}`)]] : []),
+      [b('👤 کارت کاربر', `m:u:${o.user_id}`), b('🧾 سفارش‌های کاربر', `m:uo:${o.user_id}`), b('📜 تاریخچه', `m:hist:order:${o.id}`)],
+      nav('or'),
+    ],
   };
 }
 
@@ -268,17 +349,32 @@ export async function userNets(env, id) {
 }
 
 // ---------------- plans ----------------
+// the app shows plans in this order (sort, then id); archived plans are out of the app and of every list
 export async function plans(env) {
-  const rows = await all(env, 'SELECT * FROM plans WHERE archived = 0 ORDER BY sort, id');
+  const rows = await all(env, 'SELECT id, name, price_toman, is_active, archived FROM plans ORDER BY sort, id');
+  const live = rows.filter((p) => !p.archived);
+  const arch = rows.length - live.length;
   return {
-    text: `${crumb('📦 پلن‌ها')}\n\nروی هر پلن بزن تا قیمت، روز، حجم و بقیه را عوض کنی.\n🟢 = در اپ دیده می‌شود · 🔴 = خاموش`,
-    kb: [...rows.map((p) => [b(`${p.is_active ? '🟢' : '🔴'} #${p.id} ${p.name} — ${fa(p.price_toman)} ت`, `m:p:${p.id}`)]),
-      [b('➕ پلن جدید', 'm:f:newplan')], nav('home')],
+    text: `${crumb('📦 پلن‌ها')}\n\nبه همین ترتیب در اپ دیده می‌شوند. روی هر پلن بزن تا قیمت، روز، حجم، ترتیب و بقیه را عوض کنی.\n🟢 = در اپ دیده می‌شود · 🔴 = خاموش`,
+    kb: [...live.map((p) => [b(`${p.is_active ? '🟢' : '🔴'} #${p.id} ${p.name} — ${fa(p.price_toman)} ت`, `m:p:${p.id}`)]),
+      [b('➕ پلن جدید', 'm:f:newplan'), ...(arch ? [b(`🗄 بایگانی (${fa(arch)})`, 'm:pla')] : [])], nav('home')],
+  };
+}
+
+export async function plansArchived(env) {
+  const rows = await all(env, 'SELECT id, name, price_toman FROM plans WHERE archived = 1 ORDER BY id DESC LIMIT 30');
+  return {
+    text: `${crumb('📦 پلن‌ها', '🗄 بایگانی')}\n\nپلن‌هایی که حذف شدند ولی سفارش یا اشتراک داشتند. در اپ دیده نمی‌شوند؛ اسمشان در تاریخچه می‌ماند.`,
+    kb: [...rows.map((p) => [b(`🗄 #${p.id} ${p.name} — ${fa(p.price_toman)} ت`, `m:p:${p.id}`)]), nav('pl')],
   };
 }
 
 export async function plan(env, id, extraRows = []) {
-  const p = await first(env, 'SELECT * FROM plans WHERE id = ?', id);
+  const p = await first(env, `SELECT p.*, (SELECT COUNT(*) FROM orders WHERE status = 'paid' AND (plan_id = p.id OR activate_plan_id = p.id)) sold,
+      (SELECT COALESCE(SUM(amount_toman), 0) FROM orders WHERE status = 'paid' AND kind = 'plan' AND plan_id = p.id) income,
+      (SELECT COUNT(*) FROM plans q WHERE q.archived = 0 AND (q.sort < p.sort OR (q.sort = p.sort AND q.id < p.id))) pos,
+      (SELECT COUNT(*) FROM plans WHERE archived = 0) total
+    FROM plans p WHERE p.id = ?`, id);
   if (!p) return { text: crumb('📦 پلن‌ها') + '\n\nپلن پیدا نشد.', kb: [nav('pl')] };
   const f = (field, label) => b(label, `m:w:plan:${p.id}:${field}`);
   return {
@@ -286,15 +382,20 @@ export async function plan(env, id, extraRows = []) {
       `💰 قیمت: ${fa(p.price_toman)} تومان${p.old_price_toman ? ` (قبلی: ${fa(p.old_price_toman)})` : ''}`,
       `📅 مدت: ${p.duration_days} روز`, `📦 حجم: ${p.data_limit_gb || 'نامحدود'} گیگ`, `📱 دستگاه: ${p.device_limit || 'نامحدود'}`,
       `🎁 تست رایگان: ${p.trial_days ? p.trial_days + ' روز' : 'ندارد'}`, `⭐ نشان: ${p.badge || '—'}`,
-      `وضعیت: ${p.is_active ? '🟢 روشن (در اپ دیده می‌شود)' : '🔴 خاموش'}`].join('\n'),
+      `📝 توضیح: ${p.description ? String(p.description).slice(0, 200) : '—'}`,
+      `🛒 فروش: ${fa(p.sold)} بار · ${fa(p.income)} تومان`,
+      `وضعیت: ${p.archived ? '🗄 بایگانی (در اپ نیست)' : p.is_active ? `🟢 روشن (در اپ دیده می‌شود) · جایگاه ${fa(p.pos + 1)} از ${fa(p.total)}` : '🔴 خاموش'}`].join('\n'),
     kb: [
       ...extraRows,
       [f('price', '💰 قیمت'), f('old', '🏷 قیمت قبلی')],
       [f('days', '📅 روز'), f('gb', '📦 حجم')],
       [f('devices', '📱 دستگاه'), f('trial', '🎁 تست')],
-      [f('name', '✏️ نام'), f('badge', '⭐ نشان')],
-      [b(p.is_active ? '🔴 خاموش کن' : '🟢 روشن کن', `m:pt:${p.id}`), b('📜 تاریخچه', `m:hist:plan:${p.id}`)],
-      nav('pl'),
+      [f('name', '✏️ نام'), f('badge', '⭐ نشان'), f('desc', '📝 توضیح')],
+      ...(p.archived ? [] : [[b('⬆️ بالاتر', `m:pmv:${p.id}:u`), b('⬇️ پایین‌تر', `m:pmv:${p.id}:d`)]]),
+      p.archived ? [b('📤 برگرداندن از بایگانی', `m:pua:${p.id}`), b('📋 کپی', `m:pcp:${p.id}`)]
+        : [b(p.is_active ? '🔴 خاموش کن' : '🟢 روشن کن', `m:pt:${p.id}`), b('📋 کپی', `m:pcp:${p.id}`), b('🗑 حذف', `m:pdl:${p.id}`)],
+      [b('📜 تاریخچه', `m:hist:plan:${p.id}`)],
+      nav(p.archived ? 'pla' : 'pl'),
     ],
   };
 }
@@ -333,37 +434,173 @@ export async function panel(env, id, extraRows = []) {
   };
 }
 
-// ---------------- coupons ----------------
-export async function coupons(env) {
-  const rows = await all(env, 'SELECT * FROM coupons WHERE is_active = 1 ORDER BY id DESC LIMIT 20');
-  const lines = rows.map((c) => `${c.code} — ${c.percent}% · ${c.used}${c.max_uses ? '/' + c.max_uses : ''} استفاده${c.expires_at ? ` · تا ${new Date(c.expires_at * 1000).toISOString().slice(0, 10)}` : ''}${c.plan_id ? ` · پلن #${c.plan_id}` : ''}`);
+// ---------------- coupons and referral ----------------
+const couponLine = (c) => `${c.is_active ? '🟢' : '⏸'} ${c.code} — ${c.percent}٪ · ${fa(c.used)}${c.max_uses ? '/' + fa(c.max_uses) : ''} بار`;
+// cp[:cursor]
+export async function coupons(env, cursor) {
+  const c = await first(env, 'SELECT COUNT(*) n, COALESCE(SUM(is_active), 0) on_ FROM coupons');
+  const pg = await page(env, { select: 'id, code, percent, used, max_uses, is_active', from: 'coupons', cursor });
   return {
-    text: `${crumb('🏷 تخفیف و دعوت')}\n\n${lines.join('\n') || 'کدی نیست.'}${rows.length ? '\n\nبرای پاک کردن، روی 🗑 کنار کد بزن.' : ''}`,
-    kb: [...rows.filter((c) => c.code.length <= 50).map((c) => [b(`🗑 ${c.code}`, `m:cd:${c.code}`)]), [b('➕ کد جدید', 'm:f:coupon')],
-      [b('🎁 درصد پاداش دعوت', 'm:sk:referral_percent')], nav('home')],
+    text: `${crumb('🏷 تخفیف و دعوت')}\n\n${fa(c.n)} کد (${fa(c.on_)} فعال) · 🟢 فعال · ⏸ متوقف\nروی هر کد بزن تا درصد، تعداد، مهلت و پلنش را عوض کنی یا متوقفش کنی.`,
+    kb: [...pg.rows.map((x) => [b(couponLine(x).slice(0, 60), `m:c:${x.id}`)]), ...pageRow('cp', pg),
+      [b('➕ کد جدید', 'm:f:coupon'), b('🎁 دعوت و پاداش', 'm:ref')], nav('home')],
+  };
+}
+
+export async function coupon(env, id) {
+  const c = await first(env, `SELECT c.*, p.name plan_name, (SELECT COUNT(*) FROM orders WHERE coupon_id = c.id AND status = 'paid') paid
+    FROM coupons c LEFT JOIN plans p ON p.id = c.plan_id WHERE c.id = ?`, id);
+  if (!c) return { text: crumb('🏷 تخفیف و دعوت') + '\n\nاین کد پیدا نشد.', kb: [nav('cp')] };
+  const now = nowSec();
+  const set = (f, label, v) => b(label, `m:cs:${c.id}:${f}:${v}`);
+  return {
+    text: [crumb('🏷 تخفیف و دعوت', c.code), '', `🏷 کد ${c.code}`, '',
+      `٪ تخفیف: ${c.percent}٪`, `🔢 استفاده: ${fa(c.used)} از ${c.max_uses ? fa(c.max_uses) : 'نامحدود'}`,
+      `⏳ مهلت: ${c.expires_at ? (c.expires_at > now ? `تا ${ymd(c.expires_at)}` : `تمام شده (${ymd(c.expires_at)})`) : 'همیشه'}`,
+      `📦 پلن: ${c.plan_id ? (c.plan_name || `#${c.plan_id}`) : 'همه‌ی پلن‌ها'}`, `🛒 سفارش پرداخت‌شده با این کد: ${fa(c.paid)}`,
+      `وضعیت: ${c.is_active ? '🟢 فعال' : '⏸ متوقف (در اپ قبول نمی‌شود)'}`, '',
+      'ردیف اول درصد، دوم تعداد، سوم مهلت (از امروز).'].join('\n'),
+    kb: [
+      [set('p', '10٪', 10), set('p', '20٪', 20), set('p', '30٪', 30), set('p', '50٪', 50), b('✏️', `m:f:cpct:${c.id}`)],
+      [set('u', '∞ بار', 0), set('u', '10 بار', 10), set('u', '100 بار', 100), b('✏️', `m:f:cuses:${c.id}`)],
+      [set('d', '♾ همیشه', 0), set('d', '7 روز', 7), set('d', '30 روز', 30), b('✏️', `m:f:cdays:${c.id}`)],
+      [b('📦 پلن', `m:cpl:${c.id}`), b(`👥 استفاده‌ها (${fa(c.used)})`, `m:cu:${c.id}`)],
+      [b(c.is_active ? '⏸ توقف' : '▶️ فعال کن', `m:ct:${c.id}`), ...(c.code.length <= 50 ? [b('🗑 حذف', `m:cd:${c.code}`)] : []),
+        ...(c.code.length <= 40 ? [b('📜 تاریخچه', `m:hist:coupon:${c.code}`)] : [])],
+      nav('cp'),
+    ],
+  };
+}
+
+export async function couponPlanPick(env, id) {
+  const c = await first(env, 'SELECT id, code, plan_id FROM coupons WHERE id = ?', id);
+  if (!c) return { text: crumb('🏷 تخفیف و دعوت') + '\n\nاین کد پیدا نشد.', kb: [nav('cp')] };
+  const rows = await all(env, 'SELECT id, name FROM plans WHERE archived = 0 ORDER BY sort, id LIMIT 12');
+  return {
+    text: `${crumb('🏷 تخفیف و دعوت', c.code, '📦 پلن')}\n\nکد ${c.code} برای کدام پلن قبول شود؟`,
+    kb: [[b(`${c.plan_id ? '' : '✅ '}همه‌ی پلن‌ها`, `m:cs:${c.id}:l:0`)],
+      ...rows.map((p) => [b(`${p.id === c.plan_id ? '✅ ' : ''}${p.name}`.slice(0, 60), `m:cs:${c.id}:l:${p.id}`)]), nav(`c:${c.id}`)],
+  };
+}
+
+// cu:<couponId>[:cursor] — who used it (a use is written when the order is paid)
+export async function couponUses(env, id, cursor) {
+  const c = await first(env, 'SELECT id, code FROM coupons WHERE id = ?', id);
+  if (!c) return { text: crumb('🏷 تخفیف و دعوت') + '\n\nاین کد پیدا نشد.', kb: [nav('cp')] };
+  const pg = await page(env, { select: 'id, user_id, order_id, created_at, (SELECT email FROM users WHERE users.id = coupon_uses.user_id) email',
+    from: 'coupon_uses', where: 'coupon_id = ?', args: [c.id], cursor });
+  return {
+    text: `${crumb('🏷 تخفیف و دعوت', c.code, '👥 استفاده‌ها')}\n\n${pg.rows.length ? 'روی هر نفر بزن تا کارتش باز شود.' : 'هنوز کسی با این کد خرید نکرده.'}`,
+    kb: [...pg.rows.map((r) => [b(`${ymd(r.created_at)} · ${String(r.email || '#' + r.user_id).slice(0, 34)}${r.order_id ? ` · #${r.order_id}` : ''}`, `m:u:${r.user_id}`)]),
+      ...pageRow(`cu:${c.id}`, pg), nav(`c:${c.id}`)],
+  };
+}
+
+export const REF_CHOICES = ['0', '5', '10', '15', '20'];
+export async function referral(env) {
+  const s = await getSettings(env);
+  const top = await all(env, `SELECT r.referred_by_id id, COUNT(*) n, u.email, u.tg_username,
+      (SELECT COALESCE(SUM(amount), 0) FROM wallet_tx WHERE user_id = r.referred_by_id AND reason = 'referral') earned
+    FROM users r JOIN users u ON u.id = r.referred_by_id WHERE r.referred_by_id IS NOT NULL GROUP BY r.referred_by_id ORDER BY n DESC LIMIT 5`);
+  const pct = String(s.referral_percent || '0');
+  return {
+    text: [crumb('🏷 تخفیف و دعوت', '🎁 دعوت و پاداش'), '',
+      pct === '0' ? '🎁 پاداش دعوت: خاموش' : `🎁 پاداش دعوت: ${pct}٪ از هر خرید دوستِ دعوت‌شده به کیف پول دعوت‌کننده`, '',
+      top.length ? '🏆 بیشترین دعوت:' : 'هنوز کسی دعوت نکرده.',
+      ...top.map((t, i) => `${i + 1}. ${t.tg_username ? '@' + t.tg_username : t.email} — ${fa(t.n)} نفر · ${fa(t.earned)} تومان پاداش`)].join('\n'),
+    kb: [REF_CHOICES.map((v) => b(`${v === pct ? '✅ ' : ''}${v}٪`, `m:ss:referral_percent:${v}`)),
+      [b('✏️ درصد دلخواه', 'm:w:set:referral_percent'), b('📜 تاریخچه', 'm:hist:setting:referral_percent')],
+      ...top.map((t) => [b(`👤 ${(t.tg_username ? '@' + t.tg_username : t.email).slice(0, 40)}`, `m:u:${t.id}`)]), nav('cp')],
   };
 }
 
 // ---------------- payments + settings ----------------
 export const AUTO_FA = { auto: 'خودکار', detect: 'فقط خبر بده', off: 'خاموش' };
 
+// the SMS address is a secret: only its first characters are ever shown (the setup command gives it in full)
+export const maskKey = (k) => (k ? `${String(k).slice(0, 4)}••••` : '');
+
 export async function payments(env) {
   const s = await getSettings(env);
   const card = String(s.card_number || '');
   const mode = (key) => ['auto', 'detect', 'off'].map((v) => b(`${s[key] === v ? '✅ ' : ''}${AUTO_FA[v]}`, `m:sv:${key}:${v}`));
+  const coins = COINS.filter((c) => s[walletKey(c)]).length;
+  const senders = String(s.sms_senders || '').split(',').filter(Boolean).length;
   return {
     text: [crumb('💳 روش‌های پرداخت'), '',
       `💳 کارت: ${card ? card.replace(/(\d{4})(?=\d)/g, '$1-') : 'ثبت نشده'}${s.card_holder ? ` · ${s.card_holder}` : ''}`,
-      `🏦 تأیید کارت‌به‌کارت با پیامک: ${AUTO_FA[s.card_auto] || s.card_auto}`,
-      `💎 تأیید ارز دیجیتال روی بلاک‌چین: ${AUTO_FA[s.coin_auto] || s.coin_auto}`, '',
+      `🏦 تأیید کارت‌به‌کارت با پیامک: ${AUTO_FA[s.card_auto] || s.card_auto} · فرستنده‌ی بانکی: ${fa(senders)}`,
+      `📩 آدرس پیامک: ${s.sms_key ? '…/sms/' + maskKey(s.sms_key) : 'هنوز ساخته نشده'}`,
+      `💎 ارز دیجیتال: ${fa(coins)} ولت · تأیید روی بلاک‌چین: ${AUTO_FA[s.coin_auto] || s.coin_auto}`, '',
       'خودکار = خودش فعال می‌کند · فقط خبر بده = تو تأیید کنی · خاموش = همه دستی'].join('\n'),
     kb: [
       [b('💳 شماره کارت', 'm:w:set:card_number'), b('👤 نام صاحب کارت', 'm:w:set:card_holder')],
       [b('— پیامک بانک —', 'm:pay')], mode('card_auto'),
+      [b('🏦 فرستنده‌های بانک', 'm:snd'), b('📨 پیامک‌های رسیده', 'm:sms')],
       [b('— ارز دیجیتال —', 'm:pay')], mode('coin_auto'),
       [b('💎 ولت‌ها', 'm:wl'), b('💵 قیمت دلار', 'm:x:pay|/rate')],
-      [b('📩 راه‌اندازی پیامک بانک', 'm:x:pay|/sms'), b('📋 ولت‌ها و قیمت‌ها', 'm:x:pay|/wallets')],
+      [b('⚙️ تنظیمات پرداخت', 'm:payset'), b('📩 راه‌اندازی پیامک بانک', 'm:x:pay|/sms')],
       nav('home'),
+    ],
+  };
+}
+
+// the bank numbers whose SMS confirm card payments by themselves
+export async function senders(env) {
+  const s = await getSettings(env);
+  const list = String(s.sms_senders || '').split(',').filter(Boolean);
+  return {
+    text: [crumb('💳 روش‌های پرداخت', '🏦 فرستنده‌های بانک'), '',
+      list.length ? 'پیامک واریز از این شماره‌ها خودکار تأیید می‌شود. برای حذف، روی 🗑 بزن.' : 'هنوز هیچ فرستنده‌ای مورد اعتماد نیست.',
+      '', 'برای افزودن: وقتی پیامک واریز رسید، زیرش دکمه‌ی «🏦 این فرستنده بانک من است» را بزن.'].join('\n'),
+    kb: [...list.map((x) => [x.length <= 50 ? b(`🗑 ${x}`, `m:sdel:${x}`) : b(x.slice(0, 40), 'm:snd')]),
+      [b('✏️ ویرایش کل لیست', 'm:w:set:sms_senders')], nav('pay')],
+  };
+}
+
+const SMS_FA = { paid: '✅ تأیید شد', review: '🧾 برای تو فرستاده شد', no_order: '❓ سفارشی با این مبلغ نبود', ambiguous: '⚠️ چند سفارش با این مبلغ',
+  settle_failed: '⚠️ پیدا شد ولی فعال نشد', not_deposit: '— واریز نبود', duplicate: '— تکراری', untrusted: '🔒 فرستنده ناشناس' };
+export const SMS_FILTERS = { all: 'همه', un: 'بی‌سفارش / ناموفق' };
+// sms[:filter][:cursor] — never the SMS text itself (it can hold account numbers), only what was read from it
+export async function smsLog(env, a0, a1) {
+  const f = SMS_FILTERS[a0] ? a0 : 'all';
+  const cursor = SMS_FILTERS[a0] ? a1 : a0;
+  const pg = await page(env, { select: 'id, sender, amount_rial, order_id, result, created_at', from: 'sms_log', where: f === 'un' ? SMS_UNMATCHED : '1 = 1', cursor });
+  const lines = pg.rows.map((r) => `${when(r.created_at)} · ${String(r.sender || '?').slice(0, 16)} · ${r.amount_rial ? fa(Math.round(r.amount_rial / 10)) + ' ت' : '-'} · ${SMS_FA[r.result] || r.result || '-'}${r.order_id ? ` · #${r.order_id}` : ''}`);
+  const tabs = Object.entries(SMS_FILTERS).map(([k, l]) => b(`${k === f ? '✅ ' : ''}${l}`, `m:sms:${k}`));
+  const ords = [...new Set(pg.rows.filter((r) => r.order_id).map((r) => r.order_id))].slice(0, 6).map((id) => b(`🧾 #${id}`, `m:o:${id}`));
+  return {
+    text: [crumb('💳 روش‌های پرداخت', '📨 پیامک‌های رسیده'), '', ...(lines.length ? lines : ['پیامکی نیست.'])].join('\n'),
+    kb: [tabs, ...(ords.length ? [ords.slice(0, 3), ords.slice(3)].filter((r) => r.length) : []), ...pageRow(`sms:${f}`, pg), nav('pay')],
+  };
+}
+
+// one-tap choices for the payment settings (the router only accepts these, or a typed value through the question)
+export const SET_CHOICES = {
+  referral_percent: REF_CHOICES,
+  coin_minutes: ['15', '30', '60'],
+  min_topup_toman: ['20000', '50000', '100000'],
+  card_unique: ['0', '1'],
+  usd_rate_toman: ['0'],
+};
+export async function paySettings(env) {
+  const s = await getSettings(env);
+  const pick = (key, label) => SET_CHOICES[key].map((v) => b(`${String(s[key]) === v ? '✅ ' : ''}${label(v)}`, `m:ss:${key}:${v}`));
+  const rate = parseInt(s.usd_rate_toman || '0', 10);
+  return {
+    text: [crumb('💳 روش‌های پرداخت', '⚙️ تنظیمات پرداخت'), '',
+      `💵 قیمت دلار: ${rate ? `دستی ${fa(rate)} تومان` : 'خودکار (از صرافی‌ها)'}`,
+      `⏱ مهلت پرداخت ارز: ${s.coin_minutes} دقیقه`, `👛 حداقل شارژ کیف پول: ${fa(s.min_topup_toman)} تومان`,
+      `🔢 مبلغ یکتا برای کارت‌به‌کارت: ${s.card_unique === '0' ? 'خاموش' : 'روشن'}`,
+      `🔑 کلید آدرس پیامک: ${s.sms_key ? maskKey(s.sms_key) + ' (مخفی)' : 'ندارد'}`, '',
+      'مبلغ یکتا = چند تومان به هر سفارش کارتی اضافه می‌شود تا پیامک بانک دقیقاً به همان سفارش بخورد.'].join('\n'),
+    kb: [
+      [...pick('usd_rate_toman', () => '💵 خودکار'), b('✏️ قیمت دستی دلار', 'm:w:set:usd_rate_toman')],
+      pick('coin_minutes', (v) => `⏱ ${v} دقیقه`),
+      [...pick('min_topup_toman', (v) => `${fa(v)}`), b('✏️', 'm:w:set:min_topup_toman')],
+      pick('card_unique', (v) => (v === '1' ? '🔢 یکتا روشن' : 'یکتا خاموش')),
+      [b('🔑 کلید پیامک', 'm:sk:sms_key')],
+      nav('pay'),
     ],
   };
 }
@@ -379,7 +616,9 @@ export const KEY_FA = {
 };
 const APP_KEYS = ['announcement', 'support_url', 'app_api_bases', 'app_bridges', 'trial_data_gb', 'min_topup_toman'];
 // which screen a setting belongs to (its back button)
-export const keyParent = (key) => (key.startsWith('wallet_') ? 'wl' : APP_KEYS.includes(key) ? 'app' : key === 'referral_percent' ? 'cp' : 'set');
+const PAY_KEYS = ['usd_rate_toman', 'coin_minutes', 'min_topup_toman', 'card_unique', 'sms_key'];
+export const keyParent = (key) => (key.startsWith('wallet_') ? 'wl' : key === 'referral_percent' ? 'ref' : key === 'sms_senders' ? 'snd'
+  : PAY_KEYS.includes(key) ? 'payset' : APP_KEYS.includes(key) ? 'app' : 'set');
 
 const keyRows = (s, keys, label) => {
   const rows = [];
@@ -387,13 +626,16 @@ const keyRows = (s, keys, label) => {
   return rows;
 };
 
+// wallet_trx -> "TRX (TRON (TRC20))", wallet_xrp_memo -> "XRP Destination Tag"
+const walletLabel = (k) => { const c = coinById(k.slice(7).replace(/_memo$/, '')); return k.endsWith('_memo') ? `${c ? c.symbol : k.slice(7)} · ${c && c.memo ? c.memo : 'Memo'}` : c ? `${c.symbol} (${c.network})` : k.slice(7); };
+
 export async function settings(env, wallets) {
   const s = await getSettings(env);
   const keys = Object.keys(SETTING_DEFAULTS).filter((k) => k.startsWith('wallet_') === !!wallets);
   return {
-    text: wallets ? `${crumb('💳 روش‌های پرداخت', '💎 ولت‌ها')}\n\n⚪️ = خالی (آن ارز در اپ نشان داده نمی‌شود). روی هر کدام بزن.`
+    text: wallets ? `${crumb('💳 روش‌های پرداخت', '💎 ولت‌ها')}\n\n⚪️ = خالی (آن ارز در اپ نشان داده نمی‌شود). روی هر ارز بزن تا آدرسش را بگذاری یا پاکش کنی؛ آدرس اشتباه قبول نمی‌شود.`
       : `${crumb('🛡 سیستم', '⚙️ همه‌ی تنظیمات')}\n\nروی هر مورد بزن تا مقدارش را ببینی یا عوض کنی. (⚪️ = خالی)`,
-    kb: [...keyRows(s, keys, (k) => (wallets ? k.slice(7) : (KEY_FA[k] || k))), nav(wallets ? 'pay' : 'sys')],
+    kb: [...keyRows(s, keys, (k) => (wallets ? walletLabel(k) : (KEY_FA[k] || k))), ...(wallets ? [[b('📋 ولت‌ها و قیمت‌ها', 'm:x:wl|/wallets')]] : []), nav(wallets ? 'pay' : 'sys')],
   };
 }
 
@@ -444,7 +686,7 @@ export async function system() {
   };
 }
 
-const TARGET_FA = { plan: '📦 پلن', panel: '🗂 پنل', setting: '⚙️', user: '👤 کاربر', coupon: '🏷 کد' };
+const TARGET_FA = { plan: '📦 پلن', panel: '🗂 پنل', setting: '⚙️', user: '👤 کاربر', coupon: '🏷 کد', order: '🧾 سفارش' };
 const when = (t) => new Date(t * 1000).toISOString().slice(5, 16).replace('T', ' ');
 
 function logScreen(pg, title, route, back) {
@@ -463,7 +705,7 @@ export async function auditLog(env, cursor) {
 }
 
 // one plan / panel / setting / user: its own changes ("history")
-const HIST_BACK = { plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, user: (id) => `u:${id}` };
+const HIST_BACK = { plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, user: (id) => `u:${id}`, order: (id) => `o:${id}`, coupon: () => 'cp' };
 export async function history(env, type, id, cursor) {
   if (!HIST_BACK[type] || !/^[\w.-]{1,40}$/.test(String(id || ''))) return soon('📜 تاریخچه');
   const pg = await page(env, { from: 'admin_audit', where: 'target_type = ? AND target_id = ?', args: [type, String(id)], cursor });
