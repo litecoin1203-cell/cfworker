@@ -547,7 +547,7 @@ section('telegram button menu');
   ok((await env.DB.prepare('SELECT status FROM orders WHERE id = ?').bind(ord.data.id).first()).status === 'rejected', 'reject from the list works');
 
   // every screen: buttons fit Telegram's 64-byte limit
-  for (const d of ['m:home', 'm:st', 'm:usr', 'm:pl', `m:p:${p.id}`, 'm:pa', 'm:pp:1', 'm:cp', 'm:pay', 'm:set', 'm:wl', 'm:sk:wallet_xlm_memo', 'm:help', `m:u:${mg.id}`]) {
+  for (const d of ['m:home', 'm:st', 'm:usr', 'm:pl', `m:p:${p.id}`, 'm:pa', 'm:pp:1', 'm:cp', 'm:pay', 'm:set', 'm:wl', 'm:sk:wallet_xlm_memo', 'm:help', `m:u:${mg.id}`, 'm:un', `m:un:${mg.id}`]) {
     n = fakes.tg.calls.length;
     await tap(d);
     const e = since(n).find((c) => c.method === 'editMessageText');
@@ -1664,6 +1664,77 @@ section('carriers: speed per network, own servers only, people count');
   const bm = fakes.tg.messages.length;
   await tgWebhook({ message: { chat: { id: 12345, type: 'private' }, from: { id: 12345 }, text: '/carriers' } });
   ok(fakes.tg.messages.slice(bm).some((m) => m.text.includes('رایتل') && m.text.includes('DE 1')), '/carriers lists best servers per carrier');
+}
+
+section('per-user networks: operator + connection type, per-type ranking, admin view');
+{
+  const ns = await import('../src/netstats.js');
+  const MTN = { asn: 44244, asOrganization: 'Iran Cell', region: 'Tehran' };
+  const toks = [], ids = [];
+  for (let i = 0; i < 3; i++) {
+    toks.push(await signup(`un${i}@example.com`, { device: 'un' + i }));
+    ids.push((await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(`un${i}@example.com`).first()).id);
+  }
+  // 40 servers each: the report must stay far below D1's 50 queries per request (free plan)
+  const links = Array.from({ length: 40 }, (_, i) => ({ name: `X ${i}`, link: `vless://u@x${i}.example.com:443#x` }));
+  const keys = links.map((l) => ns.serverKey(l.link));
+  const [kx, ky] = [keys[0], keys[1]];
+  for (const id of ids) await ns.rememberKeys(env, { id }, links);
+  const prep = env.DB.prepare, batch = env.DB.batch;
+  let queries = 0;
+  env.DB.prepare = (sql) => { queries++; return prep(sql); };
+  globalThis.__cgNet = {};
+  const big = await call('POST', '/api/v1/net/report', { token: toks[0], cf: MTN, json: { kind: 'wifi', results: keys.map((k, i) => ({ k, ok: i !== 1, ms: 100 + i, kbps: i === 0 ? 8000 : undefined })) } });
+  env.DB.prepare = prep; env.DB.batch = batch;
+  ok(big.data.stored === 40, 'a 40-server report is stored whole: ' + big.data.stored);
+  ok(queries <= 12, 'a 40-server report takes a fixed few queries, not one per server: ' + queries);
+  // Irancell over Wi-Fi: X works, Y does not. Irancell mobile data: the other way round.
+  for (let i = 0; i < 3; i++) {
+    globalThis.__cgNet = {};
+    if (i) await call('POST', '/api/v1/net/report', { token: toks[i], cf: MTN, json: { kind: 'wifi', results: [{ k: kx, ok: true, ms: 90 }, { k: ky, ok: false }] } });
+    globalThis.__cgNet = {};
+    await call('POST', '/api/v1/net/report', { token: toks[i], cf: MTN, json: { kind: 'cell', results: [{ k: kx, ok: false }, { k: ky, ok: true, ms: 90 }] } });
+  }
+  const nets = await env.DB.prepare('SELECT kind, isp FROM user_net WHERE user_id = ? ORDER BY kind').bind(ids[0]).all();
+  ok(nets.results.length === 2 && nets.results[0].kind === 'cell' && nets.results[1].kind === 'wifi' && nets.results[0].isp === 'ایرانسل', 'one row per operator and connection type: ' + JSON.stringify(nets.results));
+  const wifi = (await call('GET', '/api/v1/net/rank?kind=wifi', { token: toks[0], cf: MTN })).data;
+  const cell = (await call('GET', '/api/v1/net/rank?kind=cell', { token: toks[0], cf: MTN })).data;
+  ok(wifi.kind === 'wifi' && wifi.servers[kx].score > wifi.servers[ky].score && wifi.servers[kx].level === 'type', 'Irancell Wi-Fi ranks X first: ' + JSON.stringify(wifi.servers[kx]));
+  ok(cell.kind === 'cell' && cell.servers[ky].score > cell.servers[kx].score, 'Irancell mobile data ranks Y first');
+  const plain = (await call('GET', '/api/v1/net/rank?kind=bogus', { token: toks[0], cf: MTN })).data;
+  ok(plain.kind === '' && plain.servers[kx].level !== 'type', 'an unknown kind falls back to the operator-wide ranking');
+  // one account reporting over and over keeps a bounded weight
+  for (let i = 0; i < 25; i++) { globalThis.__cgNet = {}; await call('POST', '/api/v1/net/report', { token: toks[0], cf: MTN, json: { kind: 'other', results: [{ k: kx, ok: false }] } }); }
+  for (let i = 0; i < 25; i++) { globalThis.__cgNet = {}; await call('POST', '/api/v1/net/report', { token: toks[0], cf: MTN, json: { kind: 'other', results: [{ k: kx, ok: true, ms: 50 }] } }); }
+  const row = await env.DB.prepare('SELECT ok, fail, tests FROM user_net_srv WHERE user_id = ? AND kind = ? AND skey = ?').bind(ids[0], 'other', kx).first();
+  ok(row.ok <= 5 && row.ok > 4.5 && row.fail < 0.05 && row.tests === 50, 'a user\'s weight on a server stays at most 5 results and follows the latest: ' + JSON.stringify(row));
+  const sp = await env.DB.prepare('SELECT kb_sum, kb_n, ok FROM user_net_srv WHERE user_id = ? AND kind = ? AND skey = ?').bind(ids[0], 'wifi', kx).first();
+  ok(sp.kb_n === 1 && sp.kb_sum === 8000, 'speed kept per user and network');
+  // admin view: the user card names the networks, the button opens the detail, the overview counts people
+  const txt = await ns.userNetText(env, { id: ids[0], email: 'un0@example.com' });
+  ok(txt.includes('ایرانسل · وای‌فای') && txt.includes('ایرانسل · دیتای موبایل') && txt.includes('X 0') && txt.includes('🔴'), 'user detail lists each network with best and weakest servers');
+  ok(!/vless:|k[0-9a-f]{8}|example\.com:443/.test(txt.replace('un0@example.com', '')), 'no link or server key in the admin text');
+  const card = await (await import('../src/telegram.js')).userInfo(env, (await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(ids[0]).first()));
+  ok(card.includes('📶 اپراتورها: ایرانسل'), 'user card names the operators');
+  const ov = await ns.networkUsers(env);
+  ok(ov.text.includes('ایرانسل · دیتای موبایل — 3 کاربر'), 'overview counts users per operator and type: ' + ov.text);
+  ok(ov.recent.some((r) => r.id === ids[0]), 'overview lists the users who reported last: ' + JSON.stringify(ov.recent));
+  const none = await ns.userNetText(env, { id: 999999, email: 'x@example.com' });
+  ok(none.includes('هنوز گزارشی'), 'a user with no reports says so');
+  // old rows go after 30 days
+  await env.DB.prepare('UPDATE user_net SET last_at = 1 WHERE user_id = ?').bind(ids[2]).run();
+  await env.DB.prepare('UPDATE user_net_srv SET at = 1 WHERE user_id = ?').bind(ids[2]).run();
+  await ns.prune(env);
+  ok(!(await env.DB.prepare('SELECT 1 FROM user_net WHERE user_id = ?').bind(ids[2]).first()) && !(await env.DB.prepare('SELECT 1 FROM user_net_srv WHERE user_id = ?').bind(ids[2]).first()), 'per-user rows pruned after 30 days');
+}
+
+section('/me/ip: the exit address and place the app shows while connected');
+{
+  const tok = await signup('ip@example.com', { device: 'ipd' });
+  const r = await call('GET', '/api/v1/me/ip', { token: tok, headers: { 'cf-connecting-ip': '185.220.101.42' }, cf: { country: 'DE', city: 'Frankfurt am Main', region: 'Hesse' } });
+  ok(r.status === 200 && r.data.ip === '185.220.101.42' && r.data.cc === 'DE' && r.data.city === 'Frankfurt am Main', '/me/ip answers ip, country and city: ' + JSON.stringify(r.data));
+  const no = await call('GET', '/api/v1/me/ip', {});
+  ok(no.status === 401, '/me/ip needs a signed-in user');
 }
 
 section('any panel type: Rebecca, Marzban and PasarGuard are detected on /paneltest and each gets its own create call');

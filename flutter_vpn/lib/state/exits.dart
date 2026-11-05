@@ -1,3 +1,5 @@
+import 'dart:math';
+
 import '../api/countries.dart';
 import '../api/models.dart';
 
@@ -113,11 +115,29 @@ class Exit {
   double? get ispScore =>
       rank != null && rank!.reports >= 3 ? rank!.score : null;
 
-  /// Smart-connect order: fast here, weighted by how well it works on this
-  /// operator for everyone (the Cloud Gold app's formula).
+  /// Download speed as 0 … 1 on a log scale: 0.5 Mbit/s is 0, about
+  /// 3.5 Mbit/s 0.5, 20 Mbit/s and up 1. This phone's own result first,
+  /// then what people on this network measured; unknown counts as the
+  /// middle, so the few exits that got a download test are not pushed
+  /// down by it.
+  double get speedScore {
+    final r = rank;
+    final k = (kbps ?? 0) > 0
+        ? kbps!
+        : (r != null && r.people >= minPeople && r.kbps > 0 ? r.kbps : 0);
+    if (k <= 0) return 0.5;
+    return (log(k / 500) / log(20000 / 500)).clamp(0.0, 1.0);
+  }
+
+  /// Order of Best, Recommended and smart connect: what this phone
+  /// measured on this network (ping 60 %, download speed 40 %), weighted
+  /// by how well it works for people on the same operator and connection
+  /// type (the Worker's score, once three phones reported).
   double get smartScore {
     final ms = measured ?? 0;
-    final local = ms > 0 ? 1 - (ms.clamp(0, 1500) / 1500) : 0.0;
+    final local = ms > 0
+        ? (1 - (ms.clamp(0, 1500) / 1500)) * 0.6 + speedScore * 0.4
+        : 0.0;
     final isp = ispScore;
     return isp == null ? local : local * 0.45 + isp * 0.55;
   }

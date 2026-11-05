@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 
 import '../design/city_art.dart';
@@ -33,10 +31,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
-    final recommended = app.ranked
-        .where((e) => e.id != app.exit?.id)
-        .take(4)
-        .toList();
+    final recommended = app.recommended;
 
     return SafeArea(
       bottom: false,
@@ -57,11 +52,7 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             const SizedBox(height: 18),
-            // Only the session clock ticks, not the whole of Home.
-            EverySecond(
-              active: app.phase == Phase.protected && _tab == _HomeTab.now,
-              builder: (_) => _Instrument(app: app, tab: _tab),
-            ),
+            _Instrument(app: app, tab: _tab),
             // The control stands in the shard field and overlaps the crop.
             Transform.translate(
               offset: const Offset(0, -40),
@@ -313,22 +304,23 @@ class _Instrument extends StatelessWidget {
   final AppState app;
   final _HomeTab tab;
 
-  String _clock(Duration d) {
-    final h = d.inHours, m = d.inMinutes % 60, s = d.inSeconds % 60;
-    String two(int v) => v.toString().padLeft(2, '0');
-    return h > 0 ? '$h:${two(m)}' : '${two(m)}:${two(s)}';
-  }
-
   @override
   Widget build(BuildContext context) {
     final protected = app.phase == Phase.protected;
     final e = app.exit;
     final sub = app.subscription;
+    // Connected: the exit's country code, big, with the city and the
+    // public IP the internet sees above it.
+    final a = app.exitAddress;
+    final detail = tab == _HomeTab.now && protected
+        ? (a == null ? 'Finding your IP address' : 'IP ${a.ip}')
+        : null;
+    final cc = a != null && a.cc.isNotEmpty ? a.cc : (e?.code ?? '');
     final (value, unit, caption) = switch (tab) {
       _HomeTab.now when protected => (
-        _clock(app.elapsed),
-        app.elapsed.inHours > 0 ? 'h:m' : 'min:s',
-        'Session through ${e?.title ?? 'your exit'}',
+        cc.isEmpty ? '—' : cc,
+        '',
+        'Through ${a != null && a.place.isNotEmpty ? a.place : (e?.title ?? 'your exit')}',
       ),
       _HomeTab.now when e?.ping != null => (
         '${e!.ping}',
@@ -379,14 +371,23 @@ class _Instrument extends StatelessWidget {
             style: PType.small(color: PColors.ink)
                 .copyWith(fontWeight: FontWeight.w600),
           ),
+          if (detail != null)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                detail,
+                style: PType.body(color: PColors.ink)
+                    .copyWith(fontWeight: FontWeight.w700),
+              ),
+            ),
           SizedBox(
-            height: 156,
+            height: detail == null ? 156 : 132,
             child: AnimatedSwitcher(
               duration: PMotion.reduced(context)
                   ? Duration.zero
                   : PMotion.quick,
               child: _CroppedNumber(
-                key: ValueKey('$tab'),
+                key: ValueKey('$tab$value'),
                 value: value,
                 unit: unit,
               ),
@@ -634,64 +635,4 @@ class _Usage extends StatelessWidget {
       ],
     );
   }
-}
-
-/// Rebuilds [builder] once a second while [active] and the app is on
-/// screen; nothing ticks otherwise.
-class EverySecond extends StatefulWidget {
-  const EverySecond({super.key, required this.active, required this.builder});
-  final bool active;
-  final WidgetBuilder builder;
-
-  @override
-  State<EverySecond> createState() => _EverySecondState();
-}
-
-class _EverySecondState extends State<EverySecond> with WidgetsBindingObserver {
-  Timer? _tick;
-  bool _shown = true;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    final now = WidgetsBinding.instance.lifecycleState;
-    _shown = now == null || onScreen(now);
-    _sync();
-  }
-
-  @override
-  void didUpdateWidget(EverySecond old) {
-    super.didUpdateWidget(old);
-    _sync();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState s) {
-    _shown = onScreen(s);
-    _sync();
-    if (_shown) setState(() {});
-  }
-
-  void _sync() {
-    final want = widget.active && _shown;
-    if (want && _tick == null) {
-      _tick = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (mounted) setState(() {});
-      });
-    } else if (!want) {
-      _tick?.cancel();
-      _tick = null;
-    }
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    _tick?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => widget.builder(context);
 }

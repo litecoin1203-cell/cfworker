@@ -318,22 +318,37 @@ class Rank {
 }
 
 /// The network the Worker saw this phone on: its id (ASN) and English
-/// name, e.g. "Irancell". Comes from the network address the Worker sees
-/// anyway; Pleat reads nothing from the SIM.
+/// name, e.g. "Irancell", plus how the phone reaches it ([kind]: 'wifi',
+/// 'cell' for mobile data, 'other', '' unknown). The operator comes from
+/// the network address the Worker sees anyway and the kind from Android's
+/// network type; Pleat reads nothing from the SIM.
 class NetInfo {
-  const NetInfo(this.id, this.name, {this.mobile = false});
-  final String id, name;
+  const NetInfo(this.id, this.name, {this.mobile = false, this.kind = ''});
+  final String id, name, kind;
   final bool mobile;
+
+  /// Results are kept apart per operator AND connection type: Irancell
+  /// over a Wi-Fi modem is not Irancell mobile data.
+  String get key => kind.isEmpty ? id : '$id-$kind';
+
+  /// "Irancell Wi-Fi", "MCI mobile data", "Shatel".
+  String get label => switch (kind) {
+    'wifi' => '$name Wi-Fi',
+    'cell' => '$name mobile data',
+    _ => name,
+  };
 
   static NetInfo? from(dynamic data) {
     if (data is! Map) return null;
     final asn = _int(data['asn']);
     if (asn <= 0) return null;
     final name = _str(data['isp_en']).trim();
+    final kind = _str(data['kind']);
     return NetInfo(
       '$asn',
       name.isEmpty ? 'your network' : name,
       mobile: data['mobile'] == true,
+      kind: const {'wifi', 'cell', 'other'}.contains(kind) ? kind : '',
     );
   }
 }
@@ -617,3 +632,28 @@ const _banks = {
   'Resalat Bank': ['504172'],
   'Tose\'e Credit': ['628157'],
 };
+
+/// The address the internet sees while connected: the exit's public IP
+/// and where it is, as the Worker sees the request coming through the
+/// tunnel.
+class ExitAddress {
+  const ExitAddress(this.ip, {this.cc = '', this.country = '', this.city = ''});
+  final String ip, cc, country, city;
+
+  static ExitAddress? from(dynamic data) {
+    if (data is! Map) return null;
+    final ip = _str(data['ip']).trim();
+    if (ip.isEmpty) return null;
+    final cc = _str(data['cc']).toUpperCase();
+    return ExitAddress(
+      ip,
+      cc: cc,
+      country: cc.isEmpty ? '' : countryName(cc),
+      city: _str(data['city']).trim(),
+    );
+  }
+
+  /// "Frankfurt, Germany", or just the country.
+  String get place =>
+      [if (city.isNotEmpty) city, if (country.isNotEmpty) country].join(', ');
+}

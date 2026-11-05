@@ -49,15 +49,15 @@ class _LocationsScreenState extends State<LocationsScreen> {
     super.deactivate();
   }
 
-  /// Every list is the backend's: All in the Worker's order, Fastest by
-  /// what this network reported, Saved and Recent from this phone.
+  /// Every list is the backend's: All in the Worker's order, Best by what
+  /// this phone and people on this network measured, Saved and Recent from this phone.
   List<Exit> _filtered(AppState app) {
     Iterable<Exit> list = app.exits;
     switch (app.category) {
       case Category.all:
         break;
       case Category.fastest:
-        list = app.ranked.where((e) => e.score != null);
+        list = app.best;
       case Category.saved:
         list = list.where((e) => app.saved.contains(e.id));
       case Category.recent:
@@ -83,7 +83,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
     if (_query.trim().isNotEmpty) return 'No exit matches “$_query”';
     return switch (app.category) {
       Category.fastest =>
-        'No reports from ${app.network?.name ?? 'your network'} yet',
+        'No results on ${app.network?.label ?? 'your network'} yet',
       Category.saved => 'Nothing saved yet',
       Category.recent => 'No sessions on this phone yet',
       Category.all => 'No exits',
@@ -114,7 +114,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
   static String _statusLine(AppState app) {
     final at = app.testedAt;
     return [
-      if (app.network != null) 'On ${app.network!.name}',
+      if (app.network != null) 'On ${app.network!.label}',
       if (app.testing)
         'Testing exits'
       else if (at != null)

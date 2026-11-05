@@ -349,10 +349,11 @@ void main() {
         'onboarded': true,
       }, tunnel: tunnel);
       app.setTab(2);
-      await tester.pump(const Duration(milliseconds: 600));
+      await tester.pump(const Duration(seconds: 40));
       tunnel
         ..pinged.clear()
         ..speedTested.clear();
+      api.reports.clear();
       await tester.tap(
         find.byWidgetPredicate(
           (w) => w is Pressable && w.label == 'Test DE 1 now',
@@ -388,16 +389,54 @@ void main() {
     },
   );
 
-  testWidgets('a metered network gets no download tests', (tester) async {
+  testWidgets('a metered network gets at most three download tests per '
+      'six hours', (tester) async {
     final tunnel = FakeTunnel()
       ..pings = {'nl1.example.com': 240, 'de1.example.com': 60}
       ..speeds = {'de1.example.com': 9000, 'nl1.example.com': 2000}
       ..onMetered = true;
-    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    final (app, api) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
     await app.testSpeeds();
-    expect(tunnel.speedTested, isEmpty);
+    await tester.pump(const Duration(seconds: 40));
     expect(app.metered, isTrue);
+    expect(tunnel.speedTested.toSet(), {'de1.example.com', 'nl1.example.com'});
+    expect(
+      tunnel.speedTested.length,
+      lessThanOrEqualTo(AppState.speedTopMetered),
+    );
+    final before = tunnel.speedTested.length;
+    await app.testSpeeds();
+    expect(tunnel.speedTested, hasLength(before), reason: 'budget spent');
+    expect(api.reportKinds, isEmpty, reason: 'the fake phone says no kind');
     await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('results are kept per operator AND Wi-Fi or mobile data', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel()
+      ..kind = 'wifi'
+      ..pings = {'nl1.example.com': 240, 'de1.example.com': 60};
+    final (app, api) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    api
+      ..asn = 44244
+      ..ispEn = 'Irancell';
+    await app.measureIfDue();
+    await tester.pump(const Duration(seconds: 40));
+    expect(app.network?.label, 'Irancell Wi-Fi');
+    expect(api.rankKinds, contains('wifi'));
+    expect(api.reportKinds, contains('wifi'));
+    final de = app.exits.firstWhere((e) => e.server.link.contains('de1'));
+    expect(de.measured, 60);
+    // Same operator on mobile data: its own results, none yet.
+    tunnel.kind = 'cell';
+    await app.measureIfDue();
+    expect(app.network?.label, 'Irancell mobile data');
+    expect(api.rankKinds.last, 'cell');
+    await tester.pump(const Duration(seconds: 40));
+    // Best and Recommended come from the measured exits, best first.
+    expect(app.best.first.label, 'DE 1');
+    expect(app.recommended.map((e) => e.label), contains('DE 1'));
   });
 
   testWidgets('Protected only after the tunnel is up; a stopped plan drops', (
@@ -414,6 +453,11 @@ void main() {
     await tester.pump(PMotion.seal);
     expect(app.phase, Phase.protected);
     expect(find.textContaining('Protected.'), findsOneWidget);
+    // Home's Now: the exit's address in place of a session clock.
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('IP 185.220.101.42'), findsOneWidget);
+    expect(find.text('Through Frankfurt, Germany'), findsOneWidget);
+    expect(find.text('DE'), findsWidgets);
 
     tunnel.emit(TunnelState.down);
     await tester.pump(const Duration(milliseconds: 400));
@@ -486,6 +530,8 @@ void main() {
     final tunnel = FakeTunnel()
       ..pings = {'nl1.example.com': 240, 'de1.example.com': 60};
     final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    await tester.pump(const Duration(seconds: 40));
+    tunnel.pinged.clear(); // the measuring the app does when it opens
     app.select(app.exits.first.id);
     await app.connect();
     expect(tunnel.started, contains('nl1.example.com'));
@@ -607,7 +653,7 @@ void main() {
     await Future.wait([quick, full]);
     expect(app.exits, isNotEmpty);
     expect(app.exits.where((e) => e.measured == null), isEmpty);
-    await tester.pump(const Duration(seconds: 10));
+    await tester.pump(const Duration(seconds: 40));
   });
 
   testWidgets('one exit alone with its core log, for support', (tester) async {

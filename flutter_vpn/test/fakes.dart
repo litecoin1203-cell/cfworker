@@ -127,7 +127,17 @@ class FakeApi extends ApiClient {
     'expires_at': '2026-12-22T10:00:00Z',
   };
 
+  /// Connection types /net/rank was asked about (?kind=), and the ones
+  /// reports said.
+  final List<String> rankKinds = [], reportKinds = [];
+
   dynamic _answer(String m, String path, Map<String, Object?>? body) {
+    final q = path.indexOf('?');
+    if (q >= 0) {
+      final kind = Uri.splitQueryString(path.substring(q + 1))['kind'];
+      if (kind != null) rankKinds.add(kind);
+      path = path.substring(0, q);
+    }
     calls.add('$m $path');
     if (tokens.access != null && !path.startsWith('/auth/')) {
       authedCalls.add('$m $path');
@@ -307,7 +317,10 @@ class FakeApi extends ApiClient {
           throw ApiError(0, 'offline', 'Can’t reach the server.');
         }
         return {};
+      case 'GET /me/ip':
+        return {'ip': '185.220.101.42', 'cc': 'DE', 'city': 'Frankfurt'};
       case 'POST /net/report':
+        if (body?['kind'] != null) reportKinds.add('${body!['kind']}');
         reports.addAll(
           ((body?['results'] as List?) ?? const [])
               .cast<Map<String, Object?>>(),
@@ -439,6 +452,12 @@ class FakeTunnel extends Tunnel {
 
   @override
   Future<bool> metered() async => onMetered;
+
+  /// What the phone is on: 'wifi', 'cell', 'other' or ''.
+  String kind = '';
+
+  @override
+  Future<String> netKind() async => kind;
 
   @override
   Future<int?> delay() async {
