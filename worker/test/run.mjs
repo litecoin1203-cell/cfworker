@@ -2084,6 +2084,16 @@ section('profile: verify Telegram on an email account, backup email, package his
   ok((await call('POST', '/api/v1/auth/login', { json: { login: 'fan@gmail.com', password: 'gmail-pass-1' } })).status === 401, 'removed Gmail no longer logs in');
   ok((await call('POST', '/api/v1/me/email', { token: other, json: { email: '', password: 'password123' } })).status === 422, 'an account without Telegram keeps its email');
 
+  // a Pleat character as the profile picture
+  ok((await call('GET', '/api/v1/me', { token: tok })).data.avatar === null, 'no avatar picked yet');
+  const av = await call('POST', '/api/v1/me/avatar', { token: tok, json: { avatar: 'Luna' } });
+  ok(av.status === 200 && av.data.avatar === 'luna', 'avatar picked: ' + JSON.stringify(av.data));
+  ok((await call('GET', '/api/v1/me', { token: tok })).data.avatar === 'luna', 'avatar kept on /me');
+  ok((await call('POST', '/api/v1/me/avatar', { token: tok, json: { avatar: '../x.svg' } })).status === 422, 'unknown avatar rejected');
+  ok((await call('GET', '/api/v1/me', { token: other })).data.avatar === null, 'only my avatar changed');
+  ok((await call('POST', '/api/v1/me/avatar', { token: tok, json: { avatar: '' } })).data.avatar === null, 'avatar cleared');
+  ok((await call('POST', '/api/v1/me/avatar', { json: { avatar: 'kai' } })).status === 401, 'avatar needs a login');
+
   // package history: a trial, then a purchase that stacks on it, and a gift from the admin
   const pk0 = await call('GET', '/api/v1/me/packages', { token: tok });
   ok(pk0.status === 200 && Array.isArray(pk0.data) && pk0.data.length === 0, 'no packages yet');

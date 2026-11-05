@@ -154,7 +154,7 @@ async function route(request, env, p) {
   // everything below needs a logged-in user
   const authed = [
     '/me', '/trial', '/vpn', '/vpn/sub', '/vpn/servers', '/devices', '/orders', '/wallet', '/referral', '/coupons/check',
-    '/auth/change-password', '/auth/logout-all', '/me/packages', '/me/photo', '/me/email', '/me/telegram/start', '/me/telegram/verify', '/net/report', '/net/rank', '/net/google',
+    '/auth/change-password', '/auth/logout-all', '/me/packages', '/me/photo', '/me/email', '/me/avatar', '/me/telegram/start', '/me/telegram/verify', '/net/report', '/net/rank', '/net/google',
   ];
   const needsAuth = authed.includes(p) || p.startsWith('/devices/') || p.startsWith('/orders/');
   if (!needsAuth) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
@@ -169,6 +169,7 @@ async function route(request, env, p) {
     await rateLimit(env, 'RL_LOGIN', 'email:' + user.id); // it checks the password
     return auth.setEmail(env, user, await body(request));
   }
+  if (p === '/me/avatar' && m === 'POST') return auth.setAvatar(env, user, await body(request));
   if (p === '/me/telegram/start' && m === 'POST') {
     await rateLimit(env, 'RL_IP', 'tgstart:' + ip);
     return auth.tgLinkStart(env, user);

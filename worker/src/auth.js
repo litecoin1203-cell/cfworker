@@ -359,5 +359,18 @@ export function profileOut(u) {
     login: u.tg_id ? (u.tg_username ? '@' + u.tg_username : String(u.tg_id)) : u.email,
     telegram: u.tg_id ? { id: String(u.tg_id), username: u.tg_username || null, name: u.tg_name || '' } : null,
     telegram_verified: !!u.tg_id,
+    avatar: AVATARS.includes(u.avatar) ? u.avatar : null,
   };
+}
+
+// The characters drawn in the app (flutter_vpn/assets/avatars). The server only keeps which one was picked.
+export const AVATARS = ['vesper', 'kite', 'miso', 'hoot', 'bruno', 'relay', 'orbit', 'drift', 'hop', 'nimbus', 'rex', 'luna', 'mina', 'kai'];
+
+// Pick a character as the profile picture; "" (or null) goes back to the Telegram photo / initial.
+export async function setAvatar(env, user, body) {
+  const raw = body.avatar == null ? '' : String(body.avatar).trim().toLowerCase();
+  if (raw && !AVATARS.includes(raw)) throw err(422, 'invalid_input', 'Unknown avatar.', 'avatar');
+  await run(env, 'UPDATE users SET avatar = ? WHERE id = ?', raw || null, user.id);
+  const fresh = await first(env, 'SELECT * FROM users WHERE id = ?', user.id);
+  return json(profileOut(fresh));
 }

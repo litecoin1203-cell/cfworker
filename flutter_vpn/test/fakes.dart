@@ -58,6 +58,7 @@ class FakeApi extends ApiClient {
   /// Telegram verified on this account (Profile shows VERIFY until it is).
   bool tgVerified = false;
   String email = 'ali@example.com';
+  String? avatar;
 
   /// The trial is built, but its answer is lost on the way back.
   bool loseTrialAnswer = false;
@@ -180,6 +181,7 @@ class FakeApi extends ApiClient {
           'telegram': tgVerified
               ? {'id': '5551234', 'username': 'ali_vpn', 'name': 'Ali'}
               : null,
+          'avatar': avatar,
           'wallet_balance': 0,
           'referral_code': 'X1',
           'trial_available': !hasPlan,
@@ -227,6 +229,10 @@ class FakeApi extends ApiClient {
         ];
       case 'GET /me/photo':
         return {'photo': null};
+      case 'POST /me/avatar':
+        final id = (body?['avatar'] as String?) ?? '';
+        avatar = id.isEmpty ? null : id;
+        return {'avatar': avatar};
       case 'POST /me/email':
         if (body?['password'] != 'password1') {
           throw ApiError(400, 'wrong_password', 'The password is wrong.');

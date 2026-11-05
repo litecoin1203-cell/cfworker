@@ -67,6 +67,7 @@ class Me {
       telegramId = j['telegram'] is Map
           ? _str((j['telegram'] as Map)['id'])
           : '',
+      avatar = _str(j['avatar']),
       wallet = _int(j['wallet_balance']),
       referralCode = _str(j['referral_code']),
       trialAvailable = j['trial_available'] == true,
@@ -94,6 +95,9 @@ class Me {
   /// Numeric Telegram id; '' until Telegram is verified.
   final String telegramId;
   bool get telegramVerified => telegramId.isNotEmpty;
+
+  /// The Pleat character picked as the profile picture; '' for none.
+  final String avatar;
 
   /// Toman.
   final int wallet;

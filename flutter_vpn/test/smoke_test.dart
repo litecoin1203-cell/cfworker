@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:pleat/design/avatars.dart';
 import 'package:pleat/design/connect_control.dart';
 import 'package:pleat/design/tokens.dart';
 import 'package:pleat/design/widgets.dart';
@@ -669,6 +670,58 @@ void main() {
     expect(find.text('VERIFIED'), findsOneWidget);
     expect(find.text('Telegram  @ali_vpn'), findsOneWidget);
     expect(find.text('Backup login · optional'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('Profile: pick a Pleat character as the avatar', (tester) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, tunnel: FakeTunnel());
+    await tester.tap(find.textContaining(', Ali'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(AvatarArt), findsNothing);
+    await tester.tap(
+      find.descendant(
+        of: find.byType(ProfileScreen),
+        matching: find.byType(Avatar),
+      ),
+    );
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(AvatarArt), findsNWidgets(pleatAvatars.length));
+    await tester.tap(
+      find.byWidgetPredicate((w) => w is AvatarArt && w.avatar.id == 'luna'),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('USE LUNA'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(api.calls, contains('POST /me/avatar'));
+    expect(app.avatarId, 'luna');
+    expect(find.text('Avatar saved.'), findsOneWidget);
+    // the header now shows the character instead of the initial
+    expect(find.byType(AvatarArt), findsOneWidget);
+
+    // and it can go back to the initial
+    await tester.tap(
+      find.descendant(
+        of: find.byType(ProfileScreen),
+        matching: find.byType(Avatar),
+      ),
+    );
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    await tester.tap(find.text('USE MY INITIAL'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(app.avatarId, '');
+    expect(find.byType(AvatarArt), findsNothing);
     await tester.pump(const Duration(seconds: 3));
   });
 }
