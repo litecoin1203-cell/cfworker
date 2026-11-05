@@ -1330,7 +1330,7 @@ section('bot: link an existing panel account to an app user, without creating on
   const c1 = confirmOf(n);
   ok(c1 && c1.body.text.includes('ali_v2') && c1.body.text.includes('20 روز') && c1.body.text.includes('5.00 از 30.0'), 'asks first, showing the panel account: ' + (c1 && c1.body.text));
   ok(!(await env.DB.prepare('SELECT 1 x FROM panel_accounts WHERE user_id = ?').bind(uid).first()), 'nothing linked before "yes"');
-  await tap(kbData(c1).find((d) => d.startsWith('cf:')), c1.body.text);
+  await tap(kbData(c1).find((d) => d.startsWith('lp:') && d.endsWith(':0')), c1.body.text);
 
   const pa = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(uid).first();
   ok(pa && pa.remote_username === 'ali_v2' && pa.sub_path.includes('tok_ali_v2') && pa.desired === 'active', 'the app user now owns that panel account');
@@ -1359,7 +1359,7 @@ section('bot: link an existing panel account to an app user, without creating on
 
   // a used confirmation button cannot run again
   const before = (await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE action = 'user.link'").first()).c;
-  await tap(kbData(c1).find((d) => d.startsWith('cf:')), c1.body.text);
+  await tap(kbData(c1).find((d) => d.startsWith('lp:') && d.endsWith(':0')), c1.body.text);
   ok((await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE action = 'user.link'").first()).c === before, 'a confirmation works once');
 
   // a user who already got an account (free trial / grant) gets it replaced; the old one is switched off, not deleted
@@ -1372,7 +1372,7 @@ section('bot: link an existing panel account to an app user, without creating on
   await admin('/link link3@example.com reza_v2');
   const c3 = confirmOf(n);
   ok(c3 && c3.body.text.includes('جایگزین') && c3.body.text.includes(made) && c3.body.text.includes('نامحدود'), 'the question warns about the current plan and account');
-  await tap(kbData(c3).find((d) => d.startsWith('cf:')), c3.body.text);
+  await tap(kbData(c3).find((d) => d.startsWith('lp:') && d.endsWith(':0')), c3.body.text);
   const pa3 = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(uid3).first();
   ok(pa3.remote_username === 'reza_v2', 'panel-1 account is now the linked one');
   ok(fakes.pg.users[made] && fakes.pg.users[made].status === 'disabled', 'the old account is switched off on the panel, not deleted');
@@ -1391,7 +1391,7 @@ section('bot: link an existing panel account to an app user, without creating on
   await admin('/link link4@example.com old_v2');
   const c4 = confirmOf(n);
   ok(c4 && c4.body.text.includes('تمام شده'), 'the question says the time is over');
-  await tap(kbData(c4).find((d) => d.startsWith('cf:')), c4.body.text);
+  await tap(kbData(c4).find((d) => d.startsWith('lp:') && d.endsWith(':0')), c4.body.text);
   const s4 = await env.DB.prepare('SELECT state, stop_reason FROM subscriptions WHERE user_id = ?').bind(await userId('link4@example.com')).first();
   ok(s4.state === 'stopped' && s4.stop_reason === 'expired', 'an expired panel account shows as expired in the app');
 
@@ -1415,13 +1415,71 @@ section('bot: link an existing panel account to an app user, without creating on
   n = fakes.tg.calls.length;
   await admin('/link link5@example.com nima_v2 2');
   const c6 = confirmOf(n);
-  if (c6) await tap(kbData(c6).find((d) => d.startsWith('cf:')), c6.body.text);
+  if (c6) await tap(kbData(c6).find((d) => d.startsWith('lp:') && d.endsWith(':0')), c6.body.text);
   const p2state = (await env.DB.prepare('SELECT state FROM panels WHERE id = 2').first()).state;
   if (['active', 'rollout'].includes(p2state)) {
     const pa6 = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 2').bind(uid5).first();
     ok(pa6 && pa6.remote_username === 'nima_v2', 'linked on panel 2 by its number');
     ok((await env.DB.prepare('SELECT pg_username FROM subscriptions WHERE user_id = ?').bind(uid5).first()).pg_username === '', 'panel-1 username is not overwritten by another panel');
   } else ok(lastText().includes('فعال نیست'), 'a panel that is not serving cannot take a link');
+}
+
+section('link: hamid (30 days / 10 GB, 5 days gone, 2 GB used) gets every panel, one shared plan');
+{
+  const A = { chat: { id: 12345 } };
+  const kbData = (c) => ((c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard) || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const kbText = (c) => ((c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard) || []).flat().map((x) => x.text);
+  const tap = (data, text = 'x') => tgWebhook({ callback_query: { id: 'hm-' + data, data, message: { ...A, message_id: 901, text } } });
+  const confirmOf = (n) => fakes.tg.calls.slice(n).find((c) => c.method === 'sendMessage' && c.body.text.includes('مطمئنی'));
+  const now = Math.floor(Date.now() / 1000);
+  const app = { 'x-app-version': '1.9.0 (Android 14)' };
+  const plan30 = tenGb; // 30 days, 10 GB
+
+  const h = (fakes.pg.users['hamid'] = { id: 9901, username: 'hamid', status: 'active', expire: now + 25 * 86400, data_limit: 10 * GB, used_traffic: 2 * GB, token: 'tok_hamid' });
+  const tok = await signup('hamid@example.com', { device: 'hamid-phone' });
+  let n = fakes.tg.calls.length;
+  await admin('/link hamid@example.com hamid');
+  const c = confirmOf(n);
+  ok(c && kbText(c)[0].includes('پیشنهادی') && kbData(c)[0] === kbData(c).find((d) => d.endsWith(':' + plan30.id)), 'the plan that fits 10 GB / 25 days left is suggested first: ' + (c && kbText(c)[0]));
+  await tap(kbData(c)[0], c.body.text);
+  const me = (await call('GET', '/api/v1/me', { token: tok, headers: app })).data.subscription;
+  ok(me.used_bytes === 2 * GB && me.data_limit_bytes === 10 * GB && me.days_left === 25 && me.plan_name, 'app: 2 of 10 GB, 25 days, with a plan name: ' + JSON.stringify({ u: me.used_bytes, d: me.days_left, p: me.plan_name }));
+  await call('GET', '/api/v1/vpn/servers', { token: tok, headers: { ...app, 'x-device-id': 'hamid-phone' } });
+  await syncRounds(3);
+  const p2 = panelUser(pg2, 'hamid@example.com');
+  ok(p2 && p2.data_limit === 8 * GB && Math.abs(p2.expire - h.expire) < 5, 'panel 2 gets an account with the 8 GB left and the same expiry');
+  p2.used_traffic = 2 * GB;
+  await call('GET', '/api/v1/me', { token: tok }); await syncRounds(3);
+  const me2 = (await call('GET', '/api/v1/me', { token: tok })).data.subscription;
+  ok(me2.used_bytes === 4 * GB && h.data_limit === 8 * GB && p2.data_limit === 8 * GB, '2 GB on panel 2: app shows 4 of 10, each panel = its own use + 6 GB left');
+  h.used_traffic = 8 * GB;
+  await call('GET', '/api/v1/me', { token: tok }); await syncRounds(3);
+  ok(h.status === 'disabled' && p2.status === 'disabled', '10 GB in total switches both panels off');
+
+  // the same person already has accounts on panel 1 AND panel 2: the second link adds up, it does not start over
+  const hb = (fakes.pg.users['hamidb'] = { id: 9902, username: 'hamidb', status: 'active', expire: now + 25 * 86400, data_limit: 10 * GB, used_traffic: 2 * GB, token: 'tok_hb' });
+  const hb2 = (pg2.users['hamidb2'] = { id: 9903, username: 'hamidb2', status: 'active', expire: now + 28 * 86400, data_limit: 10 * GB, used_traffic: 1 * GB, token: 'tok_hb2' });
+  const tokb = await signup('hamidb@example.com', { device: 'hb-phone' });
+  n = fakes.tg.calls.length; await admin('/link hamidb@example.com hamidb');
+  let cb = confirmOf(n); await tap(kbData(cb)[0], cb.body.text);
+  await call('GET', '/api/v1/vpn/servers', { token: tokb, headers: { ...app, 'x-device-id': 'hb-phone' } });
+  const auto = panelUser(pg2, 'hamidb@example.com');
+  if (auto) auto.used_traffic = 0.5 * GB;
+  await call('GET', '/api/v1/me', { token: tokb });
+  n = fakes.tg.calls.length; await admin('/link hamidb@example.com hamidb2 2');
+  cb = confirmOf(n);
+  ok(cb && cb.body.text.includes('جمع می‌شوند'), 'the question says the usage will be added up: ' + (cb && cb.body.text));
+  await tap(kbData(cb)[0], cb.body.text);
+  await call('GET', '/api/v1/me', { token: tokb }); await syncRounds(3);
+  const mb = (await call('GET', '/api/v1/me', { token: tokb })).data.subscription;
+  const want = 3 * GB + (auto ? 0.5 * GB : 0);
+  ok(mb.used_bytes === want && mb.data_limit_bytes === 10 * GB && mb.days_left === 25, 'usage of both accounts (and the auto-made one) is summed, limit and time stay: ' + JSON.stringify({ u: mb.used_bytes / GB, d: mb.days_left }));
+  const left = 10 * GB - want;
+  ok(Math.abs(hb.data_limit - (2 * GB + left)) <= 64 * 1024 * 1024 && Math.abs(hb2.data_limit - (1 * GB + left)) <= 64 * 1024 * 1024, 'each panel is capped at its own use + what is left overall: ' + [hb.data_limit / GB, hb2.data_limit / GB]);
+  ok(Math.abs(hb2.expire - hb.expire) < 5, 'the second account takes the same expiry as the first');
+  ok(!auto || auto.status === 'disabled', 'the account the Worker had made on panel 2 is switched off');
+  const periods = (await env.DB.prepare('SELECT COUNT(*) c FROM sub_periods WHERE user_id = ?').bind(await userId('hamidb@example.com')).first()).c;
+  ok(periods === 1, 'still one period (no fresh start): ' + periods);
 }
 
 section('webhook is registered by the Worker, with no secret in the path');

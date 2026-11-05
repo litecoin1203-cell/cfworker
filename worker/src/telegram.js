@@ -175,7 +175,7 @@ async function onCallback(env, cq) {
   if (!isAdmin(env, cq.message?.chat, cq.from)) return tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: 'اجازه نداری' });
   if (String(cq.data || '').startsWith('m:')) return (await import('./telegram-menu.js')).onMenu(env, cq);
   const [action, idStr] = String(cq.data || '').split(':');
-  if (action === 'cf' || action === 'cx') return onConfirm(env, cq, action === 'cf');
+  if (action === 'cf' || action === 'cx' || action === 'lp') return onConfirm(env, cq, action !== 'cx');
   if (action === 'ts') {
     const { normSender } = await import('./sms.js');
     const list = String((await getSettings(env)).sms_senders || '').split(',').map(normSender).filter(Boolean);
@@ -263,9 +263,21 @@ export async function askConfirm(env, chatId, action, payload, question) {
   ]] } });
 }
 
+// The link question: one "yes" button per plan (the suggested one first), "no plan", and cancel.
+async function askLinkConfirm(env, chatId, payload, check) {
+  const token = [...crypto.getRandomValues(new Uint8Array(9))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  await insert(env, 'bot_confirm', { token, admin_id: String(chatId), action: 'link', payload_json: JSON.stringify(payload || {}), expires_at: nowSec() + 300 });
+  const plans = (await all(env, 'SELECT id, name, duration_days, data_limit_gb FROM plans WHERE is_active = 1 ORDER BY sort, id')).slice(0, 8);
+  const sid = check.suggestedPlanId;
+  plans.sort((a, b) => (b.id === sid) - (a.id === sid));
+  const rows = plans.map((p) => [{ text: `${p.id === sid ? '⭐ پیشنهادی: ' : '✅ '}${p.name} (${p.duration_days} روز، ${p.data_limit_gb || 'نامحدود'} گیگ)`.slice(0, 60), callback_data: `lp:${token}:${p.id}` }]);
+  rows.push([{ text: '✅ وصل کن، بدون پلن', callback_data: `lp:${token}:0` }, { text: '❌ انصراف', callback_data: `cx:${token}` }]);
+  return tg(env, 'sendMessage', { chat_id: chatId, text: `⚠️ مطمئنی؟\n${check.summary}`, reply_markup: { inline_keyboard: rows } });
+}
+
 async function onConfirm(env, cq, yes) {
   const chatId = cq.message?.chat?.id;
-  const token = String(cq.data || '').slice(3);
+  const [, token, planStr] = String(cq.data || '').split(':');
   const ack = (text) => tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text });
   const row = await first(env, 'SELECT * FROM bot_confirm WHERE token = ?', token);
   if (!row || row.admin_id !== String(chatId)) return ack('پیدا نشد');
@@ -308,9 +320,12 @@ async function onConfirm(env, cq, yes) {
     if (check.error) { await editStatus(env, cq, '❌ ' + check.error); return ack('انجام نشد'); }
     const { linkAccount } = await import('./sync.js');
     try {
-      const r = await linkAccount(env, u, panel, check.remote);
-      await audit(env, chatId, 'user.link', 'user', u.id, `پنل #${panel.id} ← ${payload.username}${r.replaced ? ` (به جای ${r.replaced})` : ''}`);
-      result = `اکانت ${payload.username} از پنل #${panel.id} به ${u.email} وصل شد. روی پنل چیزی ساخته نشد؛ همان لینک و همان کانفیگ‌ها در اپ می‌آید.`;
+      const planId = parseInt(planStr, 10) || null;
+      const plan = planId ? await first(env, 'SELECT id, name FROM plans WHERE id = ?', planId) : null;
+      const r = await linkAccount(env, u, panel, check.remote, { planId: plan ? plan.id : null });
+      await audit(env, chatId, 'user.link', 'user', u.id, `پنل #${panel.id} ← ${payload.username}${r.merged ? ' (جمع با اشتراک فعلی)' : ''}${plan ? ` · پلن #${plan.id}` : ''}${r.replaced ? ` (به جای ${r.replaced})` : ''}`);
+      result = `اکانت ${payload.username} از پنل #${panel.id} به ${u.email} وصل شد${plan ? ` (پلن ${plan.name})` : ''}. روی پنل چیزی ساخته نشد؛ همان لینک و همان کانفیگ‌ها در اپ می‌آید.`;
+      if (r.merged) result += '\nمصرف این اکانت به مصرف اشتراک فعلی اضافه شد و سقف و زمانش با همان اشتراک یکی شد.';
       if (r.replaced) result += r.disabled ? `\nاکانت قبلی‌اش (${r.replaced}) روی پنل خاموش شد.` : `\n⚠️ اکانت قبلی‌اش (${r.replaced}) خاموش نشد؛ آن را در پنل دستی خاموش کن.`;
     } catch (e) {
       const msg = /UNIQUE/i.test(String(e && e.message)) ? 'این اکانت پنل همین الان به کاربر دیگری وصل شد.' : (e && e.message) || 'خطای ناشناخته';
@@ -351,11 +366,19 @@ export async function linkCheck(env, u, panel, username) {
     `زمان: ${exp ? (exp > now ? `${Math.ceil((exp - now) / 86400)} روز (تا ${new Date(exp * 1000).toISOString().slice(0, 10)})` : 'تمام شده') : 'نامحدود'}`,
     `حجم: ${(used / GB).toFixed(2)} از ${limit ? (limit / GB).toFixed(1) + ' گیگ' : 'نامحدود'}`, '',
     'روی پنل اکانت جدیدی ساخته نمی‌شود؛ همین اکانت (همان UUID و لینک) در اپ استفاده می‌شود و v2rayNG هم کار می‌کند.'];
+  const { linkMode, suggestPlan } = await import('./sync.js');
+  const mode = await linkMode(env, u.id);
   const sub = await first(env, 'SELECT s.*, p.name FROM subscriptions s LEFT JOIN plans p ON p.id = s.plan_id WHERE s.user_id = ?', u.id);
-  if (sub) lines.push(`⚠️ اشتراک فعلی این کاربر در اپ${sub.name ? ` (${sub.name})` : ''} با این اکانت جایگزین می‌شود.`);
+  if (mode === 'merge') {
+    const left = sub.expires_at ? (sub.expires_at > now ? `${Math.ceil((sub.expires_at - now) / 86400)} روز` : 'تمام شده') : 'نامحدود';
+    lines.push(`➕ این کاربر از قبل یک اکانت پنل وصل‌شده دارد؛ این اکانت به همان اشتراک اضافه می‌شود:`,
+      `مصرف‌ها جمع می‌شوند (الان ${(sub.used_bytes / GB).toFixed(2)} + ${(used / GB).toFixed(2)} گیگ)، سقف ${sub.data_limit_bytes ? (sub.data_limit_bytes / GB).toFixed(1) + ' گیگ' : 'نامحدود'} و زمان (${left}) همان اشتراک فعلی می‌ماند.`);
+  } else if (sub) lines.push(`⚠️ اشتراک فعلی این کاربر در اپ${sub.name ? ` (${sub.name})` : ''} با این اکانت جایگزین می‌شود.`);
   const mine = await first(env, 'SELECT remote_username FROM panel_accounts WHERE user_id = ? AND panel_id = ?', u.id, panel.id);
-  if (mine) lines.push(`اکانت قبلی‌اش روی این پنل (${mine.remote_username}) خاموش می‌شود (پاک نمی‌شود).`);
-  return { remote, summary: lines.join('\n') };
+  if (mine) lines.push(`اکانت قبلی‌اش روی این پنل (${mine.remote_username}) خاموش می‌شود (پاک نمی‌شود)${mode === 'merge' ? '؛ مصرفش در حساب می‌ماند' : ''}.`);
+  const suggested = mode === 'merge' && sub.plan_id ? { id: sub.plan_id } : await suggestPlan(env, mode === 'merge' ? sub.data_limit_bytes : limit, mode === 'merge' ? sub.expires_at : exp);
+  lines.push('', '📦 در اپ روی کدام پلن باشد؟ (حجم و زمان از پنل می‌آید؛ پلن فقط اسم و تمدید را تعیین می‌کند)');
+  return { remote, summary: lines.join('\n'), suggestedPlanId: suggested ? suggested.id : null };
 }
 
 // ---------------- diagnostics ----------------
@@ -636,7 +659,7 @@ async function onMessage(env, msg, opts = {}) {
     if (!panel) return say('پنل پیدا نشد. لیست: /panels');
     const check = await linkCheck(env, u, panel, username);
     if (check.error) return say('❌ ' + check.error);
-    return askConfirm(env, chatId, 'link', { user_id: u.id, panel_id: panel.id, username }, check.summary);
+    return askLinkConfirm(env, chatId, { user_id: u.id, panel_id: panel.id, username }, check);
   }
   if (cmd === '/grant') {
     const [, email, planIdStr] = text.split(/\s+/);
