@@ -525,7 +525,7 @@ async function onMessage(env, msg, opts = {}) {
     // /addpanel نام  (type found by /paneltest)  or  /addpanel rebecca|marzban|pasarguard نام
     const { KINDS } = await import('./panels.js');
     const [, word, ...rest] = text.split(/\s+/);
-    const given = String(first || '').toLowerCase();
+    const given = String(word || '').toLowerCase();
     const k = KINDS.includes(given) ? given : 'auto';
     const label = (k === given ? rest : [word, ...rest]).join(' ').trim();
     if (!label) return say('شکل درست: /addpanel نام‌دلخواه\nنوع پنل (PasarGuard، Marzban یا Rebecca) موقع /paneltest خودکار تشخیص داده می‌شود.\nاگر خواستی نوع را خودت بگو: /addpanel rebecca نام');
