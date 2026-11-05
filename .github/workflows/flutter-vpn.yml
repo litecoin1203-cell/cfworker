@@ -59,15 +59,16 @@ jobs:
       - name: Check generated configs with the real Xray core
         run: |
           XRAY_DUMP=/tmp/xray-configs flutter test test/xray_config_test.dart
+          # GitHub release downloads sometimes answer 504 for a minute; retry.
           curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_LIB_TAG}/Xray-linux-64.zip" \
-            || curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
+            || curl -fsSL --retry 5 --retry-delay 10 -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
           unzip -oq /tmp/xray.zip -d /tmp/xray
           # The app's own geo files, so the Iran-direct rules are checked too.
           geo=android/app/src/main/assets/geo
           mkdir -p "$geo"
           base="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
-          curl -fL --retry 3 -o "$geo/geoip.dat" "$base/geoip.dat"
-          curl -fL --retry 3 -o "$geo/geosite.dat" "$base/geosite.dat"
+          curl -fL --retry 5 --retry-delay 10 -o "$geo/geoip.dat" "$base/geoip.dat"
+          curl -fL --retry 5 --retry-delay 10 -o "$geo/geosite.dat" "$base/geosite.dat"
           test -s "$geo/geoip.dat" && test -s "$geo/geosite.dat"
           export XRAY_LOCATION_ASSET="$PWD/$geo"
           for f in /tmp/xray-configs/*.json; do
