@@ -76,7 +76,7 @@ class _SplashScreenState extends State<SplashScreen>
               width: 220,
               height: 260,
               decoration: BoxDecoration(
-                color: Colors.white,
+                color: PColors.surface,
                 borderRadius: BorderRadius.circular(PRadius.sheet),
                 boxShadow: PShadow.soft(),
               ),

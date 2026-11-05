@@ -1,3 +1,7 @@
+// Colour defaults come from the live palette, so they are nullable
+// parameters stored in private fields; this lint cannot apply to those.
+// ignore_for_file: prefer_initializing_formals
+
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -12,9 +16,12 @@ class MarkColors {
   const MarkColors(this.back, this.front, this.fold);
   final Color back, front, fold;
 
-  static const onLight = MarkColors(PColors.navy, PColors.blue, PColors.ice);
-  static const onDark = MarkColors(Colors.white, PColors.ice, PColors.blue);
-  static const sealed = MarkColors(Colors.white, PColors.ice, PColors.mist);
+  static MarkColors get onLight =>
+      MarkColors(PColors.navy, PColors.blue, PColors.ice);
+  static MarkColors get onDark =>
+      MarkColors(PColors.onDeep, PColors.ice, PColors.blue);
+  static MarkColors get sealed =>
+      MarkColors(PColors.onDeep, PColors.ice, PColors.mist);
 }
 
 class MarkPainter extends CustomPainter {
@@ -24,9 +31,10 @@ class MarkPainter extends CustomPainter {
     this.fill = 1,
     this.split = 0,
     this.rotation = 0,
-    this.colors = MarkColors.onLight,
-    this.strokeColor = PColors.blue,
-  });
+    MarkColors? colors,
+    Color? strokeColor,
+  }) : colors = colors ?? MarkColors.onLight,
+       strokeColor = strokeColor ?? PColors.blue;
 
   /// 0 … 1 outline draw-on progress per plane.
   final double drawBack, drawFront;
@@ -123,13 +131,11 @@ class MarkPainter extends CustomPainter {
 
 /// Static mark, for headers and the avatar-free places.
 class PleatMark extends StatelessWidget {
-  const PleatMark({
-    super.key,
-    this.size = 40,
-    this.colors = MarkColors.onLight,
-  });
+  const PleatMark({super.key, this.size = 40, MarkColors? colors})
+    : _colors = colors;
   final double size;
-  final MarkColors colors;
+  final MarkColors? _colors;
+  MarkColors get colors => _colors ?? MarkColors.onLight;
 
   @override
   Widget build(BuildContext context) => Semantics(

@@ -100,7 +100,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
                   vertical: 6,
                 ),
                 decoration: BoxDecoration(
-                  color: Colors.white,
+                  color: PColors.surface,
                   borderRadius: BorderRadius.circular(PRadius.pill),
                 ),
                 child: Text(day, style: PType.meta(color: PColors.ink)),
@@ -310,13 +310,13 @@ class _Switch extends StatelessWidget {
               PIconView(
                 icon,
                 size: 20,
-                color: saved == v ? PColors.blue : PColors.ink,
+                color: saved == v ? PColors.accentInk : PColors.ink,
               ),
               const SizedBox(width: 8),
               Text(
                 label,
                 style: PType.small(
-                  color: saved == v ? PColors.blue : PColors.ink,
+                  color: saved == v ? PColors.accentInk : PColors.ink,
                 ).copyWith(fontWeight: FontWeight.w700),
               ),
             ],
@@ -392,7 +392,7 @@ class _LogEntry extends StatelessWidget {
                         Container(
                           width: 8,
                           height: 8,
-                          decoration: const BoxDecoration(
+                          decoration: BoxDecoration(
                             color: PColors.safe,
                             shape: BoxShape.circle,
                           ),

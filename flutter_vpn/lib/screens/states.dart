@@ -69,7 +69,7 @@ void showNote(BuildContext context, String text) {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         content: Text(
           text,
-          style: PType.small(color: Colors.white)
+          style: PType.small(color: PColors.onDeep)
               .copyWith(fontWeight: FontWeight.w700),
         ),
       ),

@@ -186,7 +186,7 @@ class _PlanCard extends StatelessWidget {
           margin: const EdgeInsets.symmetric(horizontal: 14),
           padding: const EdgeInsets.fromLTRB(18, 12, 12, 12),
           decoration: BoxDecoration(
-            color: Colors.white,
+            color: PColors.surface,
             borderRadius: const BorderRadius.vertical(
               bottom: Radius.circular(PRadius.card),
             ),

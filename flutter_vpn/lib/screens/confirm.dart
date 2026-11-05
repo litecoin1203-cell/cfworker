@@ -107,14 +107,14 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                         Container(
                           width: 48,
                           height: 48,
-                          decoration: const BoxDecoration(
+                          decoration: BoxDecoration(
                             color: PColors.mist,
                             shape: BoxShape.circle,
                           ),
                           alignment: Alignment.center,
-                          child: const PIconView(
+                          child: PIconView(
                             PIcon.lock,
-                            color: PColors.blue,
+                            color: PColors.accentInk,
                           ),
                         ),
                         const SizedBox(width: 14),
@@ -240,11 +240,7 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                     else
                       Row(
                         children: [
-                          const PIconView(
-                            PIcon.user,
-                            size: 18,
-                            color: PColors.muted,
-                          ),
+                          PIconView(PIcon.user, size: 18, color: PColors.muted),
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
@@ -270,7 +266,7 @@ class _ConfirmScreenState extends State<ConfirmScreen> {
                               ),
                               child: Text(
                                 _create ? 'Sign in' : 'Create account',
-                                style: PType.small(color: PColors.blue)
+                                style: PType.small(color: PColors.accentInk)
                                     .copyWith(fontWeight: FontWeight.w700),
                               ),
                             ),

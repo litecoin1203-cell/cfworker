@@ -1,3 +1,7 @@
+// Colour defaults come from the live palette, so they are nullable
+// parameters stored in private fields; this lint cannot apply to those.
+// ignore_for_file: prefer_initializing_formals
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -57,7 +61,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         layout: Layouts.profile,
         child: SafeArea(
           child: RefreshIndicator(
-            color: PColors.blue,
+            color: PColors.accentInk,
             onRefresh: () => Future.wait([
               app.loadMe(),
               app.loadPackages(),
@@ -99,15 +103,15 @@ class _ProfileScreenState extends State<ProfileScreen> {
                                 color: PColors.blue,
                                 shape: BoxShape.circle,
                                 border: Border.all(
-                                  color: Colors.white,
+                                  color: PColors.surface,
                                   width: 2.5,
                                 ),
                               ),
                               alignment: Alignment.center,
-                              child: const PIconView(
+                              child: PIconView(
                                 PIcon.grid,
                                 size: 12,
-                                color: Colors.white,
+                                color: PColors.onAccent,
                               ),
                             ),
                           ),
@@ -133,7 +137,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                               if (tgVerified) ...[
                                 const SizedBox(width: 8),
-                                const _Chip('VERIFIED', color: PColors.safe),
+                                _Chip('VERIFIED', color: PColors.safe),
                               ],
                             ],
                           ),
@@ -205,6 +209,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                         ),
                       ),
+                      _Appearance(app: app),
                       _Row(
                         icon: PIcon.pulse,
                         title: 'Reduce motion',
@@ -276,7 +281,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 PillButton(
                   label: 'Sign out',
                   icon: PIcon.logout,
-                  color: Colors.white,
+                  color: PColors.surface,
                   textColor: PColors.ink,
                   onTap: () async {
                     await app.signOut();
@@ -308,6 +313,117 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
+/// Day, Night, or Auto (follow the phone). Saved on this phone; the whole
+/// app changes in place, this screen included.
+class _Appearance extends StatelessWidget {
+  const _Appearance({required this.app});
+  final AppState app;
+
+  static const _choices = [
+    ('day', 'Day', PIcon.sun),
+    ('night', 'Night', PIcon.moon),
+    ('auto', 'Auto', PIcon.device),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final d = PMotion.reduced(context) ? Duration.zero : PMotion.quick;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              PIconView(
+                PColors.current.isDark ? PIcon.moon : PIcon.sun,
+                color: PColors.accentInk,
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Appearance',
+                      style: PType.h3().copyWith(fontSize: 15),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      app.theme == 'auto'
+                          ? 'Follows your phone.'
+                          : 'Day or night look, on this phone.',
+                      style: PType.small(),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          Container(
+            padding: const EdgeInsets.all(4),
+            decoration: BoxDecoration(
+              color: PColors.field,
+              borderRadius: BorderRadius.circular(PRadius.pill),
+            ),
+            child: Row(
+              children: [
+                for (final (id, label, icon) in _choices)
+                  Expanded(
+                    child: Semantics(
+                      button: true,
+                      selected: app.theme == id,
+                      label: '$label appearance',
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () => app.update((s) => s.theme = id),
+                        child: AnimatedContainer(
+                          duration: d,
+                          curve: Curves.easeOutCubic,
+                          height: 40,
+                          decoration: BoxDecoration(
+                            color: app.theme == id
+                                ? PColors.blue
+                                : Colors.transparent,
+                            borderRadius: BorderRadius.circular(PRadius.pill),
+                          ),
+                          child: ExcludeSemantics(
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                PIconView(
+                                  icon,
+                                  size: 16,
+                                  color: app.theme == id
+                                      ? PColors.onAccent
+                                      : PColors.muted,
+                                ),
+                                const SizedBox(width: 6),
+                                Text(
+                                  label,
+                                  style: PType.small(
+                                    color: app.theme == id
+                                        ? PColors.onAccent
+                                        : PColors.ink,
+                                  ).copyWith(fontWeight: FontWeight.w700),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class _Row extends StatelessWidget {
   const _Row({
     required this.icon,
@@ -329,7 +445,7 @@ class _Row extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 10),
       child: Row(
         children: [
-          PIconView(icon, color: PColors.blue),
+          PIconView(icon, color: PColors.accentInk),
           const SizedBox(width: 14),
           Expanded(
             child: Column(
@@ -430,7 +546,7 @@ class _RowAction extends StatelessWidget {
           child: Text(
             text,
             style: PType.button(
-              color: onTap == null ? PColors.muted : PColors.blue,
+              color: onTap == null ? PColors.muted : PColors.accentInk,
             ),
           ),
         ),
@@ -530,7 +646,7 @@ Future<void> _changePassword(BuildContext context) async {
   final changed = await showModalBottomSheet<bool>(
     context: context,
     backgroundColor: Colors.transparent,
-    barrierColor: PColors.navy.withValues(alpha: 0.28),
+    barrierColor: PColors.scrim,
     isScrollControlled: true,
     builder: (context) => StatefulBuilder(
       builder: (context, setSheet) {
@@ -556,8 +672,8 @@ Future<void> _changePassword(BuildContext context) async {
           ),
         );
         return Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
+          decoration: BoxDecoration(
+            color: PColors.surface,
             borderRadius: BorderRadius.vertical(
               top: Radius.circular(PRadius.sheet),
             ),
@@ -684,7 +800,7 @@ class Avatar extends StatelessWidget {
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: PColors.navy,
-              border: Border.all(color: Colors.white, width: ring),
+              border: Border.all(color: PColors.surface, width: ring),
               boxShadow: PShadow.soft(),
             ),
             clipBehavior: Clip.antiAlias,
@@ -712,7 +828,7 @@ class Avatar extends StatelessWidget {
                 decoration: BoxDecoration(
                   color: PColors.blue,
                   shape: BoxShape.circle,
-                  border: Border.all(color: Colors.white, width: 2),
+                  border: Border.all(color: PColors.surface, width: 2),
                 ),
               ),
             ),
@@ -724,15 +840,16 @@ class Avatar extends StatelessWidget {
   Widget _initial() => Text(
     app.firstName.substring(0, 1),
     style: size >= 64
-        ? PType.h1(color: Colors.white)
-        : PType.h2(color: Colors.white),
+        ? PType.h1(color: PColors.onDeep)
+        : PType.h2(color: PColors.onDeep),
   );
 }
 
 class _Chip extends StatelessWidget {
-  const _Chip(this.text, {this.color = PColors.blue});
+  const _Chip(this.text, {Color? color}) : _color = color;
   final String text;
-  final Color color;
+  final Color? _color;
+  Color get color => _color ?? PColors.blue;
 
   @override
   Widget build(BuildContext context) => Container(
@@ -769,7 +886,7 @@ class _Identity extends StatelessWidget {
                 : 'Verify your Telegram',
             body: verified ? 'Verified · ID ${me!.telegramId}' : 'Required. Get a 6-digit code from our bot. Your Telegram then logs you in too.',
             trailing: verified
-                ? const Padding(
+                ? Padding(
                     padding: EdgeInsets.only(right: 8),
                     child: PIconView(PIcon.check, color: PColors.safe),
                   )
@@ -818,7 +935,7 @@ Future<void> _emailSheet(
   final saved = await showModalBottomSheet<String>(
     context: context,
     backgroundColor: Colors.transparent,
-    barrierColor: PColors.navy.withValues(alpha: 0.28),
+    barrierColor: PColors.scrim,
     isScrollControlled: true,
     builder: (context) => StatefulBuilder(
       builder: (context, setSheet) {
@@ -874,8 +991,8 @@ Future<void> _emailSheet(
         }
 
         return Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
+          decoration: BoxDecoration(
+            color: PColors.surface,
             borderRadius: BorderRadius.vertical(
               top: Radius.circular(PRadius.sheet),
             ),
@@ -954,7 +1071,7 @@ Future<void> _avatarSheet(BuildContext context) async {
   final saved = await showModalBottomSheet<String>(
     context: context,
     backgroundColor: Colors.transparent,
-    barrierColor: PColors.navy.withValues(alpha: 0.28),
+    barrierColor: PColors.scrim,
     isScrollControlled: true,
     builder: (context) => StatefulBuilder(
       builder: (context, setSheet) {
@@ -977,8 +1094,8 @@ Future<void> _avatarSheet(BuildContext context) async {
 
         final pick = avatarById(chosen)!;
         return Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
+          decoration: BoxDecoration(
+            color: PColors.surface,
             borderRadius: BorderRadius.vertical(
               top: Radius.circular(PRadius.sheet),
             ),
@@ -1057,7 +1174,7 @@ Future<void> _avatarSheet(BuildContext context) async {
                       ? 'Use my Telegram photo'
                       : 'Use my initial',
                   color: PColors.field,
-                  textColor: PColors.blue,
+                  textColor: PColors.accentInk,
                   onTap: busy ? null : () => save(''),
                 ),
               ],
@@ -1109,7 +1226,7 @@ class _UsageCard extends StatelessWidget {
                 ],
               ),
             ),
-            const PIconView(PIcon.chevron, color: PColors.muted),
+            PIconView(PIcon.chevron, color: PColors.muted),
           ],
         ),
       );
@@ -1142,15 +1259,15 @@ class _UsageCard extends StatelessWidget {
     void openIt() => showModalBottomSheet<void>(
       context: context,
       backgroundColor: Colors.transparent,
-      barrierColor: PColors.navy.withValues(alpha: 0.28),
+      barrierColor: PColors.scrim,
       isScrollControlled: true,
       builder: (context) => ConstrainedBox(
         constraints: BoxConstraints(
           maxHeight: MediaQuery.sizeOf(context).height * 0.88,
         ),
         child: Container(
-          decoration: const BoxDecoration(
-            color: Colors.white,
+          decoration: BoxDecoration(
+            color: PColors.surface,
             borderRadius: BorderRadius.vertical(
               top: Radius.circular(PRadius.sheet),
             ),
@@ -1180,11 +1297,7 @@ class _UsageCard extends StatelessWidget {
                   const SizedBox(height: 18),
                   detail(),
                   const SizedBox(height: 22),
-                  const Divider(
-                    height: 1,
-                    thickness: 1.2,
-                    color: PColors.field,
-                  ),
+                  Divider(height: 1, thickness: 1.2, color: PColors.field),
                   const SizedBox(height: 16),
                   _Packages(app: app, bare: true),
                 ],
@@ -1227,7 +1340,7 @@ class _UsageCard extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(0, 10, 8, 6),
               child: Row(
                 children: [
-                  const PIconView(PIcon.chart, color: PColors.blue),
+                  PIconView(PIcon.chart, color: PColors.accentInk),
                   const SizedBox(width: 14),
                   Expanded(
                     child: Column(
@@ -1242,7 +1355,7 @@ class _UsageCard extends StatelessWidget {
                       ],
                     ),
                   ),
-                  const PIconView(PIcon.chevron, color: PColors.muted),
+                  PIconView(PIcon.chevron, color: PColors.muted),
                 ],
               ),
             ),
@@ -1388,7 +1501,7 @@ class _PleatsAndDotsState extends State<_PleatsAndDots>
                 ),
               ),
               const SizedBox(height: 18),
-              const Divider(height: 1, thickness: 1.2, color: PColors.field),
+              Divider(height: 1, thickness: 1.2, color: PColors.field),
               const SizedBox(height: 16),
               _bigRow(
                 'DAYS LEFT',
@@ -1536,7 +1649,7 @@ class _PackageRow extends StatelessWidget {
       decoration: BoxDecoration(
         border: first
             ? null
-            : const Border(top: BorderSide(color: PColors.field, width: 1.2)),
+            : Border(top: BorderSide(color: PColors.field, width: 1.2)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1551,8 +1664,9 @@ class _PackageRow extends StatelessWidget {
             alignment: Alignment.center,
             child: Text(
               p.days == null ? '∞' : '${p.days}d',
-              style: PType.meta(color: p.current ? Colors.white : PColors.blue)
-                  .copyWith(fontWeight: FontWeight.w700),
+              style: PType.meta(
+                color: p.current ? PColors.onAccent : PColors.accentInk,
+              ).copyWith(fontWeight: FontWeight.w700),
             ),
           ),
           const SizedBox(width: 14),

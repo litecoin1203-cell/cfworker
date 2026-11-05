@@ -172,6 +172,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   bool onboarded = false;
   bool reduceMotion = false;
 
+  /// Day or Night look: 'auto' follows the phone, 'day' and 'night' stick.
+  String theme = 'auto';
+
   /// Test the exits and take the best one; move on when one stops
   /// answering. On by default, as in the Cloud Gold app.
   bool smartConnect = true;
@@ -318,6 +321,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final p = _prefs;
     onboarded = p.getBool('onboarded') ?? false;
     reduceMotion = p.getBool('reduceMotion') ?? false;
+    theme = switch (p.getString('theme')) {
+      'day' => 'day',
+      'night' => 'night',
+      _ => 'auto',
+    };
     smartConnect = p.getBool('smartConnect') ?? true;
     localDirect = p.getBool('localDirect') ?? true;
     pinned = p.getBool('pinned') ?? false;
@@ -334,6 +342,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final p = _prefs;
     p.setBool('onboarded', onboarded);
     p.setBool('reduceMotion', reduceMotion);
+    p.setString('theme', theme);
     p.setBool('smartConnect', smartConnect);
     p.setBool('localDirect', localDirect);
     p.setBool('pinned', pinned);

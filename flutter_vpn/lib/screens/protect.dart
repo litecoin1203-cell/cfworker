@@ -122,11 +122,7 @@ class _KillSwitchCard extends StatelessWidget {
                 curve: Curves.easeInOutCubic,
                 right: -40,
                 top: -66,
-                child: const ShardChip(
-                  color: PColors.blue,
-                  width: 90,
-                  height: 190,
-                ),
+                child: ShardChip(color: PColors.blue, width: 90, height: 190),
               ),
               AnimatedPositioned(
                 duration: PMotion.reduced(context)
@@ -135,11 +131,7 @@ class _KillSwitchCard extends StatelessWidget {
                 curve: Curves.easeInOutCubic,
                 right: 96,
                 top: -44,
-                child: const ShardChip(
-                  color: PColors.ice,
-                  width: 34,
-                  height: 150,
-                ),
+                child: ShardChip(color: PColors.ice, width: 34, height: 150),
               ),
               Padding(
                 padding: const EdgeInsets.fromLTRB(24, 22, 16, 18),
@@ -152,14 +144,14 @@ class _KillSwitchCard extends StatelessWidget {
                           width: 44,
                           height: 44,
                           decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.12),
+                            color: PColors.onDeep.withValues(alpha: 0.12),
                             shape: BoxShape.circle,
                           ),
                           alignment: Alignment.center,
-                          child: const PIconView(
+                          child: PIconView(
                             PIcon.lock,
                             size: 22,
-                            color: Colors.white,
+                            color: PColors.onDeep,
                           ),
                         ),
                         const Spacer(),
@@ -174,7 +166,7 @@ class _KillSwitchCard extends StatelessWidget {
                       ],
                     ),
                     const Spacer(),
-                    Text('Kill switch', style: PType.h1(color: Colors.white)),
+                    Text('Kill switch', style: PType.h1(color: PColors.onDeep)),
                     const SizedBox(height: 6),
                     UnavailableNote(
                       !engine
@@ -217,7 +209,10 @@ class _SplitTunnelCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              PIconView(PIcon.split, color: on ? PColors.blue : PColors.muted),
+              PIconView(
+                PIcon.split,
+                color: on ? PColors.accentInk : PColors.muted,
+              ),
               const SizedBox(width: 10),
               Expanded(child: Text('Split tunnel', style: PType.h3())),
               PToggle(
@@ -308,7 +303,7 @@ class _DnsCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const PIconView(PIcon.dns, color: PColors.muted),
+              PIconView(PIcon.dns, color: PColors.muted),
               const SizedBox(width: 10),
               Expanded(child: Text('Private DNS', style: PType.h3())),
             ],
@@ -341,7 +336,7 @@ class _ProtocolCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const PIconView(PIcon.layers, color: PColors.blue),
+              PIconView(PIcon.layers, color: PColors.accentInk),
               const SizedBox(width: 10),
               Expanded(child: Text('Protocol', style: PType.h3())),
             ],
@@ -400,7 +395,7 @@ class _ProtocolCard extends StatelessWidget {
                                   p,
                                   style: PType.small(
                                     color: p == current
-                                        ? Colors.white
+                                        ? PColors.onAccent
                                         : PColors.ink,
                                   ).copyWith(fontWeight: FontWeight.w700),
                                 ),
@@ -439,7 +434,7 @@ class _AutoConnectCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              const PIconView(PIcon.wifi, color: PColors.muted),
+              PIconView(PIcon.wifi, color: PColors.muted),
               const SizedBox(width: 10),
               Expanded(child: Text('Auto-connect', style: PType.h3())),
               PToggle(
@@ -494,10 +489,10 @@ class _MiniCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              PIconView(icon, color: live ? PColors.blue : PColors.muted),
+              PIconView(icon, color: live ? PColors.accentInk : PColors.muted),
               const Spacer(),
               if (fixed)
-                const Padding(
+                Padding(
                   padding: EdgeInsets.all(12),
                   child: PIconView(PIcon.check, color: PColors.safe),
                 )

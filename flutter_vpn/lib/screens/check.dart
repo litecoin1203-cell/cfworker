@@ -155,7 +155,7 @@ class _CheckScreenState extends State<CheckScreen> {
                 PIconView(
                   f.good ? PIcon.check : PIcon.shield,
                   size: 20,
-                  color: f.good ? PColors.safe : PColors.blue,
+                  color: f.good ? PColors.safe : PColors.accentInk,
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -183,7 +183,7 @@ class _CheckScreenState extends State<CheckScreen> {
       PillButton(
         label: 'Copy report for support',
         icon: PIcon.copy,
-        color: Colors.white,
+        color: PColors.surface,
         textColor: PColors.ink,
         onTap: () => copyText(
           context,
@@ -226,7 +226,7 @@ class _CheckScreenState extends State<CheckScreen> {
                         ),
                         alignment: Alignment.center,
                         child: s.ok == null
-                            ? const SizedBox(
+                            ? SizedBox(
                                 width: 12,
                                 height: 12,
                                 child: CircularProgressIndicator(
@@ -379,7 +379,7 @@ class _TraceLinkState extends State<_TraceLink> {
         _running
             ? 'Testing alone with the core log…'
             : 'Test alone + copy core log',
-        style: PType.small(color: PColors.blue).copyWith(
+        style: PType.small(color: PColors.accentInk).copyWith(
           fontWeight: FontWeight.w700,
           decoration: _running ? null : TextDecoration.underline,
         ),

@@ -161,7 +161,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
                           if (app.exit != null) ...[
                             Text(
                               app.exit!.label,
-                              style: PType.small(color: PColors.blue)
+                              style: PType.small(color: PColors.accentInk)
                                   .copyWith(fontWeight: FontWeight.w700),
                             ),
                             const SizedBox(width: 6),
@@ -359,7 +359,7 @@ class _CategoryChip extends StatelessWidget {
               width: 48,
               height: 48,
               decoration: BoxDecoration(
-                color: active ? Colors.white : Colors.transparent,
+                color: active ? PColors.surface : Colors.transparent,
                 shape: BoxShape.circle,
                 boxShadow: active ? PShadow.soft() : null,
               ),
@@ -367,7 +367,7 @@ class _CategoryChip extends StatelessWidget {
               child: PIconView(
                 icon,
                 size: 24,
-                color: active ? PColors.blue : PColors.ink,
+                color: active ? PColors.accentInk : PColors.ink,
               ),
             ),
             const SizedBox(height: 6),
@@ -432,7 +432,7 @@ class _CountryGroupState extends State<_CountryGroup> {
                       Text(
                         '${widget.exits.length} servers  ·  $kinds',
                         style: PType.meta(
-                          color: anyOn ? PColors.blue : PColors.ink,
+                          color: anyOn ? PColors.accentInk : PColors.ink,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -444,7 +444,7 @@ class _CountryGroupState extends State<_CountryGroup> {
                   turns: open ? 0.25 : 0,
                   duration: const Duration(milliseconds: 220),
                   curve: Curves.easeOutCubic,
-                  child: const PIconView(
+                  child: PIconView(
                     PIcon.chevron,
                     size: 20,
                     color: PColors.muted,
@@ -539,7 +539,7 @@ class _ExitRow extends StatelessWidget {
                       exit.verdictOn(net)!,
                       style: PType.meta(
                         color: exit.verdict == Verdict.strong
-                            ? PColors.blue
+                            ? PColors.accentInk
                             : PColors.muted,
                       ).copyWith(fontWeight: FontWeight.w700),
                       maxLines: 1,
@@ -563,10 +563,10 @@ class _ExitRow extends StatelessWidget {
                   padding: const EdgeInsets.symmetric(horizontal: 14),
                   child: Center(
                     child: selected
-                        ? const PIconView(
+                        ? PIconView(
                             PIcon.check,
                             size: 18,
-                            color: Colors.white,
+                            color: PColors.onAccent,
                           )
                         : Text(
                             'CONNECT',

@@ -263,7 +263,7 @@ class _CoinPayScreenState extends State<CoinPayScreen>
           const SizedBox(height: 10),
           PillButton(
             label: 'Cancel order',
-            color: Colors.white,
+            color: PColors.surface,
             textColor: PColors.ink,
             onTap: _cancel,
           ),
@@ -292,7 +292,7 @@ class _Qr extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(14),
         decoration: BoxDecoration(
-          color: Colors.white,
+          color: PColors.surface,
           borderRadius: BorderRadius.circular(24),
           border: Border.all(color: PColors.mist),
         ),

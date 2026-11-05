@@ -155,7 +155,7 @@ class _OrderStatusScreenState extends State<OrderStatusScreen>
           if (app.config.supportUrl.isNotEmpty)
             PillButton(
               label: 'Message support',
-              color: Colors.white,
+              color: PColors.surface,
               textColor: PColors.ink,
               onTap: () => app.tunnel.openUrl(app.config.supportUrl),
             ),
@@ -190,7 +190,9 @@ class _OrderStatusScreenState extends State<OrderStatusScreen>
                   o.status == 'rejected'
                       ? PIcon.close
                       : (o.open ? PIcon.clock : PIcon.info),
-                  color: o.status == 'rejected' ? Colors.white : PColors.blue,
+                  color: o.status == 'rejected'
+                      ? Colors.white
+                      : PColors.accentInk,
                 ),
               ),
               const SizedBox(width: 14),
@@ -208,7 +210,7 @@ class _OrderStatusScreenState extends State<OrderStatusScreen>
 
   Widget _cancel(Order o) => PillButton(
     label: 'Cancel order',
-    color: Colors.white,
+    color: PColors.surface,
     textColor: PColors.ink,
     onTap: () async {
       final sure = await confirmSheet(
@@ -268,7 +270,7 @@ class PaidScreen extends StatelessWidget {
               Container(
                 width: 56,
                 height: 56,
-                decoration: const BoxDecoration(
+                decoration: BoxDecoration(
                   color: PColors.safe,
                   shape: BoxShape.circle,
                 ),

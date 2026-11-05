@@ -83,25 +83,10 @@ abstract final class Layouts {
 
 /// The selected category reshapes the colour mix, never the palette.
 List<Color> mixFor(Category c) => switch (c) {
-  Category.all => const [PColors.mist, PColors.navy, PColors.blue, PColors.ice],
-  Category.fastest => const [
-    PColors.ice,
-    PColors.blue,
-    PColors.blue,
-    PColors.ice,
-  ],
-  Category.saved => const [
-    PColors.mist,
-    PColors.ice,
-    PColors.blue,
-    PColors.mist,
-  ],
-  Category.recent => const [
-    PColors.ice,
-    PColors.navy,
-    PColors.mist,
-    PColors.blue,
-  ],
+  Category.all => [PColors.mist, PColors.navy, PColors.blue, PColors.ice],
+  Category.fastest => [PColors.ice, PColors.blue, PColors.blue, PColors.ice],
+  Category.saved => [PColors.mist, PColors.ice, PColors.blue, PColors.mist],
+  Category.recent => [PColors.ice, PColors.navy, PColors.mist, PColors.blue],
 };
 
 /// The live scene for the signed-in app: tab layout, category mix, lean

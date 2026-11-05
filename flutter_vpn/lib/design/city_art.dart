@@ -60,6 +60,9 @@ const _tones = {
 };
 
 class _CityPainter extends CustomPainter {
+  /// Repaints when Day and Night switch.
+  final PPalette palette = PColors.current;
+
   _CityPainter(this.seed, this.toneId);
   final int seed;
   final SceneTone toneId;
@@ -67,7 +70,13 @@ class _CityPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final w = size.width, h = size.height;
-    final tone = _tones[toneId]!;
+    final raw = _tones[toneId]!;
+    final tone = _Tone(
+      raw.sky.map(PColors.tone).toList(),
+      raw.layers.map(PColors.tone).toList(),
+      PColors.tone(raw.sun),
+      windows: raw.windows,
+    );
     final rnd = math.Random(seed);
     final horizon = h * 0.70;
 
@@ -276,7 +285,7 @@ class _CityPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_CityPainter old) =>
-      old.seed != seed || old.toneId != toneId;
+      old.palette != palette || old.seed != seed || old.toneId != toneId;
 }
 
 /// Media card with the reference's corner tab. The photo is painted; the
@@ -324,16 +333,16 @@ class MediaCard extends StatelessWidget {
             fit: StackFit.expand,
             children: [
               CityArt(exit: exit),
-              const DecoratedBox(
+              DecoratedBox(
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     begin: Alignment.topCenter,
                     end: Alignment.bottomCenter,
                     colors: [
-                      Color(0x8814284B),
-                      Color(0x0014284B),
-                      Color(0x0014284B),
-                      Color(0x9914284B),
+                      PColors.tone(const Color(0x8814284B)),
+                      PColors.tone(const Color(0x0014284B)),
+                      PColors.tone(const Color(0x0014284B)),
+                      PColors.tone(const Color(0x9914284B)),
                     ],
                     stops: [0, 0.42, 0.55, 1],
                   ),
@@ -428,20 +437,22 @@ class CornerTab extends StatelessWidget {
       child: Container(
         height: 48,
         padding: const EdgeInsets.only(left: 20, right: 22),
-        decoration: const BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.only(topRight: Radius.circular(22)),
+        decoration: BoxDecoration(
+          color: PColors.surface,
+          borderRadius: const BorderRadius.only(topRight: Radius.circular(22)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (active) ...[
-              const PIconView(PIcon.check, size: 16, color: PColors.blue),
+              PIconView(PIcon.check, size: 16, color: PColors.accentInk),
               const SizedBox(width: 6),
             ],
             Text(
               label.toUpperCase(),
-              style: PType.button(color: active ? PColors.blue : PColors.ink),
+              style: PType.button(
+                color: active ? PColors.accentInk : PColors.ink,
+              ),
             ),
           ],
         ),
@@ -525,7 +536,7 @@ class RegionBadge extends StatelessWidget {
                     child: PIconView(
                       PIcon.globe,
                       size: size * 0.5,
-                      color: PColors.blue,
+                      color: PColors.accentInk,
                     ),
                   )
                 : Stack(
@@ -662,6 +673,9 @@ class _SpeedBadgeState extends State<SpeedBadge>
 /// A white shard crossing the coin once per beat; a slow exit's is faint,
 /// and while testing the whole coin glows on and off instead.
 class _SweepPainter extends CustomPainter {
+  /// Repaints when Day and Night switch.
+  final PPalette palette = PColors.current;
+
   _SweepPainter(this.t, {required this.testing, required this.slow});
   final double t;
   final bool testing, slow;
@@ -690,10 +704,16 @@ class _SweepPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_SweepPainter old) =>
-      old.t != t || old.testing != testing || old.slow != slow;
+      old.palette != palette ||
+      old.t != t ||
+      old.testing != testing ||
+      old.slow != slow;
 }
 
 class _FoldPainter extends CustomPainter {
+  /// Repaints when Day and Night switch.
+  final PPalette palette = PColors.current;
+
   @override
   void paint(Canvas canvas, Size size) {
     final w = size.width;
@@ -704,7 +724,7 @@ class _FoldPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_FoldPainter old) => false;
+  bool shouldRepaint(_FoldPainter old) => old.palette != palette || false;
 }
 
 /// The trial / offer card from the reference's discount anatomy.
@@ -793,6 +813,9 @@ class _Perforation extends StatelessWidget {
 }
 
 class _PerfPainter extends CustomPainter {
+  /// Repaints when Day and Night switch.
+  final PPalette palette = PColors.current;
+
   @override
   void paint(Canvas canvas, Size size) {
     final p = Paint()
@@ -805,5 +828,5 @@ class _PerfPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(_PerfPainter old) => false;
+  bool shouldRepaint(_PerfPainter old) => old.palette != palette || false;
 }
