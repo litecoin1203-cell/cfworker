@@ -121,7 +121,7 @@ Future<void> showNotices(BuildContext context) {
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: Colors.transparent,
-    barrierColor: PColors.navy.withValues(alpha: 0.28),
+    barrierColor: PColors.scrim,
     isScrollControlled: true,
     builder: (context) => Container(
       decoration: BoxDecoration(

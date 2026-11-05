@@ -451,7 +451,10 @@ class _CroppedNumber extends StatelessWidget {
                   clipper: _CropClip(figure),
                   child: ColoredBox(
                     color: PColors.navy,
-                    child: layer(Colors.white, PColors.ice),
+                    child: layer(
+                      PColors.onDeep,
+                      PColors.onDeep.withValues(alpha: 0.7),
+                    ),
                   ),
                 ),
               ],

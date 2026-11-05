@@ -337,7 +337,7 @@ Future<bool> confirmSheet(
   final r = await showModalBottomSheet<bool>(
     context: context,
     backgroundColor: Colors.transparent,
-    barrierColor: PColors.navy.withValues(alpha: 0.28),
+    barrierColor: PColors.scrim,
     builder: (context) => Container(
       decoration: BoxDecoration(
         color: PColors.surface,

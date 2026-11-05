@@ -44,6 +44,8 @@ enum PIcon {
   info,
   copy,
   device,
+  sun,
+  moon,
 }
 
 class PIconView extends StatelessWidget {
@@ -129,6 +131,30 @@ class _IconPainter extends CustomPainter {
           ..cubicTo(18.5, 15, 12, 21, 12, 21)
           ..close();
         canvas.drawCircle(const Offset(12, 10), 2.3, p);
+      case PIcon.sun:
+        path.addOval(Rect.fromCircle(center: const Offset(12, 12), radius: 4));
+        for (var i = 0; i < 8; i++) {
+          final a = i * math.pi / 4;
+          final d = Offset(math.cos(a), math.sin(a));
+          final from = const Offset(12, 12) + d * 7;
+          final to = const Offset(12, 12) + d * 9.5;
+          path
+            ..moveTo(from.dx, from.dy)
+            ..lineTo(to.dx, to.dy);
+        }
+      case PIcon.moon:
+        path
+          ..moveTo(19.5, 14.5)
+          ..arcToPoint(
+            const Offset(9.5, 4.5),
+            radius: const Radius.circular(8.2),
+            largeArc: true,
+          )
+          ..arcToPoint(
+            const Offset(19.5, 14.5),
+            radius: const Radius.circular(7.2),
+            clockwise: false,
+          );
       case PIcon.pulse:
         path
           ..moveTo(3, 12)

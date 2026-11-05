@@ -594,9 +594,7 @@ class UnavailableNote extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final ink = onDark
-        ? PColors.onDeep.withValues(alpha: 0.8)
-        : PColors.muted;
+    final ink = onDark ? PColors.onDeep.withValues(alpha: 0.8) : PColors.muted;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [

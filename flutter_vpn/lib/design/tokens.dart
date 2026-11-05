@@ -147,9 +147,10 @@ class PPalette {
 
 /// The two looks the user picks between in Profile.
 abstract final class PThemes {
-  static const gold = Color(0xFFD4A537);
-  static PPalette day = PPalette.day(gold);
-  static PPalette night = PPalette.night(gold);
+  /// Ali's pick (2026-11-05): option 2, the big planes are the gold.
+  static const gold = Color(0xFFDDB560);
+  static final day = PPalette.day(gold, deepGold: true, groundTint: 0.13);
+  static final night = PPalette.night(gold, deepGold: true);
 
   /// 'day', 'night', or 'auto' (follow the phone).
   static PPalette resolve(String choice, Brightness phone) => switch (choice) {
@@ -186,6 +187,11 @@ abstract final class PColors {
   static Color get alert => current.alert;
 
   static List<Color> get planes => [navy, blue, ice, mist];
+
+  /// Behind a sheet or dialog.
+  static Color get scrim => current.isDark
+      ? const Color(0xFF000000).withValues(alpha: 0.55)
+      : current.ink.withValues(alpha: 0.28);
 
   /// Painted art turned to the active palette's hue.
   static Color tone(Color c) => current.tone(c);
