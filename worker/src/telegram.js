@@ -205,6 +205,7 @@ async function onCallback(env, cq) {
       if (e instanceof BillingError && (e.code === 'settle_busy' || e.code.startsWith('coupon'))) return ack(e.message, true);
       return ack('⚠️ ' + (e instanceof BillingError ? 'ساخت اکانت روی پنل انجام نشد. پیام بعدی را ببین.' : e.message), true);
     }
+    await audit(env, chatId, 'order.approve', 'order', order.id, `${order.amount_toman} تومان · دکمه‌ی رسید`);
     await editStatus(env, cq, `✅ تأیید و فعال شد — سفارش #${order.id} (${user.email})`);
     return ack('فعال شد');
   }
@@ -213,6 +214,7 @@ async function onCallback(env, cq) {
     const note = order.method === 'coin' ? 'واریز ارز دیجیتال پیدا نشد. اگر واریز کرده‌ای، هش تراکنش را دوباره بفرست یا با پشتیبانی تماس بگیر.' : 'رسید تأیید نشد. اگر واریز کرده‌ای با پشتیبانی تماس بگیر.';
     const r = await run(env, "UPDATE orders SET status = 'rejected', admin_note = ? WHERE id = ? AND status NOT IN ('paid', 'settling')", note, orderId);
     if (!r.meta.changes) return ack('همین الان پرداخت یا فعال شد؛ رد نمی‌شود', true);
+    await audit(env, chatId, 'order.reject', 'order', order.id, 'دکمه‌ی رسید');
     await editStatus(env, cq, `❌ رد شد — سفارش #${order.id} (${user.email})`);
     return ack('رد شد');
   }

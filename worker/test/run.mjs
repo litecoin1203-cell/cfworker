@@ -140,6 +140,7 @@ section('card purchase -> telegram -> approve -> servers');
   // admin approves via inline button
   const ap = await tgWebhook({ callback_query: { id: 'c1', data: `ap:${order.data.id}`, message: { chat: { id: 12345 }, message_id: 1 } } });
   ok(ap.status === 200, 'approve callback handled');
+  ok(!!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE action = 'order.approve' AND target_id = ?").bind(String(order.data.id)).first()), 'receipt-button approval is in the admin log');
   const me = await call('GET', '/api/v1/me', { token: tok });
   ok(me.data.subscription && me.data.subscription.active, 'subscription active after approval');
   const servers = await call('GET', '/api/v1/vpn/servers', { token: tok });
