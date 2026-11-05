@@ -129,11 +129,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           Row(
                             children: [
                               Flexible(
-                                child: Text(
-                                  handle,
-                                  style: PType.small(),
-                                  overflow: TextOverflow.ellipsis,
-                                ),
+                                child: FitLine(handle, style: PType.small()),
                               ),
                               if (tgVerified) ...[
                                 const SizedBox(width: 8),
@@ -150,8 +146,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 _Identity(app: app),
                 const SizedBox(height: 14),
                 _UsageCard(app: app),
-                const SizedBox(height: 14),
-                _Packages(app: app),
                 const SizedBox(height: 14),
                 SurfaceCard(
                   padding: const EdgeInsets.fromLTRB(20, 8, 10, 8),
@@ -320,10 +314,14 @@ class _Row extends StatelessWidget {
     required this.title,
     required this.body,
     required this.trailing,
+    this.fitTitle = false,
   });
   final PIcon icon;
   final String title, body;
   final Widget trailing;
+
+  /// One line that always fits the width (an email address).
+  final bool fitTitle;
 
   @override
   Widget build(BuildContext context) {
@@ -337,7 +335,9 @@ class _Row extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(title, style: PType.h3().copyWith(fontSize: 15)),
+                fitTitle
+                    ? FitLine(title, style: PType.h3().copyWith(fontSize: 15))
+                    : Text(title, style: PType.h3().copyWith(fontSize: 15)),
                 const SizedBox(height: 2),
                 Text(body, style: PType.small()),
               ],
@@ -347,6 +347,66 @@ class _Row extends StatelessWidget {
           trailing,
         ],
       ),
+    );
+  }
+}
+
+/// One line of text that fits its width on any screen: it first shrinks
+/// (down to 80%), and an address still too long loses the middle of its
+/// name, never the domain: "averyveryl…name@gmail.com".
+class FitLine extends StatelessWidget {
+  const FitLine(this.text, {super.key, required this.style});
+  final String text;
+  final TextStyle style;
+
+  static double _width(String t, TextStyle st, TextScaler scaler) {
+    final p = TextPainter(
+      text: TextSpan(text: t, style: st),
+      textDirection: TextDirection.ltr,
+      textScaler: scaler,
+      maxLines: 1,
+    )..layout();
+    return p.width;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scaler = MediaQuery.textScalerOf(context);
+    return LayoutBuilder(
+      builder: (context, box) {
+        final max = box.maxWidth;
+        final base = style.fontSize ?? 15;
+        var st = style;
+        // shrink in small steps until it fits, at most to 80%
+        for (var f = 1.0; f >= 0.8; f -= 0.05) {
+          st = style.copyWith(fontSize: base * f);
+          if (_width(text, st, scaler) <= max) {
+            return Text(text, style: st, maxLines: 1, softWrap: false);
+          }
+        }
+        // still too long: cut the middle of the name, keep the domain
+        final at = text.lastIndexOf('@');
+        final tail = at > 0 ? text.substring(at) : '';
+        final head = at > 0 ? text.substring(0, at) : text;
+        var keep = head.length;
+        String cut(int k) {
+          final front = (k * 0.6).ceil(), back = k - front;
+          return '${head.substring(0, front)}…'
+              '${head.substring(head.length - back)}$tail';
+        }
+
+        while (keep > 2 && _width(cut(keep), st, scaler) > max) {
+          keep--;
+        }
+        return Text(
+          cut(keep),
+          style: st,
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.ellipsis,
+          semanticsLabel: text,
+        );
+      },
     );
   }
 }
@@ -730,6 +790,7 @@ class _Identity extends StatelessWidget {
           _Row(
             icon: PIcon.mail,
             title: email.isEmpty ? 'Add your Gmail' : email,
+            fitTitle: email.isNotEmpty,
             body: email.isEmpty
                 ? 'Optional. A second way to log in if Telegram is blocked.'
                 : (verified ? 'Backup login · optional' : 'Your login'),
@@ -1011,8 +1072,9 @@ Future<void> _avatarSheet(BuildContext context) async {
   }
 }
 
-/// 3. What is left on the plan: data and days, animated in when the
-/// screen opens and again whenever the numbers change.
+/// 3. The plan, in one compact card: its name and state, and one line
+/// with what is left. Tapping that line opens a sheet from below with the
+/// data, the days and every package, so the profile itself stays short.
 class _UsageCard extends StatelessWidget {
   const _UsageCard({required this.app});
   final AppState app;
@@ -1061,9 +1123,82 @@ class _UsageCard extends StatelessWidget {
     final days = sub.daysLeft ?? 0;
     final period = (sub.periodDays ?? 0) > 0 ? sub.periodDays! : 30;
     final stopped = !sub.active;
+    Widget detail() => _PleatsAndDots(
+      dataFrac: dataFrac,
+      leftGb: sub.unlimitedData ? null : left / _gib,
+      limitGb: sub.dataLimitBytes / _gib,
+      days: sub.unlimitedTime ? null : days,
+      period: period,
+      ends: sub.expiresAt,
+      reduce: app.reduceMotion || PMotion.reduced(context),
+      muted: stopped,
+    );
+    final summary = [
+      sub.unlimitedData ? 'No data cap' : '${_gb(left)} GB left',
+      sub.unlimitedTime ? 'no end date' : '$days days left',
+    ].join('  ·  ');
+    // Data, days and every package, in a sheet from below (Ali's pick).
+    // It follows the app, so packages that arrive late still show.
+    void openIt() => showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: PColors.navy.withValues(alpha: 0.28),
+      isScrollControlled: true,
+      builder: (context) => ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.88,
+        ),
+        child: Container(
+          decoration: const BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.vertical(
+              top: Radius.circular(PRadius.sheet),
+            ),
+          ),
+          child: ListenableBuilder(
+            listenable: app,
+            builder: (context, _) => SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: PColors.mist,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    sub.planName.isEmpty ? 'Your plan' : sub.planName,
+                    style: PType.h2(),
+                  ),
+                  const SizedBox(height: 18),
+                  detail(),
+                  const SizedBox(height: 22),
+                  const Divider(
+                    height: 1,
+                    thickness: 1.2,
+                    color: PColors.field,
+                  ),
+                  const SizedBox(height: 16),
+                  _Packages(app: app, bare: true),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
     return SurfaceCard(
-      padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+      padding: const EdgeInsets.fromLTRB(20, 16, 12, 12),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
@@ -1079,27 +1214,38 @@ class _UsageCard extends StatelessWidget {
                 sub.statusLine.toUpperCase(),
                 color: stopped ? PColors.alert : PColors.safe,
               ),
+              const SizedBox(width: 8),
+              _RowAction(stopped ? 'RENEW' : 'PLANS', onTap: plans),
             ],
           ),
-          const SizedBox(height: 8),
-          const SizedBox(height: 14),
-          _PleatsAndDots(
-            dataFrac: dataFrac,
-            leftGb: sub.unlimitedData ? null : left / _gib,
-            limitGb: sub.dataLimitBytes / _gib,
-            days: sub.unlimitedTime ? null : days,
-            period: period,
-            ends: sub.expiresAt,
-            reduce: app.reduceMotion || PMotion.reduced(context),
-            muted: stopped,
-          ),
-          const SizedBox(height: 14),
-          PillButton(
-            label: stopped ? 'Renew' : 'Plans',
-            icon: PIcon.ticket,
-            color: stopped ? PColors.blue : PColors.field,
-            textColor: stopped ? Colors.white : PColors.ink,
-            onTap: plans,
+          const SizedBox(height: 6),
+          Pressable(
+            onTap: openIt,
+            label: 'Data and days left',
+            radius: 20,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(0, 10, 8, 6),
+              child: Row(
+                children: [
+                  const PIconView(PIcon.chart, color: PColors.blue),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          'Data and days',
+                          style: PType.h3().copyWith(fontSize: 15),
+                        ),
+                        const SizedBox(height: 2),
+                        Text(summary, style: PType.small()),
+                      ],
+                    ),
+                  ),
+                  const PIconView(PIcon.chevron, color: PColors.muted),
+                ],
+              ),
+            ),
           ),
         ],
       ),
@@ -1325,40 +1471,45 @@ class _PleatsAndDotsState extends State<_PleatsAndDots>
 
 /// 4. Every package, newest first: when it was bought and when it started.
 class _Packages extends StatelessWidget {
-  const _Packages({required this.app});
+  const _Packages({required this.app, this.bare = false});
   final AppState app;
+
+  /// Inside the Data and days sheet: no card of its own.
+  final bool bare;
 
   @override
   Widget build(BuildContext context) {
     final list = app.packages.value ?? const <Package>[];
+    final body = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(child: Text('Packages', style: PType.h3())),
+            if (list.isNotEmpty) Text('${list.length}', style: PType.meta()),
+          ],
+        ),
+        if (list.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 10),
+            child: Text(
+              app.packages.loading
+                  ? 'Loading your packages…'
+                  : (app.packages.error ?? 'No packages yet.'),
+              style: PType.small(),
+            ),
+          ),
+        for (var i = 0; i < list.length; i++)
+          StaggerIn(
+            index: i,
+            child: _PackageRow(p: list[i], first: i == 0),
+          ),
+      ],
+    );
+    if (bare) return body;
     return SurfaceCard(
       padding: const EdgeInsets.fromLTRB(20, 16, 20, 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(child: Text('Packages', style: PType.h3())),
-              if (list.isNotEmpty) Text('${list.length}', style: PType.meta()),
-            ],
-          ),
-          if (list.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 10),
-              child: Text(
-                app.packages.loading
-                    ? 'Loading your packages…'
-                    : (app.packages.error ?? 'No packages yet.'),
-                style: PType.small(),
-              ),
-            ),
-          for (var i = 0; i < list.length; i++)
-            StaggerIn(
-              index: i,
-              child: _PackageRow(p: list[i], first: i == 0),
-            ),
-        ],
-      ),
+      child: body,
     );
   }
 }

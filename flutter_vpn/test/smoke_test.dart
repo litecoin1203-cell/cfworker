@@ -640,17 +640,35 @@ void main() {
     expect(api.calls, contains('GET /me/packages'));
     expect(find.text('Verify your Telegram'), findsOneWidget);
     expect(find.text('ali@example.com'), findsWidgets);
-    // the numbers count up to what is left: 50 GB in the fake = 46.6 GiB,
+    expect(find.text('Packages'), findsNothing); // not on the profile any more
+    // one compact line on the profile: 50 GB in the fake = 46.6 GiB,
     // 41 GB used -> 8.4 GiB left
+    expect(find.text('8.4 GB left  ·  12 days left'), findsOneWidget);
+    expect(find.text('12 of 30'), findsNothing);
+    // tapping it slides the pleats and dots up in a sheet
+    await tester.tap(find.text('Data and days'));
+    for (var i = 0; i < 25; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
     expect(find.text('8.4 GB'), findsOneWidget);
     expect(find.text('12 of 30'), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('Packages'), 200);
+    // packages live in the sheet too, under data and days
+    await tester.dragUntilVisible(
+      find.text('Free trial  ·  5.0 GB'),
+      find.byType(SingleChildScrollView).last,
+      const Offset(0, -200),
+    );
     expect(find.text('Free trial  ·  5.0 GB'), findsOneWidget);
     expect(
       find.textContaining('Bought Nov 22  ·  Activated Nov 22, 2026'),
       findsOneWidget,
     );
     expect(find.text('RUNNING'), findsOneWidget);
+    await tester.tapAt(const Offset(20, 20)); // outside the sheet closes it
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('12 of 30'), findsNothing);
 
     // verify Telegram with the bot's code
     await tester.scrollUntilVisible(find.text('VERIFY'), -200);
@@ -723,5 +741,28 @@ void main() {
     expect(app.avatarId, '');
     expect(find.byType(AvatarArt), findsNothing);
     await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('a long email fits one line on a small phone, domain kept', (
+    tester,
+  ) async {
+    PType.familyOverride = 'PleatTest';
+    const long = 'mohammadreza.hosseini.tehran1990@gmail.com';
+    Widget at(double w, String text) => MaterialApp(
+      home: Center(
+        child: SizedBox(
+          width: w,
+          child: FitLine(text, style: PType.h3()),
+        ),
+      ),
+    );
+    await tester.pumpWidget(at(160, long));
+    final shown = tester.widget<Text>(find.byType(Text)).data!;
+    expect(shown, contains('…'));
+    expect(shown, endsWith('@gmail.com'));
+    expect(shown, startsWith('mo'));
+    expect(tester.takeException(), isNull);
+    await tester.pumpWidget(at(360, 'ali@gmail.com'));
+    expect(find.text('ali@gmail.com'), findsOneWidget);
   });
 }
