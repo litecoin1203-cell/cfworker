@@ -69,6 +69,7 @@ async function signup(email, { referral, device = 'dev-1', password = 'password1
 const TG = { 'x-telegram-bot-api-secret-token': 'hook' }; // what Telegram sends after setWebhook(secret_token)
 async function botSet(key, value) {
   await call('POST', '/tg/hook', { headers: TG, json: { message: { chat: { id: 12345 }, text: `/set ${key} ${value}` } } });
+  await drain(); // the bot answers after the webhook returns (waitUntil)
 }
 async function tgWebhook(update) { const r = await call('POST', '/tg/hook', { headers: TG, json: update }); await drain(); return r; }
 
@@ -424,7 +425,7 @@ section('telegram button menu');
   let n = fakes.tg.calls.length;
   await say('/menu');
   const homeMsg = since(n).find((c) => c.method === 'sendMessage');
-  ok(homeMsg && homeMsg.body.text.includes('مدیریت Cloud Gold') && ['m:ord', 'm:usr', 'm:pl', 'm:pa', 'm:cp', 'm:pay', 'm:set'].every((d) => kbData(homeMsg).includes(d)), '/menu opens the button menu');
+  ok(homeMsg && homeMsg.body.text.includes('مدیریت Cloud Gold') && ['m:in', 'm:usr', 'm:pl', 'm:or', 'm:pa', 'm:cp', 'm:pay', 'm:app', 'm:net', 'm:bc', 'm:st', 'm:sys'].every((d) => kbData(homeMsg).includes(d)), '/menu opens the 12-section menu');
   n = fakes.tg.calls.length;
   await say('/start');
   ok(since(n).some((c) => c.method === 'sendMessage' && kbData(c).includes('m:usr')), '/start opens the menu for the admin');
@@ -471,7 +472,7 @@ section('telegram button menu');
 
   // an old question expires
   await tap('m:w:find');
-  await env.DB.prepare("UPDATE settings SET value = json_set(value, '$.exp', 1) WHERE key = 'bot_wait'").run();
+  await env.DB.prepare('UPDATE bot_session SET expires_at = 1').run();
   n = fakes.tg.calls.length;
   await say('ali@example.com');
   ok(!sent(n).some((m) => m.text.includes('👤')), 'an expired question is ignored');
@@ -508,9 +509,14 @@ section('telegram button menu');
   ok(!!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE action = 'user.grant' AND target_id = ?").bind(String(mg.id)).first()), 'grant is in the admin log');
 
   // coupons: create by answering, delete with confirm
-  await tap('m:w:coupon');
-  await say('MENU10 10 5');
-  ok(!!(await env.DB.prepare("SELECT 1 x FROM coupons WHERE code = 'MENU10'").first()), 'coupon made from the menu');
+  await tap('m:f:coupon');
+  await say('menu10');
+  await tap('m:fa:1:10');
+  await say('5');
+  await tap('m:fa:3:0');
+  await tap('m:fa:4:0');
+  await tap('m:fok:coupon');
+  ok(!!(await env.DB.prepare("SELECT 1 x FROM coupons WHERE code = 'MENU10' AND percent = 10 AND max_uses = 5").first()), 'coupon made from the step-by-step form');
   n = fakes.tg.calls.length;
   await tap('m:cd:MENU10');
   const dc = since(n).find((c) => c.method === 'sendMessage' && c.body.text.includes('MENU10'));
@@ -2255,6 +2261,179 @@ section('panel info rows dressed as configs are not servers');
   ok(!isPlaceholder(real) && !isPlaceholder('wireguard://k@5.6.7.8:965?publickey=p#x') && !isPlaceholder('ss://YWVzOnB3@1.2.3.4:8388#x'), 'real exits are kept');
   const out = unify([info, vmInfo, real]);
   ok(out.length === 1 && decodeURIComponent(out[0].split('#')[1]).includes('AM 1'), 'only the real exit is listed: ' + out.map((l) => l.split('#')[1]).join(','));
+}
+
+section('admin panel stage 1: routes, screens, undo, forms, audit, query budget');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const A = { chat: { id: 12345 } };
+  const tap = (data, message = { ...A, message_id: 900, text: 'menu' }) => tgWebhook({ callback_query: { id: 's1-' + data, data, message } });
+  const say = (text, extra = {}) => tgWebhook({ message: { ...A, text, ...extra } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const startCalls = fakes.tg.calls.length;
+
+  // walk every screen reachable from home: every button resolves to a route and fits 64 bytes,
+  // every screen starts with breadcrumbs and ends with back + home
+  const homeKeys = flat((await menu.renderScreen(env, 'home')).kb).map((d) => d.slice(2));
+  const seen = new Set();
+  const queue = ['home'];
+  let bad = [], noNav = [], noCrumb = [];
+  while (queue.length && seen.size < 150) {
+    const d = queue.shift();
+    if (seen.has(d)) continue;
+    seen.add(d);
+    const s = await menu.renderScreen(env, d);
+    for (const x of flat(s.kb)) {
+      if (!menu.routeOf(x) || new TextEncoder().encode(x).length > 64) bad.push(`${d} -> ${x}`);
+      const r = x.startsWith('m:') && menu.ROUTES[x.slice(2).split(':')[0]];
+      if (r && r.kind === 'screen' && !seen.has(x.slice(2))) queue.push(x.slice(2));
+    }
+    if (d === 'home') continue;
+    const last = flat([s.kb[s.kb.length - 1]]);
+    const hasBack = last.some((x) => x !== 'm:home') || homeKeys.includes(d.split(':')[0]);
+    if (!last.includes('m:home') || !hasBack) noNav.push(d);
+    if (!String(s.text).startsWith('🏠 منو')) noCrumb.push(d);
+  }
+  ok(seen.size > 25, 'screen walk reached many screens: ' + seen.size);
+  ok(!bad.length, 'every button on every screen resolves to a route within 64 bytes: ' + bad.slice(0, 5).join(' | '));
+  ok(!noNav.length, 'every screen ends with back + home: ' + noNav.slice(0, 5).join(' | '));
+  ok(!noCrumb.length, 'every screen starts with breadcrumbs: ' + noCrumb.slice(0, 5).join(' | '));
+  ok(!menu.routeOf('m:nope') && !menu.routeOf('m:w:nope') && !menu.routeOf('m:f:nope') && !menu.routeOf('m:x:home|nocmd') && !menu.routeOf('m:' + 'p'.repeat(70)), 'unknown or oversized buttons resolve to nothing');
+  ok(['soon', 'or', 'bc'].every((k) => k === 'soon' || seen.has(k)) && (await menu.renderScreen(env, 'bc')).text.includes('به‌زودی'), 'sections not built yet show «به‌زودی»');
+
+  // pagination: 8 per page with a next button, and the next page continues
+  for (let i = 0; i < 10; i++) await signup(`page${i}@example.com`);
+  const p1 = await menu.renderScreen(env, 'usr');
+  const nextBtn = flat(p1.kb).find((x) => x.startsWith('m:usr:b'));
+  const ids1 = flat(p1.kb).filter((x) => /^m:u:\d+$/.test(x));
+  ok(ids1.length === 8 && !!nextBtn, 'users list pages 8 at a time with a next button');
+  const p2 = await menu.renderScreen(env, nextBtn.slice(2));
+  const ids2 = flat(p2.kb).filter((x) => /^m:u:\d+$/.test(x));
+  ok(ids2.length > 0 && !ids2.some((x) => ids1.includes(x)) && flat(p2.kb).some((x) => x.startsWith('m:usr:a')), 'the next page has new rows and a previous button');
+
+  // a non-admin reaches nothing, on any route
+  const auditBefore = (await env.DB.prepare('SELECT COUNT(*) c FROM admin_audit').first()).c;
+  const plan0 = await env.DB.prepare('SELECT * FROM plans ORDER BY id LIMIT 1').first();
+  let n = fakes.tg.calls.length;
+  for (const k of Object.keys(menu.ROUTES)) {
+    await tgWebhook({ callback_query: { id: 'out-' + k, data: `m:${k}:${plan0.id}:1`, message: { chat: { id: 999 }, message_id: 1, text: 'x' } } });
+  }
+  await tgWebhook({ callback_query: { id: 'out-pt', data: `m:pt:${plan0.id}`, message: { chat: { id: 999 }, message_id: 1, text: 'x' } } });
+  await tgWebhook({ message: { chat: { id: 999 }, text: '/coupon EVIL 50' } });
+  const outCalls = since(n).filter((c) => c.method !== 'answerCallbackQuery');
+  ok(!outCalls.length, 'non-admin taps and commands get no screen: ' + outCalls.map((c) => c.method).join(','));
+  ok((await env.DB.prepare('SELECT COUNT(*) c FROM admin_audit').first()).c === auditBefore && (await env.DB.prepare('SELECT is_active FROM plans WHERE id = ?').bind(plan0.id).first()).is_active === plan0.is_active, 'non-admin changes nothing');
+  ok(!(await env.DB.prepare("SELECT 1 x FROM coupons WHERE code = 'EVIL'").first()), 'non-admin /coupon makes nothing');
+
+  // undo: once, and only within 10 minutes, and only by the admin who made the change
+  const r1 = await acts.runAction(env, '12345', 'plan.set', { id: plan0.id, field: 'price', raw: '777' });
+  ok(r1.ok && r1.undoable && (await env.DB.prepare('SELECT price_toman FROM plans WHERE id = ?').bind(plan0.id).first()).price_toman === 777, 'reversible change applied and undoable');
+  ok(!(await acts.undoAction(env, '555', r1.auditId)).ok, 'another admin cannot undo it');
+  n = fakes.tg.calls.length;
+  await tap(`m:undo:${r1.auditId}`);
+  ok((await env.DB.prepare('SELECT price_toman FROM plans WHERE id = ?').bind(plan0.id).first()).price_toman === plan0.price_toman, 'undo button restores the old price');
+  ok(since(n).some((c) => c.method === 'editMessageText' && flat(c.body.reply_markup.inline_keyboard).includes(`m:hist:plan:${plan0.id}`)), 'undo shows the plan card again');
+  ok(!(await acts.undoAction(env, '12345', r1.auditId)).ok, 'a second undo is refused');
+  ok(!!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE action = 'plan.set.undo' AND target_id = ?").bind(String(plan0.id)).first()), 'the undo itself is logged');
+  const r2 = await acts.runAction(env, '12345', 'plan.set', { id: plan0.id, field: 'price', raw: '888' });
+  await env.DB.prepare('UPDATE admin_audit SET created_at = created_at - 601 WHERE id = ?').bind(r2.auditId).run();
+  ok(!(await acts.undoAction(env, '12345', r2.auditId)).ok && (await env.DB.prepare('SELECT price_toman FROM plans WHERE id = ?').bind(plan0.id).first()).price_toman === 888, 'undo after 10 minutes is refused');
+  const logScr = await menu.renderScreen(env, 'sys.log');
+  ok(!flat(logScr.kb).includes(`m:undo:${r2.auditId}`) && logScr.text.includes('plan.set'), 'the admin log lists changes; old ones have no undo button');
+  await env.DB.prepare('UPDATE plans SET price_toman = ? WHERE id = ?').bind(plan0.price_toman, plan0.id).run();
+  const r3 = await acts.runAction(env, '12345', 'plan.toggle', { id: plan0.id });
+  ok(flat((await menu.renderScreen(env, 'sys.log')).kb).includes(`m:undo:${r3.auditId}`), 'a fresh change has its undo button in the log');
+  ok(flat((await menu.renderScreen(env, `hist:plan:${plan0.id}`)).kb).includes(`m:undo:${r3.auditId}`), 'plan history lists it with undo');
+  await acts.undoAction(env, '12345', r3.auditId);
+  ok((await env.DB.prepare('SELECT is_active FROM plans WHERE id = ?').bind(plan0.id).first()).is_active === plan0.is_active, 'toggle undone');
+  // coupon.create undo: only while nobody used it
+  const rc = await acts.runAction(env, '12345', 'coupon.create', { code: 'UNDOME', percent: 5 });
+  await env.DB.prepare("UPDATE coupons SET used = 1 WHERE code = 'UNDOME'").run();
+  ok(!(await acts.undoAction(env, '12345', rc.auditId)).ok && !!(await env.DB.prepare("SELECT 1 x FROM coupons WHERE code = 'UNDOME'").first()), 'a used coupon is not removed by undo');
+
+  // forms: a bad answer asks again, a duplicate message does not advance, cancel writes nothing
+  const plansBefore = (await env.DB.prepare('SELECT COUNT(*) c FROM plans').first()).c;
+  await tap('m:f:newplan');
+  await say('Form Plan', { message_id: 3001 });
+  await say('Form Plan', { message_id: 3001 }); // Telegram re-sent the same message
+  const st = async () => (await env.DB.prepare("SELECT step FROM bot_session WHERE admin_id = '12345'").first())?.step;
+  ok((await st()) === 1, 'the same message twice moves the form one step');
+  n = fakes.tg.calls.length;
+  await say('abc', { message_id: 3002 });
+  ok((await st()) === 1 && since(n).some((c) => c.method === 'sendMessage' && c.body.text.includes('❌') && c.body.text.includes('مرحله 2 از 5')), 'a bad answer asks the same step again');
+  await tap('m:fa:0:30'); // a stale button from step 1
+  ok((await st()) === 1, 'a button from an old step is ignored');
+  await tap('m:fa:1:30');
+  ok((await st()) === 2, 'a suggestion button answers its step');
+  await tap('m:cancel:pl');
+  ok(!(await st()) && (await env.DB.prepare('SELECT COUNT(*) c FROM plans').first()).c === plansBefore, 'cancel writes nothing');
+  // the full form makes the plan, then shows its card with undo
+  await tap('m:f:newplan');
+  await say('سه ماهه تست', { message_id: 3010 });
+  await say('۹۰', { message_id: 3011 });
+  await tap('m:fa:2:50');
+  await tap('m:fa:3:2');
+  await say('199,000', { message_id: 3012 });
+  n = fakes.tg.calls.length;
+  await tap('m:fok:newplan');
+  const np = await env.DB.prepare("SELECT * FROM plans WHERE name = 'سه ماهه تست'").first();
+  ok(np && np.duration_days === 90 && np.data_limit_gb === 50 && np.device_limit === 2 && np.price_toman === 199000, 'new plan form creates the plan');
+  ok(since(n).some((c) => c.method === 'editMessageText' && flat(c.body.reply_markup.inline_keyboard).some((x) => x.startsWith('m:undo:'))), 'the new plan card offers undo');
+  await tap('m:fok:newplan');
+  ok((await env.DB.prepare("SELECT COUNT(*) c FROM plans WHERE name = 'سه ماهه تست'").first()).c === 1, 'a second tap on «ساخته شود» does not make it twice');
+  // a coupon code already taken asks again
+  await tap('m:f:coupon');
+  n = fakes.tg.calls.length;
+  await say('undome', { message_id: 3020 });
+  ok((await st()) === 0 && since(n).some((c) => c.body && String(c.body.text).includes('قبلاً ساخته شده')), 'a taken code asks again');
+  await tap('m:cancel:cp');
+
+  // every action leaves an audit row (the ones not exercised above are run here)
+  await acts.runAction(env, '12345', 'setting.set', { key: 'support_text', val: 'سلام' });
+  const pnl = await env.DB.prepare("SELECT id FROM panels WHERE state IN ('testing','rollout','active') ORDER BY id LIMIT 1").first();
+  if (pnl) {
+    const g = await acts.runAction(env, '12345', 'panel.groups', { panelId: pnl.id, ids: [1] });
+    await acts.undoAction(env, '12345', g.auditId);
+  }
+  await acts.runAction(env, '12345', 'coupon.delete', { code: 'UNDOME' });
+  const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
+  const missing = Object.keys(acts.ACTIONS).filter((a) => !logged.has(a));
+  ok(!missing.length, 'every admin action has written an audit row: missing ' + missing.join(','));
+  ok(Object.values(acts.ACTIONS).every((a) => ['money', 'destructive', 'reversible'].includes(a.risk)), 'every action has a risk level');
+  ok(Object.values(menu.ROUTES).every((r) => r.kind === 'screen' || r.risk), 'every action route has a risk level');
+  const secretLeak = (await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE summary LIKE '%menu-pass-123%' OR summary LIKE '%brandnewpass%' OR undo_json LIKE '%password%'").first()).c;
+  ok(secretLeak === 0, 'no password in the admin log');
+
+  // no admin text line asks to type a /command
+  const slash = since(startCalls).concat(fakes.tg.calls.filter((c) => c.method === 'editMessageText'))
+    .filter((c) => c.body && String(c.body.chat_id) === '12345')
+    .map((c) => String(c.body.text || c.body.caption || ''))
+    .filter((t) => /^\/[a-z]/m.test(t));
+  ok(!slash.length, 'no menu text line starts with /command: ' + slash.slice(0, 2).join(' || ').slice(0, 300));
+
+  // query budget: at most 6 D1 statements per screen, with about 1000 users
+  await env.DB.prepare(`INSERT INTO users (email, password_hash, referral_code, created_at)
+    WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000)
+    SELECT 'bulk' || x || '@example.com', 'x', 'BULK' || x, ?1 - x FROM c`).bind(Math.floor(Date.now() / 1000)).run();
+  const realPrepare = env.DB.prepare;
+  let q = 0;
+  env.DB.prepare = (sql) => { q++; return realPrepare(sql); };
+  const over = [];
+  let maxQ = 0;
+  const lastUser = await realPrepare("SELECT MAX(id) m FROM users WHERE email LIKE 'bulk%'").first();
+  const budgetScreens = [...seen].filter((d) => !/^(u|un):/.test(d) && d !== 'un').concat([`usr:b${lastUser.m}`]);
+  for (const d of budgetScreens) {
+    q = 0;
+    await menu.renderScreen(env, d);
+    if (q > 6) over.push(`${d}=${q}`);
+    maxQ = Math.max(maxQ, q);
+  }
+  env.DB.prepare = realPrepare;
+  console.log('    most D1 statements on one screen: ' + maxQ);
+  ok(maxQ > 0 && !over.length, `≤6 D1 statements on each of ${budgetScreens.length} screens with 1000 users: ` + over.join(' '));
+  await env.DB.prepare("DELETE FROM users WHERE email LIKE 'bulk%@example.com'").run();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

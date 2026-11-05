@@ -1,7 +1,10 @@
 // Telegram admin bot: receipts with Approve/Reject buttons, panel diagnostics, discount codes, plans, backups.
 // You run the whole shop from your Telegram chat.
 import { first, run, all, insert, getSettings, setSetting, SETTING_DEFAULTS } from './db.js';
-import { hashPassword, nowSec } from './util.js';
+import { nowSec } from './util.js';
+import { runAction, PLAN_FIELDS } from './admin-actions.js';
+
+export { PLAN_FIELDS };
 
 const API = (env, method) => `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
 
@@ -285,59 +288,26 @@ async function onConfirm(env, cq, yes) {
   if (!claim.meta.changes) return ack('این تأیید منقضی یا قبلاً استفاده شده است');
   if (!yes) { await editStatus(env, cq, '❌ لغو شد.'); return ack('لغو شد'); }
   const payload = JSON.parse(row.payload_json || '{}');
-  let result = 'انجام شد';
-  if (row.action === 'drain_panel') {
-    const { getPanel, drainPanel } = await import('./panels.js');
-    const panel = await getPanel(env, payload.panel_id);
-    if (!panel) result = 'پنل پیدا نشد';
-    else {
-      await drainPanel(env, panel);
-      await audit(env, chatId, 'panel.drain', 'panel', panel.id, `خارج‌سازی ${panel.label}`);
-      result = `پنل #${panel.id} (${panel.label}) از لیست خارج شد. مصرفش یک بار دیگر خوانده می‌شود، بعد اکانت‌هایش خاموش و پنل غیرفعال می‌شود. تاریخچه‌ی مصرف پاک نمی‌شود.`;
-    }
+  // every confirmed change goes through the actions layer (same checks, same admin log as everywhere else)
+  const ACTION = { drain_panel: 'panel.drain', grant: 'user.grant', link: 'user.link', del_coupon: 'coupon.delete' };
+  const ARGS = {
+    drain_panel: () => ({ panelId: payload.panel_id }),
+    grant: () => ({ userId: payload.user_id, planId: payload.plan_id }),
+    link: () => ({ userId: payload.user_id, panelId: payload.panel_id, username: payload.username, planId: planStr }),
+    del_coupon: () => ({ code: payload.code }),
+  };
+  if (!ACTION[row.action]) return ack('پیدا نشد');
+  let r;
+  try { r = await runAction(env, chatId, ACTION[row.action], ARGS[row.action]()); } catch (e) {
+    await editStatus(env, cq, '⚠️ ساخت اکانت روی پنل انجام نشد:\n' + e.message + '\n\nبرای عیب‌یابی /panel را بزن.');
+    return ack('انجام نشد');
   }
-  if (row.action === 'grant') {
-    const u = await first(env, 'SELECT * FROM users WHERE id = ?', payload.user_id);
-    const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', payload.plan_id);
-    if (!u || !plan) result = 'کاربر یا پلن پیدا نشد';
-    else {
-      const { provision } = await import('./billing.js');
-      try {
-        await provision(env, u, plan, { source: 'gift' });
-        await audit(env, chatId, 'user.grant', 'user', u.id, `پلن #${plan.id}`);
-        result = `پلن ${plan.name} به ${u.email} داده شد.`;
-      } catch (e) {
-        await editStatus(env, cq, '⚠️ ساخت اکانت روی پنل انجام نشد:\n' + e.message + '\n\nبرای عیب‌یابی /panel را بزن.');
-        return ack('انجام نشد');
-      }
-    }
+  if (!r.ok) {
+    if (row.action === 'link') { await editStatus(env, cq, r.error); return ack('انجام نشد'); }
+    await editStatus(env, cq, '✅ ' + r.error);
+    return ack('انجام شد');
   }
-  if (row.action === 'link') {
-    const u = await first(env, 'SELECT * FROM users WHERE id = ?', payload.user_id);
-    const { getPanel } = await import('./panels.js');
-    const panel = await getPanel(env, payload.panel_id);
-    const check = u && panel ? await linkCheck(env, u, panel, payload.username) : { error: 'کاربر یا پنل پیدا نشد' };
-    if (check.error) { await editStatus(env, cq, '❌ ' + check.error); return ack('انجام نشد'); }
-    const { linkAccount } = await import('./sync.js');
-    try {
-      const planId = parseInt(planStr, 10) || null;
-      const plan = planId ? await first(env, 'SELECT id, name FROM plans WHERE id = ?', planId) : null;
-      const r = await linkAccount(env, u, panel, check.remote, { planId: plan ? plan.id : null });
-      await audit(env, chatId, 'user.link', 'user', u.id, `پنل #${panel.id} ← ${payload.username}${r.merged ? ' (جمع با اشتراک فعلی)' : ''}${plan ? ` · پلن #${plan.id}` : ''}${r.replaced ? ` (به جای ${r.replaced})` : ''}`);
-      result = `اکانت ${payload.username} از پنل #${panel.id} به ${u.email} وصل شد${plan ? ` (پلن ${plan.name})` : ''}. روی پنل چیزی ساخته نشد؛ همان لینک و همان کانفیگ‌ها در اپ می‌آید.`;
-      if (r.merged) result += '\nمصرف این اکانت به مصرف اشتراک فعلی اضافه شد و سقف و زمانش با همان اشتراک یکی شد.';
-      if (r.replaced) result += r.disabled ? `\nاکانت قبلی‌اش (${r.replaced}) روی پنل خاموش شد.` : `\n⚠️ اکانت قبلی‌اش (${r.replaced}) خاموش نشد؛ آن را در پنل دستی خاموش کن.`;
-    } catch (e) {
-      const msg = /UNIQUE/i.test(String(e && e.message)) ? 'این اکانت پنل همین الان به کاربر دیگری وصل شد.' : (e && e.message) || 'خطای ناشناخته';
-      await editStatus(env, cq, '⚠️ وصل نشد:\n' + msg);
-      return ack('انجام نشد');
-    }
-  }
-  if (row.action === 'del_coupon') {
-    const r = await run(env, 'DELETE FROM coupons WHERE code = ?', String(payload.code || ''));
-    if (r.meta && r.meta.changes) await audit(env, chatId, 'coupon.delete', 'coupon', payload.code, null);
-    result = r.meta && r.meta.changes ? `کد ${payload.code} پاک شد.` : 'این کد پیدا نشد.';
-  }
+  const result = r.text;
   await editStatus(env, cq, '✅ ' + result);
   return ack('انجام شد');
 }
@@ -429,21 +399,24 @@ export async function sendBackup(env, chatId) {
 export const HELP = `راهنمای ربات Cloud Gold
 
 همه‌ی کارها با دکمه است؛ لازم نیست چیزی با / تایپ کنی. دکمه‌ی «🏠 منو» همیشه پایین صفحه است.
+بالای هر صفحه نوشته کجا هستی، و پایینش همیشه «برگشت» و «منوی اصلی» هست.
 
-🧾 رسیدهای منتظر — تأیید یا رد پرداخت‌ها
-👤 کاربران — جستجو با ایمیل؛ در کارت کاربر: دادن پلن، تغییر رمز، وصل اکانت پنل، تجربه اتصال (اپراتورها و سرورهایش)
-👥 کاربران و اپراتورهایشان — چند نفر روی هر اپراتور و وای‌فای یا دیتای موبایل
-📦 پلن‌ها — ویرایش هر پلن و ساخت پلن جدید
-🗂 پنل‌ها — افزودن پنل (نوعش خودکار تشخیص داده می‌شود)، ورود پنل، تست، ورود تدریجی، خارج‌کردن
-🏷 کدهای تخفیف — ساخت و حذف
-💰 پرداخت‌ها — کارت، ولت‌ها، قیمت دلار، پیامک بانک
-⚙️ تنظیمات — هر مقدار با دکمه‌ی تغییر
-📊 آمار، 🔎 گوگل، 📶 اپراتورها، 💾 پشتیبان
+📥 کارهای منتظر — رسیدهایی که باید تأیید یا رد شوند
+👤 کاربران — جستجو و فهرست؛ در کارت کاربر: دادن پلن، تغییر رمز، وصل اکانت پنل، تجربه اتصال، تاریخچه
+📦 پلن‌ها — ویرایش هر پلن، روشن/خاموش، ساخت پلن جدید مرحله‌به‌مرحله
+🗂 پنل‌ها و سرورها — افزودن پنل، ورود پنل، تست، ورود تدریجی، خارج‌کردن
+🏷 تخفیف و دعوت — ساخت کد مرحله‌به‌مرحله، حذف، درصد پاداش دعوت
+💳 روش‌های پرداخت — کارت، ولت‌ها، قیمت دلار، پیامک بانک
+📱 اپ Pleat — اطلاعیه، پشتیبانی، دامنه‌ها و پل‌ها، تست رایگان
+📶 شبکه — اپراتورها، گوگل، تجربه‌ی هر کاربر
+📊 آمار · 🛡 سیستم — لاگ مدیر، پشتیبان، همه‌ی تنظیمات
+
+↩️ تغییرهای ساده (قیمت، روشن/خاموش، تنظیمات) تا ۱۰ دقیقه با دکمه‌ی «برگردان» برمی‌گردند.
+⚠️ کارهای پولی و حذف‌ها اول «مطمئنی؟» می‌پرسند.
 
 وقتی ربات سؤالی می‌پرسد (ایمیل، عدد، رمز…) فقط جواب را بنویس و بفرست.
 پیامک واریز بانک را هم می‌توانی کپی کنی و همین‌جا بفرستی.`;
 
-export const PLAN_FIELDS = { name: 'name', price: 'price_toman', old: 'old_price_toman', days: 'duration_days', gb: 'data_limit_gb', devices: 'device_limit', trial: 'trial_days', badge: 'badge', sort: 'sort', on: 'is_active', desc: 'description' };
 
 // A command started from the button menu: its answers carry a "back" button to the screen it came from.
 // Only reached from onMenu, after onCallback checked that the tap came from the admin in their private chat.
@@ -461,6 +434,8 @@ async function onMessage(env, msg, opts = {}) {
     return tg(env, 'sendMessage', { chat_id: chatId, disable_web_page_preview: true, ...(extra || {}),
       text: b.text.slice(0, 4000), ...(b.reply_markup ? { reply_markup: b.reply_markup } : {}) });
   };
+  // the result of a reversible change: an ↩️ undo button above the usual back button
+  const sayDone = (r) => say(r.text, r.undoable ? { reply_markup: { inline_keyboard: [[{ text: '↩️ برگردان', callback_data: `m:undo:${r.auditId}` }], ...((opts.kb && opts.kb.inline_keyboard) || [])] } } : undefined);
   const cmd = text.split(/\s+/)[0].replace(/@\w+$/, '').toLowerCase();
   const admin = isAdmin(env, msg.chat, msg.from);
   // app sign-in link (t.me/<bot>?start=L<nonce>): anyone, the admin too, gets a 6-digit code in a private chat
@@ -484,7 +459,7 @@ async function onMessage(env, msg, opts = {}) {
 
   if (text === MENU_BTN || cmd === '/start' || cmd === '/menu' || cmd === '/help') {
     const menu = await import('./telegram-menu.js');
-    if (text === MENU_BTN) await menu.takeWait(env); // the menu button also cancels an open question
+    if (text === MENU_BTN) await menu.takeSession(env, chatId); // the menu button also cancels an open question or form
     // a button that stays under the chat's text box, so the menu is always one tap away
     if (cmd === '/start') await tg(env, 'sendMessage', { chat_id: chatId, text: 'همه‌ی کارها با دکمه است؛ لازم نیست دستوری تایپ کنی. دکمه‌ی «🏠 منو» همیشه پایین صفحه است.',
       reply_markup: { keyboard: [[{ text: MENU_BTN }]], resize_keyboard: true, is_persistent: true } });
@@ -494,10 +469,11 @@ async function onMessage(env, msg, opts = {}) {
   // the menu asked a question ("write the email", "new price"...): this message is the answer
   if (text && !opts.kb) {
     const menu = await import('./telegram-menu.js');
-    const w = await menu.takeWait(env);
+    const w = await menu.takeSession(env, chatId);
     if (w && !text.startsWith('/')) {
       if (w.secret && msg.message_id) await tg(env, 'deleteMessage', { chat_id: chatId, message_id: msg.message_id });
-      return onMessage(env, { chat: msg.chat, from: msg.from, text: `${w.cmd} ${text}` }, { kb: menu.backKb(w.back) });
+      if (w.flow === 'ask') return onMessage(env, { chat: msg.chat, from: msg.from, text: `${w.data.cmd} ${text}` }, { kb: menu.backKb(w.back) });
+      return menu.formText(env, chatId, w, text, msg);
     }
   }
   // a panel login typed after its question expired: it must not stay in the chat
@@ -608,28 +584,24 @@ async function onMessage(env, msg, opts = {}) {
         : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}${t.kind === 'rebecca' && !t.create ? `\nدر Rebecca هر کاربر باید یک سرویس (Service) داشته باشد. شماره‌ی سرویس را بده: /panelgroups ${panel.id} شماره` : ''}`), go);
     }
     if (cmd === '/panelgroups') {
-      const ids = String(parts[2] || '').split(',').map((x) => parseInt(x, 10)).filter((n) => n > 0);
-      const { options } = await import('./panels.js');
-      await run(env, 'UPDATE panels SET options_json = ? WHERE id = ?', JSON.stringify({ ...options(panel), group_ids: ids }), panel.id);
-      await audit(env, chatId, 'panel.groups', 'panel', panel.id, ids.join(',') || 'همه');
-      return say(`✅ گروه‌های پنل #${panel.id}: ${ids.join(',') || 'همه‌ی گروه‌های مجاز'}`);
+      const r = await runAction(env, chatId, 'panel.groups', { panelId: panel.id, ids: String(parts[2] || '').split(',') });
+      return r.ok ? sayDone(r) : say(r.error);
     }
     if (cmd === '/rollout') {
-      const pct = parseInt(parts[2], 10);
-      if (!(pct >= 0 && pct <= 100)) return say('شکل درست: /rollout شماره درصد (0 تا 100)');
-      if (!['testing', 'rollout', 'active'].includes(panel.state)) return say('اول پنل را تست کن: /paneltest ' + panel.id);
-      const p = await setRollout(env, panel, pct);
-      await audit(env, chatId, 'panel.rollout', 'panel', panel.id, `${pct}%`);
+      const r = await runAction(env, chatId, 'panel.rollout', { panelId: panel.id, pct: parts[2] });
+      if (!r.ok) return say(r.error);
+      const p = r.panel;
       const { panelProgress } = await import('./sync.js');
       const g = await panelProgress(env, p);
-      return say(`✅ پنل #${p.id}: ${STATE_FA[p.state]} ${p.rollout_percent}%.\n${g.want ? `${g.have} از ${g.want} کاربر الان روی این پنل اکانت دارند. بقیه با باز کردن اپ فوراً، یا در پس‌زمینه هر دقیقه چند نفر، اکانت می‌گیرند و کانفیگ‌های این پنل به لیستشان اضافه می‌شود. پیشرفت: /panels` : 'فعلاً کاربری با اشتراک فعال در این سهم نیست.'}`);
+      return sayDone({ ...r, text: `✅ پنل #${p.id}: ${STATE_FA[p.state]} ${p.rollout_percent}%.\n${g.want ? `${g.have} از ${g.want} کاربر الان روی این پنل اکانت دارند. بقیه با باز کردن اپ فوراً، یا در پس‌زمینه هر دقیقه چند نفر، اکانت می‌گیرند و کانفیگ‌های این پنل به لیستشان اضافه می‌شود. پیشرفت: /panels` : 'فعلاً کاربری با اشتراک فعال در این سهم نیست.'}` });
     }
     if (cmd === '/drainpanel') {
       if (['draining', 'disabled'].includes(panel.state)) return say('این پنل قبلاً خارج شده است.');
       const others = (await listPanels(env)).filter((p) => p.id !== panel.id && ['active', 'rollout'].includes(p.state));
       if (!others.length) return say('❌ این تنها پنل فعال است؛ اول یک پنل دیگر اضافه و فعال کن.');
+      const n = (await first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active'", panel.id)).c;
       return askConfirm(env, chatId, 'drain_panel', { panel_id: panel.id },
-        `پنل #${panel.id} (${panel.label}) از لیست سرورها خارج و بعد غیرفعال شود؟ کاربرانش روی پنل‌های دیگر می‌مانند و مصرفشان حفظ می‌شود.`);
+        `پنل #${panel.id} (${panel.label}) از لیست سرورها خارج و بعد غیرفعال شود؟ کاربرانش روی پنل‌های دیگر می‌مانند و مصرفشان حفظ می‌شود.\nروی این پنل ${n} اکانت فعال هست که خاموش می‌شوند. این کار برگشت ندارد.`);
     }
   }
 
@@ -642,12 +614,8 @@ async function onMessage(env, msg, opts = {}) {
   }
   if (cmd === '/reset') {
     const [, email, pass] = text.split(/\s+/);
-    if (!email || !pass || pass.length < 8) return say('شکل درست: /reset email@example.com رمزجدید (حداقل ۸ کاراکتر)');
-    const u = await first(env, 'SELECT * FROM users WHERE email = ?', email.toLowerCase());
-    if (!u) return say('کاربری با این ایمیل نیست.');
-    await run(env, 'UPDATE users SET password_hash = ?, token_version = token_version + 1 WHERE id = ?', await hashPassword(pass, env.SECRET_KEY), u.id);
-    await audit(env, chatId, 'user.reset_password', 'user', u.id, null);
-    return say(`رمز ${email} عوض شد. گوشی‌های دیگر از حساب خارج شدند.`);
+    const r = await runAction(env, chatId, 'user.reset_password', { email, pass });
+    return say(r.ok ? r.text : r.error);
   }
   if (cmd === '/link') {
     const [, email, username, panelStr] = text.split(/\s+/);
@@ -666,9 +634,7 @@ async function onMessage(env, msg, opts = {}) {
     const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', parseInt(planIdStr, 10));
     const u = await first(env, 'SELECT * FROM users WHERE email = ?', (email || '').toLowerCase());
     if (!u || !plan) return say('شکل درست: /grant email@example.com شماره‌پلن  (شماره‌ها در /plans)');
-    const { provision } = await import('./billing.js');
-    try { await provision(env, u, plan, { source: 'gift' }); } catch (e) { return say('⚠️ ساخت اکانت روی پنل انجام نشد:\n' + e.message + '\n\nبرای عیب‌یابی /panel را بزن.'); }
-    await audit(env, chatId, 'user.grant', 'user', u.id, `پلن #${plan.id}`);
+    try { await runAction(env, chatId, 'user.grant', { userId: u.id, planId: plan.id }); } catch (e) { return say('⚠️ ساخت اکانت روی پنل انجام نشد:\n' + e.message + '\n\nبرای عیب‌یابی /panel را بزن.'); }
     return say(`✅ پلن ${plan.name} به ${email} داده شد.`);
   }
   if (cmd === '/plans') {
@@ -680,33 +646,19 @@ async function onMessage(env, msg, opts = {}) {
     const m = text.match(/^\/plan(?:@\w+)?\s+(\d+)\s+(\w+)\s*([\s\S]*)$/i);
     if (!m) return say('شکل درست: /plan شماره فیلد مقدار\nمثال: /plan 1 price 199000\nفیلدها: ' + Object.keys(PLAN_FIELDS).join(' '));
     const [, id, f, raw] = m;
-    const col = PLAN_FIELDS[f.toLowerCase()];
-    if (!col) return say('فیلد ناشناخته. فیلدها: ' + Object.keys(PLAN_FIELDS).join(' '));
-    const p = await first(env, 'SELECT * FROM plans WHERE id = ?', parseInt(id, 10));
-    if (!p) return say('پلن پیدا نشد.');
-    const textual = ['name', 'badge', 'description'].includes(col);
-    const val = textual ? raw.trim() : parseInt(raw.replace(/[^\d]/g, '') || '0', 10);
-    await run(env, `UPDATE plans SET ${col} = ? WHERE id = ?`, val, p.id);
-    return say(`✅ پلن #${p.id}: ${f} = ${val === '' ? '(خالی)' : val}`);
+    const r = await runAction(env, chatId, 'plan.set', { id, field: f, raw });
+    return r.ok ? sayDone(r) : say(r.error);
   }
   if (cmd === '/newplan') {
     const parts = text.replace(/^\/newplan(@\w+)?\s*/i, '').split('|').map((s) => s.trim());
     const [name, days, gb, devices, price] = parts;
-    if (!name || !(parseInt(days, 10) > 0) || !(parseInt(price, 10) >= 0)) return say('شکل درست: /newplan نام|روز|گیگ|دستگاه|قیمت\nمثال: /newplan سه ماهه|90|0|2|399000');
-    const id = await insert(env, 'plans', { name, duration_days: parseInt(days, 10), data_limit_gb: parseInt(gb, 10) || 0, device_limit: parseInt(devices, 10) || 0,
-      price_toman: parseInt(price, 10), old_price_toman: 0, badge: '', description: '', trial_days: 0, is_active: 1, sort: 10 });
-    return say(`✅ پلن #${id} ساخته شد.`);
+    const r = await runAction(env, chatId, 'plan.create', { name, days, gb, devices, price });
+    return r.ok ? sayDone(r) : say('شکل درست: /newplan نام|روز|گیگ|دستگاه|قیمت\nمثال: /newplan سه ماهه|90|0|2|399000');
   }
   if (cmd === '/coupon') {
-    const [, code, pct, uses, days, planId] = text.split(/\s+/);
-    const percent = parseInt(pct, 10);
-    if (!code || !(percent >= 1 && percent <= 100)) return say('شکل درست: /coupon کد درصد [تعداد] [روز] [شماره‌پلن]\nمثال: /coupon YALDA 20 100 7');
-    const c = String(code).toUpperCase().replace(/[^A-Z0-9_-]/g, '');
-    try {
-      await insert(env, 'coupons', { code: c, percent, max_uses: parseInt(uses, 10) || 0, expires_at: parseInt(days, 10) > 0 ? nowSec() + parseInt(days, 10) * 86400 : null,
-        plan_id: parseInt(planId, 10) || null, is_active: 1, created_at: nowSec() });
-    } catch (e) { return say('این کد قبلاً ساخته شده. اول /delcoupon ' + c); }
-    return say(`🏷 کد ${c} ساخته شد: ${percent}% تخفیف${parseInt(uses, 10) ? `، ${uses} بار` : ''}${parseInt(days, 10) ? `، ${days} روز` : ''}${parseInt(planId, 10) ? `، فقط پلن #${planId}` : ''}`);
+    const [, code, percent, uses, days, planId] = text.split(/\s+/);
+    const r = await runAction(env, chatId, 'coupon.create', { code, percent, uses, days, planId });
+    return r.ok ? sayDone(r) : say(r.error);
   }
   if (cmd === '/coupons') {
     const rows = await all(env, 'SELECT * FROM coupons WHERE is_active = 1 ORDER BY id DESC LIMIT 30');
@@ -714,9 +666,8 @@ async function onMessage(env, msg, opts = {}) {
     return say(rows.map((c) => `${c.code} — ${c.percent}% · ${c.used}${c.max_uses ? '/' + c.max_uses : ''} استفاده${c.expires_at ? ` · تا ${new Date(c.expires_at * 1000).toISOString().slice(0, 10)}` : ''}${c.plan_id ? ` · پلن #${c.plan_id}` : ''}`).join('\n'));
   }
   if (cmd === '/delcoupon') {
-    const code = (text.split(/\s+/)[1] || '').toUpperCase();
-    const r = await run(env, 'DELETE FROM coupons WHERE code = ?', code);
-    return say(r.meta && r.meta.changes ? `🗑 کد ${code} پاک شد.` : 'این کد پیدا نشد.');
+    const r = await runAction(env, chatId, 'coupon.delete', { code: text.split(/\s+/)[1] || '' });
+    return say(r.deleted ? `🗑 ${r.text}` : r.text);
   }
   if (cmd === '/wallets') {
     const { COINS, walletKey, memoKey, prices } = await import('./coins.js');
@@ -799,28 +750,8 @@ async function onMessage(env, msg, opts = {}) {
     const i = rest.indexOf(' ');
     const key = i < 0 ? rest : rest.slice(0, i);
     const val = i < 0 ? '' : rest.slice(i + 1).trim();
-    if (!(key in SETTING_DEFAULTS)) return say(`کلید ناشناخته. کلیدها:\n${Object.keys(SETTING_DEFAULTS).join('\n')}`);
-    if (key === 'card_number' && val) {
-      const { luhnOk, bankOf, cardDigits } = await import('./banks.js');
-      if (!luhnOk(val)) return say('❌ این شماره کارت درست نیست (۱۶ رقم و معتبر). دوباره از روی کارت بنویس.');
-      const b = bankOf(val);
-      await setSetting(env, key, cardDigits(val));
-      return say(`✅ شماره کارت ثبت شد${b.name ? ` — بانک ${b.name}` : ''}.`);
-    }
-    if (key.startsWith('wallet_') && val) {
-      const { validAddress, coinById } = await import('./coins.js');
-      const c = coinById(key.slice(7));
-      if (key.endsWith('_memo')) {
-        const { validMemo } = await import('./coins.js');
-        const cid = key.slice(7, -5);
-        if (!validMemo(cid, val)) return say(cid === 'xrp' ? '❌ Destination Tag ریپل فقط عدد است (حداکثر ۱۰ رقم).' : '❌ این Memo طولانی‌تر از حد مجاز است.');
-        await setSetting(env, key, val);
-        return say(`✅ ${key} = ${val}`);
-      }
-      if (!validAddress(key.slice(7), val)) return say(`❌ این آدرس برای ${c ? c.symbol + ' (' + c.network + ')' : key} درست به نظر نمی‌رسد. دوباره از ولتت کپی کن.\nبرای خاموش کردن این ارز: /set ${key}`);
-    }
-    await setSetting(env, key, val);
-    return say(`✅ ${key} = ${val || '(خالی)'}`);
+    const r = await runAction(env, chatId, 'setting.set', { key, val });
+    return r.ok ? sayDone(r) : say(r.error);
   }
   if (cmd === '/settings') {
     const s = await getSettings(env);
@@ -856,12 +787,14 @@ const RATE_FROM = { live: 'زنده از صرافی‌ها', saved: 'آخرین 
 
 export async function statsText(env) {
   const now = nowSec();
-  const users = (await first(env, 'SELECT COUNT(*) c FROM users')).c;
-  const newUsers = (await first(env, 'SELECT COUNT(*) c FROM users WHERE created_at > ?', now - 86400)).c;
-  const active = (await first(env, 'SELECT COUNT(*) c FROM subscriptions WHERE expires_at > ? OR expires_at IS NULL', now)).c;
-  const soon = (await first(env, 'SELECT COUNT(*) c FROM subscriptions WHERE expires_at > ? AND expires_at < ?', now, now + 3 * 86400)).c;
-  const review = (await first(env, "SELECT COUNT(*) c FROM orders WHERE status = 'review'")).c;
-  const paidToday = (await first(env, "SELECT COALESCE(SUM(amount_toman),0) s FROM orders WHERE status='paid' AND method != 'wallet' AND paid_at > ?", now - 86400)).s;
-  const paidMonth = (await first(env, "SELECT COALESCE(SUM(amount_toman),0) s FROM orders WHERE status='paid' AND method != 'wallet' AND paid_at > ?", now - 30 * 86400)).s;
+  // one query (free plan: few round trips per tap)
+  const c = await first(env, `SELECT (SELECT COUNT(*) FROM users) users, (SELECT COUNT(*) FROM users WHERE created_at > ?1) newUsers,
+    (SELECT COUNT(*) FROM subscriptions WHERE expires_at > ?2 OR expires_at IS NULL) active,
+    (SELECT COUNT(*) FROM subscriptions WHERE expires_at > ?2 AND expires_at < ?3) soon,
+    (SELECT COUNT(*) FROM orders WHERE status = 'review') review,
+    (SELECT COALESCE(SUM(amount_toman), 0) FROM orders WHERE status = 'paid' AND method != 'wallet' AND paid_at > ?1) paidToday,
+    (SELECT COALESCE(SUM(amount_toman), 0) FROM orders WHERE status = 'paid' AND method != 'wallet' AND paid_at > ?4) paidMonth`,
+  now - 86400, now, now + 3 * 86400, now - 30 * 86400);
+  const { users, newUsers, active, soon, review, paidToday, paidMonth } = c;
   return `👥 کاربران: ${users} (۲۴ ساعت اخیر: ${newUsers})\n✅ اشتراک فعال: ${active}\n⏳ تمام می‌شود تا ۳ روز: ${soon}\n🧾 رسید منتظر بررسی: ${review}\n💰 دریافتی ۲۴ ساعت: ${fa(paidToday)} تومان\n💰 دریافتی ۳۰ روز: ${fa(paidMonth)} تومان`;
 }
