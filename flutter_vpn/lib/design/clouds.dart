@@ -5,218 +5,178 @@ import 'package:flutter/material.dart';
 
 import 'tokens.dart';
 
-/// Faint pale-blue clouds in the traditional Japanese illustration manner,
-/// painted on the screen ground under the shards.
+/// Auspicious clouds in the East Asian illustration manner: a cluster of
+/// round lobes, spirals rolling inside the big ones, and a long tapered
+/// tail that streams off one side. Drawn on device (original geometry),
+/// pale blue, on the screen ground under the shards.
 ///
-/// - [kasumi]: long flat mist bands with stepped edges (suyari-gasumi).
-/// - [uzu]: puffed clouds whose ends roll into spirals (uzu-gumo).
-/// - [kumo]: a crest of stacked scallops with inner arcs (kumo-mon).
-/// - [emaki]: banded clouds with inner lines and one curled tip.
-/// - [kinun]: the spiral clouds with a fine gold edge (kin-un).
-enum CloudStyle { kasumi, uzu, kumo, emaki, kinun }
+/// - [ink]: bold blue outline, spirals and a few inner strokes.
+/// - [shade]: the outline plus a soft blue shade inside each lobe edge.
+/// - [wash]: watercolour-soft blue fill with white line work, no outline.
+/// - [gilt]: champagne fill with gold line work, from the theme's gold.
+/// - [line]: outline and spirals only, nothing filled.
+enum CloudStyle { ink, shade, wash, gilt, line }
 
 abstract final class PClouds {
   /// The style in use; null paints no clouds.
   static CloudStyle? style;
 
-  static const _fill = Color(0xFFDCEBF8);
-  static const _line = Color(0xFFA9CBEA);
+  static const _paper = Color(0xFFF4F9FE);
+  static const _sky = Color(0xFFD3E6F7);
+  static const _ink = Color(0xFF8DB7DF);
 
-  /// Hand-placed so clouds sit in the gaps: (x, y, scale) as fractions.
+  /// (x, y, size, mirrored), as fractions of the screen; placed so clouds
+  /// sit in the open ground between shards and cards.
   static const _spots = [
-    (-0.08, 0.07, 1.05),
-    (0.60, 0.19, 0.80),
-    (0.04, 0.39, 0.90),
-    (0.66, 0.55, 1.00),
-    (-0.04, 0.73, 0.85),
-    (0.56, 0.88, 0.95),
+    (0.76, 0.185, 0.80, false),
+    (0.13, 0.355, 0.70, true),
+    (0.80, 0.515, 0.75, false),
+    (0.16, 0.715, 0.85, true),
+    (0.76, 0.945, 0.80, false),
+  ];
+
+  /// Lobes: centre x, centre y, radius, in cloud units; big ones first.
+  static const _lobes = [
+    (0.0, -0.15, 1.05, true),
+    (-1.35, 0.30, 0.78, true),
+    (1.30, 0.22, 0.82, true),
+    (-0.55, -0.85, 0.66, false),
+    (0.70, -0.92, 0.70, false),
+    (2.20, 0.62, 0.50, false),
+    (-2.25, 0.70, 0.46, false),
   ];
 
   static void paint(Canvas canvas, Size size) {
     final s = style;
     if (s == null) return;
-    final dark = PColors.current.isDark;
-    final a = dark ? 0.10 : 1.0;
-    final fill = Paint()..color = _fill.withValues(alpha: 0.95 * a);
-    final line = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1.5
-      ..strokeCap = StrokeCap.round
-      ..strokeJoin = StrokeJoin.round
-      ..color = (s == CloudStyle.kinun ? PColors.blue : _line).withValues(
-        alpha: (s == CloudStyle.kinun ? 0.85 : 0.9) * a,
-      );
+    final fade = PColors.current.isDark ? 0.12 : 0.8;
     final w = size.width, h = size.height;
-    for (final (i, (fx, fy, k)) in _spots.indexed) {
-      final o = Offset(fx * w, fy * h);
-      final u = 30.0 * k * (w / 390);
-      switch (s) {
-        case CloudStyle.kasumi:
-          _kasumi(canvas, o, u, w, fill, line, i);
-        case CloudStyle.uzu || CloudStyle.kinun:
-          _uzu(canvas, o, u, fill, line, i);
-        case CloudStyle.kumo:
-          _kumo(canvas, o, u, fill, line);
-        case CloudStyle.emaki:
-          _emaki(canvas, o, u, w, fill, line, i);
-      }
+    for (final (fx, fy, k, flip) in _spots) {
+      canvas.save();
+      canvas.translate(fx * w, fy * h);
+      if (flip) canvas.scale(-1, 1);
+      _cloud(canvas, 26.0 * k * (w / 390), s, fade);
+      canvas.restore();
     }
   }
 
-  static RRect _bar(double x, double y, double len, double t) =>
-      RRect.fromRectAndRadius(
-        Rect.fromLTWH(x, y, len, t),
-        Radius.circular(t / 2),
-      );
-
-  /// Three stacked rounded bars, each stepped in from the one below.
-  static Path _bands(Offset o, double u, double len, int seed) {
-    final t = u * 0.62;
-    final step = seed.isEven ? 1.0 : -1.0;
-    var p = Path()..addRRect(_bar(o.dx, o.dy + t * 1.6, len, t));
-    p = Path.combine(
-      PathOperation.union,
-      p,
-      Path()..addRRect(
-        _bar(o.dx + u * (1.4 + step * 0.6), o.dy + t * 0.8, len * 0.72, t),
-      ),
-    );
-    p = Path.combine(
-      PathOperation.union,
-      p,
-      Path()..addRRect(_bar(o.dx + u * (2.6 + step), o.dy, len * 0.4, t)),
-    );
-    return p;
-  }
-
-  static void _kasumi(
-    Canvas c,
-    Offset o,
-    double u,
-    double w,
-    Paint f,
-    Paint l,
-    int i,
-  ) {
-    final p = _bands(o, u, w * (0.55 + (i % 3) * 0.08), i);
-    c.drawPath(p, f);
-    c.drawPath(p, l);
-  }
-
-  static void _emaki(
-    Canvas c,
-    Offset o,
-    double u,
-    double w,
-    Paint f,
-    Paint l,
-    int i,
-  ) {
-    final len = w * (0.5 + (i % 3) * 0.08);
-    final p = _bands(o, u, len, i);
-    c.drawPath(p, f);
-    c.drawPath(p, l);
-    // Inner drawn lines along each band.
-    final t = u * 0.62;
-    final thin = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 1
-      ..strokeCap = StrokeCap.round
-      ..color = l.color.withValues(alpha: l.color.a * 0.7);
-    for (final (dx, dy, lw) in [(t * 0.9, t * 1.6 + t * 0.5, len - t * 2.2)]) {
-      c.drawLine(o + Offset(dx, dy), o + Offset(dx + lw * 0.7, dy), thin);
-    }
-    // One curled tip at the long band's right end.
-    final end = o + Offset(len - t * 0.5, t * 1.6 + t * 0.5);
-    c.drawPath(_spiral(end, t * 0.36, 0), l);
-  }
-
-  /// A spiral rolling inward from radius [r] around [c].
-  static Path _spiral(Offset c, double r, double start, {bool cw = true}) {
-    final p = Path();
-    const n = 40;
-    for (var k = 0; k <= n; k++) {
-      final t = k / n;
-      final ang = start + (cw ? 1 : -1) * t * math.pi * 2.4;
-      final rr = r * (1 - t * 0.82);
-      final pt = c + Offset(math.cos(ang), math.sin(ang)) * rr;
-      k == 0 ? p.moveTo(pt.dx, pt.dy) : p.lineTo(pt.dx, pt.dy);
-    }
-    return p;
-  }
-
-  static void _uzu(Canvas c, Offset o, double u, Paint f, Paint l, int i) {
-    final len = u * (5.2 + (i % 2) * 1.4);
-    final r = u * 0.55;
-    final base = o.dy + u * 1.2;
-    var body = Path()..addRRect(_bar(o.dx, base - r, len, r * 2));
-    final lobes = [(0.24, 0.62), (0.48, 0.85), (0.72, 0.6)];
-    for (final (fx, fr) in lobes) {
-      body = Path.combine(
-        PathOperation.union,
-        body,
-        Path()..addOval(
-          Rect.fromCircle(
-            center: Offset(o.dx + len * fx, base - r * 0.6),
-            radius: u * fr,
-          ),
+  static Path _body(double u) {
+    var p = Path()
+      ..addRRect(
+        RRect.fromRectAndRadius(
+          Rect.fromLTRB(-2.65 * u, 0.25 * u, 2.65 * u, 1.18 * u),
+          Radius.circular(0.46 * u),
         ),
       );
-    }
-    c.drawPath(body, f);
-    c.drawPath(body, l);
-    // Both ends roll into spirals; each lobe gets one inner arc.
-    c.drawPath(_spiral(Offset(o.dx + r, base), r * 0.78, math.pi, cw: true), l);
-    c.drawPath(
-      _spiral(Offset(o.dx + len - r, base), r * 0.78, 0, cw: false),
-      l,
-    );
-    for (final (fx, fr) in lobes) {
-      final cc = Offset(o.dx + len * fx, base - r * 0.6);
-      c.drawArc(
-        Rect.fromCircle(center: cc, radius: u * fr * 0.58),
-        math.pi * 1.1,
-        math.pi * 0.8,
-        false,
-        l,
+    for (final (x, y, r, _) in _lobes) {
+      p = Path.combine(
+        PathOperation.union,
+        p,
+        Path()
+          ..addOval(Rect.fromCircle(center: Offset(x, y) * u, radius: r * u)),
       );
     }
+    return p;
   }
 
-  static void _kumo(Canvas c, Offset o, double u, Paint f, Paint l) {
-    final r = u * 0.62;
-    final x0 = o.dx + u * 1.5, y0 = o.dy + u * 2.2;
-    // Back row first so the front scallops cover its lines.
-    final rows = [
-      for (var k = 0; k < 2; k++) (x0 + r * (1 + k * 2), y0 - r * 1.6),
-      for (var k = 0; k < 3; k++) (x0 + r * k * 2, y0 - r * 0.7),
-      for (var k = 0; k < 4; k++) (x0 - r + r * k * 2, y0),
-    ];
-    final clip = Rect.fromLTRB(
-      o.dx - u * 4,
-      o.dy - u * 4,
-      o.dx + u * 12,
-      y0 + r * 0.25,
-    );
-    c.save();
-    c.clipRect(clip);
-    for (final (x, y) in rows) {
-      final cc = Offset(x, y);
-      c.drawCircle(cc, r, f);
-      c.drawCircle(cc, r, l);
-      c.drawArc(
-        Rect.fromCircle(center: cc, radius: r * 0.6),
-        math.pi * 1.05,
-        math.pi * 0.9,
-        false,
-        l,
+  /// A ribbon that leaves the cloud's right base and thins to a point,
+  /// with one soft wave on the way.
+  static Path _tail(double u) => Path()
+    ..moveTo(2.3 * u, 0.55 * u)
+    ..cubicTo(3.3 * u, 0.40 * u, 3.9 * u, 1.05 * u, 4.8 * u, 0.55 * u)
+    ..cubicTo(5.2 * u, 0.32 * u, 5.6 * u, 0.30 * u, 6.0 * u, 0.36 * u)
+    ..cubicTo(5.5 * u, 0.55 * u, 5.1 * u, 0.98 * u, 4.5 * u, 1.05 * u)
+    ..cubicTo(3.7 * u, 1.15 * u, 3.1 * u, 0.95 * u, 2.3 * u, 1.18 * u)
+    ..close();
+
+  /// Spiral rolling inward from the lobe's lower-left, 1.6 turns.
+  static Path _spiral(Offset c, double r) {
+    final p = Path();
+    const n = 48;
+    for (var i = 0; i <= n; i++) {
+      final t = i / n;
+      final a = math.pi * 0.85 + t * math.pi * 3.2;
+      final rr = r * (1 - t * 0.86);
+      final pt = c + Offset(math.cos(a), math.sin(a)) * rr;
+      i == 0 ? p.moveTo(pt.dx, pt.dy) : p.lineTo(pt.dx, pt.dy);
+    }
+    return p;
+  }
+
+  static void _cloud(Canvas c, double u, CloudStyle s, double fade) {
+    final gold = PColors.blue;
+    final shape = Path.combine(PathOperation.union, _body(u), _tail(u));
+    final (fill, lineCol, inner) = switch (s) {
+      CloudStyle.ink => (_paper, _ink, _ink),
+      CloudStyle.shade => (_paper, _ink, _ink),
+      CloudStyle.wash => (_sky, Colors.transparent, Colors.white),
+      CloudStyle.gilt => (Color.lerp(Colors.white, gold, 0.22)!, gold, gold),
+      CloudStyle.line => (Colors.transparent, _ink, _ink),
+    };
+    Color f(Color x, [double a = 1]) => x.withValues(alpha: x.a * a * fade);
+
+    // Fill.
+    if (fill.a > 0) {
+      final paint = Paint()..color = f(fill, s == CloudStyle.wash ? 0.85 : 1);
+      if (s == CloudStyle.wash) {
+        paint.maskFilter = MaskFilter.blur(BlurStyle.normal, u * 0.10);
+      }
+      c.drawPath(shape, paint);
+    }
+
+    // Shade: a crescent of blue inside the lower-right edge of each lobe.
+    if (s == CloudStyle.shade || s == CloudStyle.gilt) {
+      c.save();
+      c.clipPath(shape);
+      final shadeCol = s == CloudStyle.gilt
+          ? Color.lerp(Colors.white, gold, 0.5)!
+          : _sky;
+      c.drawPath(shape, Paint()..color = f(shadeCol, 0.9));
+      c.drawPath(
+        shape.shift(Offset(-0.16 * u, -0.20 * u)),
+        Paint()..color = f(fill),
+      );
+      c.restore();
+    }
+
+    // Outline.
+    if (lineCol.a > 0) {
+      c.drawPath(
+        shape,
+        Paint()
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = u * (s == CloudStyle.line ? 0.075 : 0.11)
+          ..strokeJoin = StrokeJoin.round
+          ..color = f(lineCol),
       );
     }
-    c.restore();
-    c.drawLine(
-      Offset(x0 - r * 2, y0 + r * 0.25),
-      Offset(x0 + r * 6, y0 + r * 0.25),
-      l,
+
+    // Line work: spirals in the big lobes, a soft arc in the small ones,
+    // and one streak along the tail.
+    final stroke = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round
+      ..strokeWidth = u * (s == CloudStyle.wash ? 0.07 : 0.085)
+      ..color = f(inner, s == CloudStyle.wash ? 0.95 : 1);
+    for (final (x, y, r, big) in _lobes) {
+      final cc = Offset(x, y + 0.12) * u;
+      if (big) {
+        c.drawPath(_spiral(cc, r * u * 0.58), stroke);
+      } else {
+        c.drawArc(
+          Rect.fromCircle(center: Offset(x, y) * u, radius: r * u * 0.62),
+          math.pi * 1.05,
+          math.pi * 0.75,
+          false,
+          stroke,
+        );
+      }
+    }
+    c.drawPath(
+      Path()
+        ..moveTo(2.9 * u, 0.86 * u)
+        ..cubicTo(3.6 * u, 0.80 * u, 4.1 * u, 0.95 * u, 4.9 * u, 0.70 * u),
+      stroke..strokeWidth = u * 0.06,
     );
   }
 }
