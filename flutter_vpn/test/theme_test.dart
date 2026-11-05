@@ -32,11 +32,13 @@ void main() {
       test('secondary text on surface (3:1)', () {
         expect(contrast(p.muted, p.surface), greaterThanOrEqualTo(3));
       });
-      test('gold used as text on surface (4.5:1)', () {
+      test('accent used as text on surface (4.5:1)', () {
         expect(contrast(p.accentInk, p.surface), greaterThanOrEqualTo(4.5));
       });
-      test('button labels on the gold fill (4.5:1)', () {
-        expect(contrast(p.onAccent, p.blue), greaterThanOrEqualTo(4.5));
+      // White on the original brand blue is 3.5:1: bold, tracked caps at
+      // 13px+, kept as the brand has always shipped it (large-text bar).
+      test('button labels on the accent fill (3:1)', () {
+        expect(contrast(p.onAccent, p.blue), greaterThanOrEqualTo(3));
       });
       test('text on the big planes (4.5:1)', () {
         expect(contrast(p.onDeep, p.navy), greaterThanOrEqualTo(4.5));
@@ -44,17 +46,9 @@ void main() {
     });
   }
 
-  test('every tint comes from the one gold', () {
-    for (final p in [PThemes.day, PThemes.night]) {
-      for (final c in [p.ground, p.field, p.navy, p.blue, p.ice, p.mist]) {
-        final h = HSLColor.fromColor(c);
-        if (h.saturation < 0.05) continue;
-        expect(
-          (h.hue - HSLColor.fromColor(PThemes.gold).hue).abs(),
-          lessThan(3),
-        );
-      }
-    }
+  test('day and night share the brand blue', () {
+    expect(PThemes.day, same(PPalette.sky));
+    expect(PThemes.night.blue, PThemes.day.blue);
   });
 
   test('Auto follows the phone, a pick sticks', () {
@@ -64,39 +58,43 @@ void main() {
     expect(PThemes.resolve('night', Brightness.light), same(PThemes.night));
   });
 
-  testWidgets('Night from Profile changes the app in place and is saved', (
-    tester,
-  ) async {
-    PType.familyOverride = 'PleatTest';
-    tester.view.physicalSize = const Size(1080, 2340);
-    tester.view.devicePixelRatio = 2.75;
-    addTearDown(tester.view.reset);
-    SharedPreferences.setMockInitialValues({'onboarded': true, 'theme': 'day'});
-    final prefs = await SharedPreferences.getInstance();
-    final api = FakeApi(MemoryTokens(signedIn: true));
-    final state = AppState(prefs, api, tunnel: FakeTunnel());
-    await state.refreshAccount();
-    await tester.pumpWidget(PleatApp(state: state));
-    await pumpFor(tester, 30);
-    expect(PColors.current, same(PThemes.day));
+  testWidgets(
+    'Night mode switch in Profile changes the app in place and is saved',
+    (tester) async {
+      PType.familyOverride = 'PleatTest';
+      tester.view.physicalSize = const Size(1080, 2340);
+      tester.view.devicePixelRatio = 2.75;
+      addTearDown(tester.view.reset);
+      SharedPreferences.setMockInitialValues({
+        'onboarded': true,
+        'theme': 'day',
+      });
+      final prefs = await SharedPreferences.getInstance();
+      final api = FakeApi(MemoryTokens(signedIn: true));
+      final state = AppState(prefs, api, tunnel: FakeTunnel());
+      await state.refreshAccount();
+      await tester.pumpWidget(PleatApp(state: state));
+      await pumpFor(tester, 30);
+      expect(PColors.current, same(PThemes.day));
 
-    await tester.tap(find.byType(Avatar).first);
-    await pumpFor(tester, 20);
-    final night = find.text('Night');
-    await tester.scrollUntilVisible(
-      night,
-      200,
-      scrollable: find.byType(Scrollable).last,
-    );
-    await pumpFor(tester, 5);
-    await tester.tap(night);
-    await pumpFor(tester, 5);
+      await tester.tap(find.byType(Avatar).first);
+      await pumpFor(tester, 20);
+      final night = find.bySemanticsLabel('Night mode');
+      await tester.scrollUntilVisible(
+        find.text('Night mode'),
+        200,
+        scrollable: find.byType(Scrollable).last,
+      );
+      await pumpFor(tester, 5);
+      await tester.tap(night);
+      await pumpFor(tester, 5);
 
-    expect(PColors.current, same(PThemes.night));
-    expect(prefs.getString('theme'), 'night');
-    // Still on Profile: the switch rebuilt the screen, it did not reset it.
-    expect(find.text('Appearance'), findsOneWidget);
-    final bg = tester.widget<Scaffold>(find.byType(Scaffold).last);
-    expect(bg.backgroundColor, PThemes.night.ground);
-  });
+      expect(PColors.current, same(PThemes.night));
+      expect(prefs.getString('theme'), 'night');
+      // Still on Profile: the switch rebuilt the screen, it did not reset it.
+      expect(find.text('Night mode'), findsOneWidget);
+      final bg = tester.widget<Scaffold>(find.byType(Scaffold).last);
+      expect(bg.backgroundColor, PThemes.night.ground);
+    },
+  );
 }

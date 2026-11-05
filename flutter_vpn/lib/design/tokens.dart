@@ -81,6 +81,26 @@ class PPalette {
     onDeep: Color(0xFFFFFFFF),
   );
 
+  /// Night for the sky palette: the brand blue on navy taken almost to
+  /// black. Planes are a lifted navy; text is near-white.
+  static const skyNight = PPalette(
+    name: 'skyNight',
+    brightness: Brightness.dark,
+    ground: Color(0xFF04080F),
+    surface: Color(0xFF060D18),
+    field: Color(0xFF081120),
+    navy: Color(0xFF2C3E5D),
+    blue: Color(0xFF2F89F5),
+    ice: Color(0xFF18447A),
+    mist: Color(0xFF0C182D),
+    ink: Color(0xFFF2F3F5),
+    muted: Color(0xFF9CA2B0),
+    pressed: Color(0xFF4E9BF6),
+    accentInk: Color(0xFF4E9BF6),
+    onAccent: Color(0xFFFFFFFF),
+    onDeep: Color(0xFFFFFFFF),
+  );
+
   /// Day: white paper, gold accent. Every tint is the gold mixed into
   /// white; every shade is the gold taken toward black. [deepGold] picks
   /// whether the big planes are a dark bronze (false) or the gold itself.
@@ -147,10 +167,10 @@ class PPalette {
 
 /// The two looks the user picks between in Profile.
 abstract final class PThemes {
-  /// Ali's pick (2026-11-05): option 2, the big planes are the gold.
-  static const gold = Color(0xFFDDB560);
-  static final day = PPalette.day(gold, deepGold: true, groundTint: 0.13);
-  static final night = PPalette.night(gold, deepGold: true);
+  /// Ali's pick (2026-11-05, direction A): Pleat's original sky blues by
+  /// day, and the same blue on a deep navy night.
+  static const day = PPalette.sky;
+  static const night = PPalette.skyNight;
 
   /// 'day', 'night', or 'auto' (follow the phone).
   static PPalette resolve(String choice, Brightness phone) => switch (choice) {
