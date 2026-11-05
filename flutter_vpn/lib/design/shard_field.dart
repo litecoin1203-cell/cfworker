@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import 'geometry.dart';
+import 'clouds.dart';
 import 'tokens.dart';
 
 /// One shard's resting place, in fractions of the field.
@@ -273,6 +274,7 @@ class _ShardPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    PClouds.paint(canvas, size);
     paintShards(canvas, size, scene(), drift.value, scroll.value);
   }
 
