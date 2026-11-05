@@ -159,6 +159,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _beat();
     }
     if (signedIn && !me.loading) loadMe();
+    // Back on screen, maybe on another network (home Wi-Fi, mobile data).
+    unawaited(measureIfDue());
   }
 
   /// The app is on screen (not paused or hidden).
@@ -216,11 +218,38 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   NetInfo? network;
   DateTime? _rankAt;
 
+  /// The public IP and place of the exit in use; null until known.
+  ExitAddress? exitAddress;
+
+  /// Asks the Worker where this phone's calls come from. Through the
+  /// tunnel that is the exit: its public IP, country and city as
+  /// Cloudflare places it. Tried twice, as the line may still be settling.
+  Future<void> loadExitAddress() async {
+    final at = connectedAt;
+    for (var i = 0; i < 2; i++) {
+      if (phase != Phase.protected || connectedAt != at) return;
+      try {
+        final r = await api.get('/me/ip', bridge: false);
+        if (phase != Phase.protected || connectedAt != at) return;
+        final a = ExitAddress.from(r);
+        if (a != null) {
+          exitAddress = a;
+          notifyListeners();
+          return;
+        }
+      } on ApiError {
+        // try once more below
+      }
+      await Future<void>.delayed(const Duration(seconds: 3));
+    }
+  }
+
   /// Last ping and speed of every exit, per network, kept on the phone.
   NetCache _cache = NetCache({});
 
-  /// Cache key of the current network; '0' while it isn't known.
-  String get _net => network?.id ?? '0';
+  /// Cache key of the current network (operator and Wi-Fi or mobile
+  /// data); '0' while it isn't known.
+  String get _net => network?.key ?? '0';
 
   // ---- UI and the live tunnel (not persisted) ---------------------------
   int tab = 0;
@@ -296,6 +325,27 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       if (s != 0) return s;
       return (a.ping ?? 99999).compareTo(b.ping ?? 99999);
     });
+
+  /// Locations' Best: [ranked], keeping only exits this phone measured
+  /// on this network or people on it reported, so nothing unknown sits
+  /// among them.
+  List<Exit> get best => [
+    for (final e in ranked)
+      if ((e.measured ?? 0) > 0 || e.score != null) e,
+  ];
+
+  /// Home's Recommended exits: the strongest few of [best] that answer,
+  /// not the one in use. Until anything is measured, the Worker's order.
+  static const recommendCount = 4;
+  List<Exit> get recommended {
+    final current = exit?.id;
+    final picked = [
+      for (final e in best)
+        if (e.id != current && !e.unreachable) e,
+    ].take(recommendCount).toList();
+    if (picked.isNotEmpty) return picked;
+    return ranked.where((e) => e.id != current).take(recommendCount).toList();
+  }
 
   /// Protocols present in the server list, in first-seen order.
   List<String> get protocols => {for (final e in exits) e.protocol}.toList();
@@ -564,12 +614,20 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// shows that network's own last results (or none), never the old one's.
   Future<bool> _loadRank() async {
     try {
-      final r = await api.get('/net/rank');
+      final kind = await tunnel.netKind();
+      final r = await api.get(
+        kind.isEmpty ? '/net/rank' : '/net/rank?kind=$kind',
+      );
       _ranks = ranksFrom(r);
       _rankAt = DateTime.now();
       api.tokens.cache('ranks', r);
       final before = _net;
-      network = NetInfo.from(r) ?? network;
+      // The connection type is the phone's own reading; an older Worker
+      // does not echo it back.
+      final n = NetInfo.from(r);
+      if (n != null) {
+        network = NetInfo(n.id, n.name, mobile: n.mobile, kind: kind);
+      }
       if (_net != before) {
         testedAt = _cache.testedAt(_net);
         return true;
@@ -629,6 +687,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     // In parallel: the Worker may take a while on each, waiting on panels.
     await Future.wait([loadPublic(), loadMe(), loadDevices(), loadServers()]);
     unawaited(loadPhoto());
+    unawaited(measureIfDue());
   }
 
   // ---- account --------------------------------------------------------
@@ -1166,6 +1225,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> testAll({int? enough}) async {
     while (_testRun != null) {
       final partial = _testRunPartial;
+      if (enough != null && !partial) {
+        // A full run (the app just opened) tests the likely-best exits
+        // first: smart connect goes on as soon as enough of them answered
+        // instead of waiting for every exit.
+        await Future.any([_testRun!, _answered(enough)]);
+        return;
+      }
       await _testRun;
       if (enough != null || !partial) return;
     }
@@ -1179,6 +1245,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Exits that answered in the run going now.
+  int _runAnswered = 0;
+  final List<(int, Completer<void>)> _answerWaits = [];
+
+  /// Done once [n] exits answered in the run going now (or it ended).
+  Future<void> _answered(int n) {
+    if (_runAnswered >= n) return Future.value();
+    final c = Completer<void>();
+    _answerWaits.add((n, c));
+    return c.future;
+  }
+
   Future<void> _testAll(int? enough) async {
     final list = exits;
     if (list.isEmpty || !await tunnel.available()) return;
@@ -1187,6 +1265,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     final results = <Map<String, Object>>[];
     var answered = 0;
+    _runAnswered = 0;
 
     Future<void> probeOne(Exit e) async {
       String config;
@@ -1208,7 +1287,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
             ),
           );
       final ms = r.ms;
-      if (ms != null) answered++;
+      if (ms != null) {
+        answered++;
+        _runAnswered = answered;
+        for (final w in [..._answerWaits]) {
+          if (answered >= w.$1) {
+            _answerWaits.remove(w);
+            w.$2.complete();
+          }
+        }
+      }
       e.measured = ms ?? -1;
       e.failure = ms == null ? r.error : null;
       e.measuredAt = DateTime.now();
@@ -1234,6 +1322,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
 
     await Future.wait([for (var i = 0; i < _probeLanes; i++) lane()]);
+    for (final w in _answerWaits) {
+      w.$2.complete();
+    }
+    _answerWaits.clear();
     testing = false;
     testedAt = DateTime.now();
     if (enough == null) _cache.markTested(net, testedAt!);
@@ -1260,8 +1352,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       if (next.isAfter(now)) wait = next.difference(now);
     }
     _reportedAt = now.add(wait);
+    final kind = network?.kind ?? '';
     void send() => api
-        .post('/net/report', {'results': valid})
+        .post('/net/report', {
+          if (kind.isNotEmpty) 'kind': kind,
+          'results': valid,
+        })
         .then((_) {}, onError: (_) {});
     wait == Duration.zero ? send() : Timer(wait, send);
   }
@@ -1281,6 +1377,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// about 1 MB and a throw-away core.
   static const speedTop = 3;
 
+  /// On mobile data (or metered Wi-Fi) as many: about 3 MB every
+  /// [speedFresh], at most 12 MB a day, so Best on MCI or Irancell knows
+  /// speeds too. 0 would keep metered networks to pings only.
+  static const speedTopMetered = 3;
+
   /// Bumped when Locations closes or the app leaves the screen: running
   /// download tests start no new ones.
   int _speedGen = 0;
@@ -1295,6 +1396,20 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _speedRun ??= _testSpeeds(force).whenComplete(() {
         _speedRun = null;
       });
+
+  /// The app opened or came back on screen: this network's pings when
+  /// they are over [pingFresh] old, then the best few speeds when over
+  /// [speedFresh], the same rule as Locations. Nothing while a connect is
+  /// coming up (it tests what it needs itself).
+  Future<void> measureIfDue() async {
+    if (!signedIn || exits.isEmpty || _connecting) return;
+    if (!await tunnel.available()) return;
+    // Moved between Wi-Fi and mobile data: that network's ranking now.
+    final kind = await tunnel.netKind();
+    await refreshNetwork(force: kind != (network?.kind ?? ''));
+    if (_connecting) return;
+    await testSpeeds();
+  }
 
   /// Locations opened: the last results show at once; pings are tested
   /// again only when this network has none or they are over [pingFresh]
@@ -1317,10 +1432,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   Future<void> _testSpeeds(bool force) async {
     if (exits.isEmpty || !await tunnel.available()) return;
-    // About 1 MB per exit: never on a metered network. Speeds measured
-    // earlier still show.
+    // About 1 MB per exit: fewer (or none) on a metered network. Speeds
+    // measured earlier still show.
     metered = await tunnel.metered();
-    if (metered) return;
+    final top = metered ? speedTopMetered : speedTop;
+    if (top == 0) return;
     final speedRun = _speedGen;
     if (!_pingsWithin(pingFresh)) await testAll();
     if (speedRun != _speedGen) return;
@@ -1339,7 +1455,17 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
     final net = _net;
     final results = <Map<String, Object>>[];
-    for (final e in queue.take(speedTop)) {
+    // On a metered network the budget is [speedTopMetered] downloads per
+    // [speedFresh] in all, not that many more each time Locations opens.
+    final spent = metered && !force
+        ? exits
+              .where(
+                (e) =>
+                    e.kbpsAt != null && now.difference(e.kbpsAt!) <= speedFresh,
+              )
+              .length
+        : 0;
+    for (final e in queue.take(max(0, top - spent))) {
       if (run != _testGen || speedRun != _speedGen || _connecting) break;
       final String config;
       try {
@@ -1662,6 +1788,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _detours?.close();
       flushReceipts();
       connectedAt = DateTime.now();
+      exitAddress = null;
+      unawaited(loadExitAddress());
       _misses = 0;
       _reported = false;
       _okStreak = 0;

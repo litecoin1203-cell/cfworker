@@ -132,6 +132,7 @@ class MainActivity : FlutterActivity() {
                         val cm = getSystemService(android.net.ConnectivityManager::class.java)
                         result.success(cm?.isActiveNetworkMetered ?: false)
                     }
+                    "netKind" -> result.success(netKind())
                     "delay" -> background(result) {
                         PleatVpnService.running?.measureDelay(Engine.TEST_URL)?.toInt() ?: -1
                     }
@@ -195,6 +196,41 @@ class MainActivity : FlutterActivity() {
     }
 
     /** Runs [work] on the test pool and answers on the main thread; a failure answers [fallback]. */
+    /**
+     * How the phone itself reaches the internet: "wifi", "cell" (mobile
+     * data), "other" (ethernet, USB ...) or "" when offline. Pleat's own
+     * tunnel is skipped, so a connected phone still says Wi-Fi or mobile
+     * data. Only the transport is read: no SSID, no SIM, no permission
+     * beyond network state.
+     */
+    private fun netKind(): String {
+        val cm = getSystemService(android.net.ConnectivityManager::class.java) ?: return ""
+        fun kindOf(caps: android.net.NetworkCapabilities?): String? = when {
+            caps == null || caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_VPN) -> null
+            !caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) -> null
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+            caps.hasTransport(android.net.NetworkCapabilities.TRANSPORT_CELLULAR) -> "cell"
+            else -> "other"
+        }
+        return try {
+            // The default network when no VPN is up; with one up, the
+            // network under it (Android prefers Wi-Fi when both are on).
+            kindOf(cm.getNetworkCapabilities(cm.activeNetwork))
+                ?: run {
+                    @Suppress("DEPRECATION")
+                    val kinds = cm.allNetworks.mapNotNull { kindOf(cm.getNetworkCapabilities(it)) }
+                    when {
+                        "wifi" in kinds -> "wifi"
+                        "cell" in kinds -> "cell"
+                        kinds.isNotEmpty() -> "other"
+                        else -> ""
+                    }
+                }
+        } catch (e: Throwable) {
+            ""
+        }
+    }
+
     private fun background(result: MethodChannel.Result, fallback: Any = -1, work: () -> Any) {
         tests.execute {
             val value: Any = try {

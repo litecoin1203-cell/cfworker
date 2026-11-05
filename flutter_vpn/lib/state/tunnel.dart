@@ -134,6 +134,24 @@ class Tunnel {
     }
   }
 
+  /// How the phone reaches the internet under the tunnel: 'wifi', 'cell'
+  /// (mobile data), 'other', or '' when unknown. The operator comes from
+  /// the Worker; together they tell Irancell over Wi-Fi from Irancell
+  /// mobile data.
+  Future<String> netKind() async {
+    // Only once the engine answered: a channel call before that waits on
+    // a native side that may not be there.
+    if (_available != true) return '';
+    try {
+      final k = await _method.invokeMethod<String>('netKind') ?? '';
+      return const {'wifi', 'cell', 'other'}.contains(k) ? k : '';
+    } on MissingPluginException {
+      return '';
+    } on PlatformException {
+      return '';
+    }
+  }
+
   /// Whether the phone's own network (not the tunnel) is metered: mobile
   /// data, or Wi-Fi marked metered. False when unknown.
   Future<bool> metered() async {

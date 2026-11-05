@@ -76,13 +76,22 @@ Future<void> _wait(WidgetTester tester, Duration total) async {
 void _report(String net, String key, Object value) =>
     print('MEASURE $net $key=$value');
 
+/// A test that then lets the network reports it queued go out: since
+/// 1.2.15 the app measures when it comes back on screen, and the Worker
+/// takes one report per 9 s.
+void _t(String name, Future<void> Function(WidgetTester) body) =>
+    testWidgets(name, (tester) async {
+      await body(tester);
+      await _wait(tester, const Duration(seconds: 60));
+    });
+
 void main() {
   for (final metered in [false, true]) {
     final net = metered ? 'metered' : 'unmetered';
     group(net, () {
       for (final background in [true, false]) {
         final where = background ? 'screen_off' : 'on_screen';
-        testWidgets('one hour connected, $where: live pings and plan reads', (
+        _t('one hour connected, $where: live pings and plan reads', (
           tester,
         ) async {
           final tunnel = (FakeTunnel()..onMetered = metered);
@@ -104,9 +113,7 @@ void main() {
         });
       }
 
-      testWidgets('Home on screen, 10 s at 60 Hz: shard field paints', (
-        tester,
-      ) async {
+      _t('Home on screen, 10 s at 60 Hz: shard field paints', (tester) async {
         await _boot(tester, (FakeTunnel()..onMetered = metered));
         final field = tester.renderObject<RenderRepaintBoundary>(
           find
@@ -130,7 +137,7 @@ void main() {
         );
       });
 
-      testWidgets('Protected on Home, 10 s: widgets rebuilt', (tester) async {
+      _t('Protected on Home, 10 s: widgets rebuilt', (tester) async {
         final tunnel = (FakeTunnel()..onMetered = metered);
         final (app, _) = await _boot(tester, tunnel);
         await _protect(tester, app, tunnel);
@@ -167,7 +174,7 @@ void main() {
         ..pings = {for (final h in hosts) '$h.example.com': 100}
         ..speeds = {for (final h in hosts) '$h.example.com': 5000};
 
-      testWidgets('Locations opened once, 8 exits answer: download tests', (
+      _t('Locations opened once, 8 exits answer: download tests', (
         tester,
       ) async {
         final tunnel = answering();
@@ -186,7 +193,7 @@ void main() {
         }
       });
 
-      testWidgets('Locations left after 4 s, tests take 3 s: download tests', (
+      _t('Locations left after 4 s, tests take 3 s: download tests', (
         tester,
       ) async {
         final tunnel = answering()..speedTakes = const Duration(seconds: 3);
@@ -208,9 +215,7 @@ void main() {
         );
       });
 
-      testWidgets('order status open, app off screen 60 s: polls', (
-        tester,
-      ) async {
+      _t('order status open, app off screen 60 s: polls', (tester) async {
         final (_, api) = await _boot(
           tester,
           (FakeTunnel()..onMetered = metered),

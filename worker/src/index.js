@@ -154,7 +154,7 @@ async function route(request, env, p) {
   // everything below needs a logged-in user
   const authed = [
     '/me', '/trial', '/vpn', '/vpn/sub', '/vpn/servers', '/devices', '/orders', '/wallet', '/referral', '/coupons/check',
-    '/auth/change-password', '/auth/logout-all', '/me/packages', '/me/photo', '/me/email', '/me/avatar', '/me/telegram/start', '/me/telegram/verify', '/net/report', '/net/rank', '/net/google',
+    '/auth/change-password', '/auth/logout-all', '/me/packages', '/me/photo', '/me/email', '/me/avatar', '/me/telegram/start', '/me/telegram/verify', '/me/ip', '/net/report', '/net/rank', '/net/google',
   ];
   const needsAuth = authed.includes(p) || p.startsWith('/devices/') || p.startsWith('/orders/');
   if (!needsAuth) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
@@ -163,6 +163,13 @@ async function route(request, env, p) {
   if (p === '/auth/change-password' && m === 'POST') return auth.changePassword(env, user, await body(request));
   if (p === '/auth/logout-all' && m === 'POST') return auth.logoutAll(env, user);
   if (p === '/me' && m === 'GET') return account.me(env, user, request);
+  // the address this request came from and where Cloudflare places it: through the VPN, the exit's public IP,
+  // country and city (Pleat's Home shows them while connected); nothing is stored
+  if (p === '/me/ip' && m === 'GET') {
+    const cf = request.cf || {};
+    return json({ ip: String(request.headers.get('cf-connecting-ip') || '').slice(0, 45), cc: /^[A-Z]{2}$/.test(cf.country || '') ? cf.country : '',
+      city: String(cf.city || '').slice(0, 60), region: String(cf.region || '').slice(0, 60) });
+  }
   if (p === '/me/packages' && m === 'GET') return account.packages(env, user);
   if (p === '/me/photo' && m === 'GET') return account.photo(env, user);
   if (p === '/me/email' && m === 'POST') {

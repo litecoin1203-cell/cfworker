@@ -1728,6 +1728,15 @@ section('per-user networks: operator + connection type, per-type ranking, admin 
   ok(!(await env.DB.prepare('SELECT 1 FROM user_net WHERE user_id = ?').bind(ids[2]).first()) && !(await env.DB.prepare('SELECT 1 FROM user_net_srv WHERE user_id = ?').bind(ids[2]).first()), 'per-user rows pruned after 30 days');
 }
 
+section('/me/ip: the exit address and place the app shows while connected');
+{
+  const tok = await signup('ip@example.com', { device: 'ipd' });
+  const r = await call('GET', '/api/v1/me/ip', { token: tok, headers: { 'cf-connecting-ip': '185.220.101.42' }, cf: { country: 'DE', city: 'Frankfurt am Main', region: 'Hesse' } });
+  ok(r.status === 200 && r.data.ip === '185.220.101.42' && r.data.cc === 'DE' && r.data.city === 'Frankfurt am Main', '/me/ip answers ip, country and city: ' + JSON.stringify(r.data));
+  const no = await call('GET', '/api/v1/me/ip', {});
+  ok(no.status === 401, '/me/ip needs a signed-in user');
+}
+
 section('any panel type: Rebecca, Marzban and PasarGuard are detected on /paneltest and each gets its own create call');
 {
   const { getPanel, adapterFor, collectLinks, testPanel } = await import('../src/panels.js');
