@@ -313,112 +313,28 @@ class _ProfileScreenState extends State<ProfileScreen> {
   }
 }
 
-/// Day, Night, or Auto (follow the phone). Saved on this phone; the whole
-/// app changes in place, this screen included.
+/// One switch: on = night look, off = day look. Until the user flips it
+/// the app follows the phone. Saved on this phone; the whole app changes
+/// in place, this screen included.
 class _Appearance extends StatelessWidget {
   const _Appearance({required this.app});
   final AppState app;
 
-  static const _choices = [
-    ('day', 'Day', PIcon.sun),
-    ('night', 'Night', PIcon.moon),
-    ('auto', 'Auto', PIcon.device),
-  ];
-
   @override
   Widget build(BuildContext context) {
-    final d = PMotion.reduced(context) ? Duration.zero : PMotion.quick;
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              PIconView(
-                PColors.current.isDark ? PIcon.moon : PIcon.sun,
-                color: PColors.accentInk,
-              ),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Appearance',
-                      style: PType.h3().copyWith(fontSize: 15),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      app.theme == 'auto'
-                          ? 'Follows your phone.'
-                          : 'Day or night look, on this phone.',
-                      style: PType.small(),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(4),
-            decoration: BoxDecoration(
-              color: PColors.field,
-              borderRadius: BorderRadius.circular(PRadius.pill),
-            ),
-            child: Row(
-              children: [
-                for (final (id, label, icon) in _choices)
-                  Expanded(
-                    child: Semantics(
-                      button: true,
-                      selected: app.theme == id,
-                      label: '$label appearance',
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () => app.update((s) => s.theme = id),
-                        child: AnimatedContainer(
-                          duration: d,
-                          curve: Curves.easeOutCubic,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: app.theme == id
-                                ? PColors.blue
-                                : Colors.transparent,
-                            borderRadius: BorderRadius.circular(PRadius.pill),
-                          ),
-                          child: ExcludeSemantics(
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.center,
-                              children: [
-                                PIconView(
-                                  icon,
-                                  size: 16,
-                                  color: app.theme == id
-                                      ? PColors.onAccent
-                                      : PColors.muted,
-                                ),
-                                const SizedBox(width: 6),
-                                Text(
-                                  label,
-                                  style: PType.small(
-                                    color: app.theme == id
-                                        ? PColors.onAccent
-                                        : PColors.ink,
-                                  ).copyWith(fontWeight: FontWeight.w700),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ],
+    final night = PColors.current.isDark;
+    return _Row(
+      icon: night ? PIcon.moon : PIcon.sun,
+      title: 'Night mode',
+      body: app.theme == 'auto'
+          ? 'Follows your phone until you switch.'
+          : (night
+                ? 'Dark look, on this phone.'
+                : 'Light look, on this phone.'),
+      trailing: PToggle(
+        value: night,
+        onChanged: (v) => app.update((s) => s.theme = v ? 'night' : 'day'),
+        label: 'Night mode',
       ),
     );
   }
