@@ -1,3 +1,7 @@
+// Colour defaults come from the live palette, so they are nullable
+// parameters stored in private fields; this lint cannot apply to those.
+// ignore_for_file: prefer_initializing_formals
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
