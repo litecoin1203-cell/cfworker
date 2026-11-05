@@ -102,44 +102,87 @@ async function ownKeys(env, user) {
 
 const KBPS_MAX = 200000; // 200 Mbit/s: anything above is not a real phone result
 
-// POST /net/report  { results: [{ k, ok, ms, kbps? }] } — an entry with kbps and no ok is a speed result only
+// connection type the phone says it is on; '' = an older app that does not say
+export const KINDS = new Set(['wifi', 'cell', 'other']);
+const kindOf = (v) => (KINDS.has(v) ? v : '');
+export const KIND_FA = { wifi: 'وای‌فای', cell: 'دیتای موبایل', other: 'شبکه‌ی دیگر', '': 'نامشخص' };
+const DECAY = 0.8; // weight of a user's earlier results on a server each time a new one arrives
+
+// POST /net/report  { kind?, results: [{ k, ok, ms, kbps? }] } — an entry with kbps and no ok is a speed result only.
+// Set-based: a fixed handful of D1 queries whatever the number of servers (the free plan allows 50 per request;
+// one or two queries per server went over that at about 25 servers).
 export async function report(env, user, request, body) {
-  const { asn, geo } = ispOf(request);
+  const { asn, geo, isp } = ispOf(request);
   if (!asn) return json({ ok: true, skipped: 'no_asn' });
   if (throttle('__cgNet', user.id, 8000)) return json({ ok: true, skipped: 'throttled' });
+  const kind = kindOf(body.kind);
   const list = Array.isArray(body.results) ? body.results.slice(0, 60) : [];
   const own = await ownKeys(env, user);
-  const b = bucketNow();
-  let n = 0;
+  const pings = [], speeds = [], mine = [];
   const seenNow = new Set();
   for (const r of list) {
-    const k = String(r.k || '');
+    const k = String((r && r.k) || '');
     if (!KEY_RE.test(k) || seenNow.has(k)) continue; // one result per server per report
     if (own && !own.has(k)) continue; // not one of this user's servers
     seenNow.add(k);
     const speedOnly = r.ok == null && r.kbps != null;
-    if (!speedOnly) {
-      // one vote per user per server per network per 3-hour bucket, so one account cannot outvote everyone else
-      const vote = await run(env, 'INSERT OR IGNORE INTO net_votes (user_id, asn, geo, skey, bucket) VALUES (?,?,?,?,?)', user.id, asn, geo, k, b);
-      if (vote.meta.changes) {
-        const ok = r.ok ? 1 : 0;
-        const ms = ok ? Math.max(1, Math.min(10000, parseInt(r.ms, 10) || 0)) : 0;
-        await run(env, `INSERT INTO net_geo (asn, geo, skey, bucket, ok, fail, ms_sum, ms_n) VALUES (?,?,?,?,?,?,?,?)
-          ON CONFLICT(asn, geo, skey, bucket) DO UPDATE SET ok = ok + excluded.ok, fail = fail + excluded.fail, ms_sum = ms_sum + excluded.ms_sum, ms_n = ms_n + excluded.ms_n`,
-          asn, geo, k, b, ok, 1 - ok, ms, ms ? 1 : 0);
-        n++;
-      }
+    const ok = r.ok ? 1 : 0;
+    const ms = !speedOnly && ok ? Math.max(1, Math.min(10000, parseInt(r.ms, 10) || 0)) : 0;
+    const kb = parseInt(r.kbps, 10) > 0 && (speedOnly || ok) ? Math.min(KBPS_MAX, parseInt(r.kbps, 10)) : 0;
+    if (!speedOnly) pings.push({ k, ok, ms });
+    if (kb) speeds.push({ k, kb, speedOnly });
+    if (!speedOnly || kb) mine.push({ k, ok: speedOnly ? 0 : ok, fail: speedOnly ? 0 : 1 - ok, ms, kb });
+  }
+  const b = bucketNow();
+  let n = 0;
+  // shared ranking: one vote per user per server per network per 3-hour bucket, so one account cannot outvote
+  // everyone else; RETURNING gives the servers whose vote is new
+  if (pings.length) {
+    const fresh = new Set((await all(env, `INSERT OR IGNORE INTO net_votes (user_id, asn, geo, skey, bucket)
+      SELECT ?, ?, ?, value, ? FROM json_each(?) WHERE true RETURNING skey`, user.id, asn, geo, b, JSON.stringify(pings.map((p) => p.k)))).map((r) => r.skey));
+    const add = pings.filter((p) => fresh.has(p.k));
+    if (add.length) {
+      await run(env, `INSERT INTO net_geo (asn, geo, skey, bucket, ok, fail, ms_sum, ms_n)
+        SELECT ?, ?, json_extract(value, '$.k'), ?, json_extract(value, '$.ok'), 1 - json_extract(value, '$.ok'),
+          json_extract(value, '$.ms'), CASE WHEN json_extract(value, '$.ms') > 0 THEN 1 ELSE 0 END FROM json_each(?) WHERE true
+        ON CONFLICT(asn, geo, skey, bucket) DO UPDATE SET ok = ok + excluded.ok, fail = fail + excluded.fail, ms_sum = ms_sum + excluded.ms_sum, ms_n = ms_n + excluded.ms_n`,
+        asn, geo, b, JSON.stringify(add));
+      n += add.length;
     }
-    const kb = parseInt(r.kbps, 10);
-    if (kb > 0 && (speedOnly || r.ok)) {
-      const sv = await run(env, 'INSERT OR IGNORE INTO net_speed_votes (user_id, asn, geo, skey, bucket) VALUES (?,?,?,?,?)', user.id, asn, geo, k, b);
-      if (sv.meta.changes) {
-        await run(env, `INSERT INTO net_geo (asn, geo, skey, bucket, kb_sum, kb_n) VALUES (?,?,?,?,?,1)
-          ON CONFLICT(asn, geo, skey, bucket) DO UPDATE SET kb_sum = kb_sum + excluded.kb_sum, kb_n = kb_n + 1`,
-          asn, geo, k, b, Math.min(KBPS_MAX, kb));
-        if (speedOnly) n++;
-      }
+  }
+  if (speeds.length) {
+    const fresh = new Set((await all(env, `INSERT OR IGNORE INTO net_speed_votes (user_id, asn, geo, skey, bucket)
+      SELECT ?, ?, ?, value, ? FROM json_each(?) WHERE true RETURNING skey`, user.id, asn, geo, b, JSON.stringify(speeds.map((p) => p.k)))).map((r) => r.skey));
+    const add = speeds.filter((p) => fresh.has(p.k));
+    if (add.length) {
+      await run(env, `INSERT INTO net_geo (asn, geo, skey, bucket, kb_sum, kb_n)
+        SELECT ?, ?, json_extract(value, '$.k'), ?, json_extract(value, '$.kb'), 1 FROM json_each(?) WHERE true
+        ON CONFLICT(asn, geo, skey, bucket) DO UPDATE SET kb_sum = kb_sum + excluded.kb_sum, kb_n = kb_n + 1`,
+        asn, geo, b, JSON.stringify(add));
+      n += add.filter((p) => p.speedOnly).length;
     }
+  }
+  // this user's own experience on this network (operator + connection type), for the bot and the per-type ranking
+  if (mine.length) {
+    const now = nowSec();
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO user_net (user_id, asn, kind, isp, geo, first_at, last_at, reports) VALUES (?,?,?,?,?,?,?,1)
+        ON CONFLICT(user_id, asn, kind) DO UPDATE SET isp = excluded.isp, geo = excluded.geo, last_at = excluded.last_at, reports = reports + 1`)
+        .bind(user.id, asn, kind, String(isp).slice(0, 40), geo, now, now),
+      env.DB.prepare(`INSERT INTO user_net_srv (user_id, asn, kind, skey, ok, fail, ms_sum, ms_n, kb_sum, kb_n, tests, at)
+        SELECT ?, ?, ?, json_extract(value, '$.k'), json_extract(value, '$.ok'), json_extract(value, '$.fail'),
+          json_extract(value, '$.ms'), CASE WHEN json_extract(value, '$.ms') > 0 THEN 1 ELSE 0 END,
+          json_extract(value, '$.kb'), CASE WHEN json_extract(value, '$.kb') > 0 THEN 1 ELSE 0 END, 1, ? FROM json_each(?) WHERE true
+        ON CONFLICT(user_id, asn, kind, skey) DO UPDATE SET
+          ok = CASE WHEN excluded.ok + excluded.fail > 0 THEN ok * ${DECAY} + excluded.ok ELSE ok END,
+          fail = CASE WHEN excluded.ok + excluded.fail > 0 THEN fail * ${DECAY} + excluded.fail ELSE fail END,
+          ms_sum = CASE WHEN excluded.ms_n > 0 THEN ms_sum * ${DECAY} + excluded.ms_sum ELSE ms_sum END,
+          ms_n = CASE WHEN excluded.ms_n > 0 THEN ms_n * ${DECAY} + 1 ELSE ms_n END,
+          kb_sum = CASE WHEN excluded.kb_n > 0 THEN kb_sum * ${DECAY} + excluded.kb_sum ELSE kb_sum END,
+          kb_n = CASE WHEN excluded.kb_n > 0 THEN kb_n * ${DECAY} + 1 ELSE kb_n END,
+          tests = tests + 1, at = excluded.at`)
+        .bind(user.id, asn, kind, now, JSON.stringify(mine)),
+    ]);
   }
   return json({ ok: true, stored: n });
 }
@@ -178,12 +221,18 @@ async function googleMap(env) {
   return out;
 }
 
-// GET /net/rank -> { asn, isp, isp_en, mobile, geo, servers: { k: {score, n, users, ms, kbps, level} }, google: { k: {...} } }
-// score: 60% how often it connects, 20% ping, 20% download speed (unknown parts count as middling)
-export async function rank(env, request) {
+const scoreOf = (p, ms, kbps) => p * 0.6 + (ms ? Math.max(0, 1 - Math.min(ms, 2000) / 2000) : 0.5) * 0.2 + (kbps ? Math.min(kbps, 20000) / 20000 : 0.5) * 0.2;
+const TYPE_WINDOW = 3 * 86400;
+
+// GET /net/rank?kind=wifi|cell|other -> { asn, isp, isp_en, mobile, geo, kind, servers: { k: {score, n, users, ms, kbps, level} }, google }
+// score: 60% how often it connects, 20% ping, 20% download speed (unknown parts count as middling).
+// With a kind, people on the same operator AND the same connection type (Irancell over Wi-Fi is not Irancell
+// mobile data) count for half the score once two of them tested that server, three quarters from three.
+export async function rank(env, request, kindIn) {
   const { asn, isp, ispEn, geo, geoFa } = ispOf(request);
+  const kind = kindOf(kindIn);
   const google = await googleMap(env);
-  const head = { asn, isp, isp_en: ispEn || '', mobile: MOBILE.has(asn), geo: geoFa };
+  const head = { asn, isp, isp_en: ispEn || '', mobile: MOBILE.has(asn), geo: geoFa, kind };
   if (!asn) return json({ ...head, asn: 0, servers: {}, google });
   const since = bucketNow() - 24; // 72 hours
   const ispRows = await all(env, `SELECT skey, bucket, SUM(ok) ok, SUM(fail) fail, SUM(ms_sum) ms_sum, SUM(ms_n) ms_n, SUM(kb_sum) kb_sum, SUM(kb_n) kb_n
@@ -192,23 +241,35 @@ export async function rank(env, request) {
   // different people behind each server on this network: the app shows Strong/Weak only from 3 up
   const people = Object.fromEntries((await all(env, `SELECT skey, COUNT(DISTINCT user_id) u FROM net_votes
     WHERE asn = ? AND bucket >= ? GROUP BY skey`, asn, since)).map((r) => [r.skey, r.u]));
+  const T = kind ? Object.fromEntries((await all(env, `SELECT skey, SUM(ok) ok, SUM(fail) fail, SUM(ms_sum) ms, SUM(ms_n) msw,
+      SUM(kb_sum) kb, SUM(kb_n) kbw, COUNT(*) u, SUM(tests) t FROM user_net_srv WHERE asn = ? AND kind = ? AND at >= ? GROUP BY skey`,
+    asn, kind, nowSec() - TYPE_WINDOW)).map((r) => [r.skey, r])) : {};
   const I = decayed(ispRows), G = decayed(geoRows);
   const servers = {};
-  for (const k of Object.keys(I)) {
-    const a = I[k], g = G[k];
-    const pIsp = (a.ok + 1) / (a.ok + a.fail + 2);
-    // province data counts fully once it has a few results; until then it leans on the ISP-wide number
-    const PRIOR = 4;
-    const p = g ? (g.ok + PRIOR * pIsp) / (g.ok + g.fail + PRIOR) : pIsp;
-    const ms = g && g.msw >= 1 ? g.ms / g.msw : a.msw ? a.ms / a.msw : 0;
-    const kbps = g && g.kbw >= 1 ? g.kb / g.kbw : a.kbw ? a.kb / a.kbw : 0;
-    const ping = ms ? Math.max(0, 1 - Math.min(ms, 2000) / 2000) : 0.5;
-    const down = kbps ? Math.min(kbps, 20000) / 20000 : 0.5;
-    const local = g && g.raw >= 3;
-    servers[k] = {
-      score: +(p * 0.6 + ping * 0.2 + down * 0.2).toFixed(3), n: local ? g.raw : a.raw, users: people[k] || 0,
-      ms: Math.round(ms), kbps: Math.round(kbps), level: local ? 'city' : 'isp',
-    };
+  for (const k of new Set([...Object.keys(I), ...Object.keys(T)])) {
+    const a = I[k], g = G[k], t = T[k];
+    let score = null, ms = 0, kbps = 0, n = 0, level = 'isp';
+    if (a) {
+      const pIsp = (a.ok + 1) / (a.ok + a.fail + 2);
+      // province data counts fully once it has a few results; until then it leans on the ISP-wide number
+      const PRIOR = 4;
+      const p = g ? (g.ok + PRIOR * pIsp) / (g.ok + g.fail + PRIOR) : pIsp;
+      ms = g && g.msw >= 1 ? g.ms / g.msw : a.msw ? a.ms / a.msw : 0;
+      kbps = g && g.kbw >= 1 ? g.kb / g.kbw : a.kbw ? a.kb / a.kbw : 0;
+      const local = g && g.raw >= 3;
+      score = scoreOf(p, ms, kbps); n = local ? g.raw : a.raw; level = local ? 'city' : 'isp';
+    }
+    if (t && (t.u >= 2 || !a)) {
+      const tms = t.msw ? t.ms / t.msw : 0, tkb = t.kbw ? t.kb / t.kbw : 0;
+      const ts = scoreOf((t.ok + 1) / (t.ok + t.fail + 2), tms, tkb);
+      const w = Math.min(0.75, t.u * 0.25); // 2 people: half the score, 3 or more: three quarters
+      score = score == null ? ts : score * (1 - w) + ts * w;
+      if (tms) ms = ms ? (ms + tms) / 2 : tms;
+      if (tkb) kbps = kbps ? (kbps + tkb) / 2 : tkb;
+      if (!a) n = t.t;
+      level = 'type';
+    }
+    servers[k] = { score: +score.toFixed(3), n, users: Math.max(people[k] || 0, t ? t.u : 0), ms: Math.round(ms), kbps: Math.round(kbps), level };
   }
   return json({ ...head, servers, google });
 }
@@ -232,7 +293,7 @@ export async function carrierSummary(env) {
     const servers = Object.entries(D).map(([k, a]) => {
       const ms = a.msw ? a.ms / a.msw : 0, kbps = a.kbw ? a.kb / a.kbw : 0;
       const p = (a.ok + 1) / (a.ok + a.fail + 2);
-      const score = p * 0.6 + (ms ? Math.max(0, 1 - Math.min(ms, 2000) / 2000) : 0.5) * 0.2 + (kbps ? Math.min(kbps, 20000) / 20000 : 0.5) * 0.2;
+      const score = scoreOf(p, ms, kbps);
       const u = people[asn + ':' + k] || 0;
       return { k, name: names[k] || k, score, ok: Math.round(p * 100), ms: Math.round(ms), kbps: Math.round(kbps), tests: a.raw, users: u };
     }).filter((s) => s.tests > 0).sort((x, y) => y.score - x.score);
@@ -287,4 +348,76 @@ export async function prune(env) {
   await run(env, 'DELETE FROM net_votes WHERE bucket < ?', bucketNow() - 32);
   await run(env, 'DELETE FROM google_votes WHERE day < ?', day() - 3);
   await run(env, 'DELETE FROM net_speed_votes WHERE bucket < ?', bucketNow() - 32);
+  await run(env, 'DELETE FROM user_net_srv WHERE at < ?', nowSec() - 30 * 86400);
+  await run(env, 'DELETE FROM user_net WHERE last_at < ?', nowSec() - 30 * 86400);
+}
+
+// ---------------- each user's experience, for the admin bot ----------------
+const USER_WINDOW = 30 * 86400;
+const num = (n) => Number(n || 0).toLocaleString('en-US');
+const ago = (sec) => {
+  const d = Math.max(0, nowSec() - sec);
+  if (d < 3600) return `${Math.max(1, Math.round(d / 60))} دقیقه پیش`;
+  if (d < 86400) return `${Math.round(d / 3600)} ساعت پیش`;
+  return `${Math.round(d / 86400)} روز پیش`;
+};
+const netName = (r) => `${r.isp || r.asn} · ${KIND_FA[r.kind] || KIND_FA['']}`;
+const quality = (s) => {
+  const p = s.ok + s.fail > 0 ? s.ok / (s.ok + s.fail) : null;
+  const ms = s.ms_n ? s.ms_sum / s.ms_n : 0, kb = s.kb_n ? s.kb_sum / s.kb_n : 0;
+  return { p, ms, kb, score: scoreOf(p == null ? 0.5 : p, ms, kb) };
+};
+const qLine = (q) => [q.p == null ? null : (q.p > 0 ? `وصل ${num(Math.round(q.p * 100))}٪` : 'وصل نشد'),
+  q.ms ? `پینگ ${num(Math.round(q.ms))}ms` : null, q.kb ? `سرعت ${(q.kb / 1000).toFixed(1)} مگابیت` : null].filter(Boolean).join(' · ');
+
+// "ایرانسل · دیتای موبایل، شاتل · وای‌فای" — the networks this user used in the last 30 days, latest first
+export async function userNetLine(env, userId) {
+  const rows = await all(env, 'SELECT asn, kind, isp FROM user_net WHERE user_id = ? AND last_at >= ? ORDER BY last_at DESC LIMIT 4', userId, nowSec() - USER_WINDOW);
+  return rows.map(netName).join('، ');
+}
+
+// One user's networks and how each of their servers did on each, best and weakest first.
+export async function userNetText(env, u) {
+  const since = nowSec() - USER_WINDOW;
+  const nets = await all(env, 'SELECT asn, kind, isp, geo, first_at, last_at, reports FROM user_net WHERE user_id = ? AND last_at >= ? ORDER BY last_at DESC LIMIT 6', u.id, since);
+  const who = u.tg_username ? '@' + u.tg_username : u.email;
+  if (!nets.length) return `📶 تجربه اتصال — ${who}\n\nهنوز گزارشی از اپ این کاربر نرسیده (۳۰ روز اخیر). وقتی اپ را باز کند و سرورها تست شوند اینجا می‌آید.`;
+  const srv = await all(env, `SELECT asn, kind, skey, ok, fail, ms_sum, ms_n, kb_sum, kb_n, tests FROM user_net_srv
+    WHERE user_id = ? AND at >= ?`, u.id, since);
+  let names = {};
+  const kr = await first(env, 'SELECT keys FROM user_skeys WHERE user_id = ?', u.id);
+  try { names = kr ? JSON.parse(kr.keys) : {}; } catch (e) { names = {}; }
+  const lines = [`📶 تجربه اتصال — ${who}`, `${num(nets.length)} شبکه در ۳۰ روز اخیر:`];
+  for (const n of nets) {
+    const list = srv.filter((s) => s.asn === n.asn && s.kind === n.kind)
+      .map((s) => ({ name: names[s.skey] || 'سرور حذف‌شده', tests: s.tests, ...quality(s) }))
+      .sort((a, b) => b.score - a.score);
+    const tested = list.filter((s) => s.p != null).length;
+    const working = list.filter((s) => s.p != null && s.p >= 0.5).length;
+    lines.push('', `▪️ ${netName(n)}${n.geo ? ` · ${PROVINCE_FA[n.geo] || n.geo}` : ''}`,
+      `آخرین بار ${ago(n.last_at)} · اولین بار ${ago(n.first_at)} · ${num(n.reports)} گزارش`);
+    if (tested) lines.push(`${num(working)} از ${num(tested)} سرور وصل می‌شوند`);
+    const best = list.slice(0, 3), weak = list.length > 3 ? list.slice(-Math.min(3, list.length - 3)).reverse() : [];
+    for (const s of best) lines.push(`🟢 ${s.name} — ${qLine(s) || 'فقط سرعت'}`);
+    for (const s of weak) lines.push(`🔴 ${s.name} — ${qLine(s) || 'فقط سرعت'}`);
+  }
+  return lines.join('\n');
+}
+
+// All users: how many use each operator and connection type (7 days), and who reported last.
+export async function networkUsers(env) {
+  const since = nowSec() - 7 * 86400;
+  const groups = await all(env, `SELECT asn, kind, MAX(isp) isp, COUNT(DISTINCT user_id) u FROM user_net WHERE last_at >= ?
+    GROUP BY asn, kind ORDER BY u DESC LIMIT 12`, since);
+  const total = (await first(env, 'SELECT COUNT(DISTINCT user_id) c FROM user_net WHERE last_at >= ?', since)).c;
+  const recent = await all(env, `SELECT n.user_id id, u.email, u.tg_username, MAX(n.last_at) at FROM user_net n JOIN users u ON u.id = n.user_id
+    WHERE n.last_at >= ? GROUP BY n.user_id ORDER BY at DESC, n.user_id DESC LIMIT 8`, since);
+  const lines = ['📶 کاربران روی هر اپراتور (۷ روز اخیر)', ''];
+  if (!groups.length) lines.push('هنوز گزارشی از اپ‌ها نرسیده.');
+  else {
+    lines.push(`${num(total)} کاربر گزارش داده‌اند:`);
+    for (const g of groups) lines.push(`▪️ ${netName(g)} — ${num(g.u)} کاربر`);
+    lines.push('', 'آخرین کاربرهایی که گزارش دادند پایین هستند؛ روی هر کدام بزن تا اپراتورها و سرورهایش را ببینی.');
+  }
+  return { text: lines.join('\n'), recent };
 }

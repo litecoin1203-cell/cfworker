@@ -17,7 +17,7 @@ export const backKb = (back) => ({ inline_keyboard: [back && back !== 'home' ? [
 
 export const userKb = (uid) => ({ inline_keyboard: [
   [b('🎁 دادن پلن', `m:ug:${uid}`), b('🔑 تغییر رمز', `m:w:reset:${uid}`)],
-  [b('🔗 وصل اکانت پنل', `m:w:link:${uid}`)],
+  [b('🔗 وصل اکانت پنل', `m:w:link:${uid}`), b('📶 تجربه اتصال', `m:un:${uid}`)],
   [b('🔄 به‌روزرسانی', `m:u:${uid}`), b('🔙 کاربران', 'm:usr'), HOME],
 ] });
 
@@ -51,6 +51,7 @@ async function home(env) {
       [b('🗂 پنل‌ها', 'm:pa'), b('🏷 کدهای تخفیف', 'm:cp')],
       [b('💰 پرداخت‌ها', 'm:pay'), b('⚙️ تنظیمات', 'm:set')],
       [b('🔎 گوگل', 'm:x:home|/google'), b('📶 اپراتورها', 'm:x:home|/carriers')],
+      [b('👥 کاربران و اپراتورهایشان', 'm:un')],
       [b('💾 پشتیبان', 'm:x:home|/backup'), b('❓ راهنما', 'm:help')],
     ],
   };
@@ -63,6 +64,20 @@ async function users(env) {
     text: `👤 کاربران — ${fa(count)} نفر\n\nآخرین ثبت‌نام‌ها پایین هستند. برای بقیه «جستجو» را بزن.`,
     kb: [[b('🔎 جستجوی کاربر', 'm:w:find')], ...rows.map((u) => [b((u.tg_id ? (u.tg_username ? '@' + u.tg_username : 'TG ' + u.tg_id) : u.email).slice(0, 40), `m:u:${u.id}`)]), [HOME]],
   };
+}
+
+// who connects through which operator: the overview (no id) or one user's networks and servers
+async function userNets(env, id) {
+  const ns = await import('./netstats.js');
+  if (!id) {
+    const { text, recent } = await ns.networkUsers(env);
+    return { text, kb: [...recent.map((u) => [b((u.tg_username ? '@' + u.tg_username : u.email).slice(0, 40), `m:un:${u.id}`)]),
+      [b('🔄 به‌روزرسانی', 'm:un'), HOME]] };
+  }
+  const u = await first(env, 'SELECT id, email, tg_username FROM users WHERE id = ?', id);
+  if (!u) return { text: 'کاربر پیدا نشد.', kb: [[b('🔙 برگشت', 'm:un'), HOME]] };
+  return { text: await ns.userNetText(env, u),
+    kb: [[b('🔄 به‌روزرسانی', `m:un:${u.id}`), b('👤 کارت کاربر', `m:u:${u.id}`)], [b('🔙 همه‌ی کاربران', 'm:un'), HOME]] };
 }
 
 async function plans(env) {
@@ -345,6 +360,7 @@ async function showScreen(env, cq, data) {
   if (screen === 'st') s = { text: await statsText(env), kb: [[b('🔄 به‌روزرسانی', 'm:st'), HOME]] };
   else if (screen === 'help') s = { text: HELP, kb: [[HOME]] };
   else if (screen === 'usr') s = await users(env);
+  else if (screen === 'un') s = await userNets(env, id);
   else if (screen === 'pl') s = await plans(env);
   else if (screen === 'p') s = await plan(env, id);
   else if (screen === 'pa') s = await panels(env);

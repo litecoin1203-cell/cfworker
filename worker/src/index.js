@@ -187,7 +187,7 @@ async function route(request, env, p) {
   if (p === '/vpn/servers' && m === 'GET') return account.vpnServers(env, user, request);
   if (p === '/vpn/sub' && m === 'GET') return account.vpnSub(env, user, request);
   if (p === '/net/report' && m === 'POST') { const ns = await import('./netstats.js'); return ns.report(env, user, request, await body(request)); }
-  if (p === '/net/rank' && m === 'GET') { const ns = await import('./netstats.js'); return ns.rank(env, request); }
+  if (p === '/net/rank' && m === 'GET') { const ns = await import('./netstats.js'); return ns.rank(env, request, new URL(request.url).searchParams.get('kind')); }
   if (p === '/net/google' && m === 'POST') { const ns = await import('./netstats.js'); return ns.googleReport(env, user, await body(request)); }
   if (p === '/coupons/check' && m === 'POST') return orders.checkCoupon(env, user, await body(request));
   if (p === '/devices' && m === 'GET') return account.devices(env, user);
