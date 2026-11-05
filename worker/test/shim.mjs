@@ -180,6 +180,12 @@ export function installFakes({ panelBase }) {
       const method2 = url.split('/').pop();
       tg.calls.push({ method: method2, body: body && typeof body === 'string' ? JSON.parse(body) : null });
       if (method2 === 'sendMessage') { tg.messages.push(JSON.parse(body)); return resJson({ ok: true, result: { message_id: tg.messages.length } }); }
+      if (url.includes('/file/bot')) return new Response(new Uint8Array([0xff, 0xd8, 0xff, 1, 2, 3]), { status: 200 });
+      if (method2 === 'getUserProfilePhotos') {
+        const id = JSON.parse(body).user_id;
+        return resJson({ ok: true, result: { total_count: id === 555123 ? 1 : 0, photos: id === 555123 ? [[{ file_id: 's', width: 160, height: 160 }, { file_id: 'b', width: 640, height: 640 }]] : [] } });
+      }
+      if (method2 === 'getFile') return resJson({ ok: true, result: { file_id: JSON.parse(body).file_id, file_size: 6, file_path: 'photos/file_1.jpg' } });
       if (method2 === 'sendPhoto') { tg.photos.push(true); return resJson({ ok: true, result: { message_id: 1, photo: [{ file_id: 'photo_' + tg.photos.length }] } }); }
       return resJson({ ok: true, result: {} });
     }

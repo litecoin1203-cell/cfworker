@@ -8,6 +8,7 @@ import { refreshUser, usedBytes, ensureMissingFor } from './sync.js';
 import { cryptoEnabled } from './nowpayments.js';
 import { enabledCoins, coinOut } from './coins.js';
 import { notifyAdmin } from './telegram.js';
+import { profileOut } from './auth.js';
 
 export async function appConfig(env) {
   const s = await getSettings(env);
@@ -115,13 +116,76 @@ async function trialAvailable(env, user) {
 
 export async function me(env, user, request) {
   return json({
-    id: user.id, email: user.tg_id ? '' : user.email, login: user.tg_id ? (user.tg_username ? '@' + user.tg_username : String(user.tg_id)) : user.email,
-    telegram: user.tg_id ? { id: String(user.tg_id), username: user.tg_username || null, name: user.tg_name || '' } : null,
+    ...profileOut(user),
     wallet_balance: user.wallet_balance, referral_code: user.referral_code,
     created_at: new Date(user.created_at * 1000).toISOString(),
     trial_available: await trialAvailable(env, user),
     subscription: await subscriptionOut(env, user, true, { withSubUrl: !centralApp(request) }),
   });
+}
+
+// GET /me/packages: every package the person has had, newest first, for the profile screen. A package is one
+// period of the control plane: bought (with its order), a free trial, given by support, or brought in from an
+// existing panel account. purchased_at is when it was paid; activated_at is when it started counting.
+const SOURCES = ['order', 'trial', 'gift', 'panel'];
+export async function packages(env, user) {
+  const rows = await all(env, `SELECT p.*, o.created_at o_created, o.paid_at o_paid, o.amount_toman o_amount, o.method o_method
+    FROM sub_periods p LEFT JOIN orders o ON o.id = p.order_id AND o.user_id = p.user_id
+    WHERE p.user_id = ? ORDER BY p.started_at DESC, p.id DESC LIMIT 50`, user.id);
+  const sub = await first(env, 'SELECT period_id FROM subscriptions WHERE user_id = ?', user.id);
+  const plans = {};
+  const iso = (t) => (t ? new Date(t * 1000).toISOString() : null);
+  const out = [];
+  for (const r of rows) {
+    if (r.plan_id && !(r.plan_id in plans)) plans[r.plan_id] = await first(env, 'SELECT name, duration_days, data_limit_gb, device_limit FROM plans WHERE id = ?', r.plan_id);
+    const plan = r.plan_id ? plans[r.plan_id] : null;
+    let source = SOURCES.includes(r.source) ? r.source : null;
+    if (!source) source = r.order_id ? 'order' : r.legacy ? 'panel' : !r.plan_id ? 'panel' : 'gift'; // rows from before 0015
+    const current = !!sub && sub.period_id === r.id;
+    const days = r.expires_at ? Math.max(1, Math.round((r.expires_at - r.started_at) / 86400)) : null;
+    out.push({
+      id: r.id, source, current,
+      name: plan ? planName(plan.name) : (source === 'panel' ? 'Existing account' : 'Package'),
+      order_id: r.order_id || null,
+      purchased_at: source === 'order' ? iso(r.o_paid || r.o_created) : null,
+      activated_at: iso(r.started_at),
+      expires_at: iso(r.expires_at),
+      ended_at: iso(r.ended_at), end_reason: r.end_reason || null,
+      days, data_limit_bytes: r.limit_bytes || 0,
+      used_bytes: current ? await usedBytes(env, r.id) : (r.final_used_bytes ?? null),
+      amount_toman: source === 'order' ? (r.o_amount ?? null) : null,
+      method: source === 'order' ? (r.o_method || null) : null,
+      device_limit: plan ? plan.device_limit : null,
+    });
+  }
+  return json(out);
+}
+
+// GET /me/photo: the person's Telegram profile picture (small size), fetched by the Worker so the app shows it
+// even where Telegram is blocked. { photo: base64 | null }. Telegram only shows it to the bot when the person's
+// privacy settings allow; otherwise the app keeps the initial.
+export async function photo(env, user) {
+  const none = json({ photo: null });
+  if (!user.tg_id || !env.TELEGRAM_BOT_TOKEN) return none;
+  const { tg } = await import('./telegram.js');
+  const r = await tg(env, 'getUserProfilePhotos', { user_id: user.tg_id, limit: 1 });
+  const sizes = r && r.ok && r.result && r.result.photos && r.result.photos[0];
+  if (!Array.isArray(sizes) || !sizes.length) return none;
+  const pick = [...sizes].sort((a, b) => (a.width || 0) - (b.width || 0)).find((x) => (x.width || 0) >= 160) || sizes[sizes.length - 1];
+  const f = await tg(env, 'getFile', { file_id: pick.file_id });
+  const path = f && f.ok && f.result && f.result.file_path;
+  if (!path || (f.result.file_size || 0) > 200000) return none;
+  try {
+    const res = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${path}`);
+    if (!res.ok) return none;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.length > 200000) return none;
+    let bin = '';
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return new Response(JSON.stringify({ photo: btoa(bin) }), {
+      headers: { 'content-type': 'application/json', 'cache-control': 'private, max-age=86400' },
+    });
+  } catch (e) { return none; }
 }
 
 export function myIp(env, request) {
@@ -238,7 +302,7 @@ export async function startTrial(env, user, body, request) {
   const claim = await run(env, 'UPDATE users SET trial_used = 1 WHERE id = ? AND trial_used = 0', user.id);
   if (!claim.meta.changes) throw err(400, 'trial_used', 'تست رایگان را قبلاً استفاده کرده‌ای.');
   try {
-    await provision(env, user, plan, { days: plan.trial_days, dataGb: trialGb > 0 ? trialGb : undefined });
+    await provision(env, user, plan, { days: plan.trial_days, dataGb: trialGb > 0 ? trialGb : undefined, source: 'trial' });
   } catch (e) {
     await run(env, 'UPDATE users SET trial_used = 0 WHERE id = ?', user.id); // not built: the trial is still theirs
     if (e instanceof PasarGuardError) {

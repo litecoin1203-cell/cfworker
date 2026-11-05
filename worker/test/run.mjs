@@ -2025,6 +2025,87 @@ section('sign up and log in with Telegram (6-digit code from the bot)');
   delete env.TELEGRAM_BOT_USERNAME;
 }
 
+section('profile: verify Telegram on an email account, backup email, package history');
+{
+  env.TELEGRAM_BOT_USERNAME = 'PleatBot';
+  const openLink = (nonce, from) => tgWebhook({ message: { chat: { id: from.id, type: 'private' }, from, text: '/start L' + nonce } });
+  const lastCode = () => { const t = fakes.tg.messages[fakes.tg.messages.length - 1]; const m = /<code>(\d{6})<\/code>/.exec(t.text || ''); return m && m[1]; };
+  const tok = await signup('profile@example.com', { device: 'prof-dev' });
+  let me = (await call('GET', '/api/v1/me', { token: tok })).data;
+  ok(me.telegram_verified === false && me.telegram === null && me.email === 'profile@example.com', 'email account starts without Telegram');
+
+  const s = (await call('POST', '/api/v1/me/telegram/start', { token: tok })).data;
+  ok(/^[a-f0-9]{32}$/.test(s.nonce) && s.bot_url.includes('start=L' + s.nonce), 'link start gives a bot link');
+  // Telegram account already owned by someone else: no code is sent
+  await openLink(s.nonce, { id: 777001, is_bot: false, username: 'whoever', first_name: 'X' });
+  ok(!lastCode() && lastText().includes('another Pleat account'), 'a Telegram account of another user gets no code');
+  const s2 = (await call('POST', '/api/v1/me/telegram/start', { token: tok })).data;
+  await openLink(s2.nonce, { id: 555123, is_bot: false, username: 'Prof_User', first_name: 'Prof' });
+  const code = lastCode();
+  ok(code && lastText().includes('verification code'), 'bot sends a verification code');
+  // a link code can never be used to sign in, and a sign-in code can never link
+  const asLogin = await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s2.nonce, code } });
+  ok(asLogin.status === 400, 'a verification code cannot log in');
+  const other = await signup('profile2@example.com');
+  ok((await call('POST', '/api/v1/me/telegram/verify', { token: other, json: { nonce: s2.nonce, code } })).status === 400, 'another account cannot use this code');
+  const v = await call('POST', '/api/v1/me/telegram/verify', { token: tok, json: { nonce: s2.nonce, code } });
+  ok(v.status === 200 && v.data.telegram_verified && v.data.telegram.username === 'prof_user' && v.data.login === '@prof_user', 'Telegram verified: ' + JSON.stringify(v.data));
+  ok((await call('POST', '/api/v1/me/telegram/start', { token: tok })).status === 409, 'cannot verify twice');
+  const ph = await call('GET', '/api/v1/me/photo', { token: tok });
+  ok(ph.status === 200 && ph.data.photo === btoa(String.fromCharCode(0xff, 0xd8, 0xff, 1, 2, 3)), 'Telegram photo comes through the Worker');
+  ok(fakes.tg.calls.some((c) => c.method === 'getFile' && c.body.file_id === 's'), 'the small photo size is used');
+  ok((await call('GET', '/api/v1/me/photo', { token: other })).data.photo === null, 'no Telegram, no photo');
+  ok((await call('POST', '/api/v1/auth/login', { json: { login: '@prof_user', password: 'password123' } })).status === 200, 'logs in with the Telegram username now');
+  ok((await call('POST', '/api/v1/auth/login', { json: { login: 'profile@example.com', password: 'password123' } })).status === 200, 'email still logs in');
+  const sl = (await call('POST', '/api/v1/auth/tg/start')).data;
+  await openLink(sl.nonce, { id: 555123, is_bot: false, username: 'Prof_User', first_name: 'Prof' });
+  const lg = await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: sl.nonce, code: lastCode() } });
+  ok(lg.status === 200 && lg.data.access_token, 'Continue with Telegram now opens the same account');
+  // sign-in link (no account) cannot be used through the link endpoint
+  const sl2 = (await call('POST', '/api/v1/auth/tg/start')).data;
+  await openLink(sl2.nonce, { id: 600600, is_bot: false, username: 'newbie', first_name: 'N' });
+  ok((await call('POST', '/api/v1/me/telegram/verify', { token: other, json: { nonce: sl2.nonce, code: lastCode() } })).status === 400, 'a sign-in code cannot link');
+
+  // backup email on a Telegram account
+  const s3 = (await call('POST', '/api/v1/auth/tg/start')).data;
+  await openLink(s3.nonce, { id: 600700, is_bot: false, username: 'gmail_fan', first_name: 'G' });
+  const v3 = await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s3.nonce, code: lastCode() } });
+  const tgTok = (await call('POST', '/api/v1/auth/tg/register', { json: { signup_token: v3.data.signup_token, password: 'gmail-pass-1' } })).data.access_token;
+  ok((await call('GET', '/api/v1/me', { token: tgTok })).data.email === '', 'no email shown before one is added');
+  ok((await call('POST', '/api/v1/me/email', { token: tgTok, json: { email: 'fan@gmail.com', password: 'nope-nope' } })).status === 400, 'email needs the password');
+  ok((await call('POST', '/api/v1/me/email', { token: tgTok, json: { email: 'not-an-email', password: 'gmail-pass-1' } })).status === 422, 'bad email rejected');
+  ok((await call('POST', '/api/v1/me/email', { token: tgTok, json: { email: 'x@telegram.local', password: 'gmail-pass-1' } })).status === 422, 'made-up Telegram address rejected');
+  ok((await call('POST', '/api/v1/me/email', { token: tgTok, json: { email: 'profile2@example.com', password: 'gmail-pass-1' } })).data.detail.code === 'email_taken', 'someone else\'s email rejected');
+  const e1 = await call('POST', '/api/v1/me/email', { token: tgTok, json: { email: ' Fan@Gmail.com ', password: 'gmail-pass-1' } });
+  ok(e1.status === 200 && e1.data.email === 'fan@gmail.com' && e1.data.login === '@gmail_fan', 'Gmail saved: ' + JSON.stringify(e1.data));
+  ok((await call('POST', '/api/v1/auth/login', { json: { login: 'fan@gmail.com', password: 'gmail-pass-1' } })).status === 200, 'logs in with the Gmail too');
+  const e2 = await call('POST', '/api/v1/me/email', { token: tgTok, json: { email: '', password: 'gmail-pass-1' } });
+  ok(e2.status === 200 && e2.data.email === '', 'Gmail removed');
+  ok((await call('POST', '/api/v1/auth/login', { json: { login: 'fan@gmail.com', password: 'gmail-pass-1' } })).status === 401, 'removed Gmail no longer logs in');
+  ok((await call('POST', '/api/v1/me/email', { token: other, json: { email: '', password: 'password123' } })).status === 422, 'an account without Telegram keeps its email');
+
+  // package history: a trial, then a purchase that stacks on it, and a gift from the admin
+  const pk0 = await call('GET', '/api/v1/me/packages', { token: tok });
+  ok(pk0.status === 200 && Array.isArray(pk0.data) && pk0.data.length === 0, 'no packages yet');
+  const plans = (await call('GET', '/api/v1/plans')).data;
+  const trialPlan = plans.find((p) => p.trial_days > 0);
+  ok((await call('POST', '/api/v1/trial', { token: tok, json: { plan_id: trialPlan.id }, headers: { 'x-device-id': 'prof-dev' } })).status === 200, 'trial started');
+  const meRow = await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind('profile@example.com').first();
+  await env.DB.prepare('UPDATE users SET wallet_balance = 5000000 WHERE id = ?').bind(meRow.id).run();
+  const monthly = plans.find((p) => p.trial_days === 0);
+  const buy = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'wallet' } });
+  ok(buy.status === 201 && buy.data.status === 'paid', 'bought with wallet');
+  const pk = (await call('GET', '/api/v1/me/packages', { token: tok })).data;
+  ok(pk.length === 2 && pk[0].source === 'order' && pk[1].source === 'trial', 'trial and purchase listed, newest first: ' + pk.map((x) => x.source).join(','));
+  ok(pk[0].current && !pk[1].current && pk[1].end_reason === 'renewed', 'the purchase is the running package');
+  ok(pk[0].purchased_at && pk[0].activated_at && pk[0].order_id === buy.data.id && pk[0].amount_toman === buy.data.amount_toman && pk[0].method === 'wallet', 'purchase has its dates, order and price');
+  ok(pk[1].purchased_at === null && pk[1].activated_at && pk[1].amount_toman === null, 'trial has an activation date only');
+  ok(pk[0].days >= monthly.duration_days && typeof pk[0].used_bytes === 'number' && pk[0].name === monthly.name, 'the stacked package keeps the trial time left: ' + pk[0].days);
+  // someone else's packages are never shown
+  ok((await call('GET', '/api/v1/me/packages', { token: other })).data.length === 0, 'only my packages');
+  delete env.TELEGRAM_BOT_USERNAME;
+}
+
 section('panel info rows dressed as configs are not servers');
 {
   const { unify, isPlaceholder } = await import('../src/panels.js');

@@ -55,6 +55,10 @@ class FakeApi extends ApiClient {
   /// No plan until a trial starts.
   bool hasPlan = true;
 
+  /// Telegram verified on this account (Profile shows VERIFY until it is).
+  bool tgVerified = false;
+  String email = 'ali@example.com';
+
   /// The trial is built, but its answer is lost on the way back.
   bool loseTrialAnswer = false;
 
@@ -118,6 +122,8 @@ class FakeApi extends ApiClient {
     'used_bytes': 41000000000,
     'used_percent': 82,
     'device_limit': 2,
+    'period_days': 30,
+    'expires_at': '2026-12-22T10:00:00Z',
   };
 
   dynamic _answer(String m, String path, Map<String, Object?>? body) {
@@ -169,12 +175,76 @@ class FakeApi extends ApiClient {
       case 'GET /me':
         return {
           'id': 1,
-          'email': 'ali@example.com',
+          'email': email,
+          'login': tgVerified ? '@ali_vpn' : email,
+          'telegram': tgVerified
+              ? {'id': '5551234', 'username': 'ali_vpn', 'name': 'Ali'}
+              : null,
           'wallet_balance': 0,
           'referral_code': 'X1',
           'trial_available': !hasPlan,
           'subscription': hasPlan ? sub : null,
         };
+      case 'GET /me/packages':
+        return [
+          {
+            'id': 3,
+            'source': 'order',
+            'current': true,
+            'name': 'Monthly test',
+            'order_id': 9,
+            'purchased_at': '2026-11-22T09:00:00Z',
+            'activated_at': '2026-11-22T09:01:00Z',
+            'expires_at': '2026-12-22T10:00:00Z',
+            'days': 30,
+            'data_limit_bytes': 53687091200,
+            'used_bytes': 13529146982,
+            'amount_toman': 189000,
+            'method': 'card',
+          },
+          {
+            'id': 2,
+            'source': 'order',
+            'current': false,
+            'name': 'Monthly test',
+            'purchased_at': '2026-10-23T18:00:00Z',
+            'activated_at': '2026-10-23T18:00:00Z',
+            'end_reason': 'renewed',
+            'days': 30,
+            'data_limit_bytes': 53687091200,
+            'amount_toman': 189000,
+          },
+          {
+            'id': 1,
+            'source': 'trial',
+            'current': false,
+            'name': 'Annual',
+            'activated_at': '2026-10-16T12:00:00Z',
+            'end_reason': 'expired',
+            'days': 7,
+            'data_limit_bytes': 5368709120,
+          },
+        ];
+      case 'GET /me/photo':
+        return {'photo': null};
+      case 'POST /me/email':
+        if (body?['password'] != 'password1') {
+          throw ApiError(400, 'wrong_password', 'The password is wrong.');
+        }
+        email = (body?['email'] as String?) ?? '';
+        return {};
+      case 'POST /me/telegram/start':
+        return {
+          'nonce': 'a' * 32,
+          'bot_url': 'https://t.me/PleatBot?start=L${'a' * 32}',
+          'app_url': '',
+        };
+      case 'POST /me/telegram/verify':
+        if (body?['code'] != '123456') {
+          throw ApiError(400, 'bad_code', 'The code is wrong or has expired.');
+        }
+        tgVerified = true;
+        return {};
       case 'GET /devices':
         return [
           {'id': 1, 'device_id': 'd' * 32, 'model': 'Pleat', 'last_seen': null},

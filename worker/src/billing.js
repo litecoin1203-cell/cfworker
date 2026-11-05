@@ -92,7 +92,7 @@ export async function provision(env, user, plan, opts = {}) {
     await run(env, "UPDATE sub_periods SET ended_at = ?, end_reason = COALESCE(end_reason, 'renewed'), final_used_bytes = COALESCE(final_used_bytes, ?) WHERE id = ?",
       now, prevUsed, sub.period_id);
   }
-  const periodId = await insert(env, 'sub_periods', { user_id: user.id, plan_id: plan.id, order_id: opts.orderId || null, started_at: now, expires_at: newExpire, limit_bytes: dataLimit });
+  const periodId = await insert(env, 'sub_periods', { user_id: user.id, plan_id: plan.id, order_id: opts.orderId || null, source: opts.source || (opts.orderId ? 'order' : null), started_at: now, expires_at: newExpire, limit_bytes: dataLimit });
   for (const r of results) {
     await run(env, 'INSERT OR REPLACE INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at) VALUES (?, ?, ?, 0, ?)', periodId, r.panel.id, r.used, now);
   }

@@ -222,7 +222,7 @@ export async function linkAccount(env, user, panel, remote) {
       final_used_bytes = (SELECT COALESCE(SUM(accounted_bytes), 0) FROM usage_counters WHERE period_id = ?) WHERE id = ? AND ended_at IS NULL`,
     now, sub.period_id, sub.period_id));
   }
-  stmts.push(st('INSERT INTO sub_periods (user_id, plan_id, started_at, expires_at, limit_bytes) VALUES (?, NULL, ?, ?, ?)', user.id, now, expire, limit));
+  stmts.push(st("INSERT INTO sub_periods (user_id, plan_id, source, started_at, expires_at, limit_bytes) VALUES (?, NULL, 'panel', ?, ?, ?)", user.id, now, expire, limit));
   // a panel account that is switched off but still has time and data is switched on again by the sync job
   if (old) {
     stmts.push(st(`UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = ?,

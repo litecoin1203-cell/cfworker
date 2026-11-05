@@ -166,32 +166,25 @@ class _Header extends StatelessWidget {
                   .push(FadeRoute(builder: (_) => const ProfileScreen())),
           label: 'Profile',
           radius: 30,
-          child: Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: PColors.navy,
-              border: Border.all(color: Colors.white, width: 3),
-              boxShadow: PShadow.soft(),
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              app.firstName.substring(0, 1),
-              style: PType.h2(color: Colors.white),
-            ),
-          ),
+          child: Avatar(app: app, nudge: true),
         ),
         const SizedBox(width: 14),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                '$hello, ${app.firstName}',
-                style: PType.h3(),
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
+              // the name opens Profile too, like the picture
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () =>
+                    Navigator.of(context)
+                        .push(FadeRoute(builder: (_) => const ProfileScreen())),
+                child: Text(
+                  '$hello, ${app.firstName}',
+                  style: PType.h3(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
               ),
               const SizedBox(height: 3),
               Row(
@@ -364,13 +357,13 @@ class _Instrument extends StatelessWidget {
       ),
       _HomeTab.route => ('0', 'exits', 'No exit to route through yet'),
       _HomeTab.stats => (
-        ((sub?.usedBytes ?? 0) / 1e9).toStringAsFixed(1),
+        ((sub?.usedBytes ?? 0) / 1073741824).toStringAsFixed(1),
         'GB',
         sub == null
             ? 'No plan yet'
             : (sub.unlimitedData
                   ? 'Used on your plan, no data cap'
-                  : 'Used of ${(sub.dataLimitBytes / 1e9).toStringAsFixed(0)} GB on your plan'),
+                  : 'Used of ${(sub.dataLimitBytes / 1073741824).toStringAsFixed(0)} GB on your plan'),
       ),
     };
 
