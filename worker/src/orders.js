@@ -276,8 +276,11 @@ export async function uploadReceipt(env, user, orderId, request) {
   const kind = sniff(buf);
   if (!kind) throw err(400, 'bad_file', 'عکس رسید را بفرست (JPG، PNG یا WEBP).');
   const ref = String(form.get('ref') || '').trim().slice(0, 64) || null;
+  // the same upload sent again (its first answer was lost on a bad line): already with the admin, don't send it twice
+  const uploadId = String(form.get('upload_id') || '').trim().slice(0, 64) || null;
+  if (uploadId && order.receipt_upload === uploadId && order.status === 'review') return json(await orderOut(env, order));
   const fileId = await sendReceipt(env, order, user, buf, `receipt_${order.id}${kind.ext}`, kind.type);
-  await run(env, "UPDATE orders SET status = 'review', receipt_ref = ?, receipt_file_id = ?, admin_note = NULL WHERE id = ? AND status NOT IN ('paid', 'settling')", ref, fileId, order.id);
+  await run(env, "UPDATE orders SET status = 'review', receipt_ref = ?, receipt_file_id = ?, receipt_upload = ?, admin_note = NULL WHERE id = ? AND status NOT IN ('paid', 'settling')", ref, fileId, uploadId, order.id);
   if (!env.TELEGRAM_CHAT_ID) await notifyAdmin(env, `رسید جدید برای سفارش #${order.id} آمد ولی TELEGRAM_CHAT_ID تنظیم نشده.`);
   return json(await orderOut(env, await first(env, 'SELECT * FROM orders WHERE id = ?', order.id)));
 }

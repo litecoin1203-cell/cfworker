@@ -218,6 +218,43 @@ class Tunnel {
     }
   }
 
+  /// Starts the bridge core (see `bridgeConfig`); false when it didn't
+  /// start or this build has no core.
+  Future<bool> bridgeStart(String config) async {
+    try {
+      return await _method.invokeMethod<bool>('bridgeStart', {
+            'config': config,
+          }) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  Future<void> bridgeStop() async {
+    try {
+      await _method.invokeMethod<bool>('bridgeStop');
+    } on MissingPluginException {
+      // No core, no bridge.
+    } on PlatformException {
+      // Same.
+    }
+  }
+
+  /// The app's private files folder (kept until the app is removed); null
+  /// off Android.
+  Future<String?> filesDir() async {
+    try {
+      return await _method.invokeMethod<String>('filesDir');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
   void Function(TunnelState)? _onState;
 
   /// Hands every state change to [onState]. The platform stream is opened

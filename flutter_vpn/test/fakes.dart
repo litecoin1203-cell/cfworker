@@ -243,12 +243,45 @@ class FakeApi extends ApiClient {
   }
 
   @override
-  Future<dynamic> get(String path) async => _answer('GET', path, null);
+  Future<dynamic> get(String path, {bool bridge = true}) async =>
+      _answer('GET', path, null);
   @override
   Future<dynamic> post(String path, [Map<String, Object?>? body]) async =>
       _answer('POST', path, body);
   @override
   Future<dynamic> delete(String path) async => _answer('DELETE', path, null);
+
+  /// The Worker can't be reached for uploads.
+  bool uploadOffline = false;
+  final uploads = <Map<String, String>>[];
+
+  @override
+  Future<dynamic> upload(
+    String path,
+    Map<String, String> fields, {
+    required List<int> file,
+    required String filename,
+  }) async {
+    if (uploadOffline) {
+      throw ApiError(0, 'offline', 'Can’t reach the server.');
+    }
+    uploads.add({'path': path, ...fields, 'bytes': '${file.length}'});
+    return {...order('card'), 'status': 'review'};
+  }
+}
+
+/// A tunnel whose bridge only records what it was asked.
+class BridgeTunnel extends FakeTunnel {
+  final bridged = <String>[];
+  int stops = 0;
+  @override
+  Future<bool> bridgeStart(String config) async {
+    bridged.add(config);
+    return true;
+  }
+
+  @override
+  Future<void> bridgeStop() async => stops++;
 }
 
 /// A platform tunnel the test drives by hand.

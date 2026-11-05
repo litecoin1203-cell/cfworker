@@ -37,17 +37,36 @@ class TokenStore {
 
   String? access, refresh, deviceId;
 
+  /// User and password ("user:pass", hex) of the local API proxy the
+  /// tunnel and the bridge open for the app; made once per install and
+  /// kept, because Android's always-on start reuses the last config.
+  String? proxyLogin;
+
+  static String _hex(int bytes) {
+    final r = Random.secure();
+    return List.generate(
+      bytes,
+      (_) => r.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
+  }
+
   Future<void> load() async {
     access = await _s.read(key: 'access');
     refresh = await _s.read(key: 'refresh');
     deviceId = await _s.read(key: 'device');
     if (deviceId == null) {
-      final r = Random.secure();
-      deviceId = List.generate(
-        16,
-        (_) => r.nextInt(256).toRadixString(16).padLeft(2, '0'),
-      ).join();
+      deviceId = _hex(16);
       await _s.write(key: 'device', value: deviceId);
+    }
+    try {
+      proxyLogin = await _s.read(key: 'proxy');
+      if (proxyLogin == null) {
+        proxyLogin = '${_hex(8)}:${_hex(16)}';
+        await _s.write(key: 'proxy', value: proxyLogin);
+      }
+    } catch (_) {
+      // Without the Keystore this launch gets one of its own.
+      proxyLogin ??= '${_hex(8)}:${_hex(16)}';
     }
   }
 
@@ -109,14 +128,55 @@ class TokenStore {
   bool get signedIn => access != null && refresh != null;
 }
 
+/// The other ways to the Worker than the open line, given by the app:
+/// the tunnel's own API port while the tunnel is up, and the bridge (a core
+/// started only for the app's calls) while it is off.
+///
+/// A proxy is given as `user:pass@127.0.0.1:port`.
+abstract class Detours {
+  /// The tunnel's API proxy while the tunnel is up, else null.
+  String? get tunnel;
+
+  /// The bridge's proxy while the bridge runs, else null.
+  String? get bridge;
+
+  /// Starts the bridge on the exits it knows, one after another, until
+  /// [works] says the Worker answers through it; its proxy, or null when
+  /// none did. Only the Worker's own [hosts] may cross the bridge.
+  Future<String?> openBridge(
+    List<String> hosts,
+    Future<bool> Function(String proxy) works,
+  );
+
+  /// The bridge carried a call: keep it up a little longer.
+  void used();
+}
+
+/// One way to the Worker: an address, straight or through a local proxy.
+class _Way {
+  const _Way(this.base, [this.proxy]);
+  final String base;
+  final String? proxy;
+  String get key => '$base|${proxy ?? ''}';
+}
+
+List<String> _parseBases(String bases) => bases
+    .split(',')
+    .map((b) => b.trim().replaceAll(RegExp(r'/+$'), ''))
+    .where((b) => b.startsWith('https://') || b.startsWith('http://'))
+    .toList();
+
 /// The one HTTP client for the Cloud Gold Worker.
+///
+/// In Iran the open line may not reach the Worker at all, or only one of
+/// its addresses. So each call goes the way that answered last; when
+/// that way stops answering, every way is asked at once (`/health`, a
+/// few milliseconds apart in order of preference) and the first to answer
+/// is used: the tunnel's own port while connected, every address on the
+/// open line, then the bridge.
 class ApiClient {
   ApiClient(this.tokens, {String bases = apiBases, HttpClient? http})
-    : _bases = bases
-          .split(',')
-          .map((b) => b.trim().replaceAll(RegExp(r'/+$'), ''))
-          .where((b) => b.startsWith('https://') || b.startsWith('http://'))
-          .toList(),
+    : _bases = _parseBases(bases),
       _http = http ?? (HttpClient()..connectionTimeout = _connect);
 
   /// Connecting must be quick so the next address is tried soon; an answer
@@ -130,12 +190,46 @@ class ApiClient {
 
   /// Contract version, not Pleat's own: 1.9 tells the Worker this client
   /// never wants a raw subscription address (see `centralApp`).
-  static const appVersion = '1.9.0 (Pleat 1.2.11)';
+  static const appVersion = '1.9.0 (Pleat 1.2.12)';
 
   final TokenStore tokens;
   final List<String> _bases;
   final HttpClient _http;
+  final Map<String, HttpClient> _proxied = {};
   int _base = 0;
+
+  /// The tunnel and the bridge, set by the app; null in tests and before
+  /// the app is up.
+  Detours? detours;
+
+  /// The way that answered last, and when. Kept while it keeps answering.
+  _Way? _good;
+  DateTime? _goodAt;
+  static const _goodFor = Duration(minutes: 10);
+
+  /// How long `/health` may take on one way before another wins.
+  static const _probeTimeout = Duration(seconds: 8);
+
+  /// Head start each way gets over the next one in the race, so the
+  /// preferred way wins a tie.
+  static const _stagger = Duration(milliseconds: 300);
+
+  /// Every Worker address this client knows, build ones first.
+  List<String> get bases => List.unmodifiable(_bases);
+
+  /// The host names of [bases], the only ones the bridge lets through.
+  List<String> get hosts =>
+      {for (final b in _bases) Uri.parse(b).host}
+          .where((h) => h.isNotEmpty)
+          .toList();
+
+  /// Adds addresses the Worker named (app-config `api_bases`) after the
+  /// build's own; a new domain then works without a new APK.
+  void learnBases(Iterable<String> extra) {
+    for (final b in _parseBases(extra.join(','))) {
+      if (!_bases.contains(b)) _bases.add(b);
+    }
+  }
 
   /// "Maker Model" of this phone and its Android version ("14"), set once
   /// at launch. The Worker passes them to the panel with the HWID; they
@@ -168,7 +262,10 @@ class ApiClient {
     'x-app-version': appVersion,
   };
 
-  Future<dynamic> get(String path) => _send('GET', path);
+  /// [bridge]: false when starting the bridge isn't worth the wait (the
+  /// connect button's plan check: the tunnel itself is about to start).
+  Future<dynamic> get(String path, {bool bridge = true}) =>
+      _send('GET', path, bridge: bridge);
   Future<dynamic> post(String path, [Map<String, Object?>? body]) =>
       _send('POST', path, body: body ?? const {});
   Future<dynamic> delete(String path) => _send('DELETE', path);
@@ -209,6 +306,7 @@ class ApiClient {
     Map<String, Object?>? body,
     (List<int>, String)? raw,
     bool retried = false,
+    bool bridge = true,
   }) async {
     if (!configured) {
       throw ApiError(
@@ -218,9 +316,23 @@ class ApiClient {
       );
     }
     final authed = !path.startsWith('/auth/') && tokens.access != null;
-    final (status, data) = await _roundTrip(method, path, body, authed, raw);
+    final (status, data) = await _roundTrip(
+      method,
+      path,
+      body,
+      authed,
+      raw,
+      bridge,
+    );
     if (status == 401 && authed && !retried && await _refresh()) {
-      return _send(method, path, body: body, raw: raw, retried: true);
+      return _send(
+        method,
+        path,
+        body: body,
+        raw: raw,
+        retried: true,
+        bridge: bridge,
+      );
     }
     if (status >= 400) {
       final err = _error(status, data);
@@ -251,31 +363,49 @@ class ApiClient {
     }
   }
 
+  /// Calls on `/net/` say which network the phone is on (the Worker reads
+  /// the carrier from the address it sees), so they never take the tunnel
+  /// or the bridge: through an exit the Worker would see the exit's
+  /// network instead.
+  static bool _openLineOnly(String path) => path.startsWith('/net/');
+
   Future<(int, dynamic)> _roundTrip(
     String method,
     String path,
     Map<String, Object?>? body,
     bool authed, [
     (List<int>, String)? raw,
+    bool bridge = true,
   ]) async {
     Object? lastError;
+    final direct = _openLineOnly(path);
     // A GET is safe to send twice: a dropped or reset connection gets one
-    // fresh try per address, as OkHttp does for the Cloud Gold app. A POST is never repeated, so an order or a
-    // trial can't happen twice.
-    final attempts = method == 'GET' ? 2 : 1;
-    for (var tries = 0; tries < _bases.length; tries++) {
-      final base = _bases[(_base + tries) % _bases.length];
-      for (var a = 0; a < attempts; a++) {
+    // fresh try, then (when there is another way) one on a newly picked
+    // way. A POST is never repeated, so an order or a trial can't happen
+    // twice.
+    final isGet = method == 'GET';
+    for (var round = 0; round < (isGet ? 2 : 1); round++) {
+      final ways = _ways(direct: direct);
+      final _Way way;
+      try {
+        way = await _pick(ways, direct: direct, bridge: bridge);
+      } on ApiError {
+        if (lastError == null) rethrow;
+        break;
+      }
+      final client = _client(way.proxy);
+      for (var a = 0; a < (isGet ? 2 : 1); a++) {
         final started = DateTime.now();
         try {
           final (status, text) = await _exchange(
+            client,
             method,
-            Uri.parse('$base/api/v1$path'),
+            Uri.parse('${way.base}/api/v1$path'),
             body,
             authed,
             raw,
           );
-          _base = (_base + tries) % _bases.length;
+          _keep(way);
           trace?.call(method, path, status);
           timing?.call(
             method,
@@ -307,27 +437,162 @@ class ApiClient {
         }
         timing?.call(method, path, 0, DateTime.now().difference(started));
       }
+      // This way failed: the next call races every way again.
+      if (_good?.key == way.key) _good = null;
+      if (ways.length <= 1 && detours == null) break;
     }
-    throw ApiError(
-      0,
-      switch (lastError) {
-        TimeoutException() => 'timeout',
-        HandshakeException() => 'tls',
-        _ => 'offline',
-      },
-      switch (lastError) {
-        TimeoutException() =>
-          'The server didn’t answer in time. Try again in a moment.',
-        HandshakeException() => 'The server’s certificate was not trusted.',
-        _ => 'Can’t reach the server. Check the connection and try again.',
-      },
-    );
+    throw _offline(lastError);
+  }
+
+  static ApiError _offline(Object? lastError) => ApiError(
+    0,
+    switch (lastError) {
+      TimeoutException() => 'timeout',
+      HandshakeException() => 'tls',
+      _ => 'offline',
+    },
+    switch (lastError) {
+      TimeoutException() =>
+        'The server didn’t answer in time. Try again in a moment.',
+      HandshakeException() => 'The server’s certificate was not trusted.',
+      _ => 'Can’t reach the server. Check the connection and try again.',
+    },
+  );
+
+  void _keep(_Way way) {
+    _good = way;
+    _goodAt = DateTime.now();
+    final i = _bases.indexOf(way.base);
+    if (i >= 0) _base = i;
+    if (way.proxy != null && way.proxy == detours?.bridge) detours?.used();
+  }
+
+  /// Every way in order of preference: the tunnel's port (it already
+  /// crossed an exit), the open line, then a running bridge. Each starts
+  /// from the address that answered last.
+  List<_Way> _ways({required bool direct}) {
+    final order = [
+      for (var i = 0; i < _bases.length; i++)
+        _bases[(_base + i) % _bases.length],
+    ];
+    final tunnel = direct ? null : detours?.tunnel;
+    final bridge = direct ? null : detours?.bridge;
+    return [
+      if (tunnel != null)
+        for (final b in order) _Way(b, tunnel),
+      for (final b in order) _Way(b),
+      if (bridge != null)
+        for (final b in order) _Way(b, bridge),
+    ];
+  }
+
+  /// The way to use now: the last good one while it is fresh and still on
+  /// offer, otherwise the first to answer `/health`. When nothing answers
+  /// and there's no tunnel, the bridge is started and asked too.
+  Future<_Way> _pick(
+    List<_Way> ways, {
+    required bool direct,
+    bool bridge = true,
+  }) async {
+    final good = _good;
+    if (good != null &&
+        _goodAt != null &&
+        DateTime.now().difference(_goodAt!) < _goodFor &&
+        ways.any((w) => w.key == good.key)) {
+      // A tunnel that came up since is preferred over the open line.
+      if (good.proxy != null || ways.first.proxy == null) return good;
+    }
+    // One way and nothing else to try: no need to ask first.
+    if (ways.length == 1 && (direct || detours == null)) return ways.first;
+    // The calls of a screen go out together; they share one race.
+    final key = '$direct|$bridge|${ways.map((w) => w.key).join(',')}';
+    final running = _picking[key];
+    if (running != null) return running;
+    final next = _pickNow(ways, direct: direct, bridge: bridge);
+    _picking[key] = next;
+    try {
+      return await next;
+    } finally {
+      _picking.remove(key);
+    }
+  }
+
+  final Map<String, Future<_Way>> _picking = {};
+
+  Future<_Way> _pickNow(
+    List<_Way> ways, {
+    required bool direct,
+    required bool bridge,
+  }) async {
+    final (way, error) = await _race(ways);
+    if (way != null) return way;
+    final d = detours;
+    if (bridge && !direct && d != null && d.tunnel == null) {
+      _Way? found;
+      final proxy = await d.openBridge(hosts, (proxy) async {
+        final (w, _) = await _race([for (final b in _bases) _Way(b, proxy)]);
+        found = w;
+        return w != null;
+      });
+      if (proxy != null && found != null) return found!;
+    }
+    throw _offline(error);
+  }
+
+  /// Asks `/health` on every way, the later ones a little later; the
+  /// first to answer 200 wins and the rest are dropped.
+  Future<(_Way?, Object?)> _race(List<_Way> ways) async {
+    if (ways.isEmpty) return (null, null);
+    final done = Completer<(_Way?, Object?)>();
+    var left = ways.length;
+    Object? lastError;
+    final requests = <HttpClientRequest>[];
+    for (var i = 0; i < ways.length; i++) {
+      final way = ways[i];
+      () async {
+        await Future<void>.delayed(_stagger * i);
+        if (done.isCompleted) return;
+        HttpClientRequest? req;
+        try {
+          final ok = await () async {
+            req = await _client(way.proxy)
+                .openUrl('GET', Uri.parse('${way.base}/health'));
+            requests.add(req!);
+            req!.persistentConnection = false;
+            final res = await req!.close();
+            await res.drain<void>();
+            return res.statusCode == 200;
+          }().timeout(_probeTimeout);
+          if (ok && !done.isCompleted) done.complete((way, null));
+        } catch (e) {
+          lastError = e is TimeoutException ? e : (lastError ?? e);
+          req?.abort();
+        } finally {
+          left--;
+          if (left == 0 && !done.isCompleted) done.complete((null, lastError));
+        }
+      }();
+    }
+    final result = await done.future;
+    for (final r in requests) {
+      r.abort();
+    }
+    if (result.$1 != null) _keep(result.$1!);
+    return result;
+  }
+
+  HttpClient _client(String? proxy) {
+    if (proxy == null) return _http;
+    return _proxied[proxy] ??= HttpClient()
+      ..connectionTimeout = _connect
+      ..findProxy = (_) => 'PROXY $proxy';
   }
 
   /// One request on its own connection, with one deadline for all of it.
   /// On the deadline the request is aborted, so no half-dead connection is
   /// left behind or reused.
   Future<(int, String)> _exchange(
+    HttpClient client,
     String method,
     Uri url,
     Map<String, Object?>? body,
@@ -337,7 +602,7 @@ class ApiClient {
     HttpClientRequest? req;
     try {
       return await () async {
-        req = await _http.openUrl(method, url);
+        req = await client.openUrl(method, url);
         final r = req!;
         r.persistentConnection = false;
         _deviceHeaders.forEach(r.headers.set);

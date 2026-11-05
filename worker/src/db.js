@@ -23,6 +23,12 @@ export const SETTING_DEFAULTS = {
   support_url: '',
   min_topup_toman: '50000',
   announcement: '',
+  // the app's extra Worker addresses (https://..., space or comma separated): a new domain reaches every installed
+  // app on its next launch, no new APK needed
+  app_api_bases: '',
+  // share links (vless://... etc.) the app may use as a "bridge" to reach the Worker when the open line can't,
+  // for a phone with no plan yet; only the Worker's own addresses can cross it (enforced in the app)
+  app_bridges: '',
   trial_data_gb: '0',
   // Cloud Gold Pay: dollar price in toman + your own wallet address per coin (empty = coin hidden)
   usd_rate_toman: '0',

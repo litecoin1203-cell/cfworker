@@ -1,5 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -7,6 +9,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/client.dart';
 import '../api/models.dart';
+import 'bridge.dart';
 import 'diagnose.dart';
 import 'exits.dart';
 import 'net_cache.dart';
@@ -47,6 +50,22 @@ class Session {
   );
 }
 
+/// A card receipt kept on the phone until the Worker can be reached.
+class PendingReceipt {
+  PendingReceipt(this.order, this.ref, this.id, this.path);
+  final int order;
+  final String ref, id, path;
+
+  Map<String, Object> toJson() => {'o': order, 'r': ref, 'i': id, 'p': path};
+
+  static PendingReceipt fromJson(Map<String, dynamic> j) => PendingReceipt(
+    j['o'] as int,
+    j['r'] as String,
+    j['i'] as String,
+    j['p'] as String,
+  );
+}
+
 /// A value fetched from the backend, with its loading and error state.
 class Remote<T> {
   T? value;
@@ -69,8 +88,54 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   AppState(this._prefs, this.api, {Tunnel? tunnel})
     : tunnel = tunnel ?? Tunnel() {
     _load();
+    _loadReceipts();
+    _armReceipts();
     api.onSignedOut = _forgetAccount;
+    final login = api.tokens.proxyLogin?.split(':');
+    if (login != null && login.length == 2) {
+      api.detours = _detours = AppDetours(
+        native: this.tunnel,
+        login: (user: login[0], pass: login[1]),
+        tunnelUp: () => phase == Phase.protected,
+        candidates: _bridgeLinks,
+      );
+    }
     WidgetsBinding.instance.addObserver(this);
+  }
+
+  /// The tunnel's API port and the bridge; null where the install has no
+  /// proxy login (tests).
+  AppDetours? _detours;
+
+  /// The bridge is carrying the app's calls right now.
+  bool get bridging => _detours?.bridging ?? false;
+
+  /// Bridge links the Worker named (app-config `bridges`), kept for the
+  /// next launch, when the Worker may not be reachable at all.
+  List<String> _edgeBridges = const [];
+
+  /// What the bridge tries, best first: this account's own exits that
+  /// answer here (they already work on this line), then the store's
+  /// bridge links (for a phone with no account yet).
+  List<String> _bridgeLinks() => [
+    for (final e in ranked.where((e) => !e.unreachable).take(3)) e.server.link,
+    ..._edgeBridges,
+    ...splitLinks(buildBridges),
+  ];
+
+  /// Takes the Worker's extra addresses and bridge links from app-config,
+  /// and keeps them for the next launch.
+  void _learnEdge(Map<dynamic, dynamic> c, {bool save = true}) {
+    List<String> strs(Object? v) => [
+      for (final x in (v as List?) ?? const []) '$x',
+    ];
+    final bases = strs(c['api_bases']);
+    final bridges = strs(c['bridges']).where((l) => l.contains('://'));
+    api.learnBases(bases);
+    _edgeBridges = bridges.toList();
+    if (save) {
+      api.tokens.cache('edge', {'api_bases': bases, 'bridges': _edgeBridges});
+    }
   }
 
   /// Back from Android's VPN page or from the background: read what may
@@ -86,6 +151,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (s != AppLifecycleState.resumed) return;
     _foreground = true;
+    flushReceipts();
     if (phase == Phase.protected) {
       readGuard();
       // Back on screen: check the exit now instead of when the next,
@@ -304,6 +370,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
+    final edge = read(await t.cached('edge'), (v) => v as Map);
+    if (edge != null) _learnEdge(edge, save: false);
     plans.value ??= read(await t.cached('plans'), _plansFrom);
     if (signedIn) {
       me.value ??= read(await t.cached('me'), _meFrom);
@@ -358,7 +426,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     });
     try {
       final c = await api.get('/app-config');
-      if (c is Map) config = AppConfig.fromJson(c.cast<String, dynamic>());
+      if (c is Map) {
+        config = AppConfig.fromJson(c.cast<String, dynamic>());
+        _learnEdge(c);
+      }
       notifyListeners();
     } on ApiError {
       // Notices fall back to what /me says.
@@ -579,6 +650,17 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   void _forgetAccount() {
     _stopTimers();
+    // Receipts belong to the account that signed out.
+    for (final r in _pendingReceipts.values) {
+      try {
+        File(r.path).deleteSync();
+      } catch (_) {
+        // Already gone.
+      }
+    }
+    _pendingReceipts = {};
+    _saveReceipts();
+    _armReceipts();
     me.value = null;
     servers.value = null;
     devices.value = null;
@@ -705,15 +787,136 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     ((await api.post('/orders/${o.id}/cancel')) as Map).cast<String, dynamic>(),
   );
 
-  Future<Order> sendReceipt(Order o, List<int> photo, String ref) async =>
-      Order.fromJson(
-        ((await api.upload(
-          '/orders/${o.id}/receipt',
-          {'ref': ref},
-          file: photo,
-          filename: 'receipt.jpg',
-        )) as Map).cast<String, dynamic>(),
-      );
+  /// Sends the card receipt. Null when the Worker can't be reached: the
+  /// photo is then kept on the phone and sent by itself once the line is
+  /// back (see [flushReceipts]). Every try carries the same upload id, so
+  /// a try that did arrive (its answer lost on the way) isn't sent to the
+  /// admin twice.
+  Future<Order?> sendReceipt(Order o, List<int> photo, String ref) async {
+    final id = _uploadId();
+    try {
+      return await _upload(o.id, photo, ref, id);
+    } on ApiError catch (e) {
+      if (e.status != 0) rethrow;
+      await _queueReceipt(o.id, photo, ref, id);
+      return null;
+    }
+  }
+
+  Future<Order> _upload(
+    int order,
+    List<int> photo,
+    String ref,
+    String id,
+  ) async => Order.fromJson(
+    ((await api.upload(
+      '/orders/$order/receipt',
+      {'ref': ref, 'upload_id': id},
+      file: photo,
+      filename: 'receipt.jpg',
+    )) as Map).cast<String, dynamic>(),
+  );
+
+  static String _uploadId() {
+    final r = Random.secure();
+    return List.generate(
+      12,
+      (_) => r.nextInt(256).toRadixString(16).padLeft(2, '0'),
+    ).join();
+  }
+
+  /// Receipts waiting for the line, by order id.
+  Map<int, PendingReceipt> get pendingReceipts =>
+      Map.unmodifiable(_pendingReceipts);
+  Map<int, PendingReceipt> _pendingReceipts = {};
+  Timer? _receiptTimer;
+  bool _flushing = false;
+
+  /// How often a waiting receipt is tried again while the app is open.
+  static const receiptRetry = Duration(seconds: 45);
+
+  Future<String> _receiptDir() async {
+    final base = await tunnel.filesDir() ?? Directory.systemTemp.path;
+    final dir = Directory('$base/receipts');
+    await dir.create(recursive: true);
+    return dir.path;
+  }
+
+  Future<void> _queueReceipt(
+    int order,
+    List<int> photo,
+    String ref,
+    String id,
+  ) async {
+    final path = '${await _receiptDir()}/$order.jpg';
+    await File(path).writeAsBytes(photo, flush: true);
+    _pendingReceipts[order] = PendingReceipt(order, ref, id, path);
+    _saveReceipts();
+    _armReceipts();
+    notifyListeners();
+  }
+
+  void _saveReceipts() => _prefs.setStringList('receipts', [
+    for (final r in _pendingReceipts.values) jsonEncode(r.toJson()),
+  ]);
+
+  void _loadReceipts() {
+    final list = _prefs.getStringList('receipts') ?? const [];
+    _pendingReceipts = {};
+    for (final raw in list) {
+      try {
+        final r = PendingReceipt.fromJson(
+          (jsonDecode(raw) as Map).cast<String, dynamic>(),
+        );
+        _pendingReceipts[r.order] = r;
+      } catch (_) {
+        // A record that no longer parses is dropped.
+      }
+    }
+  }
+
+  void _armReceipts() {
+    if (_pendingReceipts.isEmpty) {
+      _receiptTimer?.cancel();
+      _receiptTimer = null;
+      return;
+    }
+    _receiptTimer ??= Timer.periodic(receiptRetry, (_) {
+      if (_foreground) flushReceipts();
+    });
+  }
+
+  /// Sends every waiting receipt. Called on a timer, when the app comes
+  /// back on screen and when the tunnel comes up. A receipt the Worker
+  /// refuses for good (the order was paid or cancelled meanwhile) is
+  /// dropped; one it can't be reached for stays.
+  Future<void> flushReceipts() async {
+    if (_flushing || _pendingReceipts.isEmpty || !signedIn) return;
+    _flushing = true;
+    try {
+      for (final r in _pendingReceipts.values.toList()) {
+        try {
+          final file = File(r.path);
+          if (await file.exists()) {
+            await _upload(r.order, await file.readAsBytes(), r.ref, r.id);
+          }
+        } on ApiError catch (e) {
+          if (e.status == 0) break; // Still no line; next time.
+        }
+        _pendingReceipts.remove(r.order);
+        try {
+          await File(r.path).delete();
+        } catch (_) {
+          // Already gone.
+        }
+        _saveReceipts();
+        notifyListeners();
+      }
+    } finally {
+      _flushing = false;
+      _armReceipts();
+    }
+  }
 
   /// "I have paid" for a coin order, with the transaction hash if given.
   Future<Order> coinPaid(Order o, String txid) async => Order.fromJson(
@@ -1211,7 +1414,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       final list = servers.ready ? null : loadServers();
       if (!failover) {
         try {
-          final v = await api.get('/vpn');
+          final v = await api.get('/vpn', bridge: false);
           if (stale()) return;
           final sub = v is Map && v['subscription'] is Map
               ? Subscription.fromJson(
@@ -1264,6 +1467,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         config = xrayConfig(
           target.server.link,
           localDirect: localDirect && geoAvailable,
+          api: _detours?.login,
         );
       } on FormatException {
         if (smartConnect && _failover()) return;
@@ -1355,6 +1559,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (s != TunnelState.starting) _handshake?.cancel();
     if (s == TunnelState.up && phase == Phase.handshaking) {
       phase = Phase.protected;
+      // The tunnel's own port carries the app's calls from now on.
+      _detours?.close();
+      flushReceipts();
       connectedAt = DateTime.now();
       _misses = 0;
       _reported = false;

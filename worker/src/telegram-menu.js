@@ -166,6 +166,7 @@ const KEY_FA = {
   announcement: 'اطلاعیه‌ی اپ', trial_data_gb: 'حجم تست رایگان (0 = مثل پلن)', usd_rate_toman: 'قیمت دستی دلار (0 = خودکار)',
   coin_minutes: 'مهلت پرداخت ارز (دقیقه)', card_unique: 'مبلغ یکتا (1 روشن، 0 خاموش)', card_auto: 'تأیید پیامکی کارت',
   sms_senders: 'فرستنده‌های بانکی', sms_key: 'کلید آدرس پیامک', coin_auto: 'تأیید ارز دیجیتال',
+  app_api_bases: 'دامنه‌های اضافه‌ی اپ (ضد فیلتر)', app_bridges: 'لینک‌های پل اپ (ضد فیلتر)',
 };
 
 async function settings(env, wallets) {
