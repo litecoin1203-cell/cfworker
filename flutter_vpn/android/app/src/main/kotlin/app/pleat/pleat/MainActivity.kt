@@ -21,6 +21,7 @@ class MainActivity : FlutterActivity() {
     private companion object {
         const val ASK_VPN = 41
         const val PICK_IMAGE = 42
+        const val ASK_NOTES = 43
         // Read whole (a phone photo can be over 8 MB), then made small by shrink().
         const val MAX_IMAGE = 25 * 1024 * 1024
     }
@@ -34,6 +35,10 @@ class MainActivity : FlutterActivity() {
     private val speeds = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
 
+    /** A screen the notification asked for, until the app reads it. */
+    private var pendingOpen: String? = null
+    private var tunnelChannel: MethodChannel? = null
+
     private var pendingConfig: String? = null
     private var pendingResult: MethodChannel.Result? = null
 
@@ -41,12 +46,30 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(engine)
         EventChannel(engine.dartExecutor.binaryMessenger, "pleat/tunnel/state")
             .setStreamHandler(TunnelHub.stream)
-        MethodChannel(engine.dartExecutor.binaryMessenger, "pleat/tunnel")
+        pendingOpen = pendingOpen ?: intent?.getStringExtra(TunnelNote.EXTRA_OPEN)
+        val channel = MethodChannel(engine.dartExecutor.binaryMessenger, "pleat/tunnel")
+        tunnelChannel = channel
+        channel
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "available" -> result.success(engineLoads())
                     "engineError" -> result.success(engineError())
                     "state" -> result.success(TunnelHub.state)
+                    "note" -> {
+                        TunnelNote.info = TunnelNote.Info(
+                            flag = call.argument<String>("flag").orEmpty(),
+                            place = call.argument<String>("place").orEmpty(),
+                            ip = call.argument<String>("ip").orEmpty(),
+                            protocol = call.argument<String>("protocol").orEmpty(),
+                            since = call.argument<Number>("since")?.toLong() ?: 0L,
+                        )
+                        PleatVpnService.noteChanged()
+                        result.success(null)
+                    }
+                    "pendingOpen" -> {
+                        result.success(pendingOpen)
+                        pendingOpen = null
+                    }
                     "start" -> {
                         val config = call.argument<String>("config")
                         if (config == null) {
@@ -288,7 +311,34 @@ class MainActivity : FlutterActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val target = intent.getStringExtra(TunnelNote.EXTRA_OPEN) ?: return
+        val channel = tunnelChannel
+        if (channel == null) {
+            pendingOpen = target
+        } else {
+            channel.invokeMethod("open", target)
+        }
+    }
+
+    /**
+     * Android 13+ hides a service's notification until this is allowed, and
+     * the card carries the Disconnect button. Asked once, on the first connect.
+     */
+    private fun askNotes() {
+        if (Build.VERSION.SDK_INT < 33) return
+        if (checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) return
+        val prefs = getSharedPreferences("pleat_native", MODE_PRIVATE)
+        if (prefs.getBoolean("asked_notes", false)) return
+        prefs.edit().putBoolean("asked_notes", true).apply()
+        requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), ASK_NOTES)
+    }
+
     private fun launch(config: String) {
+        askNotes()
         startService(
             Intent(this, PleatVpnService::class.java)
                 .setAction(PleatVpnService.ACTION_START)

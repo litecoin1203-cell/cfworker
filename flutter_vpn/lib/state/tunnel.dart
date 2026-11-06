@@ -2,7 +2,8 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
-enum TunnelState { down, starting, up, failed }
+/// [off]: the person tapped Disconnect on the notification. Not a drop.
+enum TunnelState { down, starting, up, failed, off }
 
 /// The platform tunnel behind `pleat/tunnel`. On Android it is
 /// `PleatVpnService`: the Xray core plus hev-socks5-tunnel on a VpnService.
@@ -30,6 +31,49 @@ class Tunnel {
   /// when the person refuses it.
   Future<void> start(String config) =>
       _method.invokeMethod<void>('start', {'config': config});
+
+  /// What the VPN notification shows about the exit in use. English only.
+  /// Cheap: the card is redrawn once per call, and the timer on it is
+  /// counted by Android itself.
+  Future<void> note({
+    required String flag,
+    required String place,
+    String ip = '',
+    String protocol = '',
+    DateTime? since,
+  }) async {
+    try {
+      await _method.invokeMethod<void>('note', {
+        'flag': flag,
+        'place': place,
+        'ip': ip,
+        'protocol': protocol,
+        'since': since?.millisecondsSinceEpoch ?? 0,
+      });
+    } on MissingPluginException {
+      // No native side (tests, desktop).
+    } on PlatformException {
+      // An older native side; the card keeps its last text.
+    }
+  }
+
+  /// [onOpen] gets the screen a notification button asked for
+  /// ("locations"), now or when the app was opened by it.
+  Future<void> watchOpen(void Function(String) onOpen) async {
+    try {
+      _method.setMethodCallHandler((call) async {
+        if (call.method == 'open' && call.arguments is String) {
+          onOpen(call.arguments as String);
+        }
+      });
+      final first = await _method.invokeMethod<String>('pendingOpen');
+      if (first != null) onOpen(first);
+    } on MissingPluginException {
+      // No native side.
+    } on PlatformException {
+      // An older native side.
+    }
+  }
 
   Future<void> stop() async {
     if (await available()) await _method.invokeMethod<void>('stop');
@@ -291,6 +335,7 @@ class Tunnel {
     'up' => TunnelState.up,
     'starting' => TunnelState.starting,
     'failed' => TunnelState.failed,
+    'off' => TunnelState.off,
     _ => TunnelState.down,
   };
 

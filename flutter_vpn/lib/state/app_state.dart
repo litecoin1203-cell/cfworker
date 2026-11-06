@@ -8,6 +8,7 @@ import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api/client.dart';
+import '../api/countries.dart';
 import '../api/models.dart';
 import 'bridge.dart';
 import 'diagnose.dart';
@@ -234,6 +235,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         final a = ExitAddress.from(r);
         if (a != null) {
           exitAddress = a;
+          _pushNote();
           notifyListeners();
           return;
         }
@@ -1712,6 +1714,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         tunnel.stop();
         _fail('The exit didn’t answer. Try another one.');
       });
+      _pushNote(target);
       await tunnel.start(config);
     } on ApiError catch (e) {
       if (!stale()) _fail(e.message);
@@ -1789,6 +1792,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       flushReceipts();
       connectedAt = DateTime.now();
       exitAddress = null;
+      _pushNote();
       unawaited(loadExitAddress());
       _misses = 0;
       _reported = false;
@@ -1798,6 +1802,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _pulse?.cancel();
       _beat();
       readGuard();
+      notifyListeners();
+    } else if (s == TunnelState.off &&
+        (phase == Phase.protected || phase == Phase.handshaking)) {
+      // Disconnect on the notification: the person's own stop, as the
+      // Home control's, so no "dropped" and no failover.
+      _attempt++;
+      if (phase == Phase.protected) _logSession();
+      _stopTimers();
+      phase = Phase.idle;
+      connectedAt = null;
+      tunnelMessage = null;
+      _save();
       notifyListeners();
     } else if (s == TunnelState.down && phase == Phase.protected) {
       _logSession();
@@ -1954,8 +1970,33 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (d.hwid.length == 32) await api.tokens.useDeviceId(d.hwid);
   }
 
+  /// What the VPN notification says about the exit: the same place and IP
+  /// as Home's "Now", once the Worker told them; until then the exit's own
+  /// country. Sent on a change only, never on a timer.
+  /// [connecting]: the exit being tried, before anything is known of it.
+  void _pushNote([Exit? connecting]) {
+    final e = connecting ?? exit;
+    if (e == null) return;
+    final a = connecting == null ? exitAddress : null;
+    unawaited(
+      tunnel.note(
+        flag: a != null && a.cc.isNotEmpty ? flagOf(a.cc) : e.flag,
+        place: a != null && a.place.isNotEmpty ? a.place : e.title,
+        ip: a?.ip ?? '',
+        protocol: e.protocol,
+        since: connectedAt,
+      ),
+    );
+  }
+
   /// On launch: a tunnel started earlier may still be running.
   Future<void> resumeTunnel() async {
+    // "Change location" on the notification opens Locations.
+    unawaited(
+      tunnel.watchOpen((screen) {
+        if (screen == 'locations') setTab(2);
+      }),
+    );
     tunnelAvailable = await tunnel.available();
     if (tunnelAvailable!) geoAvailable = await tunnel.hasGeo();
     notifyListeners();

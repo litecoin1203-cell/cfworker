@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Pleat's folded planes along the card's right edge (mist, ice, blue). -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="90dp" android:height="120dp"
+    android:viewportWidth="90" android:viewportHeight="120">
+    <path android:fillColor="@color/note_mist" android:pathData="M40,0H90V120H0z" />
+    <path android:fillColor="@color/note_ice" android:pathData="M66,0H90V120H44z" />
+    <path android:fillColor="@color/note_blue" android:pathData="M82,0H90V120H72z" />
+</vector>

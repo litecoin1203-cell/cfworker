@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Flag tile, "Protected" with its dot, and "City, Country · timer". -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="0dp"
+    android:layout_height="wrap_content"
+    android:layout_weight="1"
+    android:gravity="center_vertical"
+    android:orientation="horizontal">
+
+    <TextView
+        android:id="@+id/note_flag"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:background="@drawable/note_tile"
+        android:gravity="center"
+        android:includeFontPadding="false"
+        android:textSize="20sp" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="12dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/note_dot"
+                android:layout_width="8dp"
+                android:layout_height="8dp"
+                android:layout_marginEnd="7dp"
+                android:importantForAccessibility="no"
+                android:src="@drawable/note_dot" />
+
+            <TextView
+                android:id="@+id/note_title"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:maxLines="1"
+                android:textColor="@color/note_ink"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+        </LinearLayout>
+
+        <!-- "City, Country · 1:24:10": one Chronometer whose format holds the place. -->
+        <Chronometer
+            android:id="@+id/note_place"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/note_muted"
+            android:textSize="13sp" />
+        </LinearLayout>
+    </LinearLayout>
+</LinearLayout>
