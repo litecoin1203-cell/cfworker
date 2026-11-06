@@ -69,6 +69,7 @@ async function signup(email, { referral, device = 'dev-1', password = 'password1
 const TG = { 'x-telegram-bot-api-secret-token': 'hook' }; // what Telegram sends after setWebhook(secret_token)
 async function botSet(key, value) {
   await call('POST', '/tg/hook', { headers: TG, json: { message: { chat: { id: 12345 }, text: `/set ${key} ${value}` } } });
+  await drain(); // the bot answers after the webhook returns (waitUntil)
 }
 async function tgWebhook(update) { const r = await call('POST', '/tg/hook', { headers: TG, json: update }); await drain(); return r; }
 
@@ -139,6 +140,7 @@ section('card purchase -> telegram -> approve -> servers');
   // admin approves via inline button
   const ap = await tgWebhook({ callback_query: { id: 'c1', data: `ap:${order.data.id}`, message: { chat: { id: 12345 }, message_id: 1 } } });
   ok(ap.status === 200, 'approve callback handled');
+  ok(!!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE action = 'order.approve' AND target_id = ?").bind(String(order.data.id)).first()), 'receipt-button approval is in the admin log');
   const me = await call('GET', '/api/v1/me', { token: tok });
   ok(me.data.subscription && me.data.subscription.active, 'subscription active after approval');
   const servers = await call('GET', '/api/v1/vpn/servers', { token: tok });
@@ -424,7 +426,7 @@ section('telegram button menu');
   let n = fakes.tg.calls.length;
   await say('/menu');
   const homeMsg = since(n).find((c) => c.method === 'sendMessage');
-  ok(homeMsg && homeMsg.body.text.includes('مدیریت Cloud Gold') && ['m:ord', 'm:usr', 'm:pl', 'm:pa', 'm:cp', 'm:pay', 'm:set'].every((d) => kbData(homeMsg).includes(d)), '/menu opens the button menu');
+  ok(homeMsg && homeMsg.body.text.includes('مدیریت Cloud Gold') && ['m:in', 'm:usr', 'm:pl', 'm:or', 'm:pa', 'm:cp', 'm:pay', 'm:app', 'm:net', 'm:bc', 'm:st', 'm:sys'].every((d) => kbData(homeMsg).includes(d)), '/menu opens the 12-section menu');
   n = fakes.tg.calls.length;
   await say('/start');
   ok(since(n).some((c) => c.method === 'sendMessage' && kbData(c).includes('m:usr')), '/start opens the menu for the admin');
@@ -444,10 +446,9 @@ section('telegram button menu');
   n = fakes.tg.calls.length;
   await say('ali@example.com');
   const card = since(n).find((c) => c.method === 'sendMessage' && c.body.text.includes('👤 ali@example.com'));
-  ok(card && kbData(card).some((d) => d.startsWith('m:ug:')) && kbData(card).some((d) => d.startsWith('m:w:reset:')), 'search answer shows the user card with grant / password buttons');
-  n = fakes.tg.calls.length;
-  await say('ali@example.com');
-  ok(!sent(n).some((m) => m.text.includes('👤')), 'an answer is used once; the next text is not a search');
+  ok(card && kbData(card).some((d) => d.startsWith('m:ug:')) && kbData(card).some((d) => d.startsWith('m:usec:')), 'search answer shows the user card with grant / security buttons');
+  const openSession = async () => !!(await env.DB.prepare('SELECT 1 x FROM bot_session').first());
+  ok(!(await openSession()), 'an answer is used once; the question is gone after it');
 
   // text /find gets the same buttons
   n = fakes.tg.calls.length;
@@ -465,16 +466,14 @@ section('telegram button menu');
   // cancel drops the question
   await tap('m:w:find');
   await tap('m:cancel:usr');
-  n = fakes.tg.calls.length;
-  await say('ali@example.com');
-  ok(!sent(n).some((m) => m.text.includes('👤')), 'cancel clears the question');
+  ok(!(await openSession()), 'cancel clears the question');
 
   // an old question expires
   await tap('m:w:find');
-  await env.DB.prepare("UPDATE settings SET value = json_set(value, '$.exp', 1) WHERE key = 'bot_wait'").run();
+  await env.DB.prepare('UPDATE bot_session SET expires_at = 1').run();
   n = fakes.tg.calls.length;
-  await say('ali@example.com');
-  ok(!sent(n).some((m) => m.text.includes('👤')), 'an expired question is ignored');
+  await say('nobody-here@example.com');
+  ok(!sent(n).some((m) => m.text.includes('👤')) && !(await openSession()), 'an expired question is ignored (the text is only a lookup)');
 
   // plans: edit a field and switch a plan off/on
   const p = await env.DB.prepare('SELECT * FROM plans ORDER BY id LIMIT 1').first();
@@ -508,9 +507,14 @@ section('telegram button menu');
   ok(!!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE action = 'user.grant' AND target_id = ?").bind(String(mg.id)).first()), 'grant is in the admin log');
 
   // coupons: create by answering, delete with confirm
-  await tap('m:w:coupon');
-  await say('MENU10 10 5');
-  ok(!!(await env.DB.prepare("SELECT 1 x FROM coupons WHERE code = 'MENU10'").first()), 'coupon made from the menu');
+  await tap('m:f:coupon');
+  await say('menu10');
+  await tap('m:fa:1:10');
+  await say('5');
+  await tap('m:fa:3:0');
+  await tap('m:fa:4:0');
+  await tap('m:fok:coupon');
+  ok(!!(await env.DB.prepare("SELECT 1 x FROM coupons WHERE code = 'MENU10' AND percent = 10 AND max_uses = 5").first()), 'coupon made from the step-by-step form');
   n = fakes.tg.calls.length;
   await tap('m:cd:MENU10');
   const dc = since(n).find((c) => c.method === 'sendMessage' && c.body.text.includes('MENU10'));
@@ -1330,7 +1334,7 @@ section('bot: link an existing panel account to an app user, without creating on
   const c1 = confirmOf(n);
   ok(c1 && c1.body.text.includes('ali_v2') && c1.body.text.includes('20 روز') && c1.body.text.includes('5.00 از 30.0'), 'asks first, showing the panel account: ' + (c1 && c1.body.text));
   ok(!(await env.DB.prepare('SELECT 1 x FROM panel_accounts WHERE user_id = ?').bind(uid).first()), 'nothing linked before "yes"');
-  await tap(kbData(c1).find((d) => d.startsWith('cf:')), c1.body.text);
+  await tap(kbData(c1).find((d) => d.startsWith('lp:') && d.endsWith(':0')), c1.body.text);
 
   const pa = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(uid).first();
   ok(pa && pa.remote_username === 'ali_v2' && pa.sub_path.includes('tok_ali_v2') && pa.desired === 'active', 'the app user now owns that panel account');
@@ -1359,7 +1363,7 @@ section('bot: link an existing panel account to an app user, without creating on
 
   // a used confirmation button cannot run again
   const before = (await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE action = 'user.link'").first()).c;
-  await tap(kbData(c1).find((d) => d.startsWith('cf:')), c1.body.text);
+  await tap(kbData(c1).find((d) => d.startsWith('lp:') && d.endsWith(':0')), c1.body.text);
   ok((await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE action = 'user.link'").first()).c === before, 'a confirmation works once');
 
   // a user who already got an account (free trial / grant) gets it replaced; the old one is switched off, not deleted
@@ -1372,7 +1376,7 @@ section('bot: link an existing panel account to an app user, without creating on
   await admin('/link link3@example.com reza_v2');
   const c3 = confirmOf(n);
   ok(c3 && c3.body.text.includes('جایگزین') && c3.body.text.includes(made) && c3.body.text.includes('نامحدود'), 'the question warns about the current plan and account');
-  await tap(kbData(c3).find((d) => d.startsWith('cf:')), c3.body.text);
+  await tap(kbData(c3).find((d) => d.startsWith('lp:') && d.endsWith(':0')), c3.body.text);
   const pa3 = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(uid3).first();
   ok(pa3.remote_username === 'reza_v2', 'panel-1 account is now the linked one');
   ok(fakes.pg.users[made] && fakes.pg.users[made].status === 'disabled', 'the old account is switched off on the panel, not deleted');
@@ -1391,7 +1395,7 @@ section('bot: link an existing panel account to an app user, without creating on
   await admin('/link link4@example.com old_v2');
   const c4 = confirmOf(n);
   ok(c4 && c4.body.text.includes('تمام شده'), 'the question says the time is over');
-  await tap(kbData(c4).find((d) => d.startsWith('cf:')), c4.body.text);
+  await tap(kbData(c4).find((d) => d.startsWith('lp:') && d.endsWith(':0')), c4.body.text);
   const s4 = await env.DB.prepare('SELECT state, stop_reason FROM subscriptions WHERE user_id = ?').bind(await userId('link4@example.com')).first();
   ok(s4.state === 'stopped' && s4.stop_reason === 'expired', 'an expired panel account shows as expired in the app');
 
@@ -1415,13 +1419,71 @@ section('bot: link an existing panel account to an app user, without creating on
   n = fakes.tg.calls.length;
   await admin('/link link5@example.com nima_v2 2');
   const c6 = confirmOf(n);
-  if (c6) await tap(kbData(c6).find((d) => d.startsWith('cf:')), c6.body.text);
+  if (c6) await tap(kbData(c6).find((d) => d.startsWith('lp:') && d.endsWith(':0')), c6.body.text);
   const p2state = (await env.DB.prepare('SELECT state FROM panels WHERE id = 2').first()).state;
   if (['active', 'rollout'].includes(p2state)) {
     const pa6 = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 2').bind(uid5).first();
     ok(pa6 && pa6.remote_username === 'nima_v2', 'linked on panel 2 by its number');
     ok((await env.DB.prepare('SELECT pg_username FROM subscriptions WHERE user_id = ?').bind(uid5).first()).pg_username === '', 'panel-1 username is not overwritten by another panel');
   } else ok(lastText().includes('فعال نیست'), 'a panel that is not serving cannot take a link');
+}
+
+section('link: hamid (30 days / 10 GB, 5 days gone, 2 GB used) gets every panel, one shared plan');
+{
+  const A = { chat: { id: 12345 } };
+  const kbData = (c) => ((c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard) || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const kbText = (c) => ((c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard) || []).flat().map((x) => x.text);
+  const tap = (data, text = 'x') => tgWebhook({ callback_query: { id: 'hm-' + data, data, message: { ...A, message_id: 901, text } } });
+  const confirmOf = (n) => fakes.tg.calls.slice(n).find((c) => c.method === 'sendMessage' && c.body.text.includes('مطمئنی'));
+  const now = Math.floor(Date.now() / 1000);
+  const app = { 'x-app-version': '1.9.0 (Android 14)' };
+  const plan30 = tenGb; // 30 days, 10 GB
+
+  const h = (fakes.pg.users['hamid'] = { id: 9901, username: 'hamid', status: 'active', expire: now + 25 * 86400, data_limit: 10 * GB, used_traffic: 2 * GB, token: 'tok_hamid' });
+  const tok = await signup('hamid@example.com', { device: 'hamid-phone' });
+  let n = fakes.tg.calls.length;
+  await admin('/link hamid@example.com hamid');
+  const c = confirmOf(n);
+  ok(c && kbText(c)[0].includes('پیشنهادی') && kbData(c)[0] === kbData(c).find((d) => d.endsWith(':' + plan30.id)), 'the plan that fits 10 GB / 25 days left is suggested first: ' + (c && kbText(c)[0]));
+  await tap(kbData(c)[0], c.body.text);
+  const me = (await call('GET', '/api/v1/me', { token: tok, headers: app })).data.subscription;
+  ok(me.used_bytes === 2 * GB && me.data_limit_bytes === 10 * GB && me.days_left === 25 && me.plan_name, 'app: 2 of 10 GB, 25 days, with a plan name: ' + JSON.stringify({ u: me.used_bytes, d: me.days_left, p: me.plan_name }));
+  await call('GET', '/api/v1/vpn/servers', { token: tok, headers: { ...app, 'x-device-id': 'hamid-phone' } });
+  await syncRounds(3);
+  const p2 = panelUser(pg2, 'hamid@example.com');
+  ok(p2 && p2.data_limit === 8 * GB && Math.abs(p2.expire - h.expire) < 5, 'panel 2 gets an account with the 8 GB left and the same expiry');
+  p2.used_traffic = 2 * GB;
+  await call('GET', '/api/v1/me', { token: tok }); await syncRounds(3);
+  const me2 = (await call('GET', '/api/v1/me', { token: tok })).data.subscription;
+  ok(me2.used_bytes === 4 * GB && h.data_limit === 8 * GB && p2.data_limit === 8 * GB, '2 GB on panel 2: app shows 4 of 10, each panel = its own use + 6 GB left');
+  h.used_traffic = 8 * GB;
+  await call('GET', '/api/v1/me', { token: tok }); await syncRounds(3);
+  ok(h.status === 'disabled' && p2.status === 'disabled', '10 GB in total switches both panels off');
+
+  // the same person already has accounts on panel 1 AND panel 2: the second link adds up, it does not start over
+  const hb = (fakes.pg.users['hamidb'] = { id: 9902, username: 'hamidb', status: 'active', expire: now + 25 * 86400, data_limit: 10 * GB, used_traffic: 2 * GB, token: 'tok_hb' });
+  const hb2 = (pg2.users['hamidb2'] = { id: 9903, username: 'hamidb2', status: 'active', expire: now + 28 * 86400, data_limit: 10 * GB, used_traffic: 1 * GB, token: 'tok_hb2' });
+  const tokb = await signup('hamidb@example.com', { device: 'hb-phone' });
+  n = fakes.tg.calls.length; await admin('/link hamidb@example.com hamidb');
+  let cb = confirmOf(n); await tap(kbData(cb)[0], cb.body.text);
+  await call('GET', '/api/v1/vpn/servers', { token: tokb, headers: { ...app, 'x-device-id': 'hb-phone' } });
+  const auto = panelUser(pg2, 'hamidb@example.com');
+  if (auto) auto.used_traffic = 0.5 * GB;
+  await call('GET', '/api/v1/me', { token: tokb });
+  n = fakes.tg.calls.length; await admin('/link hamidb@example.com hamidb2 2');
+  cb = confirmOf(n);
+  ok(cb && cb.body.text.includes('جمع می‌شوند'), 'the question says the usage will be added up: ' + (cb && cb.body.text));
+  await tap(kbData(cb)[0], cb.body.text);
+  await call('GET', '/api/v1/me', { token: tokb }); await syncRounds(3);
+  const mb = (await call('GET', '/api/v1/me', { token: tokb })).data.subscription;
+  const want = 3 * GB + (auto ? 0.5 * GB : 0);
+  ok(mb.used_bytes === want && mb.data_limit_bytes === 10 * GB && mb.days_left === 25, 'usage of both accounts (and the auto-made one) is summed, limit and time stay: ' + JSON.stringify({ u: mb.used_bytes / GB, d: mb.days_left }));
+  const left = 10 * GB - want;
+  ok(Math.abs(hb.data_limit - (2 * GB + left)) <= 64 * 1024 * 1024 && Math.abs(hb2.data_limit - (1 * GB + left)) <= 64 * 1024 * 1024, 'each panel is capped at its own use + what is left overall: ' + [hb.data_limit / GB, hb2.data_limit / GB]);
+  ok(Math.abs(hb2.expire - hb.expire) < 5, 'the second account takes the same expiry as the first');
+  ok(!auto || auto.status === 'disabled', 'the account the Worker had made on panel 2 is switched off');
+  const periods = (await env.DB.prepare('SELECT COUNT(*) c FROM sub_periods WHERE user_id = ?').bind(await userId('hamidb@example.com')).first()).c;
+  ok(periods === 1, 'still one period (no fresh start): ' + periods);
 }
 
 section('webhook is registered by the Worker, with no secret in the path');
@@ -2197,6 +2259,1306 @@ section('panel info rows dressed as configs are not servers');
   ok(!isPlaceholder(real) && !isPlaceholder('wireguard://k@5.6.7.8:965?publickey=p#x') && !isPlaceholder('ss://YWVzOnB3@1.2.3.4:8388#x'), 'real exits are kept');
   const out = unify([info, vmInfo, real]);
   ok(out.length === 1 && decodeURIComponent(out[0].split('#')[1]).includes('AM 1'), 'only the real exit is listed: ' + out.map((l) => l.split('#')[1]).join(','));
+}
+
+const STAGE2_ACTIONS = ['user.add_days', 'user.add_gb', 'user.reset_usage', 'user.pause', 'user.end', 'user.plan_name', 'user.wallet', 'user.device_remove',
+  'user.logout_all', 'user.block', 'user.unlink_tg', 'user.avatar_reset', 'user.email', 'user.delete', 'user.create'];
+const STAGE3_ACTIONS = ['order.approve', 'order.reject', 'order.cancel', 'order.refund', 'plan.move', 'plan.copy', 'plan.delete', 'plan.unarchive',
+  'coupon.set', 'coupon.toggle'];
+const STAGE4_ACTIONS = ['panel.rename', 'panel.enable', 'server.hide', 'server.rename', 'app.list', 'net.reset'];
+const STAGE5_ACTIONS = ['broadcast.create', 'broadcast.start', 'broadcast.stop', 'admin.add', 'admin.remove'];
+section('admin panel stage 1: routes, screens, undo, forms, audit, query budget');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const A = { chat: { id: 12345 } };
+  const tap = (data, message = { ...A, message_id: 900, text: 'menu' }) => tgWebhook({ callback_query: { id: 's1-' + data, data, message } });
+  const say = (text, extra = {}) => tgWebhook({ message: { ...A, text, ...extra } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const startCalls = fakes.tg.calls.length;
+
+  // walk every screen reachable from home: every button resolves to a route and fits 64 bytes,
+  // every screen starts with breadcrumbs and ends with back + home
+  const homeKeys = flat((await menu.renderScreen(env, 'home')).kb).map((d) => d.slice(2));
+  const seen = new Set();
+  const queue = ['home'];
+  let bad = [], noNav = [], noCrumb = [];
+  while (queue.length && seen.size < 250) {
+    const d = queue.shift();
+    if (seen.has(d)) continue;
+    seen.add(d);
+    const s = await menu.renderScreen(env, d);
+    for (const x of flat(s.kb)) {
+      if (!menu.routeOf(x) || new TextEncoder().encode(x).length > 64) bad.push(`${d} -> ${x}`);
+      const r = x.startsWith('m:') && menu.ROUTES[x.slice(2).split(':')[0]];
+      if (r && r.kind === 'screen' && !seen.has(x.slice(2))) queue.push(x.slice(2));
+    }
+    if (d === 'home') continue;
+    const last = flat([s.kb[s.kb.length - 1]]);
+    const hasBack = last.some((x) => x !== 'm:home') || homeKeys.includes(d.split(':')[0]);
+    if (!last.includes('m:home') || !hasBack) noNav.push(d);
+    if (!String(s.text).startsWith('🏠 منو')) noCrumb.push(d);
+  }
+  ok(seen.size > 25, 'screen walk reached many screens: ' + seen.size);
+  ok(!bad.length, 'every button on every screen resolves to a route within 64 bytes: ' + bad.slice(0, 5).join(' | '));
+  ok(!noNav.length, 'every screen ends with back + home: ' + noNav.slice(0, 5).join(' | '));
+  ok(!noCrumb.length, 'every screen starts with breadcrumbs: ' + noCrumb.slice(0, 5).join(' | '));
+  ok(!menu.routeOf('m:nope') && !menu.routeOf('m:w:nope') && !menu.routeOf('m:f:nope') && !menu.routeOf('m:x:home|nocmd') && !menu.routeOf('m:' + 'p'.repeat(70)), 'unknown or oversized buttons resolve to nothing');
+  ok(['or', 'bc', 'st', 'sys'].every((k) => seen.has(k)) && !(await menu.renderScreen(env, 'bc')).text.includes('به‌زودی'), 'every home section is built (none says «به‌زودی»)');
+
+  // pagination: 8 per page with a next button, and the next page continues
+  for (let i = 0; i < 10; i++) await signup(`page${i}@example.com`);
+  const p1 = await menu.renderScreen(env, 'usr');
+  const nextBtn = flat(p1.kb).find((x) => x.startsWith('m:usr:all:b'));
+  const ids1 = flat(p1.kb).filter((x) => /^m:u:\d+$/.test(x));
+  ok(ids1.length === 8 && !!nextBtn, 'users list pages 8 at a time with a next button');
+  const p2 = await menu.renderScreen(env, nextBtn.slice(2));
+  const ids2 = flat(p2.kb).filter((x) => /^m:u:\d+$/.test(x));
+  ok(ids2.length > 0 && !ids2.some((x) => ids1.includes(x)) && flat(p2.kb).some((x) => x.startsWith('m:usr:all:a')), 'the next page has new rows and a previous button');
+
+  // a non-admin reaches nothing, on any route
+  const auditBefore = (await env.DB.prepare('SELECT COUNT(*) c FROM admin_audit').first()).c;
+  const plan0 = await env.DB.prepare('SELECT * FROM plans ORDER BY id LIMIT 1').first();
+  let n = fakes.tg.calls.length;
+  for (const k of Object.keys(menu.ROUTES)) {
+    await tgWebhook({ callback_query: { id: 'out-' + k, data: `m:${k}:${plan0.id}:1`, message: { chat: { id: 999 }, message_id: 1, text: 'x' } } });
+  }
+  await tgWebhook({ callback_query: { id: 'out-pt', data: `m:pt:${plan0.id}`, message: { chat: { id: 999 }, message_id: 1, text: 'x' } } });
+  await tgWebhook({ message: { chat: { id: 999 }, text: '/coupon EVIL 50' } });
+  const outCalls = since(n).filter((c) => c.method !== 'answerCallbackQuery');
+  ok(!outCalls.length, 'non-admin taps and commands get no screen: ' + outCalls.map((c) => c.method).join(','));
+  ok((await env.DB.prepare('SELECT COUNT(*) c FROM admin_audit').first()).c === auditBefore && (await env.DB.prepare('SELECT is_active FROM plans WHERE id = ?').bind(plan0.id).first()).is_active === plan0.is_active, 'non-admin changes nothing');
+  ok(!(await env.DB.prepare("SELECT 1 x FROM coupons WHERE code = 'EVIL'").first()), 'non-admin /coupon makes nothing');
+
+  // undo: once, and only within 10 minutes, and only by the admin who made the change
+  const r1 = await acts.runAction(env, '12345', 'plan.set', { id: plan0.id, field: 'price', raw: '777' });
+  ok(r1.ok && r1.undoable && (await env.DB.prepare('SELECT price_toman FROM plans WHERE id = ?').bind(plan0.id).first()).price_toman === 777, 'reversible change applied and undoable');
+  ok(!(await acts.undoAction(env, '555', r1.auditId)).ok, 'another admin cannot undo it');
+  n = fakes.tg.calls.length;
+  await tap(`m:undo:${r1.auditId}`);
+  ok((await env.DB.prepare('SELECT price_toman FROM plans WHERE id = ?').bind(plan0.id).first()).price_toman === plan0.price_toman, 'undo button restores the old price');
+  ok(since(n).some((c) => c.method === 'editMessageText' && flat(c.body.reply_markup.inline_keyboard).includes(`m:hist:plan:${plan0.id}`)), 'undo shows the plan card again');
+  ok(!(await acts.undoAction(env, '12345', r1.auditId)).ok, 'a second undo is refused');
+  ok(!!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE action = 'plan.set.undo' AND target_id = ?").bind(String(plan0.id)).first()), 'the undo itself is logged');
+  const r2 = await acts.runAction(env, '12345', 'plan.set', { id: plan0.id, field: 'price', raw: '888' });
+  await env.DB.prepare('UPDATE admin_audit SET created_at = created_at - 601 WHERE id = ?').bind(r2.auditId).run();
+  ok(!(await acts.undoAction(env, '12345', r2.auditId)).ok && (await env.DB.prepare('SELECT price_toman FROM plans WHERE id = ?').bind(plan0.id).first()).price_toman === 888, 'undo after 10 minutes is refused');
+  const logScr = await menu.renderScreen(env, 'sys.log');
+  ok(!flat(logScr.kb).includes(`m:undo:${r2.auditId}`) && logScr.text.includes('plan.set'), 'the admin log lists changes; old ones have no undo button');
+  await env.DB.prepare('UPDATE plans SET price_toman = ? WHERE id = ?').bind(plan0.price_toman, plan0.id).run();
+  const r3 = await acts.runAction(env, '12345', 'plan.toggle', { id: plan0.id });
+  ok(flat((await menu.renderScreen(env, 'sys.log')).kb).includes(`m:undo:${r3.auditId}`), 'a fresh change has its undo button in the log');
+  ok(flat((await menu.renderScreen(env, `hist:plan:${plan0.id}`)).kb).includes(`m:undo:${r3.auditId}`), 'plan history lists it with undo');
+  await acts.undoAction(env, '12345', r3.auditId);
+  ok((await env.DB.prepare('SELECT is_active FROM plans WHERE id = ?').bind(plan0.id).first()).is_active === plan0.is_active, 'toggle undone');
+  // coupon.create undo: only while nobody used it
+  const rc = await acts.runAction(env, '12345', 'coupon.create', { code: 'UNDOME', percent: 5 });
+  await env.DB.prepare("UPDATE coupons SET used = 1 WHERE code = 'UNDOME'").run();
+  ok(!(await acts.undoAction(env, '12345', rc.auditId)).ok && !!(await env.DB.prepare("SELECT 1 x FROM coupons WHERE code = 'UNDOME'").first()), 'a used coupon is not removed by undo');
+
+  // forms: a bad answer asks again, a duplicate message does not advance, cancel writes nothing
+  const plansBefore = (await env.DB.prepare('SELECT COUNT(*) c FROM plans').first()).c;
+  await tap('m:f:newplan');
+  await say('Form Plan', { message_id: 3001 });
+  await say('Form Plan', { message_id: 3001 }); // Telegram re-sent the same message
+  const st = async () => (await env.DB.prepare("SELECT step FROM bot_session WHERE admin_id = '12345'").first())?.step;
+  ok((await st()) === 1, 'the same message twice moves the form one step');
+  n = fakes.tg.calls.length;
+  await say('abc', { message_id: 3002 });
+  ok((await st()) === 1 && since(n).some((c) => c.method === 'sendMessage' && c.body.text.includes('❌') && c.body.text.includes('مرحله 2 از 5')), 'a bad answer asks the same step again');
+  await tap('m:fa:0:30'); // a stale button from step 1
+  ok((await st()) === 1, 'a button from an old step is ignored');
+  await tap('m:fa:1:30');
+  ok((await st()) === 2, 'a suggestion button answers its step');
+  await tap('m:cancel:pl');
+  ok(!(await st()) && (await env.DB.prepare('SELECT COUNT(*) c FROM plans').first()).c === plansBefore, 'cancel writes nothing');
+  // the full form makes the plan, then shows its card with undo
+  await tap('m:f:newplan');
+  await say('سه ماهه تست', { message_id: 3010 });
+  await say('۹۰', { message_id: 3011 });
+  await tap('m:fa:2:50');
+  await tap('m:fa:3:2');
+  await say('199,000', { message_id: 3012 });
+  n = fakes.tg.calls.length;
+  await tap('m:fok:newplan');
+  const np = await env.DB.prepare("SELECT * FROM plans WHERE name = 'سه ماهه تست'").first();
+  ok(np && np.duration_days === 90 && np.data_limit_gb === 50 && np.device_limit === 2 && np.price_toman === 199000, 'new plan form creates the plan');
+  ok(since(n).some((c) => c.method === 'editMessageText' && flat(c.body.reply_markup.inline_keyboard).some((x) => x.startsWith('m:undo:'))), 'the new plan card offers undo');
+  await tap('m:fok:newplan');
+  ok((await env.DB.prepare("SELECT COUNT(*) c FROM plans WHERE name = 'سه ماهه تست'").first()).c === 1, 'a second tap on «ساخته شود» does not make it twice');
+  // a coupon code already taken asks again
+  await tap('m:f:coupon');
+  n = fakes.tg.calls.length;
+  await say('undome', { message_id: 3020 });
+  ok((await st()) === 0 && since(n).some((c) => c.body && String(c.body.text).includes('قبلاً ساخته شده')), 'a taken code asks again');
+  await tap('m:cancel:cp');
+
+  // every action leaves an audit row (the ones not exercised above are run here)
+  await acts.runAction(env, '12345', 'setting.set', { key: 'support_text', val: 'سلام' });
+  const pnl = await env.DB.prepare("SELECT id FROM panels WHERE state IN ('testing','rollout','active') ORDER BY id LIMIT 1").first();
+  if (pnl) {
+    const g = await acts.runAction(env, '12345', 'panel.groups', { panelId: pnl.id, ids: [1] });
+    await acts.undoAction(env, '12345', g.auditId);
+  }
+  await acts.runAction(env, '12345', 'coupon.delete', { code: 'UNDOME' });
+  const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
+  const missing = Object.keys(acts.ACTIONS).filter((a) => !logged.has(a) && !STAGE2_ACTIONS.includes(a) && !STAGE3_ACTIONS.includes(a) && !STAGE4_ACTIONS.includes(a) && !STAGE5_ACTIONS.includes(a));
+  ok(!missing.length, 'every stage 1 admin action has written an audit row: missing ' + missing.join(','));
+  ok(Object.values(acts.ACTIONS).every((a) => ['money', 'destructive', 'reversible'].includes(a.risk)), 'every action has a risk level');
+  ok(Object.values(menu.ROUTES).every((r) => r.kind === 'screen' || r.risk), 'every action route has a risk level');
+  const secretLeak = (await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE summary LIKE '%menu-pass-123%' OR summary LIKE '%brandnewpass%' OR undo_json LIKE '%password%'").first()).c;
+  ok(secretLeak === 0, 'no password in the admin log');
+
+  // no admin text line asks to type a /command
+  const slash = since(startCalls).concat(fakes.tg.calls.filter((c) => c.method === 'editMessageText'))
+    .filter((c) => c.body && String(c.body.chat_id) === '12345')
+    .map((c) => String(c.body.text || c.body.caption || ''))
+    .filter((t) => /^\/[a-z]/m.test(t));
+  ok(!slash.length, 'no menu text line starts with /command: ' + slash.slice(0, 2).join(' || ').slice(0, 300));
+
+  // query budget: at most 6 D1 statements per screen, with about 1000 users
+  await env.DB.prepare(`INSERT INTO users (email, password_hash, referral_code, created_at)
+    WITH RECURSIVE c(x) AS (SELECT 1 UNION ALL SELECT x + 1 FROM c WHERE x < 1000)
+    SELECT 'bulk' || x || '@example.com', 'x', 'BULK' || x, ?1 - x FROM c`).bind(Math.floor(Date.now() / 1000)).run();
+  const realPrepare = env.DB.prepare;
+  let q = 0;
+  env.DB.prepare = (sql) => { q++; return realPrepare(sql); };
+  const over = [];
+  let maxQ = 0;
+  const lastUser = await realPrepare("SELECT MAX(id) m FROM users WHERE email LIKE 'bulk%'").first();
+  const budgetScreens = [...seen].filter((d) => !/^un:|^u:\d+:live$/.test(d) && d !== 'un').concat([`usr:b${lastUser.m}`, `usr:act:b${lastUser.m}`, `usr:none`]);
+  for (const d of budgetScreens) {
+    q = 0;
+    await menu.renderScreen(env, d);
+    if (q > 6) over.push(`${d}=${q}`);
+    maxQ = Math.max(maxQ, q);
+  }
+  env.DB.prepare = realPrepare;
+  console.log('    most D1 statements on one screen: ' + maxQ);
+  ok(maxQ > 0 && !over.length, `≤6 D1 statements on each of ${budgetScreens.length} screens with 1000 users: ` + over.join(' '));
+  await env.DB.prepare("DELETE FROM users WHERE email LIKE 'bulk%@example.com'").run();
+}
+
+section('admin panel stage 2: users (card, subscription, wallet, devices, security, delete)');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const A = { chat: { id: 12345 } };
+  let mid = 3000;
+  const tap = (data, text = 'menu') => tgWebhook({ callback_query: { id: 's2-' + (mid++), data, message: { ...A, message_id: 950, text } } });
+  const say = (text, extra = {}) => tgWebhook({ message: { ...A, text, message_id: mid++, ...extra } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const kbOf = (c) => flat(c && c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard);
+  const acks = (n) => since(n).filter((c) => c.method === 'answerCallbackQuery').map((c) => c.body.text || '');
+  const undoOf = (n) => { const e = since(n).filter((c) => c.method === 'editMessageText').pop(); return kbOf(e).find((d) => d.startsWith('m:undo:')); };
+  const confirmTok = (n) => { const c = since(n).filter((x) => x.method === 'sendMessage' && /مطمئنی/.test(x.body.text)).pop(); const d = kbOf(c).find((x) => x.startsWith('cf:')); return c && d ? { text: c.body.text, yes: d } : null; };
+  const sub = (id) => env.DB.prepare('SELECT * FROM subscriptions WHERE user_id = ?').bind(id).first();
+  const urow = (id) => env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
+  const near = (a, b, tol = 64 * 1024 * 1024) => Math.abs(a - b) <= tol;
+
+  const active = (await env.DB.prepare("SELECT id FROM panels WHERE state IN ('active','rollout') ORDER BY id").all()).results.map((r) => r.id);
+  ok(active.includes(1) && active.includes(2), 'panels 1 and 2 take users: ' + active.join());
+  const tok = await signup('s2@example.com', { device: 's2-phone' });
+  await admin(`/grant s2@example.com ${tenGb.id}`);
+  const id = await userId('s2@example.com');
+  const a = panelUser(fakes.pg, 's2@example.com'), b2 = panelUser(pg2, 's2@example.com');
+  ok(a && b2 && a.data_limit === 10 * GB && b2.data_limit === 10 * GB, 'the user has an account on both panels');
+
+  // the card: facts only, no links, no panel ids
+  const card = await menu.renderScreen(env, `u:${id}`);
+  ok(card.text.includes('s2@example.com') && card.text.includes(tenGb.name) && card.text.includes('کیف پول') && card.text.includes('دستگاه') && card.text.startsWith('🏠 منو'), 'card: email, plan, wallet, devices, breadcrumbs');
+  ok(!/:\/\/|tok_|[0-9a-f]{8}-[0-9a-f]{4}-/.test(card.text) && !card.text.includes(a.username), 'card shows no link, token, UUID or panel username');
+  const subScr = await menu.renderScreen(env, `us:${id}`);
+  ok(['m:ud:', 'm:ugb:', 'm:urs:', 'm:upz:', 'm:upl:', 'm:uend:', 'm:f:adddays:', 'm:f:addgb:'].every((p) => flat(subScr.kb).some((d) => d.startsWith(p))), 'subscription screen has days / GB / reset / pause / plan / end');
+
+  // + days reaches both panels (same evaluate / pushPending path), undo puts it back once
+  const exp0 = (await sub(id)).expires_at;
+  let n = fakes.tg.calls.length;
+  await tap(`m:ud:${id}:7`);
+  const exp1 = (await sub(id)).expires_at;
+  ok(exp1 === exp0 + 7 * 86400, '+7 days on the subscription');
+  ok(near(a.expire, exp1, 5) && near(b2.expire, exp1, 5), '+7 days reaches both panels: ' + [a.expire - exp0, b2.expire - exp0]);
+  const undo1 = undoOf(n);
+  ok(!!undo1, 'the card comes back with an undo button');
+  await tap(undo1);
+  ok((await sub(id)).expires_at === exp0 && near(a.expire, exp0, 5) && near(b2.expire, exp0, 5), 'undo puts the old expiry back on both panels');
+  n = fakes.tg.calls.length;
+  await tap(undo1);
+  ok(acks(n).some((t) => t.includes('دیگر برگشت‌پذیر نیست')) && (await sub(id)).expires_at === exp0, 'undo works once only');
+
+  // + GB reaches both panels
+  n = fakes.tg.calls.length;
+  await tap(`m:ugb:${id}:5`);
+  ok((await sub(id)).data_limit_bytes === 15 * GB && a.data_limit === 15 * GB && b2.data_limit === 15 * GB, '+5 GB on the subscription and both panels: ' + [a.data_limit / GB, b2.data_limit / GB]);
+  await tap(undoOf(n));
+  ok((await sub(id)).data_limit_bytes === 10 * GB && a.data_limit === 10 * GB && b2.data_limit === 10 * GB, 'undo +GB: 10 GB again everywhere');
+  await tap(`m:ugb:${id}:5`); // keep 15 GB for the rest
+
+  // custom days through the form
+  await tap(`m:f:adddays:${id}`);
+  await say('12');
+  await tap('m:fok:adddays');
+  ok((await sub(id)).expires_at === exp0 + 12 * 86400 && near(b2.expire, exp0 + 12 * 86400, 5), 'custom days from the form reach the panels');
+
+  // reset usage: money, asks first; zeroes the ledger and every panel gets the full limit again
+  a.used_traffic = 3 * GB; b2.used_traffic = 2 * GB;
+  await syncRounds(3);
+  ok((await sub(id)).used_bytes === 5 * GB, 'usage summed before the reset: ' + (await sub(id)).used_bytes / GB);
+  n = fakes.tg.calls.length;
+  await tap(`m:urs:${id}`);
+  let cf = confirmTok(n);
+  ok(cf && (await sub(id)).used_bytes === 5 * GB, 'reset asks "are you sure?" first and changes nothing yet');
+  await tap(cf.yes, cf.text);
+  const s0 = await sub(id);
+  const ctr = (await env.DB.prepare('SELECT SUM(accounted_bytes) t FROM usage_counters WHERE period_id = ?').bind(s0.period_id).first()).t;
+  ok(s0.used_bytes === 0 && ctr === 0, 'reset zeroes the subscription and the ledger');
+  ok(near(a.data_limit, 3 * GB + 15 * GB) && near(b2.data_limit, 2 * GB + 15 * GB), 'panels follow: each = what it already counted + the full 15 GB: ' + [a.data_limit / GB, b2.data_limit / GB]);
+  a.used_traffic = 4 * GB; await syncRounds(2);
+  ok((await sub(id)).used_bytes === 1 * GB, 'new usage after the reset counts from zero: ' + (await sub(id)).used_bytes / GB);
+
+  // pause / resume
+  n = fakes.tg.calls.length;
+  await tap(`m:upz:${id}:1`);
+  ok((await sub(id)).state === 'stopped' && a.status === 'disabled' && b2.status === 'disabled', 'pause switches off both panels');
+  await tap(undoOf(n));
+  ok((await sub(id)).state === 'active' && a.status === 'active' && b2.status === 'active', 'undo pause: both panels on again');
+
+  // plan name only
+  const lim = (await sub(id)).data_limit_bytes;
+  n = fakes.tg.calls.length;
+  await tap(`m:upn:${id}:0`);
+  ok((await sub(id)).plan_id === null && (await sub(id)).data_limit_bytes === lim, 'plan name removed, limit untouched');
+  await tap(undoOf(n));
+  ok((await sub(id)).plan_id === tenGb.id, 'undo: plan name back');
+
+  // wallet: form -> summary -> confirm (one-time) -> walletApply
+  const bal0 = (await urow(id)).wallet_balance;
+  await tap(`m:f:wadd:${id}`);
+  await tap('m:fa:0:50000');
+  await tap('m:fa:1:هدیه');
+  n = fakes.tg.calls.length;
+  await tap('m:fok:wadd');
+  cf = confirmTok(n);
+  ok(cf && cf.text.includes('50,000') && (await urow(id)).wallet_balance === bal0, 'credit asks "are you sure?" with the amount, nothing changes yet');
+  n = fakes.tg.calls.length;
+  await tap('m:fok:wadd');
+  ok(!confirmTok(n), 'a second tap on the form button asks nothing again');
+  await tap(cf.yes, cf.text);
+  await tap(cf.yes, cf.text);
+  const tx = (await env.DB.prepare("SELECT COUNT(*) c FROM wallet_tx WHERE user_id = ? AND reason = 'admin_credit'").bind(id).first()).c;
+  ok((await urow(id)).wallet_balance === bal0 + 50000 && tx === 1, 'double-tap credits once: ' + [(await urow(id)).wallet_balance, tx]);
+  const note = (await env.DB.prepare("SELECT note FROM wallet_tx WHERE user_id = ? AND reason = 'admin_credit'").bind(id).first()).note;
+  ok(note === 'هدیه', 'the reason is stored in the wallet history');
+  await tap(`m:f:wsub:${id}`);
+  await say('900000');
+  ok(String(fakes.tg.calls.slice(-1)[0].body.text).includes('دلیل'), 'debit asks for a reason after the amount');
+  await say('اصلاح اشتباه');
+  n = fakes.tg.calls.length;
+  await tap('m:fok:wsub');
+  cf = confirmTok(n);
+  n = fakes.tg.calls.length;
+  await tap(cf.yes, cf.text);
+  ok((await urow(id)).wallet_balance === bal0 + 50000 && since(n).some((c) => /موجودی کافی نیست/.test(c.body.text || '')), 'a debit below zero is refused, balance unchanged');
+  await tap(`m:f:wsub:${id}`); await say('20000'); await say('اصلاح اشتباه');
+  n = fakes.tg.calls.length; await tap('m:fok:wsub'); cf = confirmTok(n); await tap(cf.yes, cf.text);
+  ok((await urow(id)).wallet_balance === bal0 + 30000, 'a debit within the balance works');
+  const wscr = await menu.renderScreen(env, `uw:${id}`);
+  ok(wscr.text.includes('شارژ مدیر') && wscr.text.includes('کسر مدیر') && wscr.text.includes('هدیه'), 'wallet screen lists the history');
+  const walletTxt = await env.DB.prepare("SELECT summary FROM admin_audit WHERE action = 'user.wallet' ORDER BY id DESC LIMIT 1").first();
+  ok(walletTxt && walletTxt.summary.includes('اصلاح اشتباه') && !(await env.DB.prepare("SELECT undo_json FROM admin_audit WHERE action = 'user.wallet' AND undo_json IS NOT NULL").first()), 'money changes are logged and have no undo');
+
+  // devices
+  const dscr = await menu.renderScreen(env, `udv:${id}`);
+  const dbtn = flat(dscr.kb).find((d) => d.startsWith(`m:udd:${id}:`));
+  ok(!!dbtn, 'devices screen lists the phone');
+  await tap(dbtn);
+  ok((await env.DB.prepare('SELECT COUNT(*) c FROM devices WHERE user_id = ?').bind(id).first()).c === 0, 'remove one device');
+
+  // logout all
+  const before = await call('GET', '/api/v1/me', { token: tok });
+  await tap(`m:ulo:${id}`);
+  ok(before.status === 200 && (await call('GET', '/api/v1/me', { token: tok })).status === 401, 'logout all ends the old session');
+
+  // block: no login, no refresh, panels off; unblock through undo
+  const login = await call('POST', '/api/v1/auth/login', { json: { email: 's2@example.com', password: 'password123', device_id: 's2-phone' } });
+  n = fakes.tg.calls.length;
+  await tap(`m:ublk:${id}:1`);
+  ok((await urow(id)).is_active === 0 && a.status === 'disabled' && b2.status === 'disabled', 'block: account off and both panels off');
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 's2@example.com', password: 'password123' } })).status === 403, 'a blocked user cannot log in');
+  const rf = await call('POST', '/api/v1/auth/refresh', { json: { refresh_token: login.data.refresh_token } });
+  ok(rf.status >= 400 && rf.status < 500, 'a blocked user cannot refresh: ' + rf.status);
+  ok((await call('GET', '/api/v1/me', { token: login.data.access_token })).status >= 400, 'a blocked user\'s access token stops working');
+  const blockUndo = undoOf(n);
+  await syncRounds(2);
+  ok(a.status === 'disabled' && b2.status === 'disabled', 'the sync job keeps a blocked user off');
+  ok(flat((await menu.renderScreen(env, 'usr:blk')).kb).includes(`m:u:${id}`), 'the «مسدود» filter lists the user');
+  await tap(blockUndo);
+  ok((await urow(id)).is_active === 1 && a.status === 'active' && b2.status === 'active', 'unblock (undo): account and panels on again');
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 's2@example.com', password: 'password123' } })).status === 200, 'login works again after unblock');
+  ok(flat((await menu.renderScreen(env, 'usr:act')).kb).includes(`m:u:${id}`), 'the «فعال» filter lists the user');
+
+  // email edit: checked and unique
+  await tap(`m:f:email:${id}`);
+  n = fakes.tg.calls.length;
+  await say('ali@example.com');
+  ok(since(n).some((c) => /حساب دیگری/.test(c.body.text || '')), 'a taken email is refused');
+  await say('s2new@example.com');
+  await tap('m:fok:email');
+  ok((await urow(id)).email === 's2new@example.com', 'email changed');
+
+  // avatar reset with undo
+  await env.DB.prepare("UPDATE users SET avatar = 'fox' WHERE id = ?").bind(id).run();
+  n = fakes.tg.calls.length;
+  await tap(`m:uav:${id}`);
+  ok((await urow(id)).avatar === null, 'avatar reset');
+  await tap(undoOf(n));
+  ok((await urow(id)).avatar === 'fox', 'undo: avatar back');
+
+  // unlink Telegram: destructive, warns when no other login is left
+  await env.DB.prepare("UPDATE users SET tg_id = 880077, tg_username = 's2tg' WHERE id = ?").bind(id).run();
+  n = fakes.tg.calls.length;
+  await tap(`m:utg:${id}`);
+  cf = confirmTok(n);
+  ok(cf && cf.text.includes('@s2tg') && !cf.text.includes('هیچ راهی'), 'unlink asks first (email login stays)');
+  await tap(cf.yes, cf.text);
+  ok((await urow(id)).tg_id === null, 'Telegram unlinked');
+  const tgOnly = await env.DB.prepare("INSERT INTO users (email, password_hash, referral_code, created_at, tg_id, tg_username) VALUES ('tg880078@telegram.local', 'x', 'TGONLY1', 1, 880078, 'only_tg') RETURNING id").first();
+  n = fakes.tg.calls.length;
+  await tap(`m:utg:${tgOnly.id}`);
+  ok(confirmTok(n) && confirmTok(n).text.includes('هیچ راهی برای ورود نمی‌ماند'), 'a Telegram-only account gets the "no login left" warning');
+
+  // type to open: email, @username, user id, #order
+  n = fakes.tg.calls.length;
+  await say('s2new@example.com');
+  ok(since(n).some((c) => c.method === 'sendMessage' && c.body.text.includes('s2new@example.com') && kbOf(c).includes(`m:us:${id}`)), 'typing an email opens the card');
+  n = fakes.tg.calls.length;
+  await say('@only_tg');
+  ok(since(n).some((c) => c.method === 'sendMessage' && kbOf(c).includes(`m:us:${tgOnly.id}`)), 'typing @username opens the card');
+  n = fakes.tg.calls.length;
+  await say(String(id));
+  ok(since(n).some((c) => c.method === 'sendMessage' && kbOf(c).includes(`m:us:${id}`)), 'typing a user id opens the card');
+  const anyOrder = await env.DB.prepare('SELECT id, user_id FROM orders ORDER BY id LIMIT 1').first();
+  n = fakes.tg.calls.length;
+  await say('#' + anyOrder.id);
+  ok(since(n).some((c) => c.method === 'sendMessage' && c.body.text.includes(`سفارش #${anyOrder.id}`) && kbOf(c).includes(`m:u:${anyOrder.user_id}`)), 'typing #order opens the order');
+  n = fakes.tg.calls.length;
+  await say('/find ' + id);
+  ok(since(n).some((c) => c.method === 'sendMessage' && kbOf(c).includes(`m:us:${id}`)), '/find also takes a user id');
+  const oscr = await menu.renderScreen(env, `uo:${anyOrder.user_id}`);
+  ok(flat(oscr.kb).includes(`m:o:${anyOrder.id}`), 'per-user orders list');
+
+  // end subscription: destructive, both panels off as expired
+  n = fakes.tg.calls.length;
+  await tap(`m:uend:${id}`);
+  cf = confirmTok(n);
+  ok(cf && (await sub(id)).state === 'active', 'end asks first');
+  n = fakes.tg.calls.length;
+  await tap(cf.yes, cf.text);
+  const se = await sub(id);
+  ok(se.state === 'stopped' && se.stop_reason === 'expired' && a.status === 'disabled' && b2.status === 'disabled', 'end: stopped as expired on both panels');
+  ok(since(n).some((c) => c.method === 'editMessageText' && kbOf(c).includes(`m:u:${id}`)), 'the result has a way back to the card');
+  await tap(`m:ud:${id}:30`);
+  ok((await sub(id)).state === 'active' && a.status === 'active' && b2.status === 'active', '+30 days on an ended subscription switches it back on');
+
+  // soft delete: panels off, email + Telegram freed, orders and wallet history kept
+  const txBefore = (await env.DB.prepare('SELECT COUNT(*) c FROM wallet_tx WHERE user_id = ?').bind(id).first()).c;
+  n = fakes.tg.calls.length;
+  await tap(`m:udel:${id}`);
+  cf = confirmTok(n);
+  ok(cf && cf.text.includes('برگشت ندارد') && cf.text.includes('اکانت پنل') && cf.text.includes('حساب‌رسی'), 'delete asks with what it affects');
+  await tap(cf.yes, cf.text);
+  const del = await urow(id);
+  ok(del.email === `deleted+${id}@invalid` && del.is_active === 0 && del.tg_id === null, 'deleted: email rewritten, account off');
+  ok((await env.DB.prepare("SELECT COUNT(*) c FROM panel_accounts WHERE user_id = ? AND desired != 'removed'").bind(id).first()).c === 0, 'every panel account is marked removed');
+  ok((await env.DB.prepare('SELECT COUNT(*) c FROM wallet_tx WHERE user_id = ?').bind(id).first()).c === txBefore, 'wallet history kept');
+  const again = await call('POST', '/api/v1/auth/register', { json: { email: 's2new@example.com', password: 'password123', device_id: 'new-phone' } });
+  ok(again.status === 200 || again.status === 201, 'the email is free for a new sign-up: ' + again.status);
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: `deleted+${id}@invalid`, password: 'password123' } })).status >= 400, 'the deleted account cannot log in');
+  const delSec = await menu.renderScreen(env, `usec:${id}`);
+  ok(!flat(delSec.kb).some((d) => /^m:(udel|ublk|w:reset):/.test(d)), 'a deleted user has no more account buttons');
+
+  // manual user: email + password, the password message is deleted and never stored in clear
+  await tap('m:f:newuser');
+  await say('manual@example.com');
+  ok((await env.DB.prepare('SELECT secret FROM bot_session').first()).secret === 1, 'the password step marks the next message secret');
+  n = fakes.tg.calls.length;
+  await say('manualpass1', { message_id: 4242 });
+  ok(since(n).some((c) => c.method === 'deleteMessage' && c.body.message_id === 4242), 'the password message is deleted');
+  ok(!since(n).some((c) => String(c.body.text || '').includes('manualpass1')), 'the password is never echoed');
+  const sess = await env.DB.prepare('SELECT data_json FROM bot_session').first();
+  ok(sess && !sess.data_json.includes('manualpass1') && sess.data_json.includes('pbkdf2$'), 'only the hash waits in the session');
+  n = fakes.tg.calls.length;
+  await tap('m:fok:newuser');
+  const mu = await env.DB.prepare("SELECT id FROM users WHERE email = 'manual@example.com'").first();
+  ok(mu && (await call('POST', '/api/v1/auth/login', { json: { email: 'manual@example.com', password: 'manualpass1' } })).status === 200, 'manual user created and can log in');
+  ok(mu && since(n).some((c) => c.method === 'editMessageText' && kbOf(c).includes(`m:us:${mu.id}`)), 'the new user\'s card opens');
+  ok(mu && flat((await menu.renderScreen(env, 'usr:none')).kb).includes(`m:u:${mu.id}`), 'the «بی‌پلن» filter lists the new user');
+  ok(!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE summary LIKE '%manualpass1%' OR undo_json LIKE '%manualpass1%' OR undo_json LIKE '%pbkdf2%'").first()), 'no password or hash in the admin log');
+
+  // every button on every user screen is a known route within 64 bytes, and each screen has back + home
+  const big = await env.DB.prepare("INSERT INTO users (id, email, password_hash, referral_code, created_at, avatar, tg_id) VALUES (999999999, 'big@example.com', 'x', 'BIGID1', 1, 'cat', 990001) RETURNING id").first();
+  await env.DB.prepare('INSERT INTO devices (user_id, device_id, model, last_seen) VALUES (?, ?, ?, ?)').bind(big.id, 'd'.repeat(60), 'Very Long Phone Model Name Here', 1).run();
+  const bad = [], noNav = [];
+  for (const d of ['u', 'us', 'upl', 'uw', 'udv', 'usec', 'uo'].map((k) => `${k}:${big.id}`).concat([`u:${big.id}:live`, `us:${mu ? mu.id : 1}`])) {
+    const scr = await menu.renderScreen(env, d);
+    for (const x of flat(scr.kb)) if (!menu.routeOf(x) || new TextEncoder().encode(x).length > 64) bad.push(`${d} -> ${x}`);
+    const last = flat([scr.kb[scr.kb.length - 1]]);
+    if (!last.includes('m:home') || last.length < 2 || !scr.text.startsWith('🏠 منو')) noNav.push(d);
+  }
+  ok(!bad.length, 'user screen buttons resolve within 64 bytes: ' + bad.slice(0, 4).join(' | '));
+  ok(!noNav.length, 'user screens have breadcrumbs, back and home: ' + noNav.join(' '));
+  ok(['adddays', 'addgb', 'wadd', 'wsub', 'email'].every((f) => menu.routeOf(`m:f:${f}:${big.id}`)), 'every per-user form has a route');
+
+  // query budget for the user screens (the live refresh excluded)
+  const realPrepare = env.DB.prepare;
+  let q = 0, maxQ = 0;
+  const over = [];
+  env.DB.prepare = (sql) => { q++; return realPrepare(sql); };
+  for (const d of ['u', 'us', 'upl', 'uw', 'udv', 'usec', 'uo'].map((k) => `${k}:${big.id}`).concat([`o:${anyOrder.id}`, 'usr:exp', 'usr:blk'])) {
+    q = 0; await menu.renderScreen(env, d); maxQ = Math.max(maxQ, q); if (q > 6) over.push(`${d}=${q}`);
+  }
+  env.DB.prepare = realPrepare;
+  console.log('    most D1 statements on one user screen: ' + maxQ);
+  ok(!over.length, 'user screens use ≤6 D1 statements: ' + over.join(' '));
+
+  const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE3_ACTIONS.includes(x) && !STAGE4_ACTIONS.includes(x) && !STAGE5_ACTIONS.includes(x));
+  ok(!missing.length, 'every stage 2 admin action has written an audit row: missing ' + missing.join(','));
+}
+
+section('admin panel stage 3: sales (orders, plans, coupons and referral, payment methods)');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const A = { chat: { id: 12345 } };
+  let tapN = 0;
+  const tap = (data, message = { ...A, message_id: 902, text: 'menu' }) => tgWebhook({ callback_query: { id: 's3-' + (++tapN), data, message } });
+  const say = (text, extra = {}) => tgWebhook({ message: { ...A, text, ...extra } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const startCalls = fakes.tg.calls.length;
+  // the one-time "are you sure?" token the bot just sent, and its question
+  const confirmOf = (n) => {
+    const m = since(n).filter((c) => c.method === 'sendMessage' && c.body && c.body.reply_markup && flat(c.body.reply_markup.inline_keyboard).some((x) => x.startsWith('cf:'))).pop();
+    return m ? { token: flat(m.body.reply_markup.inline_keyboard).find((x) => x.startsWith('cf:')).slice(3), text: m.body.text } : null;
+  };
+  const acks = (n) => since(n).filter((c) => c.method === 'answerCallbackQuery').map((c) => String(c.body.text || '')).join(' | ');
+  const receipt = async (tok, id, b = 7) => {
+    const f = new FormData(); f.set('file', new Blob([new Uint8Array([0xff, 0xd8, 0xff, b])], { type: 'image/jpeg' }), 'r.jpg');
+    return call('POST', `/api/v1/orders/${id}/receipt`, { token: tok, form: f });
+  };
+
+  const tok = await signup('sales3@example.com', { device: 's3' });
+  const buyer = await row('SELECT * FROM users WHERE email = ?', 'sales3@example.com');
+  const appPlans = (await call('GET', '/api/v1/plans')).data;
+  const monthly = appPlans.find((p) => p.price_toman > 0 && !p.name.includes('کپی')) || appPlans[0];
+
+  // ---- orders: list, card, approve only through settle (no double delivery) ----
+  const o1 = (await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card' } })).data;
+  await receipt(tok, o1.id, 31);
+  ok((await row('SELECT status FROM orders WHERE id = ?', o1.id)).status === 'review', 'order waits for review');
+  ok(flat((await menu.renderScreen(env, 'or:rev')).kb).includes(`m:o:${o1.id}`) && !flat((await menu.renderScreen(env, 'or:paid')).kb).includes(`m:o:${o1.id}`), 'the review list shows it, the paid list does not');
+  ok(flat((await menu.renderScreen(env, 'or:rev:card')).kb).includes(`m:o:${o1.id}`) && !flat((await menu.renderScreen(env, 'or:rev:coin')).kb).includes(`m:o:${o1.id}`), 'the method filter works');
+  let card = await menu.renderScreen(env, `o:${o1.id}`);
+  ok(['oap', 'orj', 'ocx', 'orc'].every((k) => flat(card.kb).includes(`m:${k}:${o1.id}`)) && !flat(card.kb).includes(`m:orf:${o1.id}`), 'an order in review has approve, reject, cancel and the receipt photo');
+  ok(!/https?:\/\/|sub_url|vless:|seed/i.test(card.text), 'the order card shows no link or secret');
+  let n = fakes.tg.calls.length;
+  await tap(`m:orc:${o1.id}`);
+  ok(since(n).some((c) => c.method === 'sendPhoto' && c.body.photo && flat(c.body.reply_markup.inline_keyboard).includes(`m:o:${o1.id}`)), 'the receipt photo is sent with a way back to the card');
+
+  const accountsBefore = Object.keys(fakes.pg.users).length;
+  n = fakes.tg.calls.length;
+  await tap(`m:oap:${o1.id}`);
+  const c1 = confirmOf(n);
+  n = fakes.tg.calls.length;
+  await tap(`m:oap:${o1.id}`); // a double tap asks twice ...
+  const c2 = confirmOf(n);
+  ok(c1 && c2 && c1.token !== c2.token && (await row('SELECT status FROM orders WHERE id = ?', o1.id)).status === 'review', 'approve asks first and changes nothing yet');
+  await tap(`cf:${c1.token}`);
+  await tap(`cf:${c1.token}`); // the same confirmation again
+  n = fakes.tg.calls.length;
+  await tap(`cf:${c2.token}`); // ... and both questions are confirmed
+  const paid1 = await row('SELECT status, provisioned_at FROM orders WHERE id = ?', o1.id);
+  ok(paid1.status === 'paid' && paid1.provisioned_at, 'approved through settle: paid and delivered');
+  ok(Object.keys(fakes.pg.users).length === accountsBefore + 1, 'a double tap delivers once: one panel account');
+  ok((await row("SELECT COUNT(*) c FROM sub_periods WHERE user_id = ?", buyer.id)).c === 1, 'one subscription period');
+  ok(since(n).some((c) => c.body && String(c.body.text || '').includes('قبلاً تأیید')), 'the second confirmation says it was already approved');
+  ok((await row("SELECT COUNT(*) c FROM admin_audit WHERE action = 'order.approve' AND target_id = ?", String(o1.id))).c === 1, 'one audit row for the approval');
+  // two approvals at the same time
+  const o2 = (await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card' } })).data;
+  await receipt(tok, o2.id, 32);
+  const both = await Promise.all([acts.runAction(env, '12345', 'order.approve', { orderId: o2.id }), acts.runAction(env, '12345', 'order.approve', { orderId: o2.id })]);
+  ok(both.filter((r) => r.ok).length === 1 && (await row('SELECT status FROM orders WHERE id = ?', o2.id)).status === 'paid', 'two approvals at once: exactly one succeeds');
+
+  // ---- a paid order cannot be rejected or cancelled ----
+  n = fakes.tg.calls.length;
+  await tap(`m:orj:${o1.id}`);
+  ok((await row('SELECT status FROM orders WHERE id = ?', o1.id)).status === 'paid' && acks(n).includes('رد نمی‌شود'), 'rejecting a paid order is refused');
+  ok(!(await acts.runAction(env, '12345', 'order.reject', { orderId: o1.id })).ok && !(await acts.runAction(env, '12345', 'order.cancel', { orderId: o1.id })).ok, 'reject and cancel refuse a paid order in the action layer too');
+
+  // ---- refund to the wallet: asks first, only once ----
+  card = await menu.renderScreen(env, `o:${o1.id}`);
+  ok(flat(card.kb).includes(`m:orf:${o1.id}`) && !flat(card.kb).includes(`m:oap:${o1.id}`), 'a paid order offers refund, not approve');
+  const bal0 = (await row('SELECT wallet_balance b FROM users WHERE id = ?', buyer.id)).b;
+  n = fakes.tg.calls.length;
+  await tap(`m:orf:${o1.id}`);
+  const rf = confirmOf(n);
+  ok(rf && rf.text.includes(Number(o1.amount_toman).toLocaleString('en-US')) && (await row('SELECT wallet_balance b FROM users WHERE id = ?', buyer.id)).b === bal0, 'refund asks first and says how much');
+  await tap(`cf:${rf.token}`);
+  const bal1 = (await row('SELECT wallet_balance b FROM users WHERE id = ?', buyer.id)).b;
+  ok(bal1 === bal0 + o1.amount_toman, `refund credits the wallet once: ${bal0} -> ${bal1}`);
+  const again = await acts.runAction(env, '12345', 'order.refund', { orderId: o1.id });
+  ok(!again.ok && (await row('SELECT wallet_balance b FROM users WHERE id = ?', buyer.id)).b === bal1, 'a second refund is refused and moves nothing');
+  ok((await row("SELECT COUNT(*) c FROM wallet_tx WHERE order_id = ? AND reason = 'admin_refund'", o1.id)).c === 1, 'one admin_refund row');
+  const two = await Promise.all([acts.runAction(env, '12345', 'order.refund', { orderId: o2.id }), acts.runAction(env, '12345', 'order.refund', { orderId: o2.id })]);
+  ok(two.filter((r) => r.ok).length === 1 && (await row('SELECT wallet_balance b FROM users WHERE id = ?', buyer.id)).b === bal1 + o2.amount_toman, 'two refunds at once: exactly one credits');
+  card = await menu.renderScreen(env, `o:${o1.id}`);
+  ok(!flat(card.kb).includes(`m:orf:${o1.id}`) && card.text.includes('برگشت داده شده'), 'the card shows it was refunded and drops the button');
+  const top = (await call('POST', '/api/v1/orders', { token: tok, json: { topup_toman: 70000, method: 'card' } })).data;
+  await receipt(tok, top.id, 33);
+  await acts.runAction(env, '12345', 'order.approve', { orderId: top.id });
+  ok(!(await acts.runAction(env, '12345', 'order.refund', { orderId: top.id })).ok, 'a wallet top-up is not refunded into the wallet again');
+
+  // ---- reject / cancel an open order, with undo ----
+  const o3 = (await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card' } })).data;
+  n = fakes.tg.calls.length;
+  await tap(`m:orj:${o3.id}`);
+  const rj = await row('SELECT status, admin_note FROM orders WHERE id = ?', o3.id);
+  ok(rj.status === 'rejected' && rj.admin_note, 'reject sets the order rejected with a note for the user');
+  const rjUndo = since(n).find((c) => c.method === 'editMessageText' && flat(c.body.reply_markup.inline_keyboard).some((x) => x.startsWith('m:undo:')));
+  ok(!!rjUndo, 'the order card comes back with undo');
+  await tap(flat(rjUndo.body.reply_markup.inline_keyboard).find((x) => x.startsWith('m:undo:')));
+  ok((await row('SELECT status FROM orders WHERE id = ?', o3.id)).status === 'pending', 'undo puts the order back to pending');
+  const cx = await acts.runAction(env, '12345', 'order.cancel', { orderId: o3.id });
+  ok(cx.ok && (await row('SELECT status FROM orders WHERE id = ?', o3.id)).status === 'cancelled', 'cancel closes an open order');
+  ok(!(await acts.runAction(env, '12345', 'order.approve', { orderId: o3.id })).ok, 'a cancelled order is not approved');
+  await acts.undoAction(env, '12345', cx.auditId);
+  ok((await row('SELECT status FROM orders WHERE id = ?', o3.id)).status === 'pending', 'cancel can be undone');
+
+  // ---- search by number or receipt code ----
+  await env.DB.prepare("UPDATE orders SET receipt_ref = 'REF778899' WHERE id = ?").bind(o3.id).run();
+  await tap('m:w:ofind');
+  n = fakes.tg.calls.length;
+  await say('REF778899', { message_id: 4001 });
+  ok(since(n).some((c) => c.method === 'sendMessage' && String(c.body.text).includes(`سفارش #${o3.id}`)), 'search by receipt code opens the order');
+  ok((await (await import('../src/telegram-screens.js')).orderSearch(env, '#' + o1.id)).text.includes(`سفارش #${o1.id}`), 'search by #number opens the order');
+
+  // ---- plans: copy, move, description, delete = archive when used, hard delete when not ----
+  n = fakes.tg.calls.length;
+  await tap(`m:pcp:${monthly.id}`);
+  const copy = await row("SELECT * FROM plans WHERE name = ?", monthly.name + ' (کپی)');
+  ok(copy && copy.is_active === 0 && copy.price_toman === monthly.price_toman && copy.duration_days === monthly.duration_days, 'copy makes a hidden twin');
+  ok(!(await call('GET', '/api/v1/plans')).data.some((p) => p.id === copy.id), 'the copy is not in the app until turned on');
+  n = fakes.tg.calls.length;
+  await tap(`m:pdl:${copy.id}`);
+  const dc = confirmOf(n);
+  ok(dc && dc.text.includes('برای همیشه پاک') && !!(await row('SELECT 1 x FROM plans WHERE id = ?', copy.id)), 'deleting an unused plan asks first and says it is permanent');
+  await tap(`cf:${dc.token}`);
+  ok(!(await row('SELECT 1 x FROM plans WHERE id = ?', copy.id)), 'an unused plan is deleted for real');
+  n = fakes.tg.calls.length;
+  await tap(`m:pdl:${monthly.id}`);
+  const da = confirmOf(n);
+  ok(da && da.text.includes('بایگانی'), 'deleting a plan with orders says it will be archived');
+  await tap(`cf:${da.token}`);
+  const arch = await row('SELECT * FROM plans WHERE id = ?', monthly.id);
+  ok(arch && arch.archived === 1 && arch.is_active === 0, 'a used plan is archived, not deleted');
+  ok(!(await call('GET', '/api/v1/plans')).data.some((p) => p.id === monthly.id), 'archived plans are hidden from the app');
+  const tok2 = await signup('sales3b@example.com', { device: 's3b' });
+  ok((await call('POST', '/api/v1/orders', { token: tok2, json: { plan_id: monthly.id, method: 'card' } })).status === 404, 'an archived plan cannot be bought');
+  ok(!flat((await menu.renderScreen(env, 'pl')).kb).includes(`m:p:${monthly.id}`) && flat((await menu.renderScreen(env, 'pla')).kb).includes(`m:p:${monthly.id}`), 'it leaves the plan list and shows under 🗄 بایگانی');
+  ok((await menu.renderScreen(env, `o:${o1.id}`)).text.includes(monthly.name), 'history still shows its name');
+  n = fakes.tg.calls.length;
+  await tap(`m:ug:${buyer.id}`);
+  ok(!since(n).some((c) => c.body && c.body.reply_markup && flat(c.body.reply_markup.inline_keyboard).includes(`m:ugp:${buyer.id}:${monthly.id}`)), 'and from the grant list');
+  ok(!(await acts.runAction(env, '12345', 'plan.toggle', { id: monthly.id })).ok, 'an archived plan cannot just be turned on');
+  const ua = await acts.runAction(env, '12345', 'plan.unarchive', { id: monthly.id });
+  ok(ua.ok && (await row('SELECT archived FROM plans WHERE id = ?', monthly.id)).archived === 0, 'unarchive brings it back (still off)');
+  await acts.runAction(env, '12345', 'plan.toggle', { id: monthly.id });
+  ok((await call('GET', '/api/v1/plans')).data.some((p) => p.id === monthly.id), 'turned on again, the app shows it');
+  // order
+  const order0 = (await call('GET', '/api/v1/plans')).data.map((p) => p.id);
+  const mv = await acts.runAction(env, '12345', 'plan.move', { id: order0[1], dir: 'u' });
+  const order1 = (await call('GET', '/api/v1/plans')).data.map((p) => p.id);
+  ok(mv.ok && order1[0] === order0[1] && order1[1] === order0[0], 'move up swaps two plans in the app: ' + order0 + ' -> ' + order1);
+  ok(!(await acts.runAction(env, '12345', 'plan.move', { id: order1[0], dir: 'u' })).ok, 'the first plan cannot move up');
+  await acts.undoAction(env, '12345', mv.auditId);
+  ok(JSON.stringify((await call('GET', '/api/v1/plans')).data.map((p) => p.id)) === JSON.stringify(order0), 'move can be undone');
+  await tap(`m:pmv:${order0[0]}:d`);
+  ok((await call('GET', '/api/v1/plans')).data.map((p) => p.id)[1] === order0[0], 'the ⬇️ button moves it down');
+  await acts.runAction(env, '12345', 'plan.move', { id: order0[0], dir: 'u' });
+  await acts.runAction(env, '12345', 'plan.set', { id: monthly.id, field: 'desc', raw: 'برای دو گوشی' });
+  ok((await call('GET', '/api/v1/plans')).data.find((p) => p.id === monthly.id).description === 'برای دو گوشی', 'the description reaches the app');
+  const pc = await menu.renderScreen(env, `p:${monthly.id}`);
+  const sold = (await row("SELECT COUNT(*) c FROM orders WHERE status = 'paid' AND (plan_id = ?1 OR activate_plan_id = ?1)", monthly.id)).c;
+  ok(sold >= 2 && pc.text.includes(`🛒 فروش: ${Number(sold).toLocaleString('en-US')} بار`) && pc.text.includes('برای دو گوشی') && flat(pc.kb).includes(`m:w:plan:${monthly.id}:desc`), 'the plan card shows sales and the description: ' + pc.text.split('\n').find((l) => l.includes('🛒')));
+
+  // ---- coupons: edit and pause change what /coupons/check answers ----
+  await acts.runAction(env, '12345', 'coupon.create', { code: 'S3OFF', percent: 10 });
+  const cpn = await row("SELECT * FROM coupons WHERE code = 'S3OFF'");
+  const check = () => call('POST', '/api/v1/coupons/check', { token: tok2, json: { code: 'S3OFF', plan_id: monthly.id } });
+  ok((await check()).data.final_toman === Math.round(monthly.price_toman * 0.9 / 1000) * 1000, 'the new code gives 10%');
+  await tap(`m:cs:${cpn.id}:p:50`);
+  ok((await check()).data.final_toman === Math.round(monthly.price_toman * 0.5 / 1000) * 1000, 'a one-tap 50% changes the price the app gets');
+  await tap(`m:ct:${cpn.id}`);
+  const paused = await check();
+  ok(paused.status === 400 && paused.data.detail.code === 'coupon_invalid', 'a paused code is refused');
+  await tap(`m:ct:${cpn.id}`);
+  ok((await check()).status === 200, 'resumed, it works again');
+  const other = appPlans.find((p) => p.id !== monthly.id);
+  await tap(`m:cs:${cpn.id}:l:${other.id}`);
+  ok((await check()).data.detail.code === 'coupon_wrong_plan', 'limited to another plan, it is refused for this one');
+  await tap(`m:cs:${cpn.id}:l:0`);
+  await tap(`m:cs:${cpn.id}:d:7`);
+  const exp = (await row('SELECT expires_at FROM coupons WHERE id = ?', cpn.id)).expires_at;
+  ok(Math.abs(exp - (Math.floor(Date.now() / 1000) + 7 * 86400)) < 60 && (await check()).status === 200, '7 days from today');
+  await env.DB.prepare('UPDATE coupons SET expires_at = ? WHERE id = ?').bind(Math.floor(Date.now() / 1000) - 10, cpn.id).run();
+  ok((await check()).data.detail.code === 'coupon_expired', 'an expired code is refused');
+  await tap(`m:cs:${cpn.id}:d:0`);
+  ok((await row('SELECT expires_at FROM coupons WHERE id = ?', cpn.id)).expires_at === null && (await check()).status === 200, '«همیشه» clears the end date');
+  await tap(`m:f:cpct:${cpn.id}`);
+  await say('۳۵', { message_id: 4010 });
+  await tap('m:fok:cpct');
+  ok((await row('SELECT percent FROM coupons WHERE id = ?', cpn.id)).percent === 35, 'a typed percent through the form');
+  const setU = await acts.runAction(env, '12345', 'coupon.set', { id: cpn.id, field: 'u', value: 3 });
+  await acts.undoAction(env, '12345', setU.auditId);
+  ok((await row('SELECT max_uses FROM coupons WHERE id = ?', cpn.id)).max_uses === 0, 'a coupon edit can be undone');
+  ok(!(await acts.runAction(env, '12345', 'coupon.set', { id: cpn.id, field: 'p', value: 150 })).ok, 'a percent over 100 is refused');
+  const gold = await row("SELECT id FROM coupons WHERE code = 'GOLD50'");
+  const uses = await menu.renderScreen(env, `cu:${gold.id}`);
+  ok(flat(uses.kb).some((x) => /^m:u:\d+$/.test(x)), 'the uses list links to who used it');
+  const clist = await menu.renderScreen(env, 'cp');
+  ok(flat(clist.kb).includes(`m:c:${cpn.id}`), 'the coupon list opens each card');
+
+  // ---- referral ----
+  const refCode = (await row('SELECT referral_code FROM users WHERE id = ?', buyer.id)).referral_code;
+  await signup('sales3ref@example.com', { referral: refCode, device: 's3r' });
+  await tap('m:ss:referral_percent:15');
+  ok((await row("SELECT value FROM settings WHERE key = 'referral_percent'")).value === '15', 'referral percent from a suggestion button');
+  await tap('m:ss:referral_percent:99');
+  ok((await row("SELECT value FROM settings WHERE key = 'referral_percent'")).value === '15', 'a value that is not on the screen is refused');
+  const ref = await menu.renderScreen(env, 'ref');
+  ok(flat(ref.kb).includes(`m:u:${buyer.id}`) && ref.text.includes('15٪'), 'the referral screen shows the percent and the top referrer');
+
+  // ---- payment methods: secrets masked, senders, SMS log, settings ----
+  const key = 'k3y' + 'Z'.repeat(20);
+  await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('sms_key', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").bind(key).run();
+  const shown = [await menu.renderScreen(env, 'pay'), await menu.renderScreen(env, 'payset'), await menu.renderScreen(env, 'sk:sms_key')].map((x) => x.text + JSON.stringify(x.kb)).join('\n');
+  ok(!shown.includes(key) && shown.includes('k3yZ••••'), 'the SMS key is only shown masked');
+  const sk = await acts.runAction(env, '12345', 'setting.set', { key: 'sms_key', val: key + 'X' });
+  ok(sk.ok && !sk.text.includes(key) && !(await row('SELECT summary FROM admin_audit WHERE id = ?', sk.auditId)).summary.includes(key), 'setting the SMS key never echoes it');
+  await acts.undoAction(env, '12345', sk.auditId);
+  await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('sms_senders', '09120000000,mybank') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+  ok(flat((await menu.renderScreen(env, 'snd')).kb).includes('m:sdel:mybank'), 'senders are listed with a remove button');
+  n = fakes.tg.calls.length;
+  await tap('m:sdel:mybank');
+  ok((await row("SELECT value FROM settings WHERE key = 'sms_senders'")).value === '09120000000', 'one tap removes a sender');
+  const sdUndo = since(n).find((c) => c.method === 'editMessageText' && flat(c.body.reply_markup.inline_keyboard).some((x) => x.startsWith('m:undo:')));
+  await tap(flat(sdUndo.body.reply_markup.inline_keyboard).find((x) => x.startsWith('m:undo:')));
+  ok((await row("SELECT value FROM settings WHERE key = 'sms_senders'")).value === '09120000000,mybank', 'and undo puts it back');
+  const now = Math.floor(Date.now() / 1000);
+  await env.DB.prepare("INSERT INTO sms_log (hash, sender, body, amount_rial, order_id, result, created_at) VALUES ('s3a', 'mybank', 'SECRET-BODY-ACCT 6037', 1230000, NULL, 'no_order', ?), ('s3b', 'mybank', 'SECRET-BODY-2', 990000, ?, 'paid', ?), ('s3c', 'mybank', 'old', 50000, NULL, 'no_order', ?)")
+    .bind(now, o1.id, now, now - 30 * 86400).run();
+  const smsAll = await menu.renderScreen(env, 'sms');
+  const smsUn = await menu.renderScreen(env, 'sms:un');
+  ok(smsAll.text.includes('123,000') && flat(smsAll.kb).includes(`m:o:${o1.id}`) && !smsAll.text.includes('SECRET-BODY'), 'the SMS log shows amount, result and order, never the SMS text');
+  ok(smsUn.text.includes('123,000') && !smsUn.text.includes('99,000'), 'the unmatched filter shows only unmatched SMS');
+  await tap('m:ss:coin_minutes:60');
+  await tap('m:ss:coin_minutes:7');
+  ok((await row("SELECT value FROM settings WHERE key = 'coin_minutes'")).value === '60', 'coin minutes from a button; a value not offered is refused');
+  ok(!(await acts.runAction(env, '12345', 'setting.set', { key: 'wallet_trx', val: 'not-an-address' })).ok, 'a wrong wallet address is refused');
+  const wl = await menu.renderScreen(env, 'wl');
+  ok(flat(wl.kb).includes('m:sk:wallet_trx') && wl.kb.flat().some((x) => x.text.includes('TRX')), 'wallets are listed per coin');
+
+  // ---- inbox counts: receipts, coin detections, unmatched SMS, panel errors ----
+  await env.DB.prepare("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, txid, coin, created_at) VALUES (?, 'plan', ?, 100000, 'coin', 'review', 'tx-s3-detect', 'trx', ?)")
+    .bind(buyer.id, monthly.id, now).run();
+  await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('panel_err_99', 'refused') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+  const c = await row(`SELECT (SELECT COUNT(*) FROM orders WHERE status = 'review') r, (SELECT COUNT(*) FROM orders WHERE status = 'review' AND method = 'coin' AND txid IS NOT NULL) coin,
+    (SELECT COUNT(*) FROM sms_log WHERE result IN ('no_order', 'ambiguous', 'settle_failed') AND created_at > ?) sms,
+    (SELECT COUNT(*) FROM settings WHERE key LIKE 'panel_err_%' AND value != '') perr`, now - 7 * 86400);
+  const inb = await menu.renderScreen(env, 'in');
+  const fmt = (x) => Number(x).toLocaleString('en-US');
+  ok(c.coin >= 1 && c.sms >= 1 && inb.text.includes(`رسید منتظر بررسی: ${fmt(c.r)}`) && inb.text.includes(`پیداشده (منتظر تأیید تو): ${fmt(c.coin)}`)
+    && inb.text.includes(`(7 روز): ${fmt(c.sms)}`) && inb.text.includes(`ساخت اکانت را رد کرده: ${fmt(c.perr)}`), 'the inbox counts each kind: ' + inb.text.split('\n').slice(2, 6).join(' / '));
+  ok(['m:or:rev', 'm:or:rev:coin', 'm:sms:un', 'm:pa'].every((x) => flat(inb.kb).includes(x)), 'each count opens its list');
+  const homeBtn = (await menu.renderScreen(env, 'home')).kb.flat().find((x) => x.callback_data === 'm:in');
+  ok(homeBtn.text.includes(`(${c.r + c.sms + c.perr})`), 'the home button shows the total: ' + homeBtn.text);
+  await env.DB.prepare("DELETE FROM settings WHERE key = 'panel_err_99'").run();
+
+  // ---- every new screen: routes, breadcrumbs, back + home, ≤6 D1 statements ----
+  const screens = ['or', 'or:rev', 'or:paid:card', 'or:all:coin', `o:${o1.id}`, `o:${o3.id}`, 'pl', 'pla', `p:${monthly.id}`, 'cp', `c:${cpn.id}`, `cpl:${cpn.id}`, `cu:${gold.id}`,
+    'ref', 'pay', 'payset', 'snd', 'sms', 'sms:un', 'wl', 'in', `hist:order:${o1.id}`, 'hist:coupon:S3OFF'];
+  const realPrepare = env.DB.prepare;
+  let q = 0, maxQ = 0;
+  const bad = [], noNav = [], over = [];
+  env.DB.prepare = (sql) => { q++; return realPrepare(sql); };
+  for (const d of screens) {
+    q = 0;
+    const scr = await menu.renderScreen(env, d);
+    if (q > 6) over.push(`${d}=${q}`);
+    maxQ = Math.max(maxQ, q);
+    for (const x of flat(scr.kb)) if (!menu.routeOf(x) || new TextEncoder().encode(x).length > 64) bad.push(`${d} -> ${x}`);
+    const last = flat([scr.kb[scr.kb.length - 1]]);
+    if (!last.includes('m:home') || !String(scr.text).startsWith('🏠 منو')) noNav.push(d);
+  }
+  env.DB.prepare = realPrepare;
+  console.log('    most D1 statements on one sales screen: ' + maxQ);
+  ok(!bad.length, 'sales screen buttons resolve within 64 bytes: ' + bad.slice(0, 4).join(' | '));
+  ok(!noNav.length, 'sales screens have breadcrumbs and end with home: ' + noNav.join(' '));
+  ok(!over.length, 'sales screens use ≤6 D1 statements: ' + over.join(' '));
+  ok(['cpct', 'cuses', 'cdays'].every((f) => menu.routeOf(`m:f:${f}:${cpn.id}`)) && !menu.routeOf('m:f:nope:1'), 'every coupon form has a route');
+
+  const slash = since(startCalls).filter((x) => x.body && String(x.body.chat_id) === '12345').map((x) => String(x.body.text || x.body.caption || '')).filter((t) => /^\/[a-z]/m.test(t));
+  ok(!slash.length, 'no sales text line starts with /command: ' + slash.slice(0, 2).join(' || ').slice(0, 200));
+
+  const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE4_ACTIONS.includes(x) && !STAGE5_ACTIONS.includes(x));
+  ok(!missing.length, 'every admin action has written an audit row: missing ' + missing.join(','));
+}
+
+section('admin panel stage 4: panels and servers, the Pleat app, network');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const { serverKey } = await import('../src/netstats.js');
+  const A = { chat: { id: 12345 } };
+  let tapN = 0, msgN = 7000;
+  const tap = (data, message = { ...A, message_id: 904, text: 'menu' }) => tgWebhook({ callback_query: { id: 's4-' + (++tapN), data, message } });
+  const say = (text) => tgWebhook({ message: { ...A, text, message_id: ++msgN } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const rows = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results;
+  const lastText = (n) => { const c = since(n).filter((x) => x.body && (x.method === 'editMessageText' || x.method === 'sendMessage')).pop(); return c ? String(c.body.text || '') : ''; };
+  const allText = (n) => since(n).filter((x) => x.body).map((x) => JSON.stringify(x.body)).join('\n');
+  const acks = (n) => since(n).filter((c) => c.method === 'answerCallbackQuery').map((c) => String(c.body.text || '')).join(' | ');
+  const lastAudit = (action) => row('SELECT * FROM admin_audit WHERE action = ? ORDER BY id DESC LIMIT 1', action);
+  const confirmOf = (n) => {
+    const m = since(n).filter((c) => c.method === 'sendMessage' && c.body && c.body.reply_markup && flat(c.body.reply_markup.inline_keyboard).some((x) => x.startsWith('cf:'))).pop();
+    return m ? { token: flat(m.body.reply_markup.inline_keyboard).find((x) => x.startsWith('cf:')).slice(3), text: m.body.text } : null;
+  };
+
+  // a user with a plan on panel 1: three servers (NL, DE, US)
+  const tok = await signup('net4@example.com', { device: 's4' });
+  const u4 = await row('SELECT * FROM users WHERE email = ?', 'net4@example.com');
+  const plan = await row('SELECT id FROM plans WHERE is_active = 1 AND archived = 0 ORDER BY sort, id LIMIT 1');
+  await acts.runAction(env, '12345', 'user.grant', { userId: u4.id, planId: plan.id });
+  const H = { 'x-device-id': 's4', 'x-hwid': 's4' };
+  const servers = async () => (await call('GET', '/api/v1/vpn/servers', { token: tok, headers: H })).data;
+  const s0 = await servers();
+  ok(Array.isArray(s0) && s0.length >= 3, 'the stage 4 user has servers: ' + s0.map((s) => s.name).join(','));
+  const nl = s0.find((s) => s.country_code === 'NL'), de = s0.find((s) => s.country_code === 'DE');
+  const kNl = serverKey(nl.link), kDe = serverKey(de.link);
+  const pa1 = await row("SELECT panel_id FROM panel_accounts WHERE user_id = ? AND desired = 'active'", u4.id);
+  const pid = pa1.panel_id;
+
+  // ---- the server list: names, types and countries, never an address, port, id or link ----
+  let n = fakes.tg.calls.length;
+  const list = await menu.renderScreen(env, `srvs:${pid}`);
+  const listAll = list.text + JSON.stringify(list.kb);
+  ok(/NL/.test(list.text) && /vless·reality·tcp/.test(list.text) && /trojan/.test(list.text), 'the server list shows country and config type: ' + list.text.slice(0, 200));
+  ok(!/example\.com|uuid|pass@|:443|vless:\/\//.test(listAll), 'the server list never shows an address, port, id or link');
+  ok(flat(list.kb).includes(`m:srv:${pid}:${kNl}`), 'each server has its own card');
+  const card = await menu.renderScreen(env, `srv:${pid}:${kNl}`);
+  ok(!/example\.com|uuid|:443|vless:\/\//.test(card.text + JSON.stringify(card.kb)), 'the server card never shows an address, port, id or link');
+  ok(String(card.text).startsWith('🏠 منو') && flat([card.kb[card.kb.length - 1]]).includes('m:home'), 'the server card has breadcrumbs, back and home');
+
+  // ---- hide: gone from /vpn/servers and /vpn/sub; undo brings it back ----
+  n = fakes.tg.calls.length;
+  await tap(`m:sh:${pid}:${kNl}:1`);
+  ok((await row('SELECT hidden FROM server_overrides WHERE panel_id = ? AND server_key = ?', pid, kNl))?.hidden === 1, 'hide writes server_overrides');
+  const s1 = await servers();
+  ok(s1.length === s0.length - 1 && !s1.some((s) => serverKey(s.link) === kNl), 'a hidden server disappears from /vpn/servers: ' + s0.map((s) => s.name + '=' + serverKey(s.link)).join(',') + ' -> ' + s1.length);
+  const subR = await call('GET', '/api/v1/vpn/sub', { token: tok, headers: H });
+  const subLinksNow = decodeSub(await subR.res.text());
+  ok(subLinksNow.length === s0.length - 1 && !subLinksNow.some((l) => serverKey(l) === kNl), 'a hidden server disappears from /vpn/sub: ' + subLinksNow.length);
+  const hideAudit = await lastAudit('server.hide');
+  ok(hideAudit && hideAudit.undo_json && hideAudit.target_type === 'server', 'hide is in the admin log with an undo');
+  ok(flat(since(n).filter((c) => c.body && c.body.reply_markup).pop()?.body.reply_markup.inline_keyboard).includes(`m:undo:${hideAudit.id}`), 'the card comes back with the undo button');
+  await tap(`m:undo:${hideAudit.id}`);
+  ok(!(await row('SELECT 1 x FROM server_overrides WHERE panel_id = ? AND server_key = ?', pid, kNl)), 'undo of a hide removes the override');
+  ok((await servers()).length === s0.length, 'after undo the server is back in /vpn/servers');
+
+  // ---- rename: English only, shows in the app, the ranking key does not move ----
+  n = fakes.tg.calls.length;
+  await tap(`m:f:srn:${pid}.${kDe}`);
+  await say('سرور آلمان');
+  ok(/حرف فارسی/.test(lastText(n)), 'a Persian server name is refused (the app is English only)');
+  await say('🇩🇪 Germany Fast');
+  await tap('m:fok:srn');
+  ok((await row('SELECT label FROM server_overrides WHERE panel_id = ? AND server_key = ?', pid, kDe))?.label === '🇩🇪 Germany Fast', 'rename stores the label');
+  const s2 = await servers();
+  const deNow = s2.find((s) => serverKey(s.link) === kDe);
+  ok(deNow && deNow.name === 'Germany Fast' && deNow.country_code === 'DE', 'the renamed server shows its new name in the app: ' + (deNow && deNow.name));
+  ok(s2.filter((s) => s.name !== 'Germany Fast').every((s) => /^([A-Z]{2} \d+|Server \d+)$/.test(s.name)), 'other servers keep their automatic names');
+  const MCI = { asn: 197207, asOrganization: 'Mobile Communication Company of Iran PLC' };
+  const MTN = { asn: 44244, asOrganization: 'Iran Cell Service and Communication Company' };
+  globalThis.__cgNet = {};
+  await call('POST', '/api/v1/net/report', { token: tok, cf: MCI, json: { results: [{ k: kDe, ok: true, ms: 80 }, { k: kNl, ok: true, ms: 150 }] } });
+  globalThis.__cgNet = {};
+  await call('POST', '/api/v1/net/report', { token: tok, cf: MTN, json: { results: [{ k: kDe, ok: false }, { k: kNl, ok: true, ms: 60 }] } });
+  const rank = (await call('GET', '/api/v1/net/rank', { token: tok, cf: MCI })).data;
+  ok(rank.servers && rank.servers[kDe] && rank.servers[kDe].score > 0, 'ranking still works for the renamed server (same key)');
+  ok(menu.routeOf(`m:f:srn:${pid}.${kDe}`) && !menu.routeOf('m:f:nope:1'), 'the rename form has a route');
+  const r0 = await acts.runAction(env, '12345', 'server.rename', { panelId: pid, key: kDe, label: 'bad#name' });
+  ok(!r0.ok, 'a server name with # is refused');
+
+  // ---- panel: rename, last test, enable a disabled panel (and undo) ----
+  await tap(`m:f:pnm:${pid}`);
+  await say('Main panel');
+  await tap('m:fok:pnm');
+  ok((await row('SELECT label FROM panels WHERE id = ?', pid)).label === 'Main panel', 'the panel can be renamed from its card');
+  await tgWebhook({ message: { ...A, text: `/paneltest ${pid}` } });
+  const pc = await menu.renderScreen(env, `pp:${pid}`);
+  ok(/آخرین تست/.test(pc.text) && /vless·reality·tcp/.test(pc.text), 'the panel card shows the last test and the config types');
+  ok(!/example\.com|cgtest_/.test(pc.text), 'the panel card never shows the address or the test user');
+  ok(flat(pc.kb).includes(`m:srvs:${pid}`), 'the panel card links to its servers');
+  const { addPanel } = await import('../src/panels.js');
+  const p2 = await addPanel(env, 'auto', 'old panel');
+  await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(p2.id).run();
+  ok(flat((await menu.renderScreen(env, `pp:${p2.id}`)).kb).includes(`m:pen:${p2.id}`), 'a disabled panel has a re-enable button');
+  await tap(`m:pen:${p2.id}`);
+  ok((await row('SELECT state FROM panels WHERE id = ?', p2.id)).state === 'testing', 'enable moves a disabled panel back to testing');
+  await tap(`m:undo:${(await lastAudit('panel.enable')).id}`);
+  ok((await row('SELECT state FROM panels WHERE id = ?', p2.id)).state === 'disabled', 'undo of enable disables it again');
+  await env.DB.prepare('DELETE FROM panels WHERE id = ?').bind(p2.id).run();
+
+  // ---- the app's domains: add (validated), remove, reorder, test ----
+  n = fakes.tg.calls.length;
+  await tap('m:f:appd');
+  await say('http://plain.example.org');
+  ok(/آدرس درست نیست/.test(lastText(n)), 'a non-https domain is refused');
+  await say('https://x.example.org/path');
+  ok(/آدرس درست نیست/.test(lastText(n)) && !(await row("SELECT value FROM settings WHERE key = 'app_api_bases'"))?.value, 'a domain with a path is refused');
+  await say('https://API2.example.org/');
+  await tap('m:fok:appd');
+  ok((await row("SELECT value FROM settings WHERE key = 'app_api_bases'")).value === 'https://api2.example.org', 'a good domain is added (trailing slash dropped)');
+  ok(!(await acts.runAction(env, '12345', 'app.list', { k: 'd', op: 'add', value: 'https://api2.example.org' })).ok, 'a duplicate domain is refused');
+  await acts.runAction(env, '12345', 'app.list', { k: 'd', op: 'add', value: 'https://down.example.org' });
+  let cfg = (await call('GET', '/api/v1/app-config')).data;
+  ok(cfg.api_bases.join() === 'https://api2.example.org,https://down.example.org', 'app-config hands out the added domains in order');
+  const dl = await menu.renderScreen(env, 'appl:d');
+  const mv = flat(dl.kb).find((x) => x.startsWith('m:apm:d:1:'));
+  ok(mv && flat(dl.kb).includes('m:apt'), 'the domain list has move and test buttons');
+  await tap(mv);
+  cfg = (await call('GET', '/api/v1/app-config')).data;
+  ok(cfg.api_bases.join() === 'https://down.example.org,https://api2.example.org', 'reorder moves a domain up');
+  n = fakes.tg.calls.length;
+  await tap(mv); // drawn for the old order: names a different item now
+  ok(/عوض شده/.test(acks(n)) && (await call('GET', '/api/v1/app-config')).data.api_bases[0] === 'https://down.example.org', 'a stale button does not move a different item');
+  const realFetch = globalThis.fetch;
+  const seenUrls = [];
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://api2.example.org/health') { seenUrls.push(url); return new Response('{"ok":true}', { status: 200 }); }
+    if (url === 'https://down.example.org/health') { seenUrls.push(url); throw new TypeError('connect failed'); }
+    return realFetch(input, init);
+  };
+  n = fakes.tg.calls.length;
+  await tap('m:apt');
+  globalThis.fetch = realFetch;
+  const tested = lastText(n);
+  ok(/✅ https:\/\/api2\.example\.org — \d+ms/.test(tested) && /❌ https:\/\/down\.example\.org/.test(tested), 'the domain test reports a down domain as failed: ' + tested.slice(0, 200));
+  ok(seenUrls.length === 2, 'the domain test makes one fetch per domain');
+  const rmBtn = flat((await menu.renderScreen(env, 'appl:d')).kb).find((x) => x.startsWith('m:apr:d:0:'));
+  await tap(rmBtn);
+  cfg = (await call('GET', '/api/v1/app-config')).data;
+  ok(cfg.api_bases.join() === 'https://api2.example.org', 'remove takes one domain out');
+  await tap(`m:undo:${(await lastAudit('app.list')).id}`);
+  ok((await call('GET', '/api/v1/app-config')).data.api_bases.length === 2, 'undo of a remove puts the domain back');
+
+  // ---- bridges: the full link is never echoed ----
+  const BR = 'vless://secret-uuid-1234@bridge.hidden-host.net:8443?security=tls&type=ws#br';
+  n = fakes.tg.calls.length;
+  await tap('m:f:appb');
+  await say('not a link');
+  await say(BR);
+  await tap('m:fok:appb');
+  const brCalls = allText(n);
+  ok((await call('GET', '/api/v1/app-config')).data.bridges[0] === BR, 'app-config hands out the bridge in full');
+  ok(!brCalls.includes('secret-uuid') && !brCalls.includes('hidden-host') && !brCalls.includes('8443'), 'the bridge link is never echoed in bot text');
+  ok(since(n).filter((c) => c.method === 'deleteMessage').length >= 1, 'the message with the bridge is deleted from the chat');
+  const bl = await menu.renderScreen(env, 'appl:b');
+  const sk = await menu.renderScreen(env, 'sk:app_bridges');
+  ok(/vless:\/\/br•••net/.test(bl.text) && !/hidden-host|secret-uuid/.test(bl.text + sk.text), 'the bridge list and setting show only scheme + masked host: ' + bl.text.split('\n').find((l) => l.includes('vless')));
+  ok(!/hidden-host|secret-uuid/.test((await lastAudit('app.list')).summary || ''), 'the admin log does not keep the bridge link');
+  ok(acts.maskBridge('vmess://' + btoa(JSON.stringify({ add: 'vm.hidden-host.net', port: 443, id: 'x' }))) === 'vmess://vm•••net', 'vmess bridges are masked too');
+
+  // ---- announcement, support link, trial: app-config reflects the edits ----
+  await tap('m:w:set:announcement');
+  await say('New servers tonight');
+  cfg = (await call('GET', '/api/v1/app-config')).data;
+  ok(cfg.announcement === 'New servers tonight', 'app-config shows the new announcement');
+  const appScr = await menu.renderScreen(env, 'app');
+  ok(appScr.text.includes('«New servers tonight»') && flat(appScr.kb).includes('m:apc:announcement'), 'the app screen previews the announcement with a clear button');
+  await tap('m:apc:announcement');
+  ok(!(await call('GET', '/api/v1/app-config')).data.announcement, 'clear removes the announcement from the app');
+  ok(!(await acts.runAction(env, '12345', 'setting.set', { key: 'support_url', val: 'javascript:alert(1)' })).ok, 'a bad support link is refused');
+  await tap('m:w:set:support_url');
+  await say('https://t.me/cloudgold_support');
+  ok((await call('GET', '/api/v1/app-config')).data.support_url === 'https://t.me/cloudgold_support', 'app-config shows the new support link');
+  await tap('m:ss:trial_data_gb:2');
+  ok((await row("SELECT value FROM settings WHERE key = 'trial_data_gb'")).value === '2', 'trial volume is one tap');
+  ok(['m:pl', 'm:ref', 'm:pay', 'm:sk:min_topup_toman', 'm:appl:d', 'm:appl:b'].every((x) => flat(appScr.kb).includes(x)), 'every app-config field has a way to edit it from the app screen');
+  await acts.runAction(env, '12345', 'setting.set', { key: 'trial_data_gb', val: '0' });
+  await acts.runAction(env, '12345', 'setting.set', { key: 'support_url', val: '' });
+
+  // ---- network: native screens, best servers per operator, reset with impact ----
+  globalThis.__cgGoo = {};
+  await call('POST', '/api/v1/net/google', { token: tok, json: { k: kNl, name: 'NL', cc: 'NL', google_cc: 'NL', gemini: true } });
+  globalThis.__cgGoo = {};
+  await call('POST', '/api/v1/net/google', { token: tok, json: { k: kDe, name: 'DE', cc: 'DE', google_cc: 'DE', gemini: true } });
+  const nc = await menu.renderScreen(env, 'nc');
+  ok(flat(nc.kb).includes('m:nca:197207') && flat(nc.kb).includes('m:nca:44244'), 'the operator screen lists both operators');
+  const nca = await menu.renderScreen(env, 'nca:44244');
+  ok(/بهترین سرورها/.test(nca.text) && flat(nca.kb).includes('m:nrs:a:44244'), 'one operator shows its best servers and a reset button');
+  const nsv = await menu.renderScreen(env, `nsv:${kDe}`);
+  ok(/Germany Fast/.test(nsv.text) && /رتبه/.test(nsv.text), 'one server shows its rank on each operator under its new name: ' + nsv.text.slice(0, 160));
+  const count = async (col, val) => {
+    let t = 0;
+    for (const tb of ['net_stats', 'net_geo', 'net_votes', 'user_net_srv', 'google_probe']) {
+      if (col === 'asn' && tb === 'google_probe') continue;
+      t += (await row(`SELECT COUNT(*) c FROM ${tb} WHERE ${col} = ?`, val)).c;
+    }
+    return t;
+  };
+  const before = { de: await count('skey', kDe), nl: await count('skey', kNl), mtn: await count('asn', 44244), mci: await count('asn', 197207) };
+  ok(before.de > 0 && before.nl > 0 && before.mtn > 0 && before.mci > 0, 'stats exist before the reset: ' + JSON.stringify(before));
+  n = fakes.tg.calls.length;
+  await tap(`m:nrs:s:${kDe}`);
+  const q1 = confirmOf(n);
+  ok(q1 && /ردیف/.test(q1.text) && /برگشت ندارد/.test(q1.text), 'a server reset asks first and says how many rows it removes');
+  ok(await count('skey', kDe) === before.de, 'nothing is removed before the confirm');
+  await tgWebhook({ callback_query: { id: 's4-cf1', data: `cf:${q1.token}`, message: { ...A, message_id: 905, text: 'q' } } });
+  ok(await count('skey', kDe) === 0, 'a server reset removes that server\'s rows');
+  ok(await count('skey', kNl) === before.nl, 'a server reset leaves the other servers alone');
+  const nlMtn = (await row('SELECT COUNT(*) c FROM net_geo WHERE asn = 44244 AND skey = ?', kNl)).c;
+  n = fakes.tg.calls.length;
+  await tap('m:nrs:a:44244');
+  const q2 = confirmOf(n);
+  await tgWebhook({ callback_query: { id: 's4-cf2', data: `cf:${q2.token}`, message: { ...A, message_id: 906, text: 'q' } } });
+  ok(nlMtn > 0 && await count('asn', 44244) === 0, 'an operator reset removes that operator\'s rows');
+  ok(await count('asn', 197207) > 0 && (await row('SELECT COUNT(*) c FROM google_probe WHERE skey = ?', kNl)).c > 0, 'an operator reset leaves other operators and Google tests alone');
+  ok((await lastAudit('net.reset')) && !(await lastAudit('net.reset')).undo_json, 'a reset is in the admin log (no undo: destructive)');
+  ok(!(await acts.runAction(env, '12345', 'net.reset', { kind: 'a', id: '1 OR 1=1' })).ok && !(await acts.runAction(env, '12345', 'net.reset', { kind: 's', id: "x' --" })).ok, 'a reset refuses a bad target');
+
+  // ---- every new screen: buttons resolve within 64 bytes, crumbs, back + home, ≤6 D1 statements ----
+  const screens = [`pp:${pid}`, `srvs:${pid}`, `srv:${pid}:${kNl}`, `srv:${pid}:${kDe}`, 'app', 'appl:d', 'appl:b', 'sk:app_bridges', 'sk:app_api_bases', 'net', 'nc', 'nca:197207', 'nca:44244', `nsv:${kNl}`, 'ng',
+    `hist:server:${pid}.${kDe}`];
+  const realPrepare = env.DB.prepare;
+  let q = 0, maxQ = 0;
+  const bad = [], noNav = [], over = [];
+  env.DB.prepare = (sql) => { q++; return realPrepare(sql); };
+  for (const d of screens) {
+    q = 0;
+    const scr = await menu.renderScreen(env, d);
+    if (q > 6) over.push(`${d}=${q}`);
+    maxQ = Math.max(maxQ, q);
+    for (const x of flat(scr.kb)) if (!menu.routeOf(x) || new TextEncoder().encode(x).length > 64) bad.push(`${d} -> ${x}`);
+    const last = flat([scr.kb[scr.kb.length - 1]]);
+    if (!last.includes('m:home') || (last.length < 2 && !['app', 'net'].includes(d)) || !String(scr.text).startsWith('🏠 منو')) noNav.push(d);
+  }
+  env.DB.prepare = realPrepare;
+  console.log('    most D1 statements on one stage 4 screen: ' + maxQ);
+  ok(!bad.length, 'stage 4 buttons resolve within 64 bytes: ' + bad.slice(0, 4).join(' | '));
+  ok(!noNav.length, 'stage 4 screens have breadcrumbs and end with back + home: ' + noNav.join(' '));
+  ok(!over.length, 'stage 4 screens use ≤6 D1 statements: ' + over.join(' '));
+  const walked = new Set();
+  const queue = ['pa', 'app', 'net']; // the stage 1 walk covers home; this one starts at the stage 4 sections
+  while (queue.length && walked.size < 400) {
+    const d = queue.shift();
+    if (walked.has(d)) continue;
+    walked.add(d);
+    for (const x of flat((await menu.renderScreen(env, d)).kb)) {
+      const r = x.startsWith('m:') && menu.ROUTES[x.slice(2).split(':')[0]];
+      if (r && r.kind === 'screen' && !walked.has(x.slice(2))) queue.push(x.slice(2));
+    }
+  }
+  const unreached = ['srvs', 'srv', 'appl', 'nc', 'nca', 'nsv', 'ng'].filter((k) => ![...walked].some((d) => d.split(':')[0] === k));
+  ok(!unreached.length, 'the walk from home reaches every new screen: missing ' + unreached.join(',') + ' of ' + walked.size);
+  const leak = [...walked].filter((d) => /^(srvs|srv|appl|sk|pp|nc|nca|nsv|ng|app)(:|$)/.test(d));
+  let leaked = [];
+  for (const d of leak) { const s = await menu.renderScreen(env, d); if (/hidden-host|secret-uuid|uuid@|example\.com:|nl1\.|de1\./.test(s.text + JSON.stringify(s.kb))) leaked.push(d); }
+  ok(!leaked.length, 'no reachable screen shows a server address, id or bridge link: ' + leaked.join(' '));
+
+  const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE5_ACTIONS.includes(x));
+  ok(!missing.length, 'every admin action, stage 4 included, has written an audit row: missing ' + missing.join(','));
+  await acts.runAction(env, '12345', 'setting.set', { key: 'app_api_bases', val: '' });
+  await acts.runAction(env, '12345', 'setting.set', { key: 'app_bridges', val: '' });
+  await env.DB.prepare('DELETE FROM server_overrides').run();
+}
+
+section('admin panel stage 5: broadcast, stats, system, roles, security');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const tgm = await import('../src/telegram.js');
+  let tapN = 0, msgN = 9000;
+  const tapAs = (id, data) => tgWebhook({ callback_query: { id: 's5-' + (++tapN), data, message: { chat: { id }, message_id: 905, text: 'menu' } } });
+  const tap = (data) => tapAs(12345, data);
+  const sayAs = (id, text) => tgWebhook({ message: { chat: { id }, text, message_id: ++msgN } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const rows = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results;
+  const exec = (sql, ...a) => env.DB.prepare(sql).bind(...a).run();
+  const acks = (n) => since(n).filter((c) => c.method === 'answerCallbackQuery').map((c) => String(c.body.text || '')).join(' | ');
+  const screensTo = (n, chat) => since(n).filter((c) => c.body && String(c.body.chat_id) === String(chat) && (c.method === 'editMessageText' || c.method === 'sendMessage'));
+  const confirmOf = (n) => {
+    const m = since(n).filter((c) => c.method === 'sendMessage' && c.body && c.body.reply_markup && flat(c.body.reply_markup.inline_keyboard).some((x) => x.startsWith('cf:'))).pop();
+    return m ? { token: flat(m.body.reply_markup.inline_keyboard).find((x) => x.startsWith('cf:')).slice(3), text: m.body.text } : null;
+  };
+  const now = Math.floor(Date.now() / 1000);
+
+  // ---- seed: 60 Telegram users (30 with an active plan, 10 expired, 20 with none) + 3 without Telegram ----
+  await exec('UPDATE users SET tg_id = NULL'); // earlier sections' Telegram users stay out of the counts below
+  await exec('UPDATE orders SET paid_at = paid_at - 400 * 86400, created_at = created_at - 400 * 86400');
+  await exec('UPDATE users SET created_at = created_at - 400 * 86400');
+  await exec('UPDATE sub_periods SET ended_at = ended_at - 400 * 86400 WHERE ended_at IS NOT NULL');
+  const ids = { active: [], expired: [], none: [] };
+  for (let i = 0; i < 63; i++) {
+    const kind = i < 30 ? 'active' : i < 40 ? 'expired' : i < 60 ? 'none' : 'notg';
+    const r = await exec(`INSERT INTO users (email, password_hash, referral_code, created_at, tg_id, is_active) VALUES (?, 'x', ?, ?, ?, 1)`,
+      `bc${i}@example.com`, 'BC' + i, now - 3600, kind === 'notg' ? null : 700000 + i);
+    const uid = r.meta.last_row_id;
+    if (kind === 'active' || kind === 'expired') await exec('INSERT INTO subscriptions (user_id, pg_username, expires_at, data_limit_bytes, used_bytes) VALUES (?, ?, ?, 0, ?)', uid, 'bc' + i, kind === 'active' ? now + 86400 * 10 : now - 86400, kind === 'active' ? 1024 ** 3 : 0);
+    if (ids[kind]) ids[kind].push(700000 + i);
+  }
+  ok(await acts.audienceCount(env, 'active') === 30 && await acts.audienceCount(env, 'expired') === 10 && await acts.audienceCount(env, 'none') === 20 && await acts.audienceCount(env, 'all') === 60,
+    'audiences count only Telegram users: active 30, expired 10, no plan 20, all 60');
+
+  // ---- broadcast: form -> preview to the admin only -> "are you sure?" with the count ----
+  await exec('DELETE FROM broadcasts');
+  let n = fakes.tg.calls.length;
+  await tap('m:bc');
+  ok(screensTo(n, 12345).some((c) => flat(c.body.reply_markup.inline_keyboard).includes('m:f:bcast')), 'broadcast screen has a "new message" button');
+  await tap('m:f:bcast');
+  await tap('m:fa:0:active');
+  const evil = 'سلام! /grant evil@example.com 3 <b>bold</b> [x](https://t.me/x)';
+  await sayAs(12345, evil);
+  n = fakes.tg.calls.length;
+  await tap('m:fok:bcast');
+  const bc1 = await row('SELECT * FROM broadcasts ORDER BY id DESC LIMIT 1');
+  const sends = since(n).filter((c) => c.method === 'sendMessage');
+  const preview = sends.find((c) => c.body.text === evil);
+  ok(bc1 && bc1.status === 'draft' && bc1.audience === 'active' && bc1.text === evil, 'the form saves a draft with the exact text');
+  ok(preview && String(preview.body.chat_id) === '12345' && !preview.body.reply_markup && !preview.body.parse_mode, 'preview goes to the admin, as plain text with no buttons and no parse mode');
+  ok(!sends.some((c) => String(c.body.chat_id) !== '12345'), 'nobody else gets anything before the confirmation');
+  const c1 = confirmOf(n);
+  ok(c1 && c1.text.includes('30 نفر'), 'the confirmation says how many people get it: ' + (c1 && c1.text));
+  // a second broadcast cannot start while the first is sending
+  await tap('cf:' + c1.token);
+  ok((await row('SELECT status FROM broadcasts WHERE id = ?', bc1.id)).status === 'sending', 'confirmed -> sending');
+  const d2 = await acts.runAction(env, '12345', 'broadcast.create', { audience: 'none', text: 'second' });
+  const s2 = await acts.runAction(env, '12345', 'broadcast.start', { id: d2.targetId });
+  ok(!s2.ok && (await row('SELECT status FROM broadcasts WHERE id = ?', d2.targetId)).status === 'draft', 'only one broadcast sends at a time');
+  ok(!(await acts.runAction(env, '12345', 'broadcast.start', { id: bc1.id })).ok, 'a broadcast cannot be started twice');
+
+  // ---- the cron sends 25 a run, resumes from the cursor, counts blocked people, finishes, tells the owner ----
+  fakes.tg.failFor[ids.active[3]] = 403;
+  n = fakes.tg.calls.length;
+  await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain();
+  ok(!since(n).some((c) => c.method === 'sendMessage' && c.body.text === evil), 'the every-minute cron does not send broadcasts');
+  n = fakes.tg.calls.length;
+  const t1 = await acts.broadcastTick(env, { now });
+  const after1 = await row('SELECT * FROM broadcasts WHERE id = ?', bc1.id);
+  ok(t1.sent === 24 && t1.blocked === 1 && after1.status === 'sending' && after1.sent === 24 && after1.blocked === 1, 'first run: 25 people, one blocked: ' + JSON.stringify(t1));
+  ok(since(n).filter((c) => c.method === 'sendMessage').length === 25, 'a run makes at most 25 Telegram calls');
+  // a run that is still going holds a lease: a second one at the same moment sends nothing
+  await exec('UPDATE broadcasts SET updated_at = ? WHERE id = ?', now, bc1.id);
+  ok((await acts.broadcastTick(env, { now })).busy === true, 'an overlapping run is skipped (lease)');
+  await exec('UPDATE broadcasts SET updated_at = ? WHERE id = ?', now - 200, bc1.id);
+  const t2 = await acts.broadcastTick(env, { now });
+  const after2 = await row('SELECT * FROM broadcasts WHERE id = ?', bc1.id);
+  ok(t2.sent === 5 && t2.done && after2.status === 'done' && after2.sent === 29 && after2.blocked === 1, 'second run resumes and finishes: ' + JSON.stringify(t2));
+  const got = since(n).filter((c) => c.method === 'sendMessage' && c.body.text === evil).map((c) => Number(c.body.chat_id));
+  ok(got.length === 30 && new Set(got).size === 30 && got.every((id) => ids.active.includes(id)), 'each active user got it exactly once, nobody else');
+  ok(since(n).some((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '12345' && /#\d+ تمام شد/.test(c.body.text)), 'the owner hears when it is done');
+  ok(!since(n).some((c) => c.method === 'sendMessage' && c.body.text === evil && (c.body.reply_markup || c.body.parse_mode)), 'broadcast messages carry no buttons and no parse mode');
+  delete fakes.tg.failFor[ids.active[3]];
+
+  // 429: stop there, the same person is tried again on the next run
+  await exec("UPDATE broadcasts SET status = 'sending', updated_at = ? WHERE id = ?", now - 200, d2.targetId);
+  fakes.tg.failFor[ids.none[4]] = 429;
+  const t3 = await acts.broadcastTick(env, { now });
+  ok(t3.limited && t3.sent === 4 && (await row('SELECT status FROM broadcasts WHERE id = ?', d2.targetId)).status === 'sending', '429 stops the run without skipping anyone');
+  delete fakes.tg.failFor[ids.none[4]];
+  n = fakes.tg.calls.length;
+  const t4 = await acts.broadcastTick(env, { now });
+  const got2 = since(n).filter((c) => c.method === 'sendMessage' && c.body.text === 'second').map((c) => Number(c.body.chat_id));
+  ok(t4.done && got2.length === 16 && got2[0] === ids.none[4] && (await row('SELECT sent FROM broadcasts WHERE id = ?', d2.targetId)).sent === 20, 'the next run starts with the rate-limited person and finishes');
+
+  // stop, with progress on the screen, undo, then the 2-minute cron carries on
+  const d3 = await acts.runAction(env, '12345', 'broadcast.create', { audience: 'all', text: 'third' });
+  ok((await acts.runAction(env, '12345', 'broadcast.start', { id: d3.targetId })).ok, 'a new one starts once the others are done');
+  await acts.broadcastTick(env, { now: Math.floor(Date.now() / 1000) });
+  n = fakes.tg.calls.length;
+  await tap(`m:bcv:${d3.targetId}`);
+  const prog = screensTo(n, 12345).pop();
+  ok(prog && prog.body.text.includes('25') && flat(prog.body.reply_markup.inline_keyboard).includes(`m:bcs:${d3.targetId}`), 'the progress screen shows the count and a stop button');
+  await tap(`m:bcs:${d3.targetId}`);
+  ok((await row('SELECT status FROM broadcasts WHERE id = ?', d3.targetId)).status === 'stopped', 'stop button stops it');
+  ok((await acts.broadcastTick(env, { now: Math.floor(Date.now() / 1000) + 300 })) === null, 'a stopped broadcast sends nothing');
+  const stopAudit = await row("SELECT id FROM admin_audit WHERE action = 'broadcast.stop' ORDER BY id DESC LIMIT 1");
+  await tap(`m:undo:${stopAudit.id}`);
+  ok((await row('SELECT status FROM broadcasts WHERE id = ?', d3.targetId)).status === 'sending', 'undo of a stop sends again');
+  await exec('UPDATE broadcasts SET updated_at = ? WHERE id = ?', Math.floor(Date.now() / 1000) - 200, d3.targetId);
+  await worker.scheduled({ cron: '*/2 * * * *' }, env, ctx); await drain();
+  const b3 = await row('SELECT * FROM broadcasts WHERE id = ?', d3.targetId);
+  ok(b3.sent === 50 && b3.status === 'sending', 'the 2-minute cron sends the next page: ' + b3.sent);
+  await acts.runAction(env, '12345', 'broadcast.stop', { id: d3.targetId });
+
+  // ---- stats on seeded data ----
+  const [pa, pb] = await rows('SELECT id, name FROM plans WHERE is_active = 1 ORDER BY id LIMIT 2');
+  const someUser = (await row("SELECT id FROM users WHERE email = 'bc0@example.com'")).id;
+  const order = (kind, plan, amount, method, ago) => exec(`INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at, paid_at) VALUES (?, ?, ?, ?, ?, 'paid', ?, ?)`,
+    someUser, kind, plan, amount, method, now - ago, now - ago);
+  for (let i = 0; i < 3; i++) await order('plan', pa.id, 100000, 'card', 3600);
+  await order('plan', pb.id, 50000, 'wallet', 7200);
+  await order('plan', pb.id, 200000, 'coin', 3 * 86400);
+  await order('plan', pb.id, 200000, 'coin', 3 * 86400);
+  await order('topup', null, 70000, 'card', 20 * 86400);
+  for (const ago of [3600, 7200, 10 * 86400]) await exec("INSERT INTO sub_periods (user_id, started_at, ended_at, end_reason) VALUES (?, ?, ?, 'renewed')", someUser, now - 40 * 86400, now - ago);
+  const realPrepare = env.DB.prepare.bind(env.DB);
+  let q = 0;
+  env.DB.prepare = (sql) => { q++; return realPrepare(sql); };
+  const s1 = await menu.renderScreen(env, 'st:1');
+  const qStats = q;
+  env.DB.prepare = realPrepare;
+  const s7 = await menu.renderScreen(env, 'st:7');
+  const s30 = await menu.renderScreen(env, 'st:30');
+  const activeNow = (await row('SELECT COUNT(*) c, COALESCE(SUM(used_bytes), 0) u FROM subscriptions WHERE expires_at > ? OR expires_at IS NULL', now));
+  ok(s1.text.includes('فروش: 4 سفارش · 300,000 تومان') && s1.text.includes('ثبت‌نام تازه: 63') && s1.text.includes('تمدید (خرید روی اشتراک باز): 2'), 'today: 4 sales, 300,000 received (wallet not counted), 63 sign-ups, 2 renewals');
+  ok(s1.text.includes('کارت‌به‌کارت: 3 · 300,000') && s1.text.includes('کیف پول: 1 · 50,000'), 'today, per method');
+  ok(s1.text.includes(`1. ${pa.name} — 3 فروش · 300,000`), 'today\'s top plan');
+  ok(s1.text.includes(`اشتراک فعال الان: ${activeNow.c} · مصرف این دوره‌شان: ${(activeNow.u / 1024 ** 3).toFixed(activeNow.u >= 10 * 1024 ** 3 ? 1 : 2)} گیگ`), 'active subscriptions and their usage');
+  ok(s7.text.includes('فروش: 6 سفارش · 700,000 تومان') && s7.text.includes('ارز دیجیتال: 2 · 400,000') && s7.text.includes(`1. ${pb.name} — 3 فروش · 450,000`), '7 days: 6 sales, 700,000, coin split, top plan');
+  ok(s30.text.includes('فروش: 7 سفارش · 770,000 تومان') && s30.text.includes('تمدید (خرید روی اشتراک باز): 3'), '30 days: 7 sales, 770,000, 3 renewals');
+  ok(qStats <= 6, 'stats use ≤6 D1 statements: ' + qStats);
+  ok(flat(s1.kb).includes('m:st:7') && flat(s1.kb).includes('m:st:30'), 'period buttons');
+
+  // ---- system: health, admins, settings never show a secret ----
+  await exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('sms_key', 'supersecretkey123'), ('app_bridges', 'vless://secret-uuid@bridge.host:443#b'), ('panel_cred_9', 'sealed-cred')");
+  fakes.tg.webhookInfo = { url: 'https://api.test/tg', pending_update_count: 2, last_error_date: now - 60, last_error_message: 'Wrong response from the webhook: https://api.test/tg 502 at api.test' };
+  q = 0;
+  env.DB.prepare = (sql) => { q++; return realPrepare(sql); };
+  const hl = await menu.renderScreen(env, 'sys.hl');
+  const qHl = q;
+  env.DB.prepare = realPrepare;
+  ok(hl.text.includes('✅ به همین ورکر وصل است') && hl.text.includes('پیام‌های در صف: 2') && hl.text.includes('آخرین خطا'), 'health: webhook state, queue and last error');
+  ok(!/api\.test|https?:|\/tg/.test(hl.text) && qHl <= 6, 'health never shows the webhook address or secret, ≤6 statements: ' + qHl);
+  ok(hl.text.includes('همگام‌سازی') && hl.text.includes('در صف تغییر روی پنل'), 'health: sync state');
+  fakes.tg.webhookInfo = null;
+  let leak = [];
+  for (const d of ['sys', 'sys.hl', 'sys.adm', 'sys.log', 'set', 'sk:sms_key', 'sk:app_bridges', 'app', 'payset', 'bc', `bcv:${bc1.id}`]) {
+    const s = await menu.renderScreen(env, d);
+    if (/supersecretkey123|secret-uuid|bridge\.host|sealed-cred/.test(s.text + JSON.stringify(s.kb))) leak.push(d);
+  }
+  ok(!leak.length, 'no system or settings screen shows a secret: ' + leak.join(' '));
+  n = fakes.tg.calls.length;
+  await sayAs(12345, '/settings');
+  ok(!/supersecretkey123|secret-uuid|bridge\.host/.test(JSON.stringify(since(n))), 'the old /settings answer masks the SMS key and bridges');
+  const bk = await tgm.backupJson(env);
+  ok(!/supersecretkey123|secret-uuid|bridge\.host|sealed-cred|panel_cred_|panel_err_/.test(bk), 'backup leaves out the SMS key, bridges, panel logins and panel errors');
+
+  // ---- roles ----
+  await tap('m:sys.adm');
+  await tap('m:f:addadm');
+  await sayAs(12345, '222222');
+  await tap('m:fa:1:support');
+  await tap('m:fok:addadm');
+  ok((await row('SELECT role FROM admins WHERE tg_id = ?', '222222'))?.role === 'support', 'the owner adds a support admin from the buttons');
+  ok((await acts.runAction(env, '12345', 'admin.add', { tgId: '333333', role: 'viewer' })).ok, 'and a viewer');
+  ok(!(await acts.runAction(env, '12345', 'admin.add', { tgId: '12345', role: 'viewer' })).ok && !(await acts.runAction(env, '12345', 'admin.remove', { tgId: '12345' })).ok, 'the owner cannot be added or removed');
+  await tap('m:adr:12345');
+  ok((await row('SELECT COUNT(*) c FROM admins WHERE tg_id = ?', '12345')).c === 0, 'tapping remove on the owner id changes nothing');
+  ok(!(await acts.runAction(env, '222222', 'admin.add', { tgId: '444444', role: 'support' })).ok && !(await row('SELECT 1 x FROM admins WHERE tg_id = ?', '444444')), 'a support admin cannot add admins (write layer)');
+
+  // support: menu with only its buttons, approves a receipt, nothing else
+  n = fakes.tg.calls.length;
+  await sayAs(222222, '/start');
+  const supHome = screensTo(n, 222222).filter((c) => c.body.reply_markup && c.body.reply_markup.inline_keyboard).pop();
+  const supBtns = flat(supHome && supHome.body.reply_markup.inline_keyboard);
+  ok(supBtns.includes('m:in') && supBtns.every((d) => menu.allowedTap('support', d)) && !supBtns.includes('m:usr') && !supBtns.includes('m:pl'), 'support gets a home with only its buttons: ' + supBtns.join(','));
+  const stok = await signup('sup5@example.com', { device: 's5' });
+  const supOrder = await call('POST', '/api/v1/orders', { token: stok, json: { plan_id: pa.id, method: 'card' } });
+  await exec("UPDATE orders SET status = 'review' WHERE id = ?", supOrder.data.id);
+  await tapAs(222222, `ap:${supOrder.data.id}`);
+  ok((await row('SELECT status FROM orders WHERE id = ?', supOrder.data.id)).status === 'paid', 'support approves a receipt');
+  ok((await row("SELECT admin_id FROM admin_audit WHERE action = 'order.approve' AND target_id = ? ORDER BY id DESC LIMIT 1", String(supOrder.data.id)))?.admin_id === '222222', 'the admin log records which admin approved it');
+  const supUser = await row("SELECT id, wallet_balance FROM users WHERE email = 'sup5@example.com'");
+  n = fakes.tg.calls.length;
+  await tapAs(222222, `m:f:wadd:${supUser.id}`);
+  await tapAs(222222, `m:uw:${supUser.id}`);
+  ok(acks(n).includes('اجازه نداری') && !screensTo(n, 222222).length && !(await row('SELECT 1 x FROM bot_session WHERE admin_id = ?', '222222')), 'support cannot open the wallet or its form');
+  await tgm.askConfirm(env, 222222, 'u_wallet', { userId: supUser.id, amount: 500000, note: 'x' }, 'test');
+  const wTok = confirmOf(n);
+  await tapAs(222222, 'cf:' + wTok.token);
+  ok(!(await acts.runAction(env, '222222', 'user.wallet', { userId: supUser.id, amount: 500000, note: 'x' })).ok && (await row('SELECT wallet_balance FROM users WHERE id = ?', supUser.id)).wallet_balance === supUser.wallet_balance, 'support cannot credit a wallet, not even with a confirm token');
+  const planBefore = await row('SELECT * FROM plans WHERE id = ?', pa.id);
+  await tapAs(222222, `m:pt:${pa.id}`);
+  await sayAs(222222, `/plan ${pa.id} price 1`);
+  await tapAs(222222, `m:x:home|/plan ${pa.id} price 1`);
+  const planAfter = await row('SELECT * FROM plans WHERE id = ?', pa.id);
+  ok(planAfter.is_active === planBefore.is_active && planAfter.price_toman === planBefore.price_toman, 'support cannot edit a plan (button, typed command, command button)');
+
+  // viewer: screens without write buttons, every write refused
+  n = fakes.tg.calls.length;
+  await tapAs(333333, `m:p:${pa.id}`);
+  const vScr = screensTo(n, 333333).pop();
+  const vBtns = flat(vScr && vScr.body.reply_markup.inline_keyboard);
+  ok(vScr && vBtns.includes('m:home') && vBtns.every((d) => menu.allowedTap('viewer', d)) && !vBtns.some((d) => d.startsWith('m:pt:')), 'a viewer reads the plan card with no write buttons');
+  n = fakes.tg.calls.length;
+  for (const d of [`m:pt:${pa.id}`, 'm:f:newplan', `m:sk:card_number`, 'm:set', 'm:sys.adm', 'm:x:sys|/backup', `ap:${supOrder.data.id}`, `m:ss:card_unique:1`, 'm:ord']) await tapAs(333333, d);
+  await sayAs(333333, '/set announcement hacked');
+  ok(!screensTo(n, 333333).some((c) => c.method === 'editMessageText') && (await row("SELECT value FROM settings WHERE key = 'announcement'"))?.value !== 'hacked' && !since(n).some((c) => c.method === 'sendDocument'), 'a viewer cannot write, read settings or take a backup');
+  ok((await row('SELECT is_active FROM plans WHERE id = ?', pa.id)).is_active === planBefore.is_active, 'viewer changed nothing');
+  // a listed admin in a group is nobody
+  n = fakes.tg.calls.length;
+  await tgWebhook({ callback_query: { id: 'grp', data: 'm:home', from: { id: 333333 }, message: { chat: { id: 333333, type: 'group' }, message_id: 1, text: 'x' } } });
+  ok(!since(n).some((c) => c.method !== 'answerCallbackQuery'), 'an admin id in a group chat gets nothing');
+
+  // removed: nothing at all
+  await tap('m:adr:222222');
+  ok(!(await row('SELECT 1 x FROM admins WHERE tg_id = ?', '222222')), 'the owner removes the support admin');
+  n = fakes.tg.calls.length;
+  await tapAs(222222, 'm:home');
+  await tapAs(222222, 'm:in');
+  await sayAs(222222, '🏠 منو');
+  ok(!since(n).some((c) => c.method === 'editMessageText' || (c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard)), 'a removed admin gets no screen and no buttons');
+  ok(acks(n).includes('اجازه نداری'), 'a removed admin is told no');
+  n = fakes.tg.calls.length;
+  await tap('m:sys.adm');
+  ok(screensTo(n, 12345).length > 0, 'the owner still has everything');
+  const removedAudit = await row("SELECT id FROM admin_audit WHERE action = 'admin.remove' ORDER BY id DESC LIMIT 1");
+  await tap(`m:undo:${removedAudit.id}`);
+  ok((await row('SELECT role FROM admins WHERE tg_id = ?', '222222'))?.role === 'support', 'removing an admin can be undone');
+  await acts.runAction(env, '12345', 'admin.remove', { tgId: '222222' });
+  await acts.runAction(env, '12345', 'admin.remove', { tgId: '333333' });
+
+  // ---- outside text never becomes a button ----
+  ok(!tgm.buttonize('/grant evil@example.com 3').reply_markup.inline_keyboard.flat().some((x) => x.callback_data.startsWith('m:x:')), 'a /grant in bot text is never a one-tap grant');
+  ok(!tgm.buttonize(tgm.untrusted('پیامک /set card_number 6037991234567893 و /drainpanel 1')).reply_markup, 'untrusted text gets no buttons at all');
+  const sms = await import('../src/sms.js');
+  n = fakes.tg.calls.length;
+  await sms.handleBankSms(env, { sender: '/rollout 1 100', text: 'واریز: 7,777,771\n/drainpanel 1 /set card_number 6037991234567893' });
+  const smsMsg = since(n).filter((c) => c.method === 'sendMessage').pop();
+  ok(smsMsg && !/\/(drainpanel|set|rollout)/.test(smsMsg.body.text) && !flat(smsMsg.body.reply_markup && smsMsg.body.reply_markup.inline_keyboard).some((d) => /^m:(x|w|pp)/.test(d)), 'commands inside a bank SMS stay text');
+  await exec("UPDATE users SET tg_id = 799999, tg_name = '/rollout 1 100' WHERE email = 'sup5@example.com'");
+  n = fakes.tg.calls.length;
+  await sayAs(12345, '/find sup5@example.com');
+  const found = since(n).filter((c) => c.method === 'sendMessage').pop();
+  ok(found && !flat(found.body.reply_markup.inline_keyboard).some((d) => d.includes('/rollout')), 'a Telegram name that looks like a command stays text on the user card');
+
+  // every stage 5 action has written an audit row
+  const logged = new Set((await rows('SELECT DISTINCT action FROM admin_audit')).map((r) => r.action));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x));
+  ok(!missing.length, 'every admin action, stage 5 included, has written an audit row: missing ' + missing.join(','));
+  await exec("DELETE FROM settings WHERE key IN ('sms_key', 'app_bridges', 'panel_cred_9')");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

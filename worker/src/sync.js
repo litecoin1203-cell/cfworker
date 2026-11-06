@@ -200,7 +200,24 @@ export async function ensureAccount(env, user, panel, { expire, limit, hwid } = 
 // remote_username) index refuses the batch if the account already belongs to another user.
 // remote = the panel's user record, read just before. Returns {replaced, disabled}: the user's previous account
 // on that panel (if any) is switched off on the panel, never deleted.
-export async function linkAccount(env, user, panel, remote) {
+// Which way a link goes: "merge" when the user's current period already came from a linked panel account (the
+// same person had accounts on several panels), so usage adds up inside that one period; otherwise "replace".
+export async function linkMode(env, userId) {
+  const row = await first(env, `SELECT p.source FROM subscriptions s JOIN sub_periods p ON p.id = s.period_id
+    WHERE s.user_id = ? AND s.state = 'active' AND p.ended_at IS NULL`, userId);
+  return row && row.source === 'panel' ? 'merge' : 'replace';
+}
+
+// A plan the linked numbers fit: same data, and the shortest duration that still holds the days left.
+export async function suggestPlan(env, limitBytes, expire) {
+  const gb = limitBytes > 0 ? Math.round(limitBytes / 1024 ** 3) : 0;
+  const days = expire ? Math.max(1, Math.ceil((expire - nowSec()) / 86400)) : 0;
+  const rows = await all(env, 'SELECT * FROM plans WHERE is_active = 1 AND data_limit_gb = ? ORDER BY duration_days, sort, id', gb);
+  return rows.find((p) => !days || p.duration_days >= days) || rows[rows.length - 1] || null;
+}
+
+export async function linkAccount(env, user, panel, remote, { planId = null } = {}) {
+  if ((await linkMode(env, user.id)) === 'merge') return mergeAccount(env, user, panel, remote, { planId });
   const pg = await adapterFor(env, panel);
   const subPath = pg.absoluteSubUrl(remote.subscription_url || '');
   if (!subPath) throw new PasarGuardError('panel returned no subscription link for this user', 0);
@@ -222,7 +239,7 @@ export async function linkAccount(env, user, panel, remote) {
       final_used_bytes = (SELECT COALESCE(SUM(accounted_bytes), 0) FROM usage_counters WHERE period_id = ?) WHERE id = ? AND ended_at IS NULL`,
     now, sub.period_id, sub.period_id));
   }
-  stmts.push(st("INSERT INTO sub_periods (user_id, plan_id, source, started_at, expires_at, limit_bytes) VALUES (?, NULL, 'panel', ?, ?, ?)", user.id, now, expire, limit));
+  stmts.push(st("INSERT INTO sub_periods (user_id, plan_id, source, started_at, expires_at, limit_bytes) VALUES (?, ?, 'panel', ?, ?, ?)", user.id, planId, now, expire, limit));
   // a panel account that is switched off but still has time and data is switched on again by the sync job
   if (old) {
     stmts.push(st(`UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = ?,
@@ -244,13 +261,13 @@ export async function linkAccount(env, user, panel, remote) {
     WHERE user_id = ? AND panel_id != ? AND desired != 'removed'`, left, expire, user.id, panel.id));
   stmts.push(st(`INSERT INTO subscriptions (user_id, pg_username, plan_id, expires_at, data_limit_bytes, device_limit, sub_url, period_days, updated_at,
       period_id, state, stop_reason, used_bytes, used_at, baselined)
-    VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ${period}, 'active', NULL, ?, ?, 1)
-    ON CONFLICT(user_id) DO UPDATE SET plan_id = NULL, expires_at = excluded.expires_at, data_limit_bytes = excluded.data_limit_bytes,
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ${period}, 'active', NULL, ?, ?, 1)
+    ON CONFLICT(user_id) DO UPDATE SET plan_id = excluded.plan_id, expires_at = excluded.expires_at, data_limit_bytes = excluded.data_limit_bytes,
       device_limit = excluded.device_limit, period_days = excluded.period_days, updated_at = excluded.updated_at, period_id = excluded.period_id,
       state = 'active', stop_reason = NULL, used_bytes = excluded.used_bytes, used_at = excluded.used_at, baselined = 1,
       pg_username = CASE WHEN ? THEN excluded.pg_username ELSE subscriptions.pg_username END,
       sub_url = CASE WHEN ? THEN excluded.sub_url ELSE subscriptions.sub_url END`,
-  user.id, p1 ? remote.username : '', expire, limit, devices, p1 ? subPath : '', expire ? Math.max(1, Math.ceil((expire - now) / 86400)) : null, now,
+  user.id, p1 ? remote.username : '', planId, expire, limit, devices, p1 ? subPath : '', expire ? Math.max(1, Math.ceil((expire - now) / 86400)) : null, now,
   user.id, used, now, p1 ? 1 : 0, p1 ? 1 : 0));
   stmts.push(st('UPDATE users SET trial_used = 1 WHERE id = ?', user.id)); // the linked account replaces a free trial
   await env.DB.batch(stmts);
@@ -263,6 +280,54 @@ export async function linkAccount(env, user, panel, remote) {
   await evaluate(env, user.id); // stops at once if the account is already out of time or data
   await pushPending(env, { userId: user.id });
   return { replaced, disabled };
+}
+
+// A second (third...) existing panel account of the same person joins the current period instead of starting a
+// new one: what it has used is added to the period's usage, and it takes the period's expiry and what is left,
+// so the user can never get more than the plan. An account this user already had on that panel (one the Worker
+// created) keeps the bytes it used and is switched off.
+async function mergeAccount(env, user, panel, remote, { planId }) {
+  const pg = await adapterFor(env, panel);
+  const subPath = pg.absoluteSubUrl(remote.subscription_url || '');
+  if (!subPath) throw new PasarGuardError('panel returned no subscription link for this user', 0);
+  const now = nowSec();
+  const sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
+  const used = Math.max(0, parseInt(remote.used_traffic || 0, 10) || 0);
+  const old = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
+  const remoteLimit = parseInt(remote.data_limit || 0, 10) || 0;
+  const st = (sql, ...args) => env.DB.prepare(sql).bind(...args);
+  const stmts = [];
+  // its limit is rewritten by evaluate() to (its own reading + what is left overall); expiry = the period's
+  if (old) {
+    stmts.push(st(`UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = 'active',
+      desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ?, dirty = 1, attempts = 0, last_error = NULL, applied_at = ?
+      WHERE id = ?`, remote.username, remote.id ?? null, subPath, remoteLimit, remoteLimit, sub.expires_at, parseExpire(remote.expire) || null, now, old.id));
+  } else {
+    stmts.push(st(`INSERT INTO panel_accounts (user_id, panel_id, remote_username, remote_id, sub_path, desired, applied,
+      desired_limit_bytes, applied_limit_bytes, desired_expire, applied_expire, dirty, applied_at, created_at)
+      VALUES (?, ?, ?, ?, ?, 'active', 'active', ?, ?, ?, ?, 1, ?, ?)`,
+    user.id, panel.id, remote.username, remote.id ?? null, subPath, remoteLimit, remoteLimit, sub.expires_at, parseExpire(remote.expire) || null, now, now));
+  }
+  // the old account's bytes stay counted; the linked account's usage so far is added, and its counter starts from it
+  stmts.push(st(`INSERT INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(period_id, panel_id) DO UPDATE SET accounted_bytes = accounted_bytes + excluded.accounted_bytes,
+      last_remote_bytes = excluded.last_remote_bytes, baseline_pending = 0, stale = 0, last_seen_at = excluded.last_seen_at`,
+  sub.period_id, panel.id, used, used, now));
+  if (planId) {
+    stmts.push(st('UPDATE subscriptions SET plan_id = ? WHERE id = ?', planId, sub.id));
+    stmts.push(st('UPDATE sub_periods SET plan_id = ? WHERE id = ?', planId, sub.period_id));
+  }
+  await env.DB.batch(stmts);
+  let replaced = null, disabled = false;
+  if (old && old.remote_username !== remote.username) {
+    replaced = old.remote_username;
+    try { await pg.setStatus(replaced, 'disabled'); disabled = true; } catch (e) { /* the admin is told to switch it off by hand */ }
+  }
+  // evaluate() only rewrites limits that drifted, so make every account's limit be recomputed now
+  await run(env, 'UPDATE panel_accounts SET applied_limit_bytes = -1 WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
+  await evaluate(env, user.id);
+  await pushPending(env, { userId: user.id });
+  return { replaced, disabled, merged: true };
 }
 
 function randomHex(n) {
@@ -333,11 +398,11 @@ export async function noteCreateError(env, panel, e) {
     JSON.stringify({ msg, at: now, notified_at: notify ? now : prev.notified_at }));
   if (notify) {
     try {
-      const { notifyAdmin } = await import('./telegram.js');
+      const { notifyAdmin, untrusted } = await import('./telegram.js');
       await notifyAdmin(env, `⚠️ روی پنل #${panel.id} (${panel.label || ''}) برای کاربران اکانت ساخته نمی‌شود، پس کانفیگ‌هایش به آن‌ها نمی‌رسد.
 
 خطای پنل:
-${msg}
+${untrusted(msg)}
 
 بعد از رفع مشکل خودکار ادامه پیدا می‌کند. تست: /paneltest ${panel.id}`);
     } catch (x) { /* the error stays visible in /panels */ }
@@ -373,7 +438,7 @@ async function createMissing(env, max = CREATE_PER_RUN) {
   for (const panel of panels) {
     if (made >= max) break;
     const rows = await all(env, `SELECT s.*, u.email FROM subscriptions s JOIN users u ON u.id = s.user_id
-      WHERE s.state = 'active' AND s.period_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM panel_accounts a WHERE a.user_id = s.user_id AND a.panel_id = ?)
+      WHERE s.state = 'active' AND u.is_active = 1 AND s.period_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM panel_accounts a WHERE a.user_id = s.user_id AND a.panel_id = ?)
       ORDER BY s.user_id LIMIT 50`, panel.id);
     for (const s of rows) {
       if (made >= max) break;

@@ -130,7 +130,7 @@ const discounted = (price, c) => (c ? Math.max(0, Math.round((price * (100 - c.p
 
 export async function checkCoupon(env, user, body) {
   const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', body.plan_id);
-  if (!plan || !plan.is_active) throw err(404, 'plan_not_found', 'این پلن در دسترس نیست.');
+  if (!plan || !plan.is_active || plan.archived) throw err(404, 'plan_not_found', 'این پلن در دسترس نیست.');
   const c = await findCoupon(env, user, body.code, plan);
   if (!c) throw err(400, 'coupon_invalid', 'کد تخفیف را وارد کن.', 'coupon');
   return json({ code: c.code, percent: c.percent, price_toman: plan.price_toman, final_toman: discounted(plan.price_toman, c) });
@@ -143,7 +143,7 @@ export async function createOrder(env, user, body) {
   let orderId;
   if (body.plan_id) {
     const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', body.plan_id);
-    if (!plan || !plan.is_active) throw err(404, 'plan_not_found', 'این پلن در دسترس نیست.');
+    if (!plan || !plan.is_active || plan.archived) throw err(404, 'plan_not_found', 'این پلن در دسترس نیست.');
     const coupon = await findCoupon(env, user, body.coupon_code, plan);
     const price = discounted(plan.price_toman, coupon);
     const fresh = await first(env, 'SELECT wallet_balance FROM users WHERE id = ?', user.id);
