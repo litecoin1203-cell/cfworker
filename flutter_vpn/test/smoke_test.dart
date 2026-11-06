@@ -475,6 +475,32 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
   });
 
+  testWidgets('the notification shows the exit; its Disconnect is not a drop', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel();
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    final chosen = app.exits[1];
+    await app.connect(chosen.id);
+    // While connecting: the exit's own country, no IP yet.
+    expect(
+      tunnel.notes.last,
+      '${chosen.flag}|${chosen.title}||${chosen.protocol}',
+    );
+    tunnel.emit(TunnelState.up);
+    await tester.pump(PMotion.seal);
+    await tester.pump(const Duration(milliseconds: 400));
+    // Once the Worker placed the exit: the same city and IP as Home's Now.
+    expect(tunnel.notes.last, contains('|Frankfurt, Germany|185.220.101.42|'));
+
+    tunnel.emit(TunnelState.off);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(app.phase, Phase.idle);
+    expect(app.tunnelMessage, isNull);
+    expect(app.sessions.first.exitId, chosen.id);
+    await tester.pump(const Duration(seconds: 10));
+  });
+
   testWidgets('a trial whose answer was lost still shows as started', (
     tester,
   ) async {

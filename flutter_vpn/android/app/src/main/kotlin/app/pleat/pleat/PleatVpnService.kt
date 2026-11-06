@@ -1,9 +1,6 @@
 package app.pleat.pleat
 
-import android.app.Notification
-import android.app.NotificationChannel
 import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
@@ -35,10 +32,11 @@ class PleatVpnService : VpnService() {
     companion object {
         const val ACTION_START = "app.pleat.START"
         const val ACTION_STOP = "app.pleat.STOP"
+
+        /** Disconnect from the notification: the app reads "off", not a drop. */
+        const val ACTION_DISCONNECT = "app.pleat.DISCONNECT"
         const val EXTRA_CONFIG = "config"
         private const val SOCKS_PORT = 10808
-        private const val NOTE_ID = 7
-        private const val CHANNEL = "tunnel"
 
         /** The running core, for live delay checks from the app. */
         @Volatile
@@ -49,6 +47,11 @@ class PleatVpnService : VpnService() {
         @Volatile
         var instance: PleatVpnService? = null
             private set
+
+        /** The app said more about the exit (place, IP): redraw the card. */
+        fun noteChanged() {
+            instance?.let { s -> s.main.post { s.redraw() } }
+        }
     }
 
     override fun onCreate() {
@@ -116,6 +119,10 @@ class PleatVpnService : VpnService() {
                 stopTunnel("down")
                 return START_NOT_STICKY
             }
+            ACTION_DISCONNECT -> {
+                stopTunnel("off")
+                return START_NOT_STICKY
+            }
             ACTION_START -> {
                 val config = intent.getStringExtra(EXTRA_CONFIG) ?: return START_NOT_STICKY
                 lastConfig.writeText(config)
@@ -135,6 +142,8 @@ class PleatVpnService : VpnService() {
     }
 
     private fun begin(config: String) {
+        up = false
+        upSince = 0
         foreground()
         val gen = ++generation
         // Said at once, so the app knows any later "down" or "failed" is
@@ -150,7 +159,15 @@ class PleatVpnService : VpnService() {
                 false
             }
             if (gen != generation) return@execute
-            if (ok) TunnelHub.set("up") else stopTunnel("failed")
+            if (ok) {
+                TunnelHub.set("up")
+                main.post {
+                    if (gen != generation) return@post
+                    up = true
+                    upSince = System.currentTimeMillis()
+                    redraw()
+                }
+            } else stopTunnel("failed")
         }
     }
 
@@ -268,6 +285,10 @@ class PleatVpnService : VpnService() {
 
     private val main = android.os.Handler(android.os.Looper.getMainLooper())
 
+    /** Main thread only: the card says Protected once the probe passed. */
+    private var up = false
+    private var upSince = 0L
+
     override fun onRevoke() {
         // Another VPN took over, or the person turned Pleat off in Settings.
         stopTunnel("down")
@@ -288,28 +309,20 @@ class PleatVpnService : VpnService() {
     }
 
     private fun foreground() {
-        val nm = getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            nm.createNotificationChannel(
-                NotificationChannel(CHANNEL, "Tunnel", NotificationManager.IMPORTANCE_LOW)
-            )
-        }
-        val open = PendingIntent.getActivity(
-            this, 0, Intent(this, MainActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-        )
-        val note = (if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) Notification.Builder(this, CHANNEL)
-        else @Suppress("DEPRECATION") Notification.Builder(this))
-            .setContentTitle("Pleat")
-            .setContentText("Tunnel on")
-            .setSmallIcon(R.mipmap.ic_launcher)
-            .setContentIntent(open)
-            .setOngoing(true)
-            .build()
+        val note = TunnelNote.build(this, up, upSince)
         if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(NOTE_ID, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            startForeground(TunnelNote.ID, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         } else {
-            startForeground(NOTE_ID, note)
+            startForeground(TunnelNote.ID, note)
         }
+    }
+
+    /** Rebuilt only when the state or the exit's details change; the timer counts itself. */
+    private fun redraw() {
+        if (instance !== this) return
+        // A stop already took the card down (or is about to): don't bring it back.
+        if (TunnelHub.state != "up" && TunnelHub.state != "starting") return
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.notify(TunnelNote.ID, TunnelNote.build(this, up, upSince))
     }
 }

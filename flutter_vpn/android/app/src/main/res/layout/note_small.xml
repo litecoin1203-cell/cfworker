@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Collapsed VPN card (TunnelNote.kt). Android 12+ allows 48dp here. -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:gravity="center_vertical"
+    android:orientation="horizontal">
+
+    <include layout="@layout/note_top" />
+
+    <ImageView
+        android:id="@+id/note_power"
+        android:layout_width="40dp"
+        android:layout_height="40dp"
+        android:layout_marginStart="8dp"
+        android:background="@drawable/note_power_bg"
+        android:contentDescription="Disconnect"
+        android:padding="10dp"
+        android:src="@drawable/ic_note_power" />
+</LinearLayout>

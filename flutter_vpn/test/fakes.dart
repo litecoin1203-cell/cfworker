@@ -393,6 +393,18 @@ class FakeTunnel extends Tunnel {
   @override
   Future<void> stop() async => stopped = true;
 
+  /// What the VPN notification was last told, as "flag|place|ip|protocol".
+  final List<String> notes = [];
+
+  @override
+  Future<void> note({
+    required String flag,
+    required String place,
+    String ip = '',
+    String protocol = '',
+    DateTime? since,
+  }) async => notes.add('$flag|$place|$ip|$protocol');
+
   /// Ping per outbound address; a missing entry means no answer.
   Map<String, int> pings = {};
   int? live = 80;

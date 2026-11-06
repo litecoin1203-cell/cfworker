@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The VPN notification card (TunnelNote.kt): Pleat's day palette.
+     values-night has the night set; the shade picks one from the phone's mode. -->
+<resources>
+    <color name="note_ink">#FF16181D</color>
+    <color name="note_muted">#FF5F6676</color>
+    <color name="note_blue">#FF2F89F5</color>
+    <color name="note_button">#FF1E74DB</color>
+    <color name="note_on_button">#FFFFFFFF</color>
+    <color name="note_soft">#FFD7E9FA</color>
+    <color name="note_on_soft">#FF1E74DB</color>
+    <color name="note_field">#FFF2F6FB</color>
+    <color name="note_ice">#FFA9D4F5</color>
+    <color name="note_mist">#FFD7E9FA</color>
+    <color name="note_safe">#FF1F9D55</color>
+    <color name="note_wait">#FFE0A100</color>
+</resources>

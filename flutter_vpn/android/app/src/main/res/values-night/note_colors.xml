@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Night: the same Pleat blue on dark navy (direction A). -->
+<resources>
+    <color name="note_ink">#FFF2F3F5</color>
+    <color name="note_muted">#FF9CA2B0</color>
+    <color name="note_blue">#FF2F89F5</color>
+    <color name="note_button">#FF1E74DB</color>
+    <color name="note_on_button">#FFFFFFFF</color>
+    <color name="note_soft">#FF1B3A63</color>
+    <color name="note_on_soft">#FFD7E9FA</color>
+    <color name="note_field">#FF0C182D</color>
+    <color name="note_ice">#FF18447A</color>
+    <color name="note_mist">#FF0F2038</color>
+    <color name="note_safe">#FF3DBE74</color>
+    <color name="note_wait">#FFF2C14E</color>
+</resources>
