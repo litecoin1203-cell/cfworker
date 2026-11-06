@@ -152,7 +152,7 @@ class _PlanCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final data = plan.dataLimitGb > 0
         ? '${plan.dataLimitGb} GB'
-        : 'no data cap';
+        : 'No data cap';
     final line = plan.description.isNotEmpty
         ? plan.description
         : (trial
@@ -174,8 +174,12 @@ class _PlanCard extends StatelessWidget {
           title: plan.badge.isEmpty
               ? plan.name
               : '${plan.name}  ·  ${plan.badge}',
-          big: '${trial ? plan.trialDays : plan.durationDays}',
-          unit: trial ? 'days free\n$data' : 'days\n$data',
+          big: planBig(plan),
+          unit: planUnit(
+            plan,
+            days: trial ? plan.trialDays : plan.durationDays,
+            free: trial,
+          ),
           footer: [
             toman(plan.priceToman),
             if (plan.savePercent > 0) 'save ${plan.savePercent}%',
