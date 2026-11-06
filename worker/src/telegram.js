@@ -294,7 +294,7 @@ async function onConfirm(env, cq, yes) {
   // every confirmed change goes through the actions layer (same checks, same admin log as everywhere else)
   const ACTION = { drain_panel: 'panel.drain', grant: 'user.grant', link: 'user.link', del_coupon: 'coupon.delete',
     u_reset: 'user.reset_usage', u_end: 'user.end', u_tg: 'user.unlink_tg', u_del: 'user.delete', u_wallet: 'user.wallet',
-    o_approve: 'order.approve', o_refund: 'order.refund', del_plan: 'plan.delete' };
+    o_approve: 'order.approve', o_refund: 'order.refund', del_plan: 'plan.delete', net_reset: 'net.reset' };
   const ARGS = {
     drain_panel: () => ({ panelId: payload.panel_id }),
     grant: () => ({ userId: payload.user_id, planId: payload.plan_id }),
@@ -308,6 +308,7 @@ async function onConfirm(env, cq, yes) {
     o_approve: () => ({ orderId: payload.order_id }),
     o_refund: () => ({ orderId: payload.order_id }),
     del_plan: () => ({ id: payload.plan_id }),
+    net_reset: () => ({ kind: payload.kind, id: payload.id }),
   };
   // a user change comes back with a way to the card it came from
   const uid = payload.user_id || payload.userId;
@@ -315,6 +316,7 @@ async function onConfirm(env, cq, yes) {
   let back = row.action.startsWith('u_') && uid ? { inline_keyboard: [[{ text: row.action === 'u_wallet' ? '💰 کیف پول' : '👤 کارت کاربر', callback_data: row.action === 'u_wallet' ? `m:uw:${uid}` : `m:u:${uid}` }, homeBtn]] } : undefined;
   if (row.action.startsWith('o_') && payload.order_id) back = { inline_keyboard: [[{ text: '🧾 کارت سفارش', callback_data: `m:o:${payload.order_id}` }, homeBtn]] };
   if (row.action === 'del_plan') back = { inline_keyboard: [[{ text: '📦 پلن‌ها', callback_data: 'm:pl' }, homeBtn]] };
+  if (row.action === 'net_reset') back = { inline_keyboard: [[{ text: '📶 اپراتورها', callback_data: 'm:nc' }, homeBtn]] };
   if (!ACTION[row.action]) return ack('پیدا نشد');
   let r;
   try { r = await runAction(env, chatId, ACTION[row.action], ARGS[row.action]()); } catch (e) {

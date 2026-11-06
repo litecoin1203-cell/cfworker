@@ -4,7 +4,7 @@
 import { first, all, getSettings, SETTING_DEFAULTS } from './db.js';
 import { nowSec } from './util.js';
 import { statsText, userInfo, HELP, STATE_FA } from './telegram.js';
-import { canUndo } from './admin-actions.js';
+import { canUndo, APP_LISTS, splitAppList, maskBridge, itemTag } from './admin-actions.js';
 import { COINS, walletKey, coinById } from './coins.js';
 
 export const fa = (n) => Number(n || 0).toLocaleString('en-US');
@@ -416,15 +416,23 @@ export async function panel(env, id, extraRows = []) {
   const p = await getPanel(env, id);
   if (!p) return { text: crumb('🗂 پنل‌ها') + '\n\nپنل پیدا نشد.', kb: [nav('pa')] };
   const n = (await first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active'", p.id)).c;
+  let t = null;
+  try { t = JSON.parse((await first(env, 'SELECT value FROM settings WHERE key = ?', `panel_test_${p.id}`))?.value || 'null'); } catch (e) { t = null; }
   const back = `pp:${p.id}`;
   const x = (label, cmd) => b(label, `m:x:${back}|${cmd}`);
+  const kinds = t && t.kinds ? Object.entries(t.kinds).map(([k, c]) => `${k} ×${fa(c)}`).join('، ') : '';
+  const testLines = t ? [`🧪 آخرین تست: ${when(t.at)} · ${t.healthy ? '✅ سالم' : '❌ ناموفق'} · ${fa(t.configs)} کانفیگ`,
+    ...(kinds ? [`نوع کانفیگ‌ها: ${kinds}${t.unusable ? ` (${fa(t.unusable)} تا در اپ کار نمی‌کند)` : ''}`] : []),
+    ...(t.error ? [`خطا: ${t.error}`] : [])] : ['🧪 هنوز با ربات تست نشده.'];
   return {
     text: [crumb('🗂 پنل‌ها', `#${p.id}`), '', `🗂 پنل #${p.id} — ${p.label} (${p.kind})`, '',
       `وضعیت: ${STATE_FA[p.state] || p.state}${p.state === 'rollout' ? ` ${p.rollout_percent}%` : ''}`,
-      `سلامت: ${p.health} · ${n} کاربر فعال${p.version ? ` · نسخه ${p.version}` : ''}`, '',
+      `سلامت: ${p.health} · ${n} کاربر فعال${p.version ? ` · نسخه ${p.version}` : ''}`, ...testLines, '',
       'ورود تدریجی = چند درصد کاربران روی این پنل هم اکانت بگیرند.'].join('\n'),
     kb: [
       ...extraRows,
+      [b('🖥 سرورها', `m:srvs:${p.id}`), b('✏️ تغییر نام', `m:f:pnm:${p.id}`)],
+      ...(p.state === 'disabled' ? [[b('🔄 فعال‌سازی دوباره (برگشت به تست)', `m:pen:${p.id}`)]] : []),
       [x('🧪 تست پنل', `/paneltest ${p.id}`), b('👥 گروه‌ها / سرویس', `m:w:groups:${p.id}`)],
       [x('10%', `/rollout ${p.id} 10`), x('25%', `/rollout ${p.id} 25`), x('50%', `/rollout ${p.id} 50`), x('100%', `/rollout ${p.id} 100`)],
       [b('🔐 ورود پنل (آدرس، یوزر، رمز)', `m:w:panelcred:${p.id}`)],
@@ -582,6 +590,7 @@ export const SET_CHOICES = {
   min_topup_toman: ['20000', '50000', '100000'],
   card_unique: ['0', '1'],
   usd_rate_toman: ['0'],
+  trial_data_gb: ['0', '1', '2', '5'],
 };
 export async function paySettings(env) {
   const s = await getSettings(env);
@@ -642,31 +651,178 @@ export async function settings(env, wallets) {
 export async function settingKey(env, key, extraRows = []) {
   if (!(key in SETTING_DEFAULTS)) return { text: crumb('⚙️ تنظیمات') + '\n\nکلید ناشناخته.', kb: [nav('set')] };
   const s = await getSettings(env);
-  const val = key === 'sms_key' && s[key] ? '••• (مخفی)' : s[key] || '(خالی)';
+  const val = key === 'sms_key' && s[key] ? '••• (مخفی)'
+    : key === 'app_bridges' && s[key] ? splitAppList(s[key]).map(maskBridge).join('\n') : s[key] || '(خالی)';
+  const list = { app_api_bases: 'd', app_bridges: 'b' }[key];
+  // the two app lists are edited item by item (validated); a free-text edit would skip the checks
+  const edit = list ? [b('📝 ویرایش لیست', `m:appl:${list}`)] : [b('✏️ تغییر', `m:w:set:${key}`), b('🧹 خالی کن', `m:x:sk:${key}|/set ${key}`)];
   return {
     text: `${crumb('⚙️', KEY_FA[key] || key)}\n\n⚙️ ${KEY_FA[key] || key}\n${key} = ${val}`,
-    kb: [...extraRows, [b('✏️ تغییر', `m:w:set:${key}`), b('🧹 خالی کن', `m:x:sk:${key}|/set ${key}`)], [b('📜 تاریخچه', `m:hist:setting:${key}`)], nav(keyParent(key))],
+    kb: [...extraRows, edit, [b('📜 تاریخچه', `m:hist:setting:${key}`)], nav(keyParent(key))],
   };
 }
 
 // ---------------- Pleat app, network ----------------
+// Everything GET /app-config gives the app has a way to change it from here: announcement, support link,
+// the emergency domain / bridge lists, the trial, the minimum top-up, referral %, and payment methods.
+export const TRIAL_GB_CHOICES = SET_CHOICES.trial_data_gb;
 export async function app(env) {
   const s = await getSettings(env);
-  const bases = String(s.app_api_bases || '').split(/[\s,]+/).filter(Boolean).length;
-  const bridges = String(s.app_bridges || '').split(/\s+/).filter(Boolean).length;
+  const bases = splitAppList(s.app_api_bases).length, bridges = splitAppList(s.app_bridges).length;
+  const trials = await all(env, 'SELECT name, trial_days FROM plans WHERE trial_days > 0 AND is_active = 1 AND archived = 0 ORDER BY sort, id LIMIT 4');
+  const ann = String(s.announcement || '');
+  const trialGb = String(s.trial_data_gb || '0');
   return {
-    text: [crumb('📱 اپ Pleat'), '', `📢 اطلاعیه: ${s.announcement ? s.announcement.slice(0, 80) : '—'}`, `🛟 پشتیبانی: ${s.support_url || '—'}`,
-      `🌐 دامنه‌های اضافه: ${fa(bases)} · 🌉 لینک پل: ${fa(bridges)}`, `🎁 حجم تست رایگان: ${s.trial_data_gb === '0' ? 'مثل پلن' : s.trial_data_gb + ' گیگ'}`, '',
-      'روی هر مورد بزن تا عوضش کنی. ویرایش لیستی دامنه‌ها و پل‌ها با تست، در مرحله‌ی ۴ اضافه می‌شود.'].join('\n'),
-    kb: [...keyRows(s, APP_KEYS, (k) => KEY_FA[k] || k), nav('home')],
+    text: [crumb('📱 اپ Pleat'), '',
+      `📢 اطلاعیه:${ann ? `\n«${ann.slice(0, 300)}${ann.length > 300 ? '…' : ''}»` : ' — (چیزی در اپ نشان داده نمی‌شود)'}`,
+      `🛟 پشتیبانی: ${s.support_url || '—'}`,
+      `🌐 دامنه‌های اضافه: ${fa(bases)} · 🌉 پل‌ها: ${fa(bridges)}`,
+      `🎁 تست رایگان: ${trials.length ? trials.map((p) => `${p.name} ${fa(p.trial_days)} روز`).join('، ') : 'هیچ پلنی تست ندارد'} · حجم: ${trialGb === '0' ? 'مثل پلن' : trialGb + ' گیگ'}`,
+      `💰 حداقل شارژ: ${fa(s.min_topup_toman)} تومان · 🎁 پاداش دعوت: ${fa(s.referral_percent)}٪`, '',
+      'روزهای تست رایگان روی هر پلن تنظیم می‌شود (📦 پلن‌ها › پلن › روز تست).'].join('\n'),
+    kb: [
+      [b('📢 ✏️ اطلاعیه', 'm:w:set:announcement'), ...(ann ? [b('🧹 پاک کردن اطلاعیه', 'm:apc:announcement')] : [])],
+      [b('🛟 ✏️ لینک پشتیبانی', 'm:w:set:support_url'), ...(s.support_url ? [b('🧹 پاک کردن', 'm:apc:support_url')] : [])],
+      [b(`🌐 دامنه‌ها (${fa(bases)})`, 'm:appl:d'), b(`🌉 پل‌ها (${fa(bridges)})`, 'm:appl:b')],
+      [...TRIAL_GB_CHOICES.map((v) => b(`${v === trialGb ? '✅ ' : ''}${v === '0' ? 'تست: مثل پلن' : v + ' گیگ'}`, `m:ss:trial_data_gb:${v}`)), b('✏️', 'm:w:set:trial_data_gb')],
+      [b('⏳ روزهای تست (پلن‌ها)', 'm:pl'), b('💰 حداقل شارژ', 'm:sk:min_topup_toman')],
+      [b('🎁 دعوت و پاداش', 'm:ref'), b('💳 روش‌های پرداخت', 'm:pay')],
+      nav('home'),
+    ],
   };
 }
 
+// the app's emergency lists, item by item: k = d (API domains) or b (bridge configs, always masked here)
+export async function appList(env, k) {
+  const key = APP_LISTS[k];
+  if (!key) return { text: crumb('📱 اپ Pleat') + '\n\nلیست ناشناخته.', kb: [nav('app')] };
+  const list = splitAppList((await getSettings(env))[key]);
+  const dom = k === 'd';
+  const rows = list.map((v, i) => [...(i ? [b(`⬆️ ${i + 1}`, `m:apm:${k}:${i}:${itemTag(v)}`)] : []), b(`🗑 ${i + 1}`, `m:apr:${k}:${i}:${itemTag(v)}`)]);
+  return {
+    text: [crumb('📱 اپ Pleat', dom ? '🌐 دامنه‌ها' : '🌉 پل‌ها'), '',
+      dom ? 'اگر دامنه‌ی اصلی فیلتر شد، اپ به ترتیب این دامنه‌ها را امتحان می‌کند (فقط https، بدون مسیر).'
+        : 'اگر هیچ دامنه‌ای باز نشد، اپ از این کانفیگ‌ها برای رسیدن به سرور استفاده می‌کند. لینک کامل هیچ‌وقت اینجا نشان داده نمی‌شود.', '',
+      ...(list.length ? list.map((v, i) => `${i + 1}. ${dom ? v : maskBridge(v)}`) : ['(خالی)']), '',
+      `حداکثر ۸ مورد. ترتیب = ترتیبی که اپ امتحان می‌کند.`].join('\n'),
+    kb: [...rows, [b(dom ? '➕ افزودن دامنه' : '➕ افزودن پل', `m:f:${dom ? 'appd' : 'appb'}`), ...(dom && list.length ? [b('🔎 تست', 'm:apt')] : [])], nav('app')],
+  };
+}
+
+// ---------------- panel servers (names, types, countries only; never an address, port or link) ----------------
+export async function panelServerList(env, id) {
+  const { getPanel, panelServers, overridesFor } = await import('./panels.js');
+  const p = await getPanel(env, id);
+  if (!p) return { text: crumb('🗂 پنل‌ها', '🖥 سرورها') + '\n\nپنل پیدا نشد.', kb: [nav('pa')] };
+  const ov = await overridesFor(env, [p.id]);
+  const labels = ov.labels[p.id] || {};
+  const { servers, source } = await panelServers(env, p);
+  const known = new Set(servers.map((s) => s.key));
+  const extra = [...new Set([...Object.keys(labels), ...[...ov.hidden].map((h) => h.split(':')[1])])].filter((k) => !known.has(k));
+  const mark = (k) => `${ov.hidden.has(p.id + ':' + k) ? '🙈 ' : ''}${labels[k] ? '✏️ ' : ''}`;
+  const lines = servers.map((s) => `${mark(s.key)}${labels[s.key] || s.name} — ${s.type}${s.cc ? ` · ${s.cc}` : ''}`);
+  const why = source === 'none' ? 'هنوز هیچ کاربر فعالی روی این پنل نیست، پس لیست سرورهایش خوانده نمی‌شود.'
+    : source === 'error' ? 'پنل جواب نداد؛ لیست سرورها خوانده نشد.' : servers.length ? '' : 'این پنل کانفیگی نداد.';
+  return {
+    text: [crumb('🗂 پنل‌ها', `#${p.id}`, '🖥 سرورها'), '', `🖥 سرورهای پنل #${p.id} — ${p.label}`, '',
+      ...lines, ...(why ? [why] : []), ...(extra.length ? ['', `${fa(extra.length)} سرور تنظیم‌شده الان در پنل نیست.`] : []), '',
+      '🙈 = از اپ برداشته شده · ✏️ = نام دلخواه. روی هر سرور بزن.'].join('\n'),
+    kb: [...servers.slice(0, 30).map((s) => [b(`${mark(s.key)}${labels[s.key] || s.name} · ${s.type}`.slice(0, 60), `m:srv:${p.id}:${s.key}`)]),
+      ...extra.slice(0, 10).map((k) => [b(`${mark(k)}${labels[k] || 'سرور قدیمی'}`, `m:srv:${p.id}:${k}`)]),
+      [b('🔄 به‌روزرسانی', `m:srvs:${p.id}`)], nav(`pp:${p.id}`)],
+  };
+}
+
+export async function panelServer(env, id, key) {
+  const { getPanel, panelServers } = await import('./panels.js');
+  const { SKEY_RE } = await import('./admin-actions.js');
+  const p = await getPanel(env, id);
+  if (!p || !SKEY_RE.test(String(key || ''))) return { text: crumb('🗂 پنل‌ها', '🖥 سرور') + '\n\nپیدا نشد.', kb: [nav(p ? `srvs:${p.id}` : 'pa')] };
+  const o = (await first(env, 'SELECT hidden, label FROM server_overrides WHERE panel_id = ? AND server_key = ?', p.id, key)) || { hidden: 0, label: null };
+  const s = (await panelServers(env, p)).servers.find((x) => x.key === key);
+  return {
+    text: [crumb('🗂 پنل‌ها', `#${p.id}`, '🖥 سرور'), '', `🖥 ${o.label || (s ? s.name : 'سرور قدیمی')}`,
+      s ? `نوع: ${s.type}${s.cc ? ` · کشور: ${s.cc}` : ''}` : 'این سرور الان در لیست پنل نیست.',
+      `در اپ: ${o.hidden ? '🙈 مخفی (کاربرها نمی‌بینندش)' : '👁 نمایش داده می‌شود'}`,
+      `نام در اپ: ${o.label ? o.label : `خودکار${s ? ` (${s.name})` : ''}`}`, '',
+      'رتبه‌بندی و آمار با کلید ثابت سرور حساب می‌شود؛ با تغییر نام از بین نمی‌رود.'].join('\n'),
+    kb: [
+      [b(o.hidden ? '👁 نمایش دوباره در اپ' : '🙈 مخفی کردن از اپ', `m:sh:${p.id}:${key}:${o.hidden ? 0 : 1}`)],
+      [b('✏️ نام در اپ', `m:f:srn:${p.id}.${key}`), ...(o.label ? [b('↺ نام خودکار', `m:sl:${p.id}:${key}`)] : [])],
+      [b('📶 آمار شبکه‌ی این سرور', `m:nsv:${key}`), b('📜 تاریخچه', `m:hist:server:${p.id}.${key}`)],
+      nav(`srvs:${p.id}`),
+    ],
+  };
+}
+
+// ---------------- network ----------------
 export async function net() {
   return {
     text: `${crumb('📶 شبکه و رتبه‌بندی')}\n\nکدام سرور روی کدام اپراتور بهتر است، وضعیت سرورها از دید گوگل، و تجربه‌ی هر کاربر.`,
-    kb: [[b('📶 اپراتورها و بهترین سرورها', 'm:x:net|/carriers')], [b('🔎 وضعیت از دید گوگل', 'm:x:net|/google')],
+    kb: [[b('📶 اپراتورها و بهترین سرورها', 'm:nc')], [b('🔎 وضعیت از دید گوگل', 'm:ng')],
       [b('👥 کاربران و اپراتورهایشان', 'm:un')], nav('home')],
+  };
+}
+
+const srvLine = (s) => `${s.name} — وصل ${fa(s.ok)}٪${s.ms ? ` · پینگ ${fa(s.ms)}ms` : ''}${s.kbps ? ` · ${(s.kbps / 1000).toFixed(1)} مگابیت` : ''} · ${fa(s.users)} نفر`;
+
+export async function carriers(env) {
+  const { carrierSummary } = await import('./netstats.js');
+  const nets = (await carrierSummary(env)).slice(0, 12);
+  const lines = nets.map((n) => `▪️ ${n.isp} — ${fa(n.tests)} تست · بهترین: ${n.servers[0] ? srvLine(n.servers[0]) : '—'}`);
+  return {
+    text: [crumb('📶 شبکه', 'اپراتورها'), '', ...(lines.length ? lines : ['هنوز نتیجه‌ای از گوشی‌ها نرسیده. بعد از چند تست در اپ دوباره بزن.']), '',
+      'روی هر اپراتور بزن تا بهترین و ضعیف‌ترین سرورهایش را ببینی (۳ روز اخیر).'].join('\n'),
+    kb: [...nets.map((n) => [b(`${n.isp} (${fa(n.servers.length)} سرور)`, `m:nca:${n.asn}`)]), nav('net')],
+  };
+}
+
+export async function carrier(env, asn) {
+  const { carrierSummary } = await import('./netstats.js');
+  const n = (await carrierSummary(env)).find((x) => x.asn === asn);
+  if (!n) return { text: crumb('📶 شبکه', 'اپراتور') + '\n\nبرای این اپراتور در ۳ روز اخیر نتیجه‌ای نیست.', kb: [[b('🧹 پاک کردن آمار این اپراتور', `m:nrs:a:${asn}`)], nav('nc')] };
+  const best = n.servers.slice(0, 5), weak = n.servers.length > 5 ? n.servers.slice(-3).reverse() : [];
+  return {
+    text: [crumb('📶 شبکه', n.isp), '', `▪️ ${n.isp} (AS${n.asn}) — ${fa(n.tests)} تست`, '', 'بهترین سرورها:', ...best.map((s, i) => `${i + 1}. 🟢 ${srvLine(s)}`),
+      ...(weak.length ? ['', 'ضعیف‌ترین:', ...weak.map((s) => `🔴 ${srvLine(s)}`)] : []), '',
+      '🔴 یعنی روی این اپراتور کمتر وصل می‌شود یا کندتر است.'].join('\n'),
+    kb: [...best.concat(weak).slice(0, 8).map((s) => [b(`📊 ${s.name}`.slice(0, 50), `m:nsv:${s.k}`)]),
+      [b('🧹 پاک کردن آمار این اپراتور', `m:nrs:a:${n.asn}`)], nav('nc')],
+  };
+}
+
+// one server on every operator, and how Google sees it
+export async function netServer(env, key) {
+  const { SKEY_RE } = await import('./admin-actions.js');
+  if (!SKEY_RE.test(String(key || ''))) return { text: crumb('📶 شبکه', 'سرور') + '\n\nپیدا نشد.', kb: [nav('nc')] };
+  const { carrierSummary } = await import('./netstats.js');
+  const rows = [];
+  let name = '';
+  for (const n of await carrierSummary(env)) {
+    const i = n.servers.findIndex((s) => s.k === key);
+    if (i >= 0) { rows.push({ isp: n.isp, rank: i + 1, of: n.servers.length, s: n.servers[i] }); name = name || n.servers[i].name; }
+  }
+  const g = await first(env, `SELECT SUM(tests) t, SUM(gemini_ok) g, SUM(google_ir) ir, SUM(google_wall) w, MAX(name) name
+    FROM google_probe WHERE skey = ? AND day >= ?`, key, Math.floor(nowSec() / 86400) - 2);
+  name = name || (g && g.name) || 'سرور';
+  const gl = g && g.t ? (g.ir / g.t >= 0.5 ? '🔴 گوگل آن را «ایران» می‌بیند' : g.w / g.t >= 0.5 ? '🟠 گوگل IP را مشکوک می‌داند' : g.g / g.t < 0.5 ? '🟡 گوگل سالم، Gemini نه' : '🟢 گوگل و Gemini سالم') + ` · ${fa(g.t)} تست` : 'هنوز تست گوگل ندارد.';
+  return {
+    text: [crumb('📶 شبکه', name), '', `📊 ${name}`, '', ...(rows.length ? rows.map((r) => `▪️ ${r.isp}: رتبه ${fa(r.rank)} از ${fa(r.of)} — ${srvLine(r.s).split(' — ')[1]}`) : ['در ۳ روز اخیر روی هیچ اپراتوری تست نشده.']),
+      '', `🔎 ${gl}`].join('\n'),
+    kb: [[b('🧹 پاک کردن آمار این سرور', `m:nrs:s:${key}`)], nav('nc')],
+  };
+}
+
+export async function google(env) {
+  const { googleSummary } = await import('./netstats.js');
+  const rows = (await googleSummary(env)).sort((a, z) => (a.status === 'google') - (z.status === 'google'));
+  const ico = { google: '🟢', no_gemini: '🟡', iran: '🔴', flagged: '🟠' };
+  const txt = { google: 'گوگل و Gemini سالم', no_gemini: 'گوگل سالم، Gemini نه', iran: 'گوگل آن را «ایران» می‌بیند', flagged: 'گوگل IP را مشکوک می‌داند (کپچا)' };
+  return {
+    text: [crumb('📶 شبکه', '🔎 گوگل'), '', ...(rows.length ? rows.slice(0, 25).map((r) => `${ico[r.status]} ${r.name} — ${txt[r.status]} · ${r.google_cc || '?'} · ${fa(r.tests)} تست`)
+      : ['هنوز تست گوگلی ثبت نشده. هر کاربر بعد از اتصال، سرورش را خودکار تست می‌کند.']), '',
+      'برای 🔴 و 🟠: روی همان نود، خروجی را از IP دیگری بده (مثلاً WARP) تا گوگل آن را کشور دیگری ببیند.'].join('\n'),
+    kb: [...rows.slice(0, 8).map((r) => [b(`${ico[r.status]} ${r.name}`.slice(0, 50), `m:nsv:${r.k}`)]), nav('net')],
   };
 }
 
@@ -686,7 +842,7 @@ export async function system() {
   };
 }
 
-const TARGET_FA = { plan: '📦 پلن', panel: '🗂 پنل', setting: '⚙️', user: '👤 کاربر', coupon: '🏷 کد', order: '🧾 سفارش' };
+const TARGET_FA = { plan: '📦 پلن', panel: '🗂 پنل', setting: '⚙️', user: '👤 کاربر', coupon: '🏷 کد', order: '🧾 سفارش', server: '🖥 سرور', net: '📶 آمار شبکه' };
 const when = (t) => new Date(t * 1000).toISOString().slice(5, 16).replace('T', ' ');
 
 function logScreen(pg, title, route, back) {
@@ -705,7 +861,8 @@ export async function auditLog(env, cursor) {
 }
 
 // one plan / panel / setting / user: its own changes ("history")
-const HIST_BACK = { plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, user: (id) => `u:${id}`, order: (id) => `o:${id}`, coupon: () => 'cp' };
+const HIST_BACK = { plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, user: (id) => `u:${id}`, order: (id) => `o:${id}`, coupon: () => 'cp',
+  server: (id) => `srv:${String(id).replace('.', ':')}` };
 export async function history(env, type, id, cursor) {
   if (!HIST_BACK[type] || !/^[\w.-]{1,40}$/.test(String(id || ''))) return soon('📜 تاریخچه');
   const pg = await page(env, { from: 'admin_audit', where: 'target_type = ? AND target_id = ?', args: [type, String(id)], cursor });

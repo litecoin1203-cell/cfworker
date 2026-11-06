@@ -2265,6 +2265,7 @@ const STAGE2_ACTIONS = ['user.add_days', 'user.add_gb', 'user.reset_usage', 'use
   'user.logout_all', 'user.block', 'user.unlink_tg', 'user.avatar_reset', 'user.email', 'user.delete', 'user.create'];
 const STAGE3_ACTIONS = ['order.approve', 'order.reject', 'order.cancel', 'order.refund', 'plan.move', 'plan.copy', 'plan.delete', 'plan.unarchive',
   'coupon.set', 'coupon.toggle'];
+const STAGE4_ACTIONS = ['panel.rename', 'panel.enable', 'server.hide', 'server.rename', 'app.list', 'net.reset'];
 section('admin panel stage 1: routes, screens, undo, forms, audit, query budget');
 {
   const menu = await import('../src/telegram-menu.js');
@@ -2401,7 +2402,7 @@ section('admin panel stage 1: routes, screens, undo, forms, audit, query budget'
   }
   await acts.runAction(env, '12345', 'coupon.delete', { code: 'UNDOME' });
   const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
-  const missing = Object.keys(acts.ACTIONS).filter((a) => !logged.has(a) && !STAGE2_ACTIONS.includes(a) && !STAGE3_ACTIONS.includes(a));
+  const missing = Object.keys(acts.ACTIONS).filter((a) => !logged.has(a) && !STAGE2_ACTIONS.includes(a) && !STAGE3_ACTIONS.includes(a) && !STAGE4_ACTIONS.includes(a));
   ok(!missing.length, 'every stage 1 admin action has written an audit row: missing ' + missing.join(','));
   ok(Object.values(acts.ACTIONS).every((a) => ['money', 'destructive', 'reversible'].includes(a.risk)), 'every action has a risk level');
   ok(Object.values(menu.ROUTES).every((r) => r.kind === 'screen' || r.risk), 'every action route has a risk level');
@@ -2722,7 +2723,7 @@ section('admin panel stage 2: users (card, subscription, wallet, devices, securi
   ok(!over.length, 'user screens use ≤6 D1 statements: ' + over.join(' '));
 
   const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
-  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE3_ACTIONS.includes(x));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE3_ACTIONS.includes(x) && !STAGE4_ACTIONS.includes(x));
   ok(!missing.length, 'every stage 2 admin action has written an audit row: missing ' + missing.join(','));
 }
 
@@ -3013,8 +3014,281 @@ section('admin panel stage 3: sales (orders, plans, coupons and referral, paymen
   ok(!slash.length, 'no sales text line starts with /command: ' + slash.slice(0, 2).join(' || ').slice(0, 200));
 
   const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
-  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE4_ACTIONS.includes(x));
   ok(!missing.length, 'every admin action has written an audit row: missing ' + missing.join(','));
+}
+
+section('admin panel stage 4: panels and servers, the Pleat app, network');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const { serverKey } = await import('../src/netstats.js');
+  const A = { chat: { id: 12345 } };
+  let tapN = 0, msgN = 7000;
+  const tap = (data, message = { ...A, message_id: 904, text: 'menu' }) => tgWebhook({ callback_query: { id: 's4-' + (++tapN), data, message } });
+  const say = (text) => tgWebhook({ message: { ...A, text, message_id: ++msgN } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const rows = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results;
+  const lastText = (n) => { const c = since(n).filter((x) => x.body && (x.method === 'editMessageText' || x.method === 'sendMessage')).pop(); return c ? String(c.body.text || '') : ''; };
+  const allText = (n) => since(n).filter((x) => x.body).map((x) => JSON.stringify(x.body)).join('\n');
+  const acks = (n) => since(n).filter((c) => c.method === 'answerCallbackQuery').map((c) => String(c.body.text || '')).join(' | ');
+  const lastAudit = (action) => row('SELECT * FROM admin_audit WHERE action = ? ORDER BY id DESC LIMIT 1', action);
+  const confirmOf = (n) => {
+    const m = since(n).filter((c) => c.method === 'sendMessage' && c.body && c.body.reply_markup && flat(c.body.reply_markup.inline_keyboard).some((x) => x.startsWith('cf:'))).pop();
+    return m ? { token: flat(m.body.reply_markup.inline_keyboard).find((x) => x.startsWith('cf:')).slice(3), text: m.body.text } : null;
+  };
+
+  // a user with a plan on panel 1: three servers (NL, DE, US)
+  const tok = await signup('net4@example.com', { device: 's4' });
+  const u4 = await row('SELECT * FROM users WHERE email = ?', 'net4@example.com');
+  const plan = await row('SELECT id FROM plans WHERE is_active = 1 AND archived = 0 ORDER BY sort, id LIMIT 1');
+  await acts.runAction(env, '12345', 'user.grant', { userId: u4.id, planId: plan.id });
+  const H = { 'x-device-id': 's4', 'x-hwid': 's4' };
+  const servers = async () => (await call('GET', '/api/v1/vpn/servers', { token: tok, headers: H })).data;
+  const s0 = await servers();
+  ok(Array.isArray(s0) && s0.length >= 3, 'the stage 4 user has servers: ' + s0.map((s) => s.name).join(','));
+  const nl = s0.find((s) => s.country_code === 'NL'), de = s0.find((s) => s.country_code === 'DE');
+  const kNl = serverKey(nl.link), kDe = serverKey(de.link);
+  const pa1 = await row("SELECT panel_id FROM panel_accounts WHERE user_id = ? AND desired = 'active'", u4.id);
+  const pid = pa1.panel_id;
+
+  // ---- the server list: names, types and countries, never an address, port, id or link ----
+  let n = fakes.tg.calls.length;
+  const list = await menu.renderScreen(env, `srvs:${pid}`);
+  const listAll = list.text + JSON.stringify(list.kb);
+  ok(/NL/.test(list.text) && /vless·reality·tcp/.test(list.text) && /trojan/.test(list.text), 'the server list shows country and config type: ' + list.text.slice(0, 200));
+  ok(!/example\.com|uuid|pass@|:443|vless:\/\//.test(listAll), 'the server list never shows an address, port, id or link');
+  ok(flat(list.kb).includes(`m:srv:${pid}:${kNl}`), 'each server has its own card');
+  const card = await menu.renderScreen(env, `srv:${pid}:${kNl}`);
+  ok(!/example\.com|uuid|:443|vless:\/\//.test(card.text + JSON.stringify(card.kb)), 'the server card never shows an address, port, id or link');
+  ok(String(card.text).startsWith('🏠 منو') && flat([card.kb[card.kb.length - 1]]).includes('m:home'), 'the server card has breadcrumbs, back and home');
+
+  // ---- hide: gone from /vpn/servers and /vpn/sub; undo brings it back ----
+  n = fakes.tg.calls.length;
+  await tap(`m:sh:${pid}:${kNl}:1`);
+  ok((await row('SELECT hidden FROM server_overrides WHERE panel_id = ? AND server_key = ?', pid, kNl))?.hidden === 1, 'hide writes server_overrides');
+  const s1 = await servers();
+  ok(s1.length === s0.length - 1 && !s1.some((s) => serverKey(s.link) === kNl), 'a hidden server disappears from /vpn/servers: ' + s0.map((s) => s.name + '=' + serverKey(s.link)).join(',') + ' -> ' + s1.length);
+  const subR = await call('GET', '/api/v1/vpn/sub', { token: tok, headers: H });
+  const subLinksNow = decodeSub(await subR.res.text());
+  ok(subLinksNow.length === s0.length - 1 && !subLinksNow.some((l) => serverKey(l) === kNl), 'a hidden server disappears from /vpn/sub: ' + subLinksNow.length);
+  const hideAudit = await lastAudit('server.hide');
+  ok(hideAudit && hideAudit.undo_json && hideAudit.target_type === 'server', 'hide is in the admin log with an undo');
+  ok(flat(since(n).filter((c) => c.body && c.body.reply_markup).pop()?.body.reply_markup.inline_keyboard).includes(`m:undo:${hideAudit.id}`), 'the card comes back with the undo button');
+  await tap(`m:undo:${hideAudit.id}`);
+  ok(!(await row('SELECT 1 x FROM server_overrides WHERE panel_id = ? AND server_key = ?', pid, kNl)), 'undo of a hide removes the override');
+  ok((await servers()).length === s0.length, 'after undo the server is back in /vpn/servers');
+
+  // ---- rename: English only, shows in the app, the ranking key does not move ----
+  n = fakes.tg.calls.length;
+  await tap(`m:f:srn:${pid}.${kDe}`);
+  await say('سرور آلمان');
+  ok(/حرف فارسی/.test(lastText(n)), 'a Persian server name is refused (the app is English only)');
+  await say('🇩🇪 Germany Fast');
+  await tap('m:fok:srn');
+  ok((await row('SELECT label FROM server_overrides WHERE panel_id = ? AND server_key = ?', pid, kDe))?.label === '🇩🇪 Germany Fast', 'rename stores the label');
+  const s2 = await servers();
+  const deNow = s2.find((s) => serverKey(s.link) === kDe);
+  ok(deNow && deNow.name === 'Germany Fast' && deNow.country_code === 'DE', 'the renamed server shows its new name in the app: ' + (deNow && deNow.name));
+  ok(s2.filter((s) => s.name !== 'Germany Fast').every((s) => /^([A-Z]{2} \d+|Server \d+)$/.test(s.name)), 'other servers keep their automatic names');
+  const MCI = { asn: 197207, asOrganization: 'Mobile Communication Company of Iran PLC' };
+  const MTN = { asn: 44244, asOrganization: 'Iran Cell Service and Communication Company' };
+  globalThis.__cgNet = {};
+  await call('POST', '/api/v1/net/report', { token: tok, cf: MCI, json: { results: [{ k: kDe, ok: true, ms: 80 }, { k: kNl, ok: true, ms: 150 }] } });
+  globalThis.__cgNet = {};
+  await call('POST', '/api/v1/net/report', { token: tok, cf: MTN, json: { results: [{ k: kDe, ok: false }, { k: kNl, ok: true, ms: 60 }] } });
+  const rank = (await call('GET', '/api/v1/net/rank', { token: tok, cf: MCI })).data;
+  ok(rank.servers && rank.servers[kDe] && rank.servers[kDe].score > 0, 'ranking still works for the renamed server (same key)');
+  ok(menu.routeOf(`m:f:srn:${pid}.${kDe}`) && !menu.routeOf('m:f:nope:1'), 'the rename form has a route');
+  const r0 = await acts.runAction(env, '12345', 'server.rename', { panelId: pid, key: kDe, label: 'bad#name' });
+  ok(!r0.ok, 'a server name with # is refused');
+
+  // ---- panel: rename, last test, enable a disabled panel (and undo) ----
+  await tap(`m:f:pnm:${pid}`);
+  await say('Main panel');
+  await tap('m:fok:pnm');
+  ok((await row('SELECT label FROM panels WHERE id = ?', pid)).label === 'Main panel', 'the panel can be renamed from its card');
+  await tgWebhook({ message: { ...A, text: `/paneltest ${pid}` } });
+  const pc = await menu.renderScreen(env, `pp:${pid}`);
+  ok(/آخرین تست/.test(pc.text) && /vless·reality·tcp/.test(pc.text), 'the panel card shows the last test and the config types');
+  ok(!/example\.com|cgtest_/.test(pc.text), 'the panel card never shows the address or the test user');
+  ok(flat(pc.kb).includes(`m:srvs:${pid}`), 'the panel card links to its servers');
+  const { addPanel } = await import('../src/panels.js');
+  const p2 = await addPanel(env, 'auto', 'old panel');
+  await env.DB.prepare("UPDATE panels SET state = 'disabled' WHERE id = ?").bind(p2.id).run();
+  ok(flat((await menu.renderScreen(env, `pp:${p2.id}`)).kb).includes(`m:pen:${p2.id}`), 'a disabled panel has a re-enable button');
+  await tap(`m:pen:${p2.id}`);
+  ok((await row('SELECT state FROM panels WHERE id = ?', p2.id)).state === 'testing', 'enable moves a disabled panel back to testing');
+  await tap(`m:undo:${(await lastAudit('panel.enable')).id}`);
+  ok((await row('SELECT state FROM panels WHERE id = ?', p2.id)).state === 'disabled', 'undo of enable disables it again');
+  await env.DB.prepare('DELETE FROM panels WHERE id = ?').bind(p2.id).run();
+
+  // ---- the app's domains: add (validated), remove, reorder, test ----
+  n = fakes.tg.calls.length;
+  await tap('m:f:appd');
+  await say('http://plain.example.org');
+  ok(/آدرس درست نیست/.test(lastText(n)), 'a non-https domain is refused');
+  await say('https://x.example.org/path');
+  ok(/آدرس درست نیست/.test(lastText(n)) && !(await row("SELECT value FROM settings WHERE key = 'app_api_bases'"))?.value, 'a domain with a path is refused');
+  await say('https://API2.example.org/');
+  await tap('m:fok:appd');
+  ok((await row("SELECT value FROM settings WHERE key = 'app_api_bases'")).value === 'https://api2.example.org', 'a good domain is added (trailing slash dropped)');
+  ok(!(await acts.runAction(env, '12345', 'app.list', { k: 'd', op: 'add', value: 'https://api2.example.org' })).ok, 'a duplicate domain is refused');
+  await acts.runAction(env, '12345', 'app.list', { k: 'd', op: 'add', value: 'https://down.example.org' });
+  let cfg = (await call('GET', '/api/v1/app-config')).data;
+  ok(cfg.api_bases.join() === 'https://api2.example.org,https://down.example.org', 'app-config hands out the added domains in order');
+  const dl = await menu.renderScreen(env, 'appl:d');
+  const mv = flat(dl.kb).find((x) => x.startsWith('m:apm:d:1:'));
+  ok(mv && flat(dl.kb).includes('m:apt'), 'the domain list has move and test buttons');
+  await tap(mv);
+  cfg = (await call('GET', '/api/v1/app-config')).data;
+  ok(cfg.api_bases.join() === 'https://down.example.org,https://api2.example.org', 'reorder moves a domain up');
+  n = fakes.tg.calls.length;
+  await tap(mv); // drawn for the old order: names a different item now
+  ok(/عوض شده/.test(acks(n)) && (await call('GET', '/api/v1/app-config')).data.api_bases[0] === 'https://down.example.org', 'a stale button does not move a different item');
+  const realFetch = globalThis.fetch;
+  const seenUrls = [];
+  globalThis.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url === 'https://api2.example.org/health') { seenUrls.push(url); return new Response('{"ok":true}', { status: 200 }); }
+    if (url === 'https://down.example.org/health') { seenUrls.push(url); throw new TypeError('connect failed'); }
+    return realFetch(input, init);
+  };
+  n = fakes.tg.calls.length;
+  await tap('m:apt');
+  globalThis.fetch = realFetch;
+  const tested = lastText(n);
+  ok(/✅ https:\/\/api2\.example\.org — \d+ms/.test(tested) && /❌ https:\/\/down\.example\.org/.test(tested), 'the domain test reports a down domain as failed: ' + tested.slice(0, 200));
+  ok(seenUrls.length === 2, 'the domain test makes one fetch per domain');
+  const rmBtn = flat((await menu.renderScreen(env, 'appl:d')).kb).find((x) => x.startsWith('m:apr:d:0:'));
+  await tap(rmBtn);
+  cfg = (await call('GET', '/api/v1/app-config')).data;
+  ok(cfg.api_bases.join() === 'https://api2.example.org', 'remove takes one domain out');
+  await tap(`m:undo:${(await lastAudit('app.list')).id}`);
+  ok((await call('GET', '/api/v1/app-config')).data.api_bases.length === 2, 'undo of a remove puts the domain back');
+
+  // ---- bridges: the full link is never echoed ----
+  const BR = 'vless://secret-uuid-1234@bridge.hidden-host.net:8443?security=tls&type=ws#br';
+  n = fakes.tg.calls.length;
+  await tap('m:f:appb');
+  await say('not a link');
+  await say(BR);
+  await tap('m:fok:appb');
+  const brCalls = allText(n);
+  ok((await call('GET', '/api/v1/app-config')).data.bridges[0] === BR, 'app-config hands out the bridge in full');
+  ok(!brCalls.includes('secret-uuid') && !brCalls.includes('hidden-host') && !brCalls.includes('8443'), 'the bridge link is never echoed in bot text');
+  ok(since(n).filter((c) => c.method === 'deleteMessage').length >= 1, 'the message with the bridge is deleted from the chat');
+  const bl = await menu.renderScreen(env, 'appl:b');
+  const sk = await menu.renderScreen(env, 'sk:app_bridges');
+  ok(/vless:\/\/br•••net/.test(bl.text) && !/hidden-host|secret-uuid/.test(bl.text + sk.text), 'the bridge list and setting show only scheme + masked host: ' + bl.text.split('\n').find((l) => l.includes('vless')));
+  ok(!/hidden-host|secret-uuid/.test((await lastAudit('app.list')).summary || ''), 'the admin log does not keep the bridge link');
+  ok(acts.maskBridge('vmess://' + btoa(JSON.stringify({ add: 'vm.hidden-host.net', port: 443, id: 'x' }))) === 'vmess://vm•••net', 'vmess bridges are masked too');
+
+  // ---- announcement, support link, trial: app-config reflects the edits ----
+  await tap('m:w:set:announcement');
+  await say('New servers tonight');
+  cfg = (await call('GET', '/api/v1/app-config')).data;
+  ok(cfg.announcement === 'New servers tonight', 'app-config shows the new announcement');
+  const appScr = await menu.renderScreen(env, 'app');
+  ok(appScr.text.includes('«New servers tonight»') && flat(appScr.kb).includes('m:apc:announcement'), 'the app screen previews the announcement with a clear button');
+  await tap('m:apc:announcement');
+  ok(!(await call('GET', '/api/v1/app-config')).data.announcement, 'clear removes the announcement from the app');
+  ok(!(await acts.runAction(env, '12345', 'setting.set', { key: 'support_url', val: 'javascript:alert(1)' })).ok, 'a bad support link is refused');
+  await tap('m:w:set:support_url');
+  await say('https://t.me/cloudgold_support');
+  ok((await call('GET', '/api/v1/app-config')).data.support_url === 'https://t.me/cloudgold_support', 'app-config shows the new support link');
+  await tap('m:ss:trial_data_gb:2');
+  ok((await row("SELECT value FROM settings WHERE key = 'trial_data_gb'")).value === '2', 'trial volume is one tap');
+  ok(['m:pl', 'm:ref', 'm:pay', 'm:sk:min_topup_toman', 'm:appl:d', 'm:appl:b'].every((x) => flat(appScr.kb).includes(x)), 'every app-config field has a way to edit it from the app screen');
+  await acts.runAction(env, '12345', 'setting.set', { key: 'trial_data_gb', val: '0' });
+  await acts.runAction(env, '12345', 'setting.set', { key: 'support_url', val: '' });
+
+  // ---- network: native screens, best servers per operator, reset with impact ----
+  globalThis.__cgGoo = {};
+  await call('POST', '/api/v1/net/google', { token: tok, json: { k: kNl, name: 'NL', cc: 'NL', google_cc: 'NL', gemini: true } });
+  globalThis.__cgGoo = {};
+  await call('POST', '/api/v1/net/google', { token: tok, json: { k: kDe, name: 'DE', cc: 'DE', google_cc: 'DE', gemini: true } });
+  const nc = await menu.renderScreen(env, 'nc');
+  ok(flat(nc.kb).includes('m:nca:197207') && flat(nc.kb).includes('m:nca:44244'), 'the operator screen lists both operators');
+  const nca = await menu.renderScreen(env, 'nca:44244');
+  ok(/بهترین سرورها/.test(nca.text) && flat(nca.kb).includes('m:nrs:a:44244'), 'one operator shows its best servers and a reset button');
+  const nsv = await menu.renderScreen(env, `nsv:${kDe}`);
+  ok(/Germany Fast/.test(nsv.text) && /رتبه/.test(nsv.text), 'one server shows its rank on each operator under its new name: ' + nsv.text.slice(0, 160));
+  const count = async (col, val) => {
+    let t = 0;
+    for (const tb of ['net_stats', 'net_geo', 'net_votes', 'user_net_srv', 'google_probe']) {
+      if (col === 'asn' && tb === 'google_probe') continue;
+      t += (await row(`SELECT COUNT(*) c FROM ${tb} WHERE ${col} = ?`, val)).c;
+    }
+    return t;
+  };
+  const before = { de: await count('skey', kDe), nl: await count('skey', kNl), mtn: await count('asn', 44244), mci: await count('asn', 197207) };
+  ok(before.de > 0 && before.nl > 0 && before.mtn > 0 && before.mci > 0, 'stats exist before the reset: ' + JSON.stringify(before));
+  n = fakes.tg.calls.length;
+  await tap(`m:nrs:s:${kDe}`);
+  const q1 = confirmOf(n);
+  ok(q1 && /ردیف/.test(q1.text) && /برگشت ندارد/.test(q1.text), 'a server reset asks first and says how many rows it removes');
+  ok(await count('skey', kDe) === before.de, 'nothing is removed before the confirm');
+  await tgWebhook({ callback_query: { id: 's4-cf1', data: `cf:${q1.token}`, message: { ...A, message_id: 905, text: 'q' } } });
+  ok(await count('skey', kDe) === 0, 'a server reset removes that server\'s rows');
+  ok(await count('skey', kNl) === before.nl, 'a server reset leaves the other servers alone');
+  const nlMtn = (await row('SELECT COUNT(*) c FROM net_geo WHERE asn = 44244 AND skey = ?', kNl)).c;
+  n = fakes.tg.calls.length;
+  await tap('m:nrs:a:44244');
+  const q2 = confirmOf(n);
+  await tgWebhook({ callback_query: { id: 's4-cf2', data: `cf:${q2.token}`, message: { ...A, message_id: 906, text: 'q' } } });
+  ok(nlMtn > 0 && await count('asn', 44244) === 0, 'an operator reset removes that operator\'s rows');
+  ok(await count('asn', 197207) > 0 && (await row('SELECT COUNT(*) c FROM google_probe WHERE skey = ?', kNl)).c > 0, 'an operator reset leaves other operators and Google tests alone');
+  ok((await lastAudit('net.reset')) && !(await lastAudit('net.reset')).undo_json, 'a reset is in the admin log (no undo: destructive)');
+  ok(!(await acts.runAction(env, '12345', 'net.reset', { kind: 'a', id: '1 OR 1=1' })).ok && !(await acts.runAction(env, '12345', 'net.reset', { kind: 's', id: "x' --" })).ok, 'a reset refuses a bad target');
+
+  // ---- every new screen: buttons resolve within 64 bytes, crumbs, back + home, ≤6 D1 statements ----
+  const screens = [`pp:${pid}`, `srvs:${pid}`, `srv:${pid}:${kNl}`, `srv:${pid}:${kDe}`, 'app', 'appl:d', 'appl:b', 'sk:app_bridges', 'sk:app_api_bases', 'net', 'nc', 'nca:197207', 'nca:44244', `nsv:${kNl}`, 'ng',
+    `hist:server:${pid}.${kDe}`];
+  const realPrepare = env.DB.prepare;
+  let q = 0, maxQ = 0;
+  const bad = [], noNav = [], over = [];
+  env.DB.prepare = (sql) => { q++; return realPrepare(sql); };
+  for (const d of screens) {
+    q = 0;
+    const scr = await menu.renderScreen(env, d);
+    if (q > 6) over.push(`${d}=${q}`);
+    maxQ = Math.max(maxQ, q);
+    for (const x of flat(scr.kb)) if (!menu.routeOf(x) || new TextEncoder().encode(x).length > 64) bad.push(`${d} -> ${x}`);
+    const last = flat([scr.kb[scr.kb.length - 1]]);
+    if (!last.includes('m:home') || (last.length < 2 && !['app', 'net'].includes(d)) || !String(scr.text).startsWith('🏠 منو')) noNav.push(d);
+  }
+  env.DB.prepare = realPrepare;
+  console.log('    most D1 statements on one stage 4 screen: ' + maxQ);
+  ok(!bad.length, 'stage 4 buttons resolve within 64 bytes: ' + bad.slice(0, 4).join(' | '));
+  ok(!noNav.length, 'stage 4 screens have breadcrumbs and end with back + home: ' + noNav.join(' '));
+  ok(!over.length, 'stage 4 screens use ≤6 D1 statements: ' + over.join(' '));
+  const walked = new Set();
+  const queue = ['pa', 'app', 'net']; // the stage 1 walk covers home; this one starts at the stage 4 sections
+  while (queue.length && walked.size < 400) {
+    const d = queue.shift();
+    if (walked.has(d)) continue;
+    walked.add(d);
+    for (const x of flat((await menu.renderScreen(env, d)).kb)) {
+      const r = x.startsWith('m:') && menu.ROUTES[x.slice(2).split(':')[0]];
+      if (r && r.kind === 'screen' && !walked.has(x.slice(2))) queue.push(x.slice(2));
+    }
+  }
+  const unreached = ['srvs', 'srv', 'appl', 'nc', 'nca', 'nsv', 'ng'].filter((k) => ![...walked].some((d) => d.split(':')[0] === k));
+  ok(!unreached.length, 'the walk from home reaches every new screen: missing ' + unreached.join(',') + ' of ' + walked.size);
+  const leak = [...walked].filter((d) => /^(srvs|srv|appl|sk|pp|nc|nca|nsv|ng|app)(:|$)/.test(d));
+  let leaked = [];
+  for (const d of leak) { const s = await menu.renderScreen(env, d); if (/hidden-host|secret-uuid|uuid@|example\.com:|nl1\.|de1\./.test(s.text + JSON.stringify(s.kb))) leaked.push(d); }
+  ok(!leaked.length, 'no reachable screen shows a server address, id or bridge link: ' + leaked.join(' '));
+
+  const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x));
+  ok(!missing.length, 'every admin action, stage 4 included, has written an audit row: missing ' + missing.join(','));
+  await acts.runAction(env, '12345', 'setting.set', { key: 'app_api_bases', val: '' });
+  await acts.runAction(env, '12345', 'setting.set', { key: 'app_bridges', val: '' });
+  await env.DB.prepare('DELETE FROM server_overrides').run();
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

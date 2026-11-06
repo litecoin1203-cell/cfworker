@@ -15,7 +15,7 @@ export const PLAN_FIELDS = { name: 'name', price: 'price_toman', old: 'old_price
   trial: 'trial_days', badge: 'badge', sort: 'sort', on: 'is_active', desc: 'description' };
 const PLAN_COLS = new Set(Object.values(PLAN_FIELDS));
 const TEXT_COLS = new Set(['name', 'badge', 'description']);
-const MASKED = new Set(['sms_key']); // never shown in the log
+const MASKED = new Set(['sms_key', 'app_bridges']); // never shown in the log (bridges are working configs)
 const show = (key, v) => (MASKED.has(key) && v ? '•••' : v === '' || v == null ? '(خالی)' : String(v).slice(0, 80));
 const fail = (error) => ({ ok: false, error });
 
@@ -94,6 +94,16 @@ export const ACTIONS = {
           const c = coinById(key.slice(7));
           return fail(`❌ این آدرس برای ${c ? c.symbol + ' (' + c.network + ')' : key} درست به نظر نمی‌رسد. دوباره از ولتت کپی کن.\nبرای خاموش کردن این ارز: /set ${key}`);
         }
+      }
+      if (key === 'support_url' && val && !/^(https:\/\/|tg:\/\/)[^\s<>"']{3,300}$/i.test(val)) return fail('❌ لینک پشتیبانی باید با https:// یا tg:// شروع شود، مثلاً https://t.me/your_support');
+      if (key === 'trial_data_gb' && !/^\d{1,4}$/.test(val || '0')) return fail('❌ حجم تست را به گیگ و فقط عدد بنویس (0 = مثل پلن).');
+      if (key === 'announcement' && val.length > 1000) return fail('❌ اطلاعیه حداکثر ۱۰۰۰ حرف است.');
+      if (key === 'app_api_bases' || key === 'app_bridges') { // a whole-list set (old /set) keeps only the items the editor would take
+        const items = splitAppList(val);
+        const okItems = [...new Set(items.map(key === 'app_api_bases' ? cleanBase : cleanBridge).filter(Boolean))].slice(0, LIST_MAX);
+        val = okItems.join('\n');
+        const dropped = items.length - okItems.length;
+        text = `✅ ${KEY_LABEL[key]}: ${fa(okItems.length)} مورد ذخیره شد${dropped ? ` (${fa(dropped)} مورد نادرست یا تکراری کنار گذاشته شد)` : ''}.`;
       }
       await setSetting(env, key, val);
       return { targetId: key, summary: `${show(key, before)} → ${show(key, val)}`, undo: { key, value: before ?? '' }, text };
@@ -725,6 +735,198 @@ Object.assign(ACTIONS, {
         text: c.is_active ? `⏸ کد ${c.code} متوقف شد` : `▶️ کد ${c.code} دوباره فعال شد` };
     },
     undo: (env, u) => ACTIONS['coupon.set'].undo(env, u),
+  },
+});
+
+// ---------------- stage 4: panels, servers, the app's lists, network stats ----------------
+export const SKEY_RE = /^[a-z0-9]{6,16}$/; // the key the apps send (serverKey: "k" + 8 hex)
+export const APP_LISTS = { d: 'app_api_bases', b: 'app_bridges' };
+const KEY_LABEL = { app_api_bases: 'دامنه‌های اپ', app_bridges: 'پل‌های اپ' };
+const LIST_MAX = 8;
+const BASE_RE = /^https:\/\/[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:\d{1,5})?$/i;
+const BRIDGE_RE = /^(vless|vmess|trojan|ss|hysteria2|hy2|wireguard):\/\/\S+$/i;
+// a short tag of one list item (FNV-1a, 6 hex): a button names the item it was drawn for, so a stale button
+// cannot remove or move a different item after the list changed
+export function itemTag(v) {
+  let h = 0x811c9dc5;
+  for (const ch of String(v)) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(16).padStart(8, '0').slice(0, 6);
+}
+export const splitAppList = (v) => String(v || '').split(/[\s,]+/).map((x) => x.trim().replace(/\/+$/, '')).filter(Boolean);
+// a domain for the app's API: https, a host name, an optional port, nothing else (no path, user or query)
+export function cleanBase(raw) {
+  const v = String(raw || '').trim().replace(/\/+$/, '');
+  return BASE_RE.test(v) && v.length <= 200 ? v.toLowerCase() : null;
+}
+export function cleanBridge(raw) {
+  const v = String(raw || '').trim();
+  return BRIDGE_RE.test(v) && v.length <= 2000 && !/[,]/.test(v) ? v : null;
+}
+// "vless://ab•••com" — never the whole link, its id or its port
+export function maskBridge(link) {
+  const s = String(link || '');
+  const scheme = (s.split('://', 1)[0] || '?').toLowerCase();
+  let host = '';
+  try {
+    if (scheme === 'vmess') {
+      let raw = s.slice(8).split('#')[0];
+      raw += '='.repeat((4 - (raw.length % 4)) % 4);
+      host = String(JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/'))).add || '');
+    } else {
+      const rest = s.replace(/^[a-z0-9+.-]+:\/\//i, '').split('#')[0].split('?')[0].split('/')[0];
+      host = rest.slice(rest.lastIndexOf('@') + 1).replace(/^\[/, '').replace(/\](:\d*)?$/, '').replace(/:\d*$/, '');
+    }
+  } catch (e) { host = ''; }
+  const m = host.length > 6 ? host.slice(0, 2) + '•••' + host.slice(-3) : '•••';
+  return `${scheme}://${m}`;
+}
+
+const panelRow = async (env, id) => (await import('./panels.js')).getPanel(env, parseInt(id, 10));
+// server_overrides: the row after a change, or deleted when it says nothing any more
+async function writeOverride(env, panelId, key, hidden, label) {
+  if (!hidden && !label) await run(env, 'DELETE FROM server_overrides WHERE panel_id = ? AND server_key = ?', panelId, key);
+  else await run(env, `INSERT INTO server_overrides (panel_id, server_key, hidden, label) VALUES (?, ?, ?, ?)
+    ON CONFLICT(panel_id, server_key) DO UPDATE SET hidden = excluded.hidden, label = excluded.label`, panelId, key, hidden ? 1 : 0, label || null);
+}
+const overrideOf = (env, panelId, key) => first(env, 'SELECT hidden, label FROM server_overrides WHERE panel_id = ? AND server_key = ?', panelId, key);
+
+// what one network-stats reset removes: tables keyed by server (skey) or by operator (asn)
+export const NET_RESET_TABLES = {
+  s: ['net_stats', 'net_geo', 'net_votes', 'net_speed_votes', 'user_net_srv', 'google_probe', 'google_votes'],
+  a: ['net_stats', 'net_geo', 'net_votes', 'net_speed_votes', 'user_net_srv', 'user_net'],
+};
+export function netResetTarget(kind, id) {
+  if (kind === 's' && SKEY_RE.test(String(id))) return { col: 'skey', val: String(id), tables: NET_RESET_TABLES.s };
+  const asn = parseInt(id, 10);
+  if (kind === 'a' && asn > 0 && String(asn) === String(id)) return { col: 'asn', val: asn, tables: NET_RESET_TABLES.a };
+  return null;
+}
+// rows a reset would remove, per table (one query)
+export async function netResetImpact(env, kind, id) {
+  const t = netResetTarget(kind, id);
+  if (!t) return null;
+  const row = await first(env, `SELECT ${t.tables.map((tb) => `(SELECT COUNT(*) FROM ${tb} WHERE ${t.col} = ?1) AS ${tb}`).join(', ')}`, t.val);
+  return { ...t, counts: row, total: Object.values(row).reduce((a, b) => a + Number(b || 0), 0) };
+}
+
+Object.assign(ACTIONS, {
+  'panel.rename': {
+    risk: 'reversible', target: 'panel',
+    async apply(env, { panelId, label }) {
+      const p = await panelRow(env, panelId);
+      if (!p) return fail('پنل پیدا نشد.');
+      label = String(label || '').trim().replace(/\s+/g, ' ');
+      if (!label || label.length > 40) return fail('نام پنل باید ۱ تا ۴۰ حرف باشد.');
+      await run(env, 'UPDATE panels SET label = ? WHERE id = ?', label, p.id);
+      return { targetId: p.id, summary: `${p.label} → ${label}`, undo: { panelId: p.id, label: p.label }, text: `✏️ نام پنل #${p.id}: ${label}` };
+    },
+    async undo(env, u) {
+      const r = await run(env, 'UPDATE panels SET label = ? WHERE id = ?', String(u.label || '').slice(0, 40), u.panelId);
+      return !!r.meta.changes;
+    },
+  },
+  // a disabled panel goes back to testing (takes nobody until the admin rolls it out again)
+  'panel.enable': {
+    risk: 'reversible', target: 'panel',
+    async apply(env, { panelId }) {
+      const p = await panelRow(env, panelId);
+      if (!p) return fail('پنل پیدا نشد.');
+      if (p.state !== 'disabled') return fail('فقط پنل غیرفعال دوباره فعال می‌شود.');
+      await run(env, "UPDATE panels SET state = 'testing', rollout_percent = 0 WHERE id = ? AND state = 'disabled'", p.id);
+      return { targetId: p.id, summary: 'disabled → testing', undo: { panelId: p.id, pct: p.rollout_percent || 0 },
+        text: `🔄 پنل #${p.id} به حالت «در حال تست» برگشت. هنوز به کسی داده نمی‌شود؛ اول تستش کن، بعد درصد بده.` };
+    },
+    async undo(env, u) {
+      const r = await run(env, "UPDATE panels SET state = 'disabled', rollout_percent = ? WHERE id = ? AND state = 'testing'", u.pct || 0, u.panelId);
+      return !!r.meta.changes;
+    },
+  },
+  'server.hide': {
+    risk: 'reversible', target: 'server',
+    async apply(env, { panelId, key, on }) {
+      const p = await panelRow(env, panelId);
+      if (!p) return fail('پنل پیدا نشد.');
+      if (!SKEY_RE.test(String(key))) return fail('سرور پیدا نشد.');
+      const before = (await overrideOf(env, p.id, key)) || { hidden: 0, label: null };
+      const hidden = on ? 1 : 0;
+      await writeOverride(env, p.id, key, hidden, before.label);
+      return { targetId: `${p.id}.${key}`, summary: `hidden: ${before.hidden ? 1 : 0} → ${hidden}`, undo: { panelId: p.id, key, hidden: before.hidden ? 1 : 0, label: before.label || null },
+        text: hidden ? '🙈 این سرور از لیست اپ برداشته شد (کاربرها دیگر نمی‌بینندش).' : '👁 این سرور دوباره در لیست اپ است.' };
+    },
+    async undo(env, u) {
+      if (!SKEY_RE.test(String(u.key))) return false;
+      await writeOverride(env, parseInt(u.panelId, 10), u.key, u.hidden, u.label);
+      return true;
+    },
+  },
+  // label '' = back to the automatic name ("🇩🇪 DE 2"); the app is English only, so no Persian
+  'server.rename': {
+    risk: 'reversible', target: 'server',
+    async apply(env, { panelId, key, label }) {
+      const p = await panelRow(env, panelId);
+      if (!p) return fail('پنل پیدا نشد.');
+      if (!SKEY_RE.test(String(key))) return fail('سرور پیدا نشد.');
+      let clean = null;
+      if (String(label || '').trim()) {
+        const { cleanServerLabel } = await import('./panels.js');
+        clean = cleanServerLabel(label);
+        if (!clean) return fail('نام سرور باید ۱ تا ۴۰ حرف انگلیسی، عدد یا ایموجی باشد (اپ انگلیسی است؛ حرف فارسی و # " < > قبول نمی‌شود).');
+      }
+      const before = (await overrideOf(env, p.id, key)) || { hidden: 0, label: null };
+      await writeOverride(env, p.id, key, before.hidden, clean);
+      return { targetId: `${p.id}.${key}`, summary: `label: ${before.label || '(خودکار)'} → ${clean || '(خودکار)'}`,
+        undo: { panelId: p.id, key, hidden: before.hidden ? 1 : 0, label: before.label || null },
+        text: clean ? `✏️ نام این سرور در اپ: ${clean}` : '✏️ نام این سرور به نام خودکار برگشت.' };
+    },
+    undo: (env, u) => ACTIONS['server.hide'].undo(env, u),
+  },
+  // the app's emergency lists: k = d (API domains) or b (bridge configs); op = add | remove | move
+  'app.list': {
+    risk: 'reversible', target: 'setting',
+    async apply(env, { k, op, value, index, dir, tag }) {
+      const key = APP_LISTS[k];
+      if (!key) return fail('لیست ناشناخته.');
+      const before = (await getSettings(env))[key] || '';
+      const list = splitAppList(before);
+      const i = parseInt(index, 10);
+      if (op !== 'add' && tag != null && !(i >= 0 && i < list.length && itemTag(list[i]) === tag)) return fail('این لیست در این فاصله عوض شده؛ دوباره نگاه کن.');
+      let text;
+      if (op === 'add') {
+        const v = k === 'd' ? cleanBase(value) : cleanBridge(value);
+        if (!v) return fail(k === 'd' ? '❌ آدرس درست نیست. فقط https و نام دامنه، مثل https://api.example.com (بدون مسیر).'
+          : '❌ کانفیگ درست نیست. باید با vless:// یا vmess:// یا trojan:// یا ss:// یا hysteria2:// یا wireguard:// شروع شود.');
+        if (list.some((x) => x.toLowerCase() === v.toLowerCase())) return fail('این مورد همین الان در لیست هست.');
+        if (list.length >= LIST_MAX) return fail(`حداکثر ${LIST_MAX} مورد. اول یکی را حذف کن.`);
+        list.push(v);
+        text = k === 'd' ? `➕ دامنه اضافه شد: ${v}` : `➕ پل اضافه شد: ${maskBridge(v)}`;
+      } else if (op === 'remove') {
+        if (!(i >= 0 && i < list.length)) return fail('این مورد دیگر در لیست نیست.');
+        const [gone] = list.splice(i, 1);
+        text = `🗑 حذف شد: ${k === 'd' ? gone : maskBridge(gone)}`;
+      } else if (op === 'move') {
+        const j = dir === 'u' ? i - 1 : i + 1;
+        if (!(i >= 0 && i < list.length) || j < 0 || j >= list.length) return fail('جابه‌جایی ممکن نیست.');
+        [list[i], list[j]] = [list[j], list[i]];
+        text = '⬆️ ترتیب عوض شد';
+      } else return fail('کار ناشناخته.');
+      const val = list.join('\n');
+      await setSetting(env, key, val);
+      const brief = (v) => (k === 'd' ? splitAppList(v).join(' ') || '(خالی)' : `${splitAppList(v).length} پل`);
+      return { targetId: key, summary: `${op}: ${brief(before)} → ${brief(val)}`.slice(0, 300), undo: { key, value: before }, text };
+    },
+    undo: (env, u) => ACTIONS['setting.set'].undo(env, u),
+  },
+  // removes the stats of one server (kind 's', id = skey) or one operator (kind 'a', id = asn), in one batch
+  'net.reset': {
+    risk: 'destructive', target: 'net',
+    async apply(env, { kind, id }) {
+      const t = netResetTarget(kind, id);
+      if (!t) return fail('هدف پاک کردن درست نیست.');
+      const res = await env.DB.batch(t.tables.map((tb) => st(env, `DELETE FROM ${tb} WHERE ${t.col} = ?`, t.val)));
+      const n = res.reduce((a, r) => a + Number((r.meta && r.meta.changes) || 0), 0);
+      return { targetId: `${kind}:${t.val}`, summary: `${fa(n)} ردیف از ${t.tables.join(',')}`,
+        text: `🧹 آمار ${kind === 's' ? 'این سرور' : 'این اپراتور'} پاک شد (${fa(n)} ردیف). از گزارش‌های بعدی اپ دوباره جمع می‌شود.` };
+    },
   },
 });
 

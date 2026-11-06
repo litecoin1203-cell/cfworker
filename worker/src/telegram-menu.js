@@ -15,7 +15,7 @@ import { first, all, run } from './db.js';
 import { nowSec, hashPassword } from './util.js';
 import { tg, runAdminCommand, askConfirm } from './telegram.js';
 import * as S from './telegram-screens.js';
-import { runAction, undoAction, checkEmail } from './admin-actions.js';
+import { runAction, undoAction, checkEmail, maskBridge } from './admin-actions.js';
 
 const { b, HOME, nav } = S;
 const fa = S.fa;
@@ -116,6 +116,45 @@ export const FORMS = {
     steps: [{ key: 'email', ask: 'ایمیل جدید این کاربر را بنویس:', hint: 'این ایمیل درست نیست.', parse: emailParse }],
     summary: (d) => [`کاربر: #${d.userId}`, `ایمیل جدید: ${d.email}`],
     done: (r, d) => `usec:${d.userId}`,
+  },
+  // ---- panels, servers, the app's lists (stage 4) ----
+  pnm: {
+    title: '✏️ نام پنل', ok: '✅ انجام شود', back: (d) => `pp:${d.panelId}`, action: 'panel.rename',
+    init: async (env, raw) => { const id = parseInt(raw, 10); return id > 0 && (await first(env, 'SELECT 1 x FROM panels WHERE id = ?', id)) ? { panelId: id } : null; },
+    steps: [{ key: 'label', ask: 'نام تازه‌ی پنل را بنویس (فقط برای تو در ربات است، کاربر نمی‌بیند):', hint: 'نام باید ۱ تا ۴۰ حرف باشد.',
+      parse: (v) => { const t = String(v || '').trim().replace(/\s+/g, ' '); return t && t.length <= 40 ? t : null; } }],
+    summary: (d) => [`پنل: #${d.panelId}`, `نام تازه: ${d.label}`],
+    done: (r, d) => `pp:${d.panelId}`,
+  },
+  srn: {
+    title: '✏️ نام سرور در اپ', ok: '✅ انجام شود', back: (d) => `srv:${d.panelId}:${d.key}`, action: 'server.rename',
+    init: async (env, raw) => {
+      const [pid, key] = String(raw || '').split('.');
+      const id = parseInt(pid, 10);
+      return id > 0 && /^[a-z0-9]{6,16}$/.test(key || '') && (await first(env, 'SELECT 1 x FROM panels WHERE id = ?', id)) ? { panelId: id, key } : null;
+    },
+    steps: [{ key: 'label', ask: 'نامی که کاربرها در اپ می‌بینند را بنویس. اپ انگلیسی است: حروف انگلیسی، عدد و ایموجی پرچم (مثلاً 🇩🇪 Germany Fast):',
+      hint: 'نام باید ۱ تا ۴۰ حرف انگلیسی، عدد یا ایموجی باشد؛ حرف فارسی و # " < > قبول نمی‌شود.',
+      parse: async (v) => { const { cleanServerLabel } = await import('./panels.js'); return cleanServerLabel(v); } }],
+    summary: (d) => [`پنل: #${d.panelId}`, `نام در اپ: ${d.label}`],
+    done: (r, d) => `srv:${d.panelId}:${d.key}`,
+  },
+  appd: {
+    title: '➕ دامنه‌ی اضافه برای اپ', ok: '✅ اضافه شود', back: 'appl:d', action: 'app.list',
+    steps: [{ key: 'v', ask: 'آدرس دامنه را بنویس، فقط https و بدون مسیر (مثلاً https://api2.example.com):', hint: 'آدرس درست نیست: فقط https:// و نام دامنه، بدون مسیر یا فاصله.',
+      parse: async (v) => (await import('./admin-actions.js')).cleanBase(v) }],
+    summary: (d) => [`دامنه: ${d.v}`],
+    args: (d) => ({ k: 'd', op: 'add', value: d.v }),
+    done: () => 'appl:d',
+  },
+  appb: {
+    title: '➕ پل برای اپ', ok: '✅ اضافه شود', back: 'appl:b', action: 'app.list',
+    steps: [{ key: 'v', secret: true, ask: 'کانفیگ پل را بفرست (vless:// یا vmess:// یا trojan:// یا ss:// یا hysteria2:// یا wireguard://).\nپیامت بلافاصله از چت پاک می‌شود و لینک کامل جایی نشان داده نمی‌شود.',
+      hint: 'کانفیگ درست نیست؛ باید یک لینک کامل با یکی از این شروع‌ها باشد: vless:// vmess:// trojan:// ss:// hysteria2:// wireguard://',
+      parse: async (v) => (await import('./admin-actions.js')).cleanBridge(v) }],
+    summary: (d) => [`پل: ${maskBridge(d.v)}`],
+    args: (d) => ({ k: 'b', op: 'add', value: d.v }),
+    done: () => 'appl:b',
   },
   newuser: {
     title: '➕ کاربر دستی', back: 'usr', action: 'user.create', ok: '✅ ساخته شود',
@@ -240,6 +279,13 @@ const SCREENS = {
   sk: (env, a) => S.settingKey(env, a[0]),
   app: (env) => S.app(env),
   net: () => S.net(),
+  srvs: (env, a) => S.panelServerList(env, parseInt(a[0], 10)),
+  srv: (env, a) => S.panelServer(env, parseInt(a[0], 10), a[1]),
+  appl: (env, a) => S.appList(env, a[0]),
+  nc: (env) => S.carriers(env),
+  nca: (env, a) => S.carrier(env, parseInt(a[0], 10)),
+  nsv: (env, a) => S.netServer(env, a[0]),
+  ng: (env) => S.google(env),
   st: (env) => S.stats(env),
   sys: () => S.system(),
   'sys.log': (env, a) => S.auditLog(env, a[0]),
@@ -258,6 +304,8 @@ const ACTION_RISK = {
   oap: 'money', orf: 'money', orj: 'reversible', ocx: 'reversible', orc: 'read',
   pmv: 'reversible', pcp: 'reversible', pua: 'reversible', pdl: 'destructive',
   cs: 'reversible', ct: 'reversible', ss: 'reversible', sdel: 'reversible',
+  // panels, servers, the app, network (stage 4)
+  pen: 'reversible', sh: 'reversible', sl: 'reversible', apm: 'reversible', apr: 'reversible', apc: 'reversible', apt: 'read', nrs: 'destructive',
 };
 // reversible user buttons: route -> [action, args from the button, the screen the card comes back on]
 const USER_TAPS = {
@@ -276,6 +324,13 @@ const USER_TAPS = {
   pua: (a) => ['plan.unarchive', { id: a[0] }, `p:${a[0]}`],
   cs: (a) => ['coupon.set', { id: a[0], field: a[1], value: a[2] }, `c:${a[0]}`],
   ct: (a) => ['coupon.toggle', { id: a[0] }, `c:${a[0]}`],
+  // panels, servers, the app's lists (stage 4)
+  pen: (a) => ['panel.enable', { panelId: a[0] }, `pp:${a[0]}`],
+  sh: (a) => ['server.hide', { panelId: a[0], key: a[1], on: a[2] === '1' }, `srv:${a[0]}:${a[1]}`],
+  sl: (a) => ['server.rename', { panelId: a[0], key: a[1], label: '' }, `srv:${a[0]}:${a[1]}`],
+  apm: (a) => ['app.list', { k: a[0], op: 'move', index: a[1], dir: 'u', tag: a[2] || '' }, `appl:${a[0]}`],
+  apr: (a) => ['app.list', { k: a[0], op: 'remove', index: a[1], tag: a[2] || '' }, `appl:${a[0]}`],
+  apc: (a) => ['setting.set', { key: ['announcement', 'support_url'].includes(a[0]) ? a[0] : '-', val: '' }, 'app'],
 };
 const GiB = 1024 ** 3;
 // money / destructive user buttons: the "are you sure?" question, with what it affects
@@ -395,9 +450,27 @@ async function cardWithUndo(env, cq, data, r) {
   const scr = await renderScreen(env, data);
   return show(env, cq, { text: scr.text, kb: [...undoRows(r), ...scr.kb] });
 }
-const UNDO_BACK = { user: (id) => `u:${id}`, plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, coupon: () => 'cp', order: (id) => `o:${id}` };
+const UNDO_BACK = { user: (id) => `u:${id}`, plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, coupon: () => 'cp', order: (id) => `o:${id}`,
+  server: (id) => `srv:${String(id).replace('.', ':')}` };
+// one extra app domain: GET <base>/health within 5 s; ok only when it answers like this worker ({"ok":true})
+export async function checkHealth(base) {
+  const t0 = Date.now();
+  try {
+    const r = await fetch(`${base}/health`, { signal: AbortSignal.timeout(5000), headers: { 'user-agent': 'cloudgold-admin-check' } });
+    const body = await r.text().catch(() => '');
+    if (!r.ok) return { ok: false, why: `HTTP ${r.status}` };
+    let j = null;
+    try { j = JSON.parse(body); } catch (e) { j = null; }
+    if (!j || j.ok !== true) return { ok: false, why: 'جواب ورکر نیست' };
+    return { ok: true, ms: Date.now() - t0 };
+  } catch (e) {
+    return { ok: false, why: e && e.name === 'TimeoutError' ? 'بیش از ۵ ثانیه' : 'وصل نشد' };
+  }
+}
+const NET_TABLE_FA = { net_stats: 'آمار روزانه', net_geo: 'آمار استانی', net_votes: 'رأی کاربران', net_speed_votes: 'رأی سرعت',
+  user_net_srv: 'تجربه‌ی هر کاربر', user_net: 'شبکه‌های کاربران', google_probe: 'تست گوگل', google_votes: 'رأی تست گوگل' };
 // where a one-tap setting comes back to
-const SET_BACK = { referral_percent: 'ref' };
+const SET_BACK = { referral_percent: 'ref', trial_data_gb: 'app' };
 
 // onCallback in telegram.js has already checked that the tap came from the admin in their private chat.
 export async function onMenu(env, cq) {
@@ -576,6 +649,29 @@ export async function onMenu(env, cq) {
     await ack('🗑 حذف شد؛ پیامک‌های این شماره دیگر خودکار تأیید نمی‌شوند');
     return cardWithUndo(env, cq, 'snd', r);
   }
+  // ---- the app's domains, network stats (stage 4) ----
+  if (route === 'apt') { // each extra domain's /health, in parallel (at most 8 fetches)
+    await ack('⏳ در حال تست…');
+    const { getSettings } = await import('./db.js');
+    const { splitAppList } = await import('./admin-actions.js');
+    const list = splitAppList((await getSettings(env)).app_api_bases).slice(0, 8);
+    const res = await Promise.all(list.map((base) => checkHealth(base)));
+    const lines = res.map((r, i) => `${r.ok ? '✅' : '❌'} ${list[i]} — ${r.ok ? `${fa(r.ms)}ms` : r.why}`);
+    return show(env, cq, { text: [S.crumb('📱 اپ Pleat', '🌐 دامنه‌ها', '🔎 تست'), '', ...(lines.length ? lines : ['دامنه‌ای در لیست نیست.']), '',
+      'تست از سرور Cloudflare است، نه از ایران؛ «✅» یعنی دامنه درست به ورکر می‌رسد، نه اینکه در ایران فیلتر نیست.'].join('\n'),
+    kb: [[b('🔄 تست دوباره', 'm:apt')], nav('appl:d')] });
+  }
+  if (route === 'nrs') { // destructive: asks first, with how many rows it removes
+    const { netResetImpact } = await import('./admin-actions.js');
+    const kind = args[0], id = args[1];
+    const imp = await netResetImpact(env, kind, id);
+    if (!imp) return ack('پیدا نشد');
+    if (!imp.total) return ack('برای این مورد آماری ثبت نشده', true);
+    const parts = Object.entries(imp.counts).filter(([, n]) => n > 0).map(([t, n]) => `• ${NET_TABLE_FA[t] || t}: ${fa(n)} ردیف`);
+    await askConfirm(env, chatId, 'net_reset', { kind, id }, [`آمار ${kind === 's' ? 'این سرور' : `اپراتور AS${id}`} پاک شود؟ این کار برگشت ندارد:`, ...parts,
+      kind === 's' ? 'آمار بقیه‌ی سرورها دست نمی‌خورد.' : 'آمار بقیه‌ی اپراتورها دست نمی‌خورد.', 'رتبه‌بندی از گزارش‌های بعدی اپ دوباره ساخته می‌شود.'].join('\n'));
+    return ack('');
+  }
   if (route === 'undo') {
     const r = await undoAction(env, chatId, int(0));
     if (!r.ok) { await ack(r.error, true); return showScreen(env, cq, 'sys.log'); }
@@ -590,8 +686,11 @@ export async function onMenu(env, cq) {
 async function startForm(env, cq, name, ack, uid) {
   const f = FORMS[name];
   if (!f) return ack('پیدا نشد');
-  const data = {};
-  if (typeof f.back === 'function') { // a per-user (or per-coupon) form needs one that exists
+  let data = {};
+  if (f.init) { // a form about one panel or one server reads (and checks) its target from the button
+    data = await f.init(env, uid);
+    if (!data) return ack('پیدا نشد');
+  } else if (typeof f.back === 'function') { // a per-user (or per-coupon) form needs one that exists
     const id = parseInt(uid, 10);
     const coupon = f.param === 'couponId';
     if (!(id > 0) || !(await first(env, `SELECT 1 x FROM ${coupon ? 'coupons' : 'users'} WHERE id = ?`, id))) return ack(coupon ? 'این کد پیدا نشد' : 'کاربر پیدا نشد');

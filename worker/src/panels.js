@@ -5,6 +5,7 @@ import { first, all, run, insert } from './db.js';
 import { nowSec, err, seal, openSealed } from './util.js';
 import { PasarGuard, PasarGuardError, decodeSub } from './pasarguard.js';
 import { Marzban, Rebecca, detectKind } from './marzban.js';
+import { serverKey } from './netstats.js';
 
 // states whose configs users get; draining/disabled panels are already out of the list
 const SERVING = ['active', 'rollout'];
@@ -227,7 +228,10 @@ export function isPlaceholder(link) {
   return /^127\./.test(host) || host === '0.0.0.0' || host === 'localhost' || host === '::1' || host === '::' || (port !== '' && Number(port) <= 1);
 }
 
-export function unify(links) {
+// labels = {serverKey: name} the admin gave a server (server_overrides): used as is, takes no number.
+// Ranking does not move: it is keyed by serverKey (type|host|port), never by the name.
+export function unify(links, labels = {}) {
+  const hasLabels = Object.keys(labels).length > 0;
   const seen = new Set();
   const perCc = {};
   const out = [];
@@ -236,6 +240,8 @@ export function unify(links) {
     const key = link.split('#')[0];
     if (seen.has(key)) continue;
     seen.add(key);
+    const label = hasLabels ? labels[serverKey(link)] : null;
+    if (label) { out.push(withRemark(link, label)); continue; }
     const cc = flagToCc(remarkOf(link));
     const n = (perCc[cc || '?'] = (perCc[cc || '?'] || 0) + 1);
     out.push(withRemark(link, cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`));
@@ -243,11 +249,68 @@ export function unify(links) {
   return out;
 }
 
+// What the app may show as a server name. The app is English only, so no Persian/Arabic letters; emoji flags,
+// Latin letters, digits and a little punctuation are fine. null = not allowed.
+export function cleanServerLabel(text) {
+  const t = String(text || '').trim().replace(/\s+/g, ' ');
+  if (!t || [...t].length > 40) return null;
+  if (/[؀-ۿݐ-ݿﭐ-﷿ﹰ-﻿]/.test(t)) return null;
+  if (/[<>"'`\\#%]/.test(t) || /[\u0000-\u001F\u007F]/.test(t)) return null;
+  return t;
+}
+
+// Admin overrides (hide / rename) of these panels: {hidden: Set("pid:key"), labels: {pid: {key: label}}}. One query.
+export async function overridesFor(env, panelIds) {
+  const out = { hidden: new Set(), labels: {} };
+  const ids = [...new Set(panelIds.map(Number).filter((n) => n > 0))];
+  if (!ids.length) return out;
+  const rows = await all(env, `SELECT panel_id, server_key, hidden, label FROM server_overrides
+    WHERE panel_id IN (${ids.map(() => '?').join(',')})`, ...ids);
+  for (const r of rows) {
+    if (r.hidden) out.hidden.add(r.panel_id + ':' + r.server_key);
+    if (r.label) (out.labels[r.panel_id] = out.labels[r.panel_id] || {})[r.server_key] = r.label;
+  }
+  return out;
+}
+
+// One panel's servers for the admin bot: a name numbered as if this panel were alone, the config type and the
+// country. Read from one active account's subscription on that panel (1-2 fetches). Never returns an address,
+// port, id or link. {servers: [{key, name, type, cc}], source: 'account' | 'none' | 'error'}
+export async function panelServers(env, panel) {
+  const a = await first(env, `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json FROM panel_accounts a
+    JOIN panels p ON p.id = a.panel_id WHERE a.panel_id = ? AND a.desired = 'active' AND a.sub_path != ''
+    ORDER BY a.id DESC LIMIT 1`, panel.id);
+  if (!a) return { servers: [], source: 'none' };
+  let found = [];
+  try {
+    const pg = await adapterFor(env, panelOfAccount(a));
+    let raw = await pg.subscriptionRaw(a.sub_path, {});
+    found = raw.status >= 200 && raw.status < 300 ? decodeSub(raw.text) : [];
+    if (!found.length && ![403, 404, 429].includes(raw.status)) {
+      raw = await pg.subscriptionRaw(pg.linksUrl(a.sub_path), {});
+      found = raw.status >= 200 && raw.status < 300 ? decodeSub(raw.text) : [];
+    }
+  } catch (e) { return { servers: [], source: 'error' }; }
+  const seen = new Set(), perCc = {}, servers = [];
+  for (const link of found) {
+    if (isPlaceholder(link)) continue;
+    const key = serverKey(link);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    const cc = flagToCc(remarkOf(link));
+    const n = (perCc[cc || '?'] = (perCc[cc || '?'] || 0) + 1);
+    const type = Object.keys(linkKinds([link]).counts)[0] || '?';
+    servers.push({ key, name: cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`, type, cc });
+  }
+  return { servers: servers.slice(0, 60), source: 'account' };
+}
+
 // The user's configs from every panel they are served by, merged. fwd = the phone's HWID headers (panel 1
 // limits devices with them). {links, deviceLimit, missing}: deviceLimit = a panel refused this phone.
 export async function collectLinks(env, userId, fwd = {}) {
   const accounts = (await accountsOf(env, userId)).filter((a) => SERVING.includes(a.panel_state) && a.desired === 'active' && a.sub_path);
-  const links = [];
+  const links = [], labels = {};
+  const ov = await overridesFor(env, accounts.map((a) => a.panel_id));
   let reached = 0, deviceLimit = false, missing = 0;
   for (const a of accounts) {
     let raw;
@@ -269,9 +332,15 @@ export async function collectLinks(env, userId, fwd = {}) {
     if (raw.status === 404) { missing++; continue; }
     if (raw.status < 200 || raw.status >= 300) continue;
     reached++;
-    links.push(...found);
+    for (const l of found) {
+      const k = serverKey(l);
+      if (ov.hidden.has(a.panel_id + ':' + k)) continue; // the admin hid it (server_overrides)
+      links.push(l);
+      const lab = ov.labels[a.panel_id]?.[k];
+      if (lab && !labels[k]) labels[k] = lab;
+    }
   }
-  return { links: unify(links), reached, deviceLimit, missing, accounts: accounts.length };
+  return { links: unify(links, labels), reached, deviceLimit, missing, accounts: accounts.length };
 }
 
 // Groups new accounts go into: panel 1 keeps the pg_group_ids setting, other panels use options.group_ids;
@@ -345,6 +414,11 @@ export async function testPanel(env, panel) {
   }
   const healthy = out.login && out.create && out.configs > 0;
   await recordHealth(env, panel.id, healthy);
+  // the last result, for the panel card in the admin bot (facts only: no address, user name or link)
+  const last = { at: nowSec(), healthy, configs: out.configs, kinds: out.kinds?.counts || null, unusable: out.kinds?.unusable || 0,
+    error: out.error ? String(out.error).slice(0, 160) : null };
+  await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
+    `panel_test_${panel.id}`, JSON.stringify(last));
   await run(env, 'UPDATE panels SET version = COALESCE(?, version) WHERE id = ?', out.version, panel.id);
   if (healthy && panel.state === 'new') await run(env, "UPDATE panels SET state = 'testing' WHERE id = ?", panel.id);
   return { ...out, healthy };
