@@ -3,7 +3,7 @@ import 'package:pleat/api/models.dart';
 import 'package:pleat/screens/store_kit.dart';
 
 PlanInfo plan(int gb, int days) =>
-    PlanInfo.fromJson({'id': 1, 'name': 'پلن ویژه', 'duration_days': days, 'data_limit_gb': gb});
+    PlanInfo.fromJson({'duration_days': days, 'data_limit_gb': gb});
 
 void main() {
   test('data size is the big number, duration the small line', () {
