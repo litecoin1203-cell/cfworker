@@ -222,10 +222,10 @@ class _CheckoutScreenState extends State<CheckoutScreen> {
       children: [
         OfferCard(
           title: plan?.name ?? 'Wallet',
-          big: plan == null ? grouped(_price) : '${plan.durationDays}',
+          big: plan == null ? grouped(_price) : planBig(plan),
           unit: plan == null
               ? 'toman'
-              : 'days\n${plan.dataLimitGb > 0 ? '${plan.dataLimitGb} GB' : 'no data cap'}',
+              : planUnit(plan, days: plan.durationDays),
           footer: [
             if (_coupon != null && plan != null)
               'was ${toman(plan.priceToman)}',

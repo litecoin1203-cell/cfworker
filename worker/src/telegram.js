@@ -294,7 +294,7 @@ async function askLinkConfirm(env, chatId, payload, check) {
   const plans = (await all(env, 'SELECT id, name, duration_days, data_limit_gb FROM plans WHERE is_active = 1 AND archived = 0 ORDER BY sort, id')).slice(0, 8);
   const sid = check.suggestedPlanId;
   plans.sort((a, b) => (b.id === sid) - (a.id === sid));
-  const rows = plans.map((p) => [{ text: `${p.id === sid ? '⭐ پیشنهادی: ' : '✅ '}${p.name} (${p.duration_days} روز، ${p.data_limit_gb || 'نامحدود'} گیگ)`.slice(0, 60), callback_data: `lp:${token}:${p.id}` }]);
+  const rows = plans.map((p) => [{ text: `${p.id === sid ? '⭐ پیشنهادی: ' : '✅ '}${p.name} (${p.data_limit_gb || 'نامحدود'} گیگ، ${p.duration_days} روز)`.slice(0, 60), callback_data: `lp:${token}:${p.id}` }]);
   rows.push([{ text: '✅ وصل کن، بدون پلن', callback_data: `lp:${token}:0` }, { text: '❌ انصراف', callback_data: `cx:${token}` }]);
   return tg(env, 'sendMessage', { chat_id: chatId, text: `⚠️ مطمئنی؟\n${check.summary}`, reply_markup: { inline_keyboard: rows } });
 }
@@ -705,7 +705,7 @@ async function onMessage(env, msg, opts = {}) {
   }
   if (cmd === '/plans') {
     const plans = await all(env, 'SELECT * FROM plans ORDER BY sort, id');
-    const lines = plans.map((p) => `#${p.id} ${p.name} — ${fa(p.price_toman)} ت، ${p.duration_days} روز، ${p.data_limit_gb || 'نامحدود'} گیگ، ${p.device_limit || 'نامحدود'} دستگاه${p.trial_days ? `، تست ${p.trial_days} روز` : ''}${p.is_active ? '' : ' (خاموش)'}`);
+    const lines = plans.map((p) => `#${p.id} ${p.name} — ${fa(p.price_toman)} ت، ${p.data_limit_gb || 'نامحدود'} گیگ، ${p.duration_days} روز، ${p.device_limit || 'نامحدود'} دستگاه${p.trial_days ? `، تست ${p.trial_days} روز` : ''}${p.is_active ? '' : ' (خاموش)'}`);
     return say((lines.join('\n') || 'پلنی نیست.') + '\n\nتغییر: /plan شماره فیلد مقدار');
   }
   if (cmd === '/plan') {

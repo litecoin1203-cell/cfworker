@@ -197,7 +197,7 @@ export async function userPlanPick(env, id) {
   const rows = await all(env, 'SELECT id, name, duration_days, data_limit_gb FROM plans WHERE archived = 0 ORDER BY sort, id LIMIT 12');
   return {
     text: `${crumb('👤 کاربران', who(u), '📦 نام پلن')}\n\nاپ این کاربر کدام پلن را نشان دهد؟ حجم و زمانش عوض نمی‌شود.`,
-    kb: [...rows.map((p) => [b(`${p.name} (${p.duration_days} روز، ${p.data_limit_gb || 'نامحدود'} گیگ)`.slice(0, 60), `m:upn:${id}:${p.id}`)]),
+    kb: [...rows.map((p) => [b(`${p.name} (${p.data_limit_gb || 'نامحدود'} گیگ، ${p.duration_days} روز)`.slice(0, 60), `m:upn:${id}:${p.id}`)]),
       [b('— بدون پلن —', `m:upn:${id}:0`)], nav(`us:${id}`)],
   };
 }
@@ -380,7 +380,7 @@ export async function plan(env, id, extraRows = []) {
   return {
     text: [crumb('📦 پلن‌ها', `#${p.id}`), '', `📦 پلن #${p.id} — ${p.name}`, '',
       `💰 قیمت: ${fa(p.price_toman)} تومان${p.old_price_toman ? ` (قبلی: ${fa(p.old_price_toman)})` : ''}`,
-      `📅 مدت: ${p.duration_days} روز`, `📦 حجم: ${p.data_limit_gb || 'نامحدود'} گیگ`, `📱 دستگاه: ${p.device_limit || 'نامحدود'}`,
+      `📦 حجم: ${p.data_limit_gb || 'نامحدود'} گیگ`, `📅 مدت: ${p.duration_days} روز`, `📱 دستگاه: ${p.device_limit || 'نامحدود'}`,
       `🎁 تست رایگان: ${p.trial_days ? p.trial_days + ' روز' : 'ندارد'}`, `⭐ نشان: ${p.badge || '—'}`,
       `📝 توضیح: ${p.description ? String(p.description).slice(0, 200) : '—'}`,
       `🛒 فروش: ${fa(p.sold)} بار · ${fa(p.income)} تومان`,
