@@ -398,11 +398,11 @@ export async function noteCreateError(env, panel, e) {
     JSON.stringify({ msg, at: now, notified_at: notify ? now : prev.notified_at }));
   if (notify) {
     try {
-      const { notifyAdmin } = await import('./telegram.js');
+      const { notifyAdmin, untrusted } = await import('./telegram.js');
       await notifyAdmin(env, `⚠️ روی پنل #${panel.id} (${panel.label || ''}) برای کاربران اکانت ساخته نمی‌شود، پس کانفیگ‌هایش به آن‌ها نمی‌رسد.
 
 خطای پنل:
-${msg}
+${untrusted(msg)}
 
 بعد از رفع مشکل خودکار ادامه پیدا می‌کند. تست: /paneltest ${panel.id}`);
     } catch (x) { /* the error stays visible in /panels */ }

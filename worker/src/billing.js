@@ -2,7 +2,7 @@
 import { first, all, run, insert, getSettingInt, getSetting } from './db.js';
 import { PasarGuardError, pgOrThrow, parseExpire } from './pasarguard.js';
 import { nowSec } from './util.js';
-import { notifyAdmin } from './telegram.js';
+import { notifyAdmin, untrusted } from './telegram.js';
 import { panelsFor, getPanel, adapterFor } from './panels.js';
 import { ensureAccount, usedBytes } from './sync.js';
 
@@ -238,7 +238,7 @@ async function deliver(env, order, quiet) {
     } catch (e) {
       if (e instanceof PasarGuardError) {
         if (!quiet) {
-          await notifyAdmin(env, `⚠️ ساخت اکانت روی پنل برای سفارش #${order.id} (${user.email}) انجام نشد.\n\nخطای پنل:\n${e.message}\n\nبعد از رفع مشکل، دکمه‌ی زیر را بزن.`, order.method === 'wallet' ? undefined : retryButton(order.id));
+          await notifyAdmin(env, `⚠️ ساخت اکانت روی پنل برای سفارش #${order.id} (${user.email}) انجام نشد.\n\nخطای پنل:\n${untrusted(e.message)}\n\nبعد از رفع مشکل، دکمه‌ی زیر را بزن.`, order.method === 'wallet' ? undefined : retryButton(order.id));
         }
         throw new BillingError('provision_failed', 'فعال‌سازی اشتراک الان ممکن نشد. پشتیبانی خبردار شد و به‌زودی درستش می‌کند.');
       }
@@ -269,7 +269,7 @@ async function autoActivate(env, user, topup) {
     await payWithWallet(env, fresh, order);
     await run(env, 'UPDATE orders SET result_order_id = ? WHERE id = ?', id, topup.id);
   } catch (e) {
-    await notifyAdmin(env, `⚠️ کیف پول ${user.email} شارژ شد ولی فعال‌سازی خودکار پلن انجام نشد: ${e.message}\nپول در کیف پول کاربر مانده است.`);
+    await notifyAdmin(env, `⚠️ کیف پول ${user.email} شارژ شد ولی فعال‌سازی خودکار پلن انجام نشد: ${untrusted(e.message)}\nپول در کیف پول کاربر مانده است.`);
   }
 }
 

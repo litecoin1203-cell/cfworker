@@ -930,6 +930,157 @@ Object.assign(ACTIONS, {
   },
 });
 
+// ---------------- broadcasts and admins (stage 5) ----------------
+// Who a broadcast goes to. Always people who signed in with Telegram (a tg_id), whose account is active and not
+// deleted; ?1 is "now". The same WHERE counts them for the question and picks them, a page at a time, in the cron.
+export const AUDIENCES = {
+  all: { fa: 'همه‌ی کاربران تلگرام', sql: '1 = 1' },
+  active: { fa: 'اشتراک فعال', sql: 'EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = users.id AND (s.expires_at IS NULL OR s.expires_at > ?1))' },
+  expired: { fa: 'اشتراک تمام‌شده', sql: 'EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = users.id AND s.expires_at IS NOT NULL AND s.expires_at <= ?1)' },
+  none: { fa: 'بدون پلن', sql: 'NOT EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = users.id)' },
+};
+// ("?1 > 0" keeps the ?1 parameter used when an audience itself does not need "now")
+const REACHABLE = "users.tg_id IS NOT NULL AND users.is_active = 1 AND users.email NOT LIKE 'deleted+%' AND ?1 > 0";
+export const BROADCAST_MAX = 3500;
+export const BROADCAST_PAGE = 25; // messages per cron run (each one is a subrequest; Telegram allows ~30/s)
+const LEASE_SECONDS = 90;
+
+export async function audienceCount(env, aud, now = nowSec()) {
+  const a = AUDIENCES[aud];
+  if (!a) return 0;
+  return (await first(env, `SELECT COUNT(*) c FROM users WHERE ${REACHABLE} AND (${a.sql})`, now)).c;
+}
+
+// One cron run: up to `max` messages of the broadcast that is sending, from its cursor on. A lease on updated_at
+// keeps two runs from sending the same page; the counters and the cursor are saved in one UPDATE at the end.
+// 403 = the person blocked the bot (counted, skipped); 429 = Telegram says slow down: stop here, the same person is
+// tried again on the next run. Text goes out as plain text: no parse_mode, no buttons.
+export async function broadcastTick(env, { max = BROADCAST_PAGE, now = nowSec() } = {}) {
+  if (!env.TELEGRAM_BOT_TOKEN) return null;
+  const bc = await first(env, "SELECT * FROM broadcasts WHERE status = 'sending' ORDER BY id LIMIT 1");
+  if (!bc || !AUDIENCES[bc.audience]) return null;
+  const lease = await run(env, "UPDATE broadcasts SET updated_at = ? WHERE id = ? AND status = 'sending' AND updated_at <= ?", now, bc.id, now - LEASE_SECONDS);
+  if (!lease.meta.changes) return { id: bc.id, busy: true };
+  const rows = await all(env, `SELECT id, tg_id FROM users WHERE id > ?2 AND ${REACHABLE} AND (${AUDIENCES[bc.audience].sql}) ORDER BY id LIMIT ?3`, now, bc.cursor, max);
+  const { tg } = await import('./telegram.js');
+  let sent = 0, failed = 0, blocked = 0, cursor = bc.cursor, limited = false;
+  for (const u of rows) {
+    const r = await tg(env, 'sendMessage', { chat_id: u.tg_id, text: bc.text, disable_web_page_preview: true });
+    const code = r && !r.ok ? Number(r.error_code) : 0;
+    if (code === 429) { limited = true; break; }
+    if (r && r.ok) sent++;
+    else if (code === 403) blocked++;
+    else failed++;
+    cursor = u.id;
+  }
+  const done = !limited && rows.length < max;
+  // a stop tapped while this page went out wins: the counters are kept, the status stays "stopped"
+  await run(env, `UPDATE broadcasts SET sent = sent + ?, failed = failed + ?, blocked = blocked + ?, cursor = ?, updated_at = ?,
+    status = CASE WHEN status = 'sending' AND ? = 1 THEN 'done' ELSE status END WHERE id = ?`, sent, failed, blocked, cursor, now - LEASE_SECONDS - 1, done ? 1 : 0, bc.id);
+  if (done) {
+    const f = await first(env, 'SELECT * FROM broadcasts WHERE id = ?', bc.id);
+    if (f && f.status === 'done' && env.TELEGRAM_CHAT_ID) {
+      await tg(env, 'sendMessage', { chat_id: env.TELEGRAM_CHAT_ID, text: `📣 پیام همگانی #${f.id} تمام شد: ${fa(f.sent)} رسید، ${fa(f.blocked)} ربات را بلاک کرده‌اند، ${fa(f.failed)} ناموفق.`,
+        reply_markup: { inline_keyboard: [[{ text: '📣 جزئیات', callback_data: `m:bcv:${f.id}` }]] } });
+    }
+  }
+  return { id: bc.id, sent, failed, blocked, limited, done };
+}
+
+const ROLES = ['support', 'viewer'];
+export const ROLE_FA = { owner: 'مالک', support: 'پشتیبان', viewer: 'فقط دیدن' };
+const tgIdOf = (v) => { const s = String(v ?? '').trim(); return /^\d{5,15}$/.test(s) ? s : null; };
+
+Object.assign(ACTIONS, {
+  'broadcast.create': {
+    risk: 'reversible', target: 'broadcast',
+    async apply(env, { audience, text }) {
+      text = String(text ?? '').trim();
+      if (!AUDIENCES[audience]) return fail('گیرنده‌ها درست نیست.');
+      if (!text || text.length > BROADCAST_MAX) return fail(`متن باید ۱ تا ${fa(BROADCAST_MAX)} حرف باشد.`);
+      const now = nowSec();
+      const id = await insert(env, 'broadcasts', { audience, text, cursor: 0, sent: 0, failed: 0, blocked: 0, status: 'draft', created_at: now, updated_at: now });
+      return { targetId: id, summary: `${AUDIENCES[audience].fa} · ${fa(text.length)} حرف (پیش‌نویس)`, undo: { id }, text: `📝 پیش‌نویس #${id} ساخته شد.` };
+    },
+    async undo(env, u) { return !!(await run(env, "DELETE FROM broadcasts WHERE id = ? AND status = 'draft'", u.id)).meta.changes; },
+  },
+  // draft -> sending, only while no other broadcast is sending (one conditional UPDATE, so two taps start one)
+  'broadcast.start': {
+    risk: 'destructive', target: 'broadcast',
+    async apply(env, { id }) {
+      const b = await first(env, 'SELECT * FROM broadcasts WHERE id = ?', parseInt(id, 10));
+      if (!b) return fail('این پیام پیدا نشد.');
+      if (b.status !== 'draft') return fail('این پیام قبلاً شروع یا لغو شده است.');
+      const now = nowSec();
+      const r = await run(env, `UPDATE broadcasts SET status = 'sending', updated_at = ? WHERE id = ? AND status = 'draft'
+        AND NOT EXISTS (SELECT 1 FROM broadcasts WHERE status = 'sending')`, now - LEASE_SECONDS - 1, b.id);
+      if (!r.meta.changes) return fail('یک پیام همگانی دیگر در حال ارسال است؛ اول آن تمام یا متوقف شود.');
+      const n = await audienceCount(env, b.audience, now);
+      return { targetId: b.id, summary: `${AUDIENCES[b.audience].fa} · حدود ${fa(n)} نفر`,
+        text: `📣 ارسال پیام #${b.id} شروع شد (حدود ${fa(n)} نفر). هر ۲ دقیقه ${fa(BROADCAST_PAGE)} نفر؛ پیشرفت را در «📣 پیام همگانی» ببین.` };
+    },
+  },
+  'broadcast.stop': {
+    risk: 'reversible', target: 'broadcast',
+    async apply(env, { id }) {
+      const r = await run(env, "UPDATE broadcasts SET status = 'stopped' WHERE id = ? AND status = 'sending'", parseInt(id, 10));
+      if (!r.meta.changes) return fail('این پیام در حال ارسال نیست.');
+      return { targetId: parseInt(id, 10), summary: 'sending → stopped', undo: { id: parseInt(id, 10) }, text: '⏹ ارسال متوقف شد.' };
+    },
+    async undo(env, u) {
+      return !!(await run(env, `UPDATE broadcasts SET status = 'sending' WHERE id = ? AND status = 'stopped'
+        AND NOT EXISTS (SELECT 1 FROM broadcasts WHERE status = 'sending')`, u.id)).meta.changes;
+    },
+  },
+  // an extra admin: support (inbox and receipts) or viewer (read only). The owner is never in this table.
+  'admin.add': {
+    risk: 'reversible', target: 'admin',
+    async apply(env, { tgId, role }) {
+      const id = tgIdOf(tgId);
+      if (!id) return fail('آیدی عددی تلگرام درست نیست (۵ تا ۱۵ رقم).');
+      if (id === String(env.TELEGRAM_CHAT_ID || '')) return fail('این آیدی خود مالک است؛ مالک همیشه همه‌ی دسترسی‌ها را دارد.');
+      if (!ROLES.includes(role)) return fail('نقش درست نیست.');
+      const before = await first(env, 'SELECT * FROM admins WHERE tg_id = ?', id);
+      await run(env, 'INSERT INTO admins (tg_id, role, added_at) VALUES (?, ?, ?) ON CONFLICT(tg_id) DO UPDATE SET role = excluded.role', id, role, nowSec());
+      return { targetId: id, summary: `${before ? ROLE_FA[before.role] : '—'} → ${ROLE_FA[role]}`, undo: { id, before: before || null },
+        text: `✅ ${id} حالا ${ROLE_FA[role]} است.` };
+    },
+    async undo(env, u) {
+      if (!tgIdOf(u.id)) return false;
+      if (u.before && ROLES.includes(u.before.role)) await run(env, 'UPDATE admins SET role = ? WHERE tg_id = ?', u.before.role, u.id);
+      else await run(env, 'DELETE FROM admins WHERE tg_id = ?', u.id);
+      return true;
+    },
+  },
+  'admin.remove': {
+    risk: 'reversible', target: 'admin',
+    async apply(env, { tgId }) {
+      const id = tgIdOf(tgId);
+      if (!id) return fail('آیدی درست نیست.');
+      if (id === String(env.TELEGRAM_CHAT_ID || '')) return fail('مالک حذف نمی‌شود.');
+      const before = await first(env, 'SELECT * FROM admins WHERE tg_id = ?', id);
+      if (!before) return fail('این آیدی مدیر نیست.');
+      // with the row go their open question / form and their unused "are you sure?" buttons
+      await env.DB.batch([st(env, 'DELETE FROM admins WHERE tg_id = ?', id), st(env, 'DELETE FROM bot_session WHERE admin_id = ?', id),
+        st(env, 'UPDATE bot_confirm SET used_at = ? WHERE admin_id = ? AND used_at IS NULL', nowSec(), id)]);
+      return { targetId: id, summary: `${ROLE_FA[before.role]} حذف شد`, undo: { id, role: before.role, added_at: before.added_at }, text: `🗑 ${id} دیگر مدیر نیست.` };
+    },
+    async undo(env, u) {
+      if (!tgIdOf(u.id) || !ROLES.includes(u.role)) return false;
+      await run(env, 'INSERT OR IGNORE INTO admins (tg_id, role, added_at) VALUES (?, ?, ?)', u.id, u.role, u.added_at || nowSec());
+      return true;
+    },
+  },
+});
+
+// What a non-owner may write, checked again here under the router: support approves and rejects receipts only.
+const ROLE_ACTIONS = { support: new Set(['order.approve', 'order.reject']), viewer: new Set() };
+async function actorAllowed(env, actor, name) {
+  if (String(actor) === String(env.TELEGRAM_CHAT_ID || '')) return true;
+  const r = await first(env, 'SELECT role FROM admins WHERE tg_id = ?', String(actor));
+  return !!(r && ROLE_ACTIONS[r.role] && ROLE_ACTIONS[r.role].has(name));
+}
+
 // a real, free email address (not a made-up Telegram one, not a deleted one)
 export async function checkEmail(env, raw) {
   const { cleanEmail } = await import('./util.js');
@@ -948,6 +1099,7 @@ export const riskOf = (name) => (ACTIONS[name] ? ACTIONS[name].risk : null);
 export async function runAction(env, actor, name, args = {}) {
   const def = ACTIONS[name];
   if (!def) throw new Error('unknown admin action ' + name);
+  if (!(await actorAllowed(env, actor, name))) return fail('اجازه‌ی این کار را نداری.');
   const r = await def.apply(env, args);
   if (r.ok === false) return r;
   if (r.skipAudit) return { ok: true, ...r, auditId: null, undoable: false };

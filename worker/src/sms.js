@@ -59,7 +59,7 @@ async function openCardOrders(env) {
 
 // Core: one SMS text -> result. trusted=true when the sender is the bank (or the admin pasted it).
 export async function handleBankSms(env, { sender = '', text = '', trusted = false, source = 'sms' }) {
-  const { notifyAdmin } = await import('./telegram.js');
+  const { notifyAdmin, untrusted } = await import('./telegram.js');
   const body = String(text || '').slice(0, 1000);
   const hash = await hmacHex('sms', normSender(sender) + '|' + body.replace(/\s+/g, ' ').trim());
   try { await insert(env, 'sms_log', { hash, sender: String(sender).slice(0, 60), body, created_at: nowSec() }); }
@@ -81,12 +81,12 @@ export async function handleBankSms(env, { sender = '', text = '', trusted = fal
   const first_ = p.amounts[0];
   if (!matches.length) {
     await run(env, 'UPDATE sms_log SET result = ?, amount_rial = ? WHERE hash = ?', 'no_order', first_, hash);
-    await notifyAdmin(env, `💳 پیامک واریز رسید (${(first_).toLocaleString('en-US')}) ولی سفارش کارت‌به‌کارتی با این مبلغ باز نیست.\nفرستنده: ${sender || '—'}\n\n${body}`);
+    await notifyAdmin(env, `💳 پیامک واریز رسید (${(first_).toLocaleString('en-US')}) ولی سفارش کارت‌به‌کارتی با این مبلغ باز نیست.\nفرستنده: ${untrusted(sender) || "—"}\n\n${untrusted(body)}`);
     return { result: 'no_order', amount: first_ };
   }
   if (matches.length > 1) {
     await run(env, 'UPDATE sms_log SET result = ?, amount_rial = ? WHERE hash = ?', 'ambiguous', rial, hash);
-    await notifyAdmin(env, `💳 پیامک واریز ${rial.toLocaleString('en-US')} ریال با ${matches.length} سفارش جور است (${matches.map((o) => '#' + o.id).join('، ')}). خودت تأیید کن.\n\n${body}`,
+    await notifyAdmin(env, `💳 پیامک واریز ${rial.toLocaleString('en-US')} ریال با ${matches.length} سفارش جور است (${matches.map((o) => '#' + o.id).join('، ')}). خودت تأیید کن.\n\n${untrusted(body)}`,
       { inline_keyboard: matches.slice(0, 4).map((o) => [{ text: `✅ تأیید #${o.id}`, callback_data: `ap:${o.id}` }]) });
     return { result: 'ambiguous' };
   }
@@ -114,7 +114,7 @@ export async function handleBankSms(env, { sender = '', text = '', trusted = fal
   await run(env, 'UPDATE sms_log SET result = ? WHERE hash = ?', 'review', hash);
   const kb = [[{ text: `✅ تأیید #${order.id}`, callback_data: `ap:${order.id}` }, { text: '❌ رد', callback_data: `rj:${order.id}` }]];
   if (!senderTrusted && sender) kb.push([{ text: '🏦 این فرستنده بانک من است (تأیید خودکار از این به بعد)', callback_data: `ts:${normSender(sender).slice(0, 50)}` }]);
-  await notifyAdmin(env, `💳 پیامک واریز با سفارش #${order.id} جور است\n${order.amount_toman.toLocaleString('en-US')} تومان · ${user.email}\nفرستنده: ${sender || '—'}${senderTrusted ? '' : ' (هنوز در لیست بانک‌های تو نیست)'}\n\n${body}`, { inline_keyboard: kb });
+  await notifyAdmin(env, `💳 پیامک واریز با سفارش #${order.id} جور است\n${order.amount_toman.toLocaleString('en-US')} تومان · ${user.email}\nفرستنده: ${untrusted(sender) || "—"}${senderTrusted ? '' : ' (هنوز در لیست بانک‌های تو نیست)'}\n\n${untrusted(body)}`, { inline_keyboard: kb });
   return { result: 'review', orderId: order.id };
 }
 

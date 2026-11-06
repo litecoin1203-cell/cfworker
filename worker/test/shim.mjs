@@ -57,7 +57,7 @@ export function installFakes({ panelBase }) {
     down: false, puts: 0, putLog: [], host: host || 'example.com', kind, createLog: [], putBodies: [], services: [{ id: 4, name: 'main', has_hosts: true, broken: false }] });
   const pg = newPanel();
   const panels = { [panelBase]: pg };
-  const tg = { messages: [], photos: [], lastButtons: null, calls: [] };
+  const tg = { messages: [], photos: [], lastButtons: null, calls: [], failFor: {}, webhookInfo: null }; // failFor: chat_id -> Telegram error code (403, 429)
   const np = { invoices: [] };
 
   const resJson = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
@@ -179,7 +179,12 @@ export function installFakes({ panelBase }) {
     if (url.includes('api.telegram.org')) {
       const method2 = url.split('/').pop();
       tg.calls.push({ method: method2, body: body && typeof body === 'string' ? JSON.parse(body) : null });
-      if (method2 === 'sendMessage') { tg.messages.push(JSON.parse(body)); return resJson({ ok: true, result: { message_id: tg.messages.length } }); }
+      if (method2 === 'sendMessage') {
+        const sm = JSON.parse(body), code = tg.failFor[String(sm.chat_id)];
+        if (code) return resJson({ ok: false, error_code: code, description: code === 429 ? 'Too Many Requests: retry after 5' : 'Forbidden: bot was blocked by the user' }, code);
+        tg.messages.push(sm); return resJson({ ok: true, result: { message_id: tg.messages.length } });
+      }
+      if (method2 === 'getWebhookInfo' && tg.webhookInfo) return resJson({ ok: true, result: tg.webhookInfo });
       if (url.includes('/file/bot')) return new Response(new Uint8Array([0xff, 0xd8, 0xff, 1, 2, 3]), { status: 200 });
       if (method2 === 'getUserProfilePhotos') {
         const id = JSON.parse(body).user_id;

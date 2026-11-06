@@ -2266,6 +2266,7 @@ const STAGE2_ACTIONS = ['user.add_days', 'user.add_gb', 'user.reset_usage', 'use
 const STAGE3_ACTIONS = ['order.approve', 'order.reject', 'order.cancel', 'order.refund', 'plan.move', 'plan.copy', 'plan.delete', 'plan.unarchive',
   'coupon.set', 'coupon.toggle'];
 const STAGE4_ACTIONS = ['panel.rename', 'panel.enable', 'server.hide', 'server.rename', 'app.list', 'net.reset'];
+const STAGE5_ACTIONS = ['broadcast.create', 'broadcast.start', 'broadcast.stop', 'admin.add', 'admin.remove'];
 section('admin panel stage 1: routes, screens, undo, forms, audit, query budget');
 {
   const menu = await import('../src/telegram-menu.js');
@@ -2304,7 +2305,7 @@ section('admin panel stage 1: routes, screens, undo, forms, audit, query budget'
   ok(!noNav.length, 'every screen ends with back + home: ' + noNav.slice(0, 5).join(' | '));
   ok(!noCrumb.length, 'every screen starts with breadcrumbs: ' + noCrumb.slice(0, 5).join(' | '));
   ok(!menu.routeOf('m:nope') && !menu.routeOf('m:w:nope') && !menu.routeOf('m:f:nope') && !menu.routeOf('m:x:home|nocmd') && !menu.routeOf('m:' + 'p'.repeat(70)), 'unknown or oversized buttons resolve to nothing');
-  ok(['soon', 'or', 'bc'].every((k) => k === 'soon' || seen.has(k)) && (await menu.renderScreen(env, 'bc')).text.includes('به‌زودی'), 'sections not built yet show «به‌زودی»');
+  ok(['or', 'bc', 'st', 'sys'].every((k) => seen.has(k)) && !(await menu.renderScreen(env, 'bc')).text.includes('به‌زودی'), 'every home section is built (none says «به‌زودی»)');
 
   // pagination: 8 per page with a next button, and the next page continues
   for (let i = 0; i < 10; i++) await signup(`page${i}@example.com`);
@@ -2402,7 +2403,7 @@ section('admin panel stage 1: routes, screens, undo, forms, audit, query budget'
   }
   await acts.runAction(env, '12345', 'coupon.delete', { code: 'UNDOME' });
   const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
-  const missing = Object.keys(acts.ACTIONS).filter((a) => !logged.has(a) && !STAGE2_ACTIONS.includes(a) && !STAGE3_ACTIONS.includes(a) && !STAGE4_ACTIONS.includes(a));
+  const missing = Object.keys(acts.ACTIONS).filter((a) => !logged.has(a) && !STAGE2_ACTIONS.includes(a) && !STAGE3_ACTIONS.includes(a) && !STAGE4_ACTIONS.includes(a) && !STAGE5_ACTIONS.includes(a));
   ok(!missing.length, 'every stage 1 admin action has written an audit row: missing ' + missing.join(','));
   ok(Object.values(acts.ACTIONS).every((a) => ['money', 'destructive', 'reversible'].includes(a.risk)), 'every action has a risk level');
   ok(Object.values(menu.ROUTES).every((r) => r.kind === 'screen' || r.risk), 'every action route has a risk level');
@@ -2723,7 +2724,7 @@ section('admin panel stage 2: users (card, subscription, wallet, devices, securi
   ok(!over.length, 'user screens use ≤6 D1 statements: ' + over.join(' '));
 
   const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
-  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE3_ACTIONS.includes(x) && !STAGE4_ACTIONS.includes(x));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE3_ACTIONS.includes(x) && !STAGE4_ACTIONS.includes(x) && !STAGE5_ACTIONS.includes(x));
   ok(!missing.length, 'every stage 2 admin action has written an audit row: missing ' + missing.join(','));
 }
 
@@ -3014,7 +3015,7 @@ section('admin panel stage 3: sales (orders, plans, coupons and referral, paymen
   ok(!slash.length, 'no sales text line starts with /command: ' + slash.slice(0, 2).join(' || ').slice(0, 200));
 
   const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
-  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE4_ACTIONS.includes(x));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE4_ACTIONS.includes(x) && !STAGE5_ACTIONS.includes(x));
   ok(!missing.length, 'every admin action has written an audit row: missing ' + missing.join(','));
 }
 
@@ -3284,11 +3285,280 @@ section('admin panel stage 4: panels and servers, the Pleat app, network');
   ok(!leaked.length, 'no reachable screen shows a server address, id or bridge link: ' + leaked.join(' '));
 
   const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
-  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE5_ACTIONS.includes(x));
   ok(!missing.length, 'every admin action, stage 4 included, has written an audit row: missing ' + missing.join(','));
   await acts.runAction(env, '12345', 'setting.set', { key: 'app_api_bases', val: '' });
   await acts.runAction(env, '12345', 'setting.set', { key: 'app_bridges', val: '' });
   await env.DB.prepare('DELETE FROM server_overrides').run();
+}
+
+section('admin panel stage 5: broadcast, stats, system, roles, security');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const tgm = await import('../src/telegram.js');
+  let tapN = 0, msgN = 9000;
+  const tapAs = (id, data) => tgWebhook({ callback_query: { id: 's5-' + (++tapN), data, message: { chat: { id }, message_id: 905, text: 'menu' } } });
+  const tap = (data) => tapAs(12345, data);
+  const sayAs = (id, text) => tgWebhook({ message: { chat: { id }, text, message_id: ++msgN } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const rows = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results;
+  const exec = (sql, ...a) => env.DB.prepare(sql).bind(...a).run();
+  const acks = (n) => since(n).filter((c) => c.method === 'answerCallbackQuery').map((c) => String(c.body.text || '')).join(' | ');
+  const screensTo = (n, chat) => since(n).filter((c) => c.body && String(c.body.chat_id) === String(chat) && (c.method === 'editMessageText' || c.method === 'sendMessage'));
+  const confirmOf = (n) => {
+    const m = since(n).filter((c) => c.method === 'sendMessage' && c.body && c.body.reply_markup && flat(c.body.reply_markup.inline_keyboard).some((x) => x.startsWith('cf:'))).pop();
+    return m ? { token: flat(m.body.reply_markup.inline_keyboard).find((x) => x.startsWith('cf:')).slice(3), text: m.body.text } : null;
+  };
+  const now = Math.floor(Date.now() / 1000);
+
+  // ---- seed: 60 Telegram users (30 with an active plan, 10 expired, 20 with none) + 3 without Telegram ----
+  await exec('UPDATE users SET tg_id = NULL'); // earlier sections' Telegram users stay out of the counts below
+  await exec('UPDATE orders SET paid_at = paid_at - 400 * 86400, created_at = created_at - 400 * 86400');
+  await exec('UPDATE users SET created_at = created_at - 400 * 86400');
+  await exec('UPDATE sub_periods SET ended_at = ended_at - 400 * 86400 WHERE ended_at IS NOT NULL');
+  const ids = { active: [], expired: [], none: [] };
+  for (let i = 0; i < 63; i++) {
+    const kind = i < 30 ? 'active' : i < 40 ? 'expired' : i < 60 ? 'none' : 'notg';
+    const r = await exec(`INSERT INTO users (email, password_hash, referral_code, created_at, tg_id, is_active) VALUES (?, 'x', ?, ?, ?, 1)`,
+      `bc${i}@example.com`, 'BC' + i, now - 3600, kind === 'notg' ? null : 700000 + i);
+    const uid = r.meta.last_row_id;
+    if (kind === 'active' || kind === 'expired') await exec('INSERT INTO subscriptions (user_id, pg_username, expires_at, data_limit_bytes, used_bytes) VALUES (?, ?, ?, 0, ?)', uid, 'bc' + i, kind === 'active' ? now + 86400 * 10 : now - 86400, kind === 'active' ? 1024 ** 3 : 0);
+    if (ids[kind]) ids[kind].push(700000 + i);
+  }
+  ok(await acts.audienceCount(env, 'active') === 30 && await acts.audienceCount(env, 'expired') === 10 && await acts.audienceCount(env, 'none') === 20 && await acts.audienceCount(env, 'all') === 60,
+    'audiences count only Telegram users: active 30, expired 10, no plan 20, all 60');
+
+  // ---- broadcast: form -> preview to the admin only -> "are you sure?" with the count ----
+  await exec('DELETE FROM broadcasts');
+  let n = fakes.tg.calls.length;
+  await tap('m:bc');
+  ok(screensTo(n, 12345).some((c) => flat(c.body.reply_markup.inline_keyboard).includes('m:f:bcast')), 'broadcast screen has a "new message" button');
+  await tap('m:f:bcast');
+  await tap('m:fa:0:active');
+  const evil = 'سلام! /grant evil@example.com 3 <b>bold</b> [x](https://t.me/x)';
+  await sayAs(12345, evil);
+  n = fakes.tg.calls.length;
+  await tap('m:fok:bcast');
+  const bc1 = await row('SELECT * FROM broadcasts ORDER BY id DESC LIMIT 1');
+  const sends = since(n).filter((c) => c.method === 'sendMessage');
+  const preview = sends.find((c) => c.body.text === evil);
+  ok(bc1 && bc1.status === 'draft' && bc1.audience === 'active' && bc1.text === evil, 'the form saves a draft with the exact text');
+  ok(preview && String(preview.body.chat_id) === '12345' && !preview.body.reply_markup && !preview.body.parse_mode, 'preview goes to the admin, as plain text with no buttons and no parse mode');
+  ok(!sends.some((c) => String(c.body.chat_id) !== '12345'), 'nobody else gets anything before the confirmation');
+  const c1 = confirmOf(n);
+  ok(c1 && c1.text.includes('30 نفر'), 'the confirmation says how many people get it: ' + (c1 && c1.text));
+  // a second broadcast cannot start while the first is sending
+  await tap('cf:' + c1.token);
+  ok((await row('SELECT status FROM broadcasts WHERE id = ?', bc1.id)).status === 'sending', 'confirmed -> sending');
+  const d2 = await acts.runAction(env, '12345', 'broadcast.create', { audience: 'none', text: 'second' });
+  const s2 = await acts.runAction(env, '12345', 'broadcast.start', { id: d2.targetId });
+  ok(!s2.ok && (await row('SELECT status FROM broadcasts WHERE id = ?', d2.targetId)).status === 'draft', 'only one broadcast sends at a time');
+  ok(!(await acts.runAction(env, '12345', 'broadcast.start', { id: bc1.id })).ok, 'a broadcast cannot be started twice');
+
+  // ---- the cron sends 25 a run, resumes from the cursor, counts blocked people, finishes, tells the owner ----
+  fakes.tg.failFor[ids.active[3]] = 403;
+  n = fakes.tg.calls.length;
+  await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain();
+  ok(!since(n).some((c) => c.method === 'sendMessage' && c.body.text === evil), 'the every-minute cron does not send broadcasts');
+  n = fakes.tg.calls.length;
+  const t1 = await acts.broadcastTick(env, { now });
+  const after1 = await row('SELECT * FROM broadcasts WHERE id = ?', bc1.id);
+  ok(t1.sent === 24 && t1.blocked === 1 && after1.status === 'sending' && after1.sent === 24 && after1.blocked === 1, 'first run: 25 people, one blocked: ' + JSON.stringify(t1));
+  ok(since(n).filter((c) => c.method === 'sendMessage').length === 25, 'a run makes at most 25 Telegram calls');
+  // a run that is still going holds a lease: a second one at the same moment sends nothing
+  await exec('UPDATE broadcasts SET updated_at = ? WHERE id = ?', now, bc1.id);
+  ok((await acts.broadcastTick(env, { now })).busy === true, 'an overlapping run is skipped (lease)');
+  await exec('UPDATE broadcasts SET updated_at = ? WHERE id = ?', now - 200, bc1.id);
+  const t2 = await acts.broadcastTick(env, { now });
+  const after2 = await row('SELECT * FROM broadcasts WHERE id = ?', bc1.id);
+  ok(t2.sent === 5 && t2.done && after2.status === 'done' && after2.sent === 29 && after2.blocked === 1, 'second run resumes and finishes: ' + JSON.stringify(t2));
+  const got = since(n).filter((c) => c.method === 'sendMessage' && c.body.text === evil).map((c) => Number(c.body.chat_id));
+  ok(got.length === 30 && new Set(got).size === 30 && got.every((id) => ids.active.includes(id)), 'each active user got it exactly once, nobody else');
+  ok(since(n).some((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '12345' && /#\d+ تمام شد/.test(c.body.text)), 'the owner hears when it is done');
+  ok(!since(n).some((c) => c.method === 'sendMessage' && c.body.text === evil && (c.body.reply_markup || c.body.parse_mode)), 'broadcast messages carry no buttons and no parse mode');
+  delete fakes.tg.failFor[ids.active[3]];
+
+  // 429: stop there, the same person is tried again on the next run
+  await exec("UPDATE broadcasts SET status = 'sending', updated_at = ? WHERE id = ?", now - 200, d2.targetId);
+  fakes.tg.failFor[ids.none[4]] = 429;
+  const t3 = await acts.broadcastTick(env, { now });
+  ok(t3.limited && t3.sent === 4 && (await row('SELECT status FROM broadcasts WHERE id = ?', d2.targetId)).status === 'sending', '429 stops the run without skipping anyone');
+  delete fakes.tg.failFor[ids.none[4]];
+  n = fakes.tg.calls.length;
+  const t4 = await acts.broadcastTick(env, { now });
+  const got2 = since(n).filter((c) => c.method === 'sendMessage' && c.body.text === 'second').map((c) => Number(c.body.chat_id));
+  ok(t4.done && got2.length === 16 && got2[0] === ids.none[4] && (await row('SELECT sent FROM broadcasts WHERE id = ?', d2.targetId)).sent === 20, 'the next run starts with the rate-limited person and finishes');
+
+  // stop, with progress on the screen, undo, then the 2-minute cron carries on
+  const d3 = await acts.runAction(env, '12345', 'broadcast.create', { audience: 'all', text: 'third' });
+  ok((await acts.runAction(env, '12345', 'broadcast.start', { id: d3.targetId })).ok, 'a new one starts once the others are done');
+  await acts.broadcastTick(env, { now: Math.floor(Date.now() / 1000) });
+  n = fakes.tg.calls.length;
+  await tap(`m:bcv:${d3.targetId}`);
+  const prog = screensTo(n, 12345).pop();
+  ok(prog && prog.body.text.includes('25') && flat(prog.body.reply_markup.inline_keyboard).includes(`m:bcs:${d3.targetId}`), 'the progress screen shows the count and a stop button');
+  await tap(`m:bcs:${d3.targetId}`);
+  ok((await row('SELECT status FROM broadcasts WHERE id = ?', d3.targetId)).status === 'stopped', 'stop button stops it');
+  ok((await acts.broadcastTick(env, { now: Math.floor(Date.now() / 1000) + 300 })) === null, 'a stopped broadcast sends nothing');
+  const stopAudit = await row("SELECT id FROM admin_audit WHERE action = 'broadcast.stop' ORDER BY id DESC LIMIT 1");
+  await tap(`m:undo:${stopAudit.id}`);
+  ok((await row('SELECT status FROM broadcasts WHERE id = ?', d3.targetId)).status === 'sending', 'undo of a stop sends again');
+  await exec('UPDATE broadcasts SET updated_at = ? WHERE id = ?', Math.floor(Date.now() / 1000) - 200, d3.targetId);
+  await worker.scheduled({ cron: '*/2 * * * *' }, env, ctx); await drain();
+  const b3 = await row('SELECT * FROM broadcasts WHERE id = ?', d3.targetId);
+  ok(b3.sent === 50 && b3.status === 'sending', 'the 2-minute cron sends the next page: ' + b3.sent);
+  await acts.runAction(env, '12345', 'broadcast.stop', { id: d3.targetId });
+
+  // ---- stats on seeded data ----
+  const [pa, pb] = await rows('SELECT id, name FROM plans WHERE is_active = 1 ORDER BY id LIMIT 2');
+  const someUser = (await row("SELECT id FROM users WHERE email = 'bc0@example.com'")).id;
+  const order = (kind, plan, amount, method, ago) => exec(`INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at, paid_at) VALUES (?, ?, ?, ?, ?, 'paid', ?, ?)`,
+    someUser, kind, plan, amount, method, now - ago, now - ago);
+  for (let i = 0; i < 3; i++) await order('plan', pa.id, 100000, 'card', 3600);
+  await order('plan', pb.id, 50000, 'wallet', 7200);
+  await order('plan', pb.id, 200000, 'coin', 3 * 86400);
+  await order('plan', pb.id, 200000, 'coin', 3 * 86400);
+  await order('topup', null, 70000, 'card', 20 * 86400);
+  for (const ago of [3600, 7200, 10 * 86400]) await exec("INSERT INTO sub_periods (user_id, started_at, ended_at, end_reason) VALUES (?, ?, ?, 'renewed')", someUser, now - 40 * 86400, now - ago);
+  const realPrepare = env.DB.prepare.bind(env.DB);
+  let q = 0;
+  env.DB.prepare = (sql) => { q++; return realPrepare(sql); };
+  const s1 = await menu.renderScreen(env, 'st:1');
+  const qStats = q;
+  env.DB.prepare = realPrepare;
+  const s7 = await menu.renderScreen(env, 'st:7');
+  const s30 = await menu.renderScreen(env, 'st:30');
+  const activeNow = (await row('SELECT COUNT(*) c, COALESCE(SUM(used_bytes), 0) u FROM subscriptions WHERE expires_at > ? OR expires_at IS NULL', now));
+  ok(s1.text.includes('فروش: 4 سفارش · 300,000 تومان') && s1.text.includes('ثبت‌نام تازه: 63') && s1.text.includes('تمدید (خرید روی اشتراک باز): 2'), 'today: 4 sales, 300,000 received (wallet not counted), 63 sign-ups, 2 renewals');
+  ok(s1.text.includes('کارت‌به‌کارت: 3 · 300,000') && s1.text.includes('کیف پول: 1 · 50,000'), 'today, per method');
+  ok(s1.text.includes(`1. ${pa.name} — 3 فروش · 300,000`), 'today\'s top plan');
+  ok(s1.text.includes(`اشتراک فعال الان: ${activeNow.c} · مصرف این دوره‌شان: ${(activeNow.u / 1024 ** 3).toFixed(activeNow.u >= 10 * 1024 ** 3 ? 1 : 2)} گیگ`), 'active subscriptions and their usage');
+  ok(s7.text.includes('فروش: 6 سفارش · 700,000 تومان') && s7.text.includes('ارز دیجیتال: 2 · 400,000') && s7.text.includes(`1. ${pb.name} — 3 فروش · 450,000`), '7 days: 6 sales, 700,000, coin split, top plan');
+  ok(s30.text.includes('فروش: 7 سفارش · 770,000 تومان') && s30.text.includes('تمدید (خرید روی اشتراک باز): 3'), '30 days: 7 sales, 770,000, 3 renewals');
+  ok(qStats <= 6, 'stats use ≤6 D1 statements: ' + qStats);
+  ok(flat(s1.kb).includes('m:st:7') && flat(s1.kb).includes('m:st:30'), 'period buttons');
+
+  // ---- system: health, admins, settings never show a secret ----
+  await exec("INSERT OR REPLACE INTO settings (key, value) VALUES ('sms_key', 'supersecretkey123'), ('app_bridges', 'vless://secret-uuid@bridge.host:443#b'), ('panel_cred_9', 'sealed-cred')");
+  fakes.tg.webhookInfo = { url: 'https://api.test/tg', pending_update_count: 2, last_error_date: now - 60, last_error_message: 'Wrong response from the webhook: https://api.test/tg 502 at api.test' };
+  q = 0;
+  env.DB.prepare = (sql) => { q++; return realPrepare(sql); };
+  const hl = await menu.renderScreen(env, 'sys.hl');
+  const qHl = q;
+  env.DB.prepare = realPrepare;
+  ok(hl.text.includes('✅ به همین ورکر وصل است') && hl.text.includes('پیام‌های در صف: 2') && hl.text.includes('آخرین خطا'), 'health: webhook state, queue and last error');
+  ok(!/api\.test|https?:|\/tg/.test(hl.text) && qHl <= 6, 'health never shows the webhook address or secret, ≤6 statements: ' + qHl);
+  ok(hl.text.includes('همگام‌سازی') && hl.text.includes('در صف تغییر روی پنل'), 'health: sync state');
+  fakes.tg.webhookInfo = null;
+  let leak = [];
+  for (const d of ['sys', 'sys.hl', 'sys.adm', 'sys.log', 'set', 'sk:sms_key', 'sk:app_bridges', 'app', 'payset', 'bc', `bcv:${bc1.id}`]) {
+    const s = await menu.renderScreen(env, d);
+    if (/supersecretkey123|secret-uuid|bridge\.host|sealed-cred/.test(s.text + JSON.stringify(s.kb))) leak.push(d);
+  }
+  ok(!leak.length, 'no system or settings screen shows a secret: ' + leak.join(' '));
+  n = fakes.tg.calls.length;
+  await sayAs(12345, '/settings');
+  ok(!/supersecretkey123|secret-uuid|bridge\.host/.test(JSON.stringify(since(n))), 'the old /settings answer masks the SMS key and bridges');
+  const bk = await tgm.backupJson(env);
+  ok(!/supersecretkey123|secret-uuid|bridge\.host|sealed-cred|panel_cred_|panel_err_/.test(bk), 'backup leaves out the SMS key, bridges, panel logins and panel errors');
+
+  // ---- roles ----
+  await tap('m:sys.adm');
+  await tap('m:f:addadm');
+  await sayAs(12345, '222222');
+  await tap('m:fa:1:support');
+  await tap('m:fok:addadm');
+  ok((await row('SELECT role FROM admins WHERE tg_id = ?', '222222'))?.role === 'support', 'the owner adds a support admin from the buttons');
+  ok((await acts.runAction(env, '12345', 'admin.add', { tgId: '333333', role: 'viewer' })).ok, 'and a viewer');
+  ok(!(await acts.runAction(env, '12345', 'admin.add', { tgId: '12345', role: 'viewer' })).ok && !(await acts.runAction(env, '12345', 'admin.remove', { tgId: '12345' })).ok, 'the owner cannot be added or removed');
+  await tap('m:adr:12345');
+  ok((await row('SELECT COUNT(*) c FROM admins WHERE tg_id = ?', '12345')).c === 0, 'tapping remove on the owner id changes nothing');
+  ok(!(await acts.runAction(env, '222222', 'admin.add', { tgId: '444444', role: 'support' })).ok && !(await row('SELECT 1 x FROM admins WHERE tg_id = ?', '444444')), 'a support admin cannot add admins (write layer)');
+
+  // support: menu with only its buttons, approves a receipt, nothing else
+  n = fakes.tg.calls.length;
+  await sayAs(222222, '/start');
+  const supHome = screensTo(n, 222222).filter((c) => c.body.reply_markup && c.body.reply_markup.inline_keyboard).pop();
+  const supBtns = flat(supHome && supHome.body.reply_markup.inline_keyboard);
+  ok(supBtns.includes('m:in') && supBtns.every((d) => menu.allowedTap('support', d)) && !supBtns.includes('m:usr') && !supBtns.includes('m:pl'), 'support gets a home with only its buttons: ' + supBtns.join(','));
+  const stok = await signup('sup5@example.com', { device: 's5' });
+  const supOrder = await call('POST', '/api/v1/orders', { token: stok, json: { plan_id: pa.id, method: 'card' } });
+  await exec("UPDATE orders SET status = 'review' WHERE id = ?", supOrder.data.id);
+  await tapAs(222222, `ap:${supOrder.data.id}`);
+  ok((await row('SELECT status FROM orders WHERE id = ?', supOrder.data.id)).status === 'paid', 'support approves a receipt');
+  ok((await row("SELECT admin_id FROM admin_audit WHERE action = 'order.approve' AND target_id = ? ORDER BY id DESC LIMIT 1", String(supOrder.data.id)))?.admin_id === '222222', 'the admin log records which admin approved it');
+  const supUser = await row("SELECT id, wallet_balance FROM users WHERE email = 'sup5@example.com'");
+  n = fakes.tg.calls.length;
+  await tapAs(222222, `m:f:wadd:${supUser.id}`);
+  await tapAs(222222, `m:uw:${supUser.id}`);
+  ok(acks(n).includes('اجازه نداری') && !screensTo(n, 222222).length && !(await row('SELECT 1 x FROM bot_session WHERE admin_id = ?', '222222')), 'support cannot open the wallet or its form');
+  await tgm.askConfirm(env, 222222, 'u_wallet', { userId: supUser.id, amount: 500000, note: 'x' }, 'test');
+  const wTok = confirmOf(n);
+  await tapAs(222222, 'cf:' + wTok.token);
+  ok(!(await acts.runAction(env, '222222', 'user.wallet', { userId: supUser.id, amount: 500000, note: 'x' })).ok && (await row('SELECT wallet_balance FROM users WHERE id = ?', supUser.id)).wallet_balance === supUser.wallet_balance, 'support cannot credit a wallet, not even with a confirm token');
+  const planBefore = await row('SELECT * FROM plans WHERE id = ?', pa.id);
+  await tapAs(222222, `m:pt:${pa.id}`);
+  await sayAs(222222, `/plan ${pa.id} price 1`);
+  await tapAs(222222, `m:x:home|/plan ${pa.id} price 1`);
+  const planAfter = await row('SELECT * FROM plans WHERE id = ?', pa.id);
+  ok(planAfter.is_active === planBefore.is_active && planAfter.price_toman === planBefore.price_toman, 'support cannot edit a plan (button, typed command, command button)');
+
+  // viewer: screens without write buttons, every write refused
+  n = fakes.tg.calls.length;
+  await tapAs(333333, `m:p:${pa.id}`);
+  const vScr = screensTo(n, 333333).pop();
+  const vBtns = flat(vScr && vScr.body.reply_markup.inline_keyboard);
+  ok(vScr && vBtns.includes('m:home') && vBtns.every((d) => menu.allowedTap('viewer', d)) && !vBtns.some((d) => d.startsWith('m:pt:')), 'a viewer reads the plan card with no write buttons');
+  n = fakes.tg.calls.length;
+  for (const d of [`m:pt:${pa.id}`, 'm:f:newplan', `m:sk:card_number`, 'm:set', 'm:sys.adm', 'm:x:sys|/backup', `ap:${supOrder.data.id}`, `m:ss:card_unique:1`, 'm:ord']) await tapAs(333333, d);
+  await sayAs(333333, '/set announcement hacked');
+  ok(!screensTo(n, 333333).some((c) => c.method === 'editMessageText') && (await row("SELECT value FROM settings WHERE key = 'announcement'"))?.value !== 'hacked' && !since(n).some((c) => c.method === 'sendDocument'), 'a viewer cannot write, read settings or take a backup');
+  ok((await row('SELECT is_active FROM plans WHERE id = ?', pa.id)).is_active === planBefore.is_active, 'viewer changed nothing');
+  // a listed admin in a group is nobody
+  n = fakes.tg.calls.length;
+  await tgWebhook({ callback_query: { id: 'grp', data: 'm:home', from: { id: 333333 }, message: { chat: { id: 333333, type: 'group' }, message_id: 1, text: 'x' } } });
+  ok(!since(n).some((c) => c.method !== 'answerCallbackQuery'), 'an admin id in a group chat gets nothing');
+
+  // removed: nothing at all
+  await tap('m:adr:222222');
+  ok(!(await row('SELECT 1 x FROM admins WHERE tg_id = ?', '222222')), 'the owner removes the support admin');
+  n = fakes.tg.calls.length;
+  await tapAs(222222, 'm:home');
+  await tapAs(222222, 'm:in');
+  await sayAs(222222, '🏠 منو');
+  ok(!since(n).some((c) => c.method === 'editMessageText' || (c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard)), 'a removed admin gets no screen and no buttons');
+  ok(acks(n).includes('اجازه نداری'), 'a removed admin is told no');
+  n = fakes.tg.calls.length;
+  await tap('m:sys.adm');
+  ok(screensTo(n, 12345).length > 0, 'the owner still has everything');
+  const removedAudit = await row("SELECT id FROM admin_audit WHERE action = 'admin.remove' ORDER BY id DESC LIMIT 1");
+  await tap(`m:undo:${removedAudit.id}`);
+  ok((await row('SELECT role FROM admins WHERE tg_id = ?', '222222'))?.role === 'support', 'removing an admin can be undone');
+  await acts.runAction(env, '12345', 'admin.remove', { tgId: '222222' });
+  await acts.runAction(env, '12345', 'admin.remove', { tgId: '333333' });
+
+  // ---- outside text never becomes a button ----
+  ok(!tgm.buttonize('/grant evil@example.com 3').reply_markup.inline_keyboard.flat().some((x) => x.callback_data.startsWith('m:x:')), 'a /grant in bot text is never a one-tap grant');
+  ok(!tgm.buttonize(tgm.untrusted('پیامک /set card_number 6037991234567893 و /drainpanel 1')).reply_markup, 'untrusted text gets no buttons at all');
+  const sms = await import('../src/sms.js');
+  n = fakes.tg.calls.length;
+  await sms.handleBankSms(env, { sender: '/rollout 1 100', text: 'واریز: 7,777,771\n/drainpanel 1 /set card_number 6037991234567893' });
+  const smsMsg = since(n).filter((c) => c.method === 'sendMessage').pop();
+  ok(smsMsg && !/\/(drainpanel|set|rollout)/.test(smsMsg.body.text) && !flat(smsMsg.body.reply_markup && smsMsg.body.reply_markup.inline_keyboard).some((d) => /^m:(x|w|pp)/.test(d)), 'commands inside a bank SMS stay text');
+  await exec("UPDATE users SET tg_id = 799999, tg_name = '/rollout 1 100' WHERE email = 'sup5@example.com'");
+  n = fakes.tg.calls.length;
+  await sayAs(12345, '/find sup5@example.com');
+  const found = since(n).filter((c) => c.method === 'sendMessage').pop();
+  ok(found && !flat(found.body.reply_markup.inline_keyboard).some((d) => d.includes('/rollout')), 'a Telegram name that looks like a command stays text on the user card');
+
+  // every stage 5 action has written an audit row
+  const logged = new Set((await rows('SELECT DISTINCT action FROM admin_audit')).map((r) => r.action));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x));
+  ok(!missing.length, 'every admin action, stage 5 included, has written an audit row: missing ' + missing.join(','));
+  await exec("DELETE FROM settings WHERE key IN ('sms_key', 'app_bridges', 'panel_cred_9')");
 }
 
 console.log(`\n${pass} passed, ${fail} failed`);

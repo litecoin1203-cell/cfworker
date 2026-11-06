@@ -7,7 +7,7 @@ import { collectLinks, flagToCc } from './panels.js';
 import { refreshUser, usedBytes, ensureMissingFor } from './sync.js';
 import { cryptoEnabled } from './nowpayments.js';
 import { enabledCoins, coinOut } from './coins.js';
-import { notifyAdmin } from './telegram.js';
+import { notifyAdmin, untrusted } from './telegram.js';
 import { profileOut } from './auth.js';
 
 export async function appConfig(env) {
@@ -306,7 +306,7 @@ export async function startTrial(env, user, body, request) {
   } catch (e) {
     await run(env, 'UPDATE users SET trial_used = 0 WHERE id = ?', user.id); // not built: the trial is still theirs
     if (e instanceof PasarGuardError) {
-      await notifyAdmin(env, `⚠️ تست رایگان برای ${user.email} ساخته نشد.\n\nخطای پنل:\n${e.message}\n\nبرای عیب‌یابی /panel را بزن.`);
+      await notifyAdmin(env, `⚠️ تست رایگان برای ${user.email} ساخته نشد.\n\nخطای پنل:\n${untrusted(e.message)}\n\nبرای عیب‌یابی /panel را بزن.`);
       throw err(503, 'provision_failed', 'فعال‌سازی تست رایگان الان ممکن نشد. پشتیبانی خبردار شد؛ چند دقیقه دیگر دوباره امتحان کن.');
     }
     throw e;

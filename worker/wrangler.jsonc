@@ -10,8 +10,9 @@
     "logs": { "enabled": true, "head_sampling_rate": 1 },
     "traces": { "enabled": true, "head_sampling_rate": 0.1 }
   },
-  // every minute: on-chain check of crypto payments; 20:30 UTC (midnight in Iran): daily report + backup
-  "triggers": { "crons": ["* * * * *", "30 20 * * *"] },
+  // every minute: on-chain check of crypto payments; 20:30 UTC (midnight in Iran): daily report + backup;
+  // every 2 minutes: one page (25 messages) of an admin broadcast, in its own invocation and subrequest budget
+  "triggers": { "crons": ["* * * * *", "30 20 * * *", "*/2 * * * *"] },
   // Workers Rate Limiting (counted per Cloudflare location): RL_IP caps sign-ups, logins and free trials per IP,
   // RL_LOGIN caps login attempts per email. namespace_id is any number unique within the account.
   "ratelimits": [

@@ -15,7 +15,7 @@ import { first, all, run } from './db.js';
 import { nowSec, hashPassword } from './util.js';
 import { tg, runAdminCommand, askConfirm } from './telegram.js';
 import * as S from './telegram-screens.js';
-import { runAction, undoAction, checkEmail, maskBridge } from './admin-actions.js';
+import { runAction, undoAction, checkEmail, maskBridge, AUDIENCES, BROADCAST_MAX, ROLE_FA, audienceCount } from './admin-actions.js';
 
 const { b, HOME, nav } = S;
 const fa = S.fa;
@@ -166,7 +166,55 @@ export const FORMS = {
     summary: (d) => [`ایمیل: ${d.email}`, 'رمز: ••••••••'],
     done: (r) => `u:${r.targetId}`,
   },
+  // ---- broadcast, admins (stage 5) ----
+  // fok saves a draft, sends the text to this admin alone as a preview, then asks "are you sure?" with the count
+  bcast: {
+    title: '📣 پیام همگانی جدید', back: 'bc', action: 'broadcast.create', ok: '👁 پیش‌نمایش و ادامه', broadcast: true,
+    steps: [
+      { key: 'audience', ask: 'این پیام به چه کسانی برود؟ (فقط کسانی که با تلگرام وارد اپ شده‌اند پیام را می‌گیرند)', hint: 'یکی از دکمه‌ها را بزن.',
+        parse: (v) => (AUDIENCES[v] ? v : null),
+        suggest: async (env) => { const out = []; for (const [k, a] of Object.entries(AUDIENCES)) out.push(opt(`${a.fa} (${fa(await audienceCount(env, k))})`, k)); return out; } },
+      { key: 'text', ask: `متن پیام را بنویس (حداکثر ${fa(BROADCAST_MAX)} حرف). همان‌طور که نوشتی، بدون قالب‌بندی و بدون دکمه فرستاده می‌شود.`,
+        hint: `متن باید ۱ تا ${fa(BROADCAST_MAX)} حرف باشد.`, parse: (v) => { const t = String(v ?? '').trim(); return t && t.length <= BROADCAST_MAX ? t : null; } },
+    ],
+    summary: (d) => [`گیرنده‌ها: ${AUDIENCES[d.audience] ? AUDIENCES[d.audience].fa : '-'}`, `متن: ${fa(String(d.text || '').length)} حرف`, '', 'بعد از این دکمه، پیش‌نمایش فقط برای خودت فرستاده می‌شود.'],
+    done: (r) => `bcv:${r.targetId}`,
+  },
+  addadm: {
+    title: '➕ مدیر جدید', back: 'sys.adm', action: 'admin.add', ok: '✅ اضافه شود',
+    steps: [
+      { key: 'tgId', ask: 'آیدی عددی تلگرام آن شخص را بنویس (خودش با فرستادن /id به همین ربات آن را می‌بیند):', hint: 'آیدی باید ۵ تا ۱۵ رقم باشد و آیدی خود مالک نباشد.',
+        parse: (v, env) => { const s = digits(v); return /^\d{5,15}$/.test(s) && s !== String(env.TELEGRAM_CHAT_ID || '') ? s : null; } },
+      { key: 'role', ask: 'چه دسترسی داشته باشد؟\n🧾 پشتیبان: فقط کارهای منتظر و تأیید / رد رسیدها\n👁 فقط دیدن: همه‌ی صفحه‌ها را می‌بیند، چیزی را عوض نمی‌کند', hint: 'یکی از دکمه‌ها را بزن.',
+        parse: (v) => (['support', 'viewer'].includes(v) ? v : null), suggest: [opt('🧾 پشتیبان', 'support'), opt('👁 فقط دیدن', 'viewer')] },
+    ],
+    summary: (d) => [`آیدی: ${d.tgId}`, `نقش: ${ROLE_FA[d.role] || '-'}`],
+    done: () => 'sys.adm',
+  },
 };
+
+// ---------------- roles ----------------
+// owner: everything. support: the inbox, orders (read) and approving / rejecting receipts. viewer: screens only.
+// Checked on every tap in telegram.js (allowedTap) and again in the write layer; buttons a role may not press are
+// also taken off its screens (forRole).
+const SUPPORT_ROUTES = new Set(['home', 'in', 'ord', 'o', 'or', 'oap', 'orj', 'orc', 'cancel', 'help']);
+const VIEWER_HIDDEN = new Set(['sk', 'set', 'wl', 'sys.adm']); // setting values and the admin list stay with the owner
+export function allowedTap(role, data) {
+  const d = String(data || '');
+  if (role === 'owner') return true;
+  if (role !== 'support' && role !== 'viewer') return false;
+  if (/^(cf|cx):[0-9a-f]{18}$/.test(d)) return true; // onConfirm checks what is being confirmed
+  if (role === 'support' && /^(ap|rj|rp):\d{1,12}$/.test(d)) return true;
+  if (!d.startsWith('m:') || !routeOf(d)) return false;
+  const route = d.slice(2).split(':')[0];
+  if (role === 'support') return SUPPORT_ROUTES.has(route);
+  return route === 'cancel' || (ROUTES[route].kind === 'screen' && !VIEWER_HIDDEN.has(route));
+}
+export function forRole(role, kb) {
+  if (!role || role === 'owner') return kb;
+  const rows = (kb || []).map((row) => row.filter((x) => x.url || allowedTap(role, x.callback_data))).filter((row) => row.length);
+  return rows.length ? rows : [[HOME]];
+}
 
 function couponForm(field, title, ask, hint, parse, show) {
   return {
@@ -286,12 +334,15 @@ const SCREENS = {
   nca: (env, a) => S.carrier(env, parseInt(a[0], 10)),
   nsv: (env, a) => S.netServer(env, a[0]),
   ng: (env) => S.google(env),
-  st: (env) => S.stats(env),
+  st: (env, a) => S.stats(env, a[0]),
   sys: () => S.system(),
+  'sys.adm': (env) => S.admins(env),
+  'sys.hl': (env) => S.health(env),
   'sys.log': (env, a) => S.auditLog(env, a[0]),
   help: () => S.help(),
   hist: (env, a) => S.history(env, a[0], a[1], a[2]),
-  bc: () => S.soon('📣 پیام همگانی'),
+  bc: (env, a) => S.broadcasts(env, a[0]),
+  bcv: (env, a) => S.broadcast(env, parseInt(a[0], 10)),
 };
 // action routes and how risky they are (see the top of this file)
 const ACTION_RISK = {
@@ -306,6 +357,8 @@ const ACTION_RISK = {
   cs: 'reversible', ct: 'reversible', ss: 'reversible', sdel: 'reversible',
   // panels, servers, the app, network (stage 4)
   pen: 'reversible', sh: 'reversible', sl: 'reversible', apm: 'reversible', apr: 'reversible', apc: 'reversible', apt: 'read', nrs: 'destructive',
+  // broadcast, admins (stage 5)
+  bcs: 'reversible', bcgo: 'destructive', adr: 'reversible',
 };
 // reversible user buttons: route -> [action, args from the button, the screen the card comes back on]
 const USER_TAPS = {
@@ -331,6 +384,9 @@ const USER_TAPS = {
   apm: (a) => ['app.list', { k: a[0], op: 'move', index: a[1], dir: 'u', tag: a[2] || '' }, `appl:${a[0]}`],
   apr: (a) => ['app.list', { k: a[0], op: 'remove', index: a[1], tag: a[2] || '' }, `appl:${a[0]}`],
   apc: (a) => ['setting.set', { key: ['announcement', 'support_url'].includes(a[0]) ? a[0] : '-', val: '' }, 'app'],
+  // broadcast, admins (stage 5)
+  bcs: (a) => ['broadcast.stop', { id: a[0] }, `bcv:${a[0]}`],
+  adr: (a) => ['admin.remove', { tgId: a[0] }, 'sys.adm'],
 };
 const GiB = 1024 ** 3;
 // money / destructive user buttons: the "are you sure?" question, with what it affects
@@ -425,15 +481,16 @@ async function sendPending(env, chatId) {
 }
 
 // ---------------- entry points ----------------
-export async function sendHome(env, chatId) {
+export async function sendHome(env, chatId, role = 'owner') {
   const s = await S.home(env);
-  return tg(env, 'sendMessage', { chat_id: chatId, text: s.text, reply_markup: { inline_keyboard: s.kb } });
+  return tg(env, 'sendMessage', { chat_id: chatId, text: s.text, reply_markup: { inline_keyboard: forRole(role, s.kb) } });
 }
 
 // Menu messages are edited in place; a photo (receipt) cannot become a menu, so it gets a new message.
+// A support or viewer admin sees only the buttons their role may press.
 async function show(env, cq, s) {
   const m = cq.message || {};
-  const body = { text: String(s.text).slice(0, 4000), reply_markup: { inline_keyboard: s.kb }, disable_web_page_preview: true };
+  const body = { text: String(s.text).slice(0, 4000), reply_markup: { inline_keyboard: forRole(cq._role, s.kb) }, disable_web_page_preview: true };
   if (m.text && m.message_id) return tg(env, 'editMessageText', { chat_id: m.chat.id, message_id: m.message_id, ...body });
   return tg(env, 'sendMessage', { chat_id: m.chat.id, ...body });
 }
@@ -451,7 +508,7 @@ async function cardWithUndo(env, cq, data, r) {
   return show(env, cq, { text: scr.text, kb: [...undoRows(r), ...scr.kb] });
 }
 const UNDO_BACK = { user: (id) => `u:${id}`, plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, coupon: () => 'cp', order: (id) => `o:${id}`,
-  server: (id) => `srv:${String(id).replace('.', ':')}` };
+  server: (id) => `srv:${String(id).replace('.', ':')}`, broadcast: (id) => `bcv:${id}`, admin: () => 'sys.adm' };
 // one extra app domain: GET <base>/health within 5 s; ok only when it answers like this worker ({"ok":true})
 export async function checkHealth(base) {
   const t0 = Date.now();
@@ -479,6 +536,7 @@ export async function onMenu(env, cq) {
   const data = String(cq.data || '').slice(2);
   const [route, ...args] = data.split(':');
   const int = (i) => parseInt(args[i], 10);
+  if (!cq._role || !allowedTap(cq._role, cq.data)) return ack('اجازه نداری'); // set by onCallback; nothing else may get here
   if (!routeOf(cq.data)) { await ack('این دکمه قدیمی است'); return showScreen(env, cq, 'home'); }
 
   if (ROUTES[route].kind === 'screen') { await ack(''); return showScreen(env, cq, data); }
@@ -527,6 +585,12 @@ export async function onMenu(env, cq) {
     }
     const r = await runAction(env, chatId, f.action, a);
     if (!r.ok) { await ack(r.error, true); return showScreen(env, cq, backOf(f, d)); }
+    if (f.broadcast) { // the preview goes to this admin only, exactly as people will get it; then "are you sure?"
+      await tg(env, 'sendMessage', { chat_id: chatId, text: d.text, disable_web_page_preview: true });
+      await askBroadcast(env, chatId, r.targetId, d.audience);
+      await ack('');
+      return showScreen(env, cq, f.done(r, d));
+    }
     await ack(r.text.slice(0, 190));
     return cardWithUndo(env, cq, f.done(r, d), r);
   }
@@ -672,6 +736,12 @@ export async function onMenu(env, cq) {
       kind === 's' ? 'آمار بقیه‌ی سرورها دست نمی‌خورد.' : 'آمار بقیه‌ی اپراتورها دست نمی‌خورد.', 'رتبه‌بندی از گزارش‌های بعدی اپ دوباره ساخته می‌شود.'].join('\n'));
     return ack('');
   }
+  if (route === 'bcgo') { // a draft whose question expired: ask again
+    const bc = await first(env, "SELECT id, audience FROM broadcasts WHERE id = ? AND status = 'draft'", int(0));
+    if (!bc) { await ack('این پیام دیگر پیش‌نویس نیست', true); return showScreen(env, cq, 'bc'); }
+    await askBroadcast(env, chatId, bc.id, bc.audience);
+    return ack('');
+  }
   if (route === 'undo') {
     const r = await undoAction(env, chatId, int(0));
     if (!r.ok) { await ack(r.error, true); return showScreen(env, cq, 'sys.log'); }
@@ -681,6 +751,13 @@ export async function onMenu(env, cq) {
   }
   await ack('');
   return showScreen(env, cq, 'home');
+}
+
+// destructive: sending cannot be taken back, so the question says how many people get it
+async function askBroadcast(env, chatId, id, audience) {
+  const n = await audienceCount(env, audience);
+  return askConfirm(env, chatId, 'bc_start', { id }, [`پیام همگانی #${id} برای «${AUDIENCES[audience].fa}» فرستاده شود؟`,
+    `${fa(n)} نفر آن را می‌گیرند (فقط کسانی که با تلگرام وارد اپ شده‌اند).`, 'پیام بالا پیش‌نمایش آن است. ارسال برگشت ندارد؛ فقط می‌شود وسطش متوقفش کرد.'].join('\n'));
 }
 
 async function startForm(env, cq, name, ack, uid) {

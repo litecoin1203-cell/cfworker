@@ -829,25 +829,123 @@ export async function google(env) {
 export const soon = (title) => ({ text: `${crumb(title)}\n\n${SOON}`, kb: [nav('home')] });
 
 // ---------------- stats, system, admin log ----------------
-export async function stats(env) {
-  return { text: `${crumb('📊 آمار')}\n\n${await statsText(env)}`, kb: [[b('🔄 به‌روزرسانی', 'm:st')], nav('home')] };
+// today / 7 / 30 days, in three queries (one row of counts, one per payment method, one top-plans list), all on
+// indexed columns: orders(status, paid_at), users(created_at), sub_periods(end_reason, ended_at)
+export const STAT_PERIODS = { 1: 'امروز (۲۴ ساعت)', 7: '۷ روز', 30: '۳۰ روز' };
+export async function stats(env, period) {
+  const days = STAT_PERIODS[period] ? parseInt(period, 10) : 1;
+  const now = nowSec(), since = now - days * 86400;
+  const c = await first(env, `SELECT
+    (SELECT COUNT(*) FROM orders WHERE status = 'paid' AND paid_at > ?1) sales,
+    (SELECT COALESCE(SUM(amount_toman), 0) FROM orders WHERE status = 'paid' AND paid_at > ?1 AND method != 'wallet') toman,
+    (SELECT COUNT(*) FROM users WHERE created_at > ?1) signups,
+    (SELECT COUNT(*) FROM sub_periods WHERE end_reason = 'renewed' AND ended_at > ?1) renewals,
+    (SELECT COUNT(*) FROM subscriptions WHERE expires_at > ?2 OR expires_at IS NULL) active,
+    (SELECT COALESCE(SUM(used_bytes), 0) FROM subscriptions WHERE expires_at > ?2 OR expires_at IS NULL) used`, since, now);
+  const methods = await all(env, `SELECT method, COUNT(*) n, COALESCE(SUM(amount_toman), 0) t FROM orders WHERE status = 'paid' AND paid_at > ?
+    GROUP BY method ORDER BY t DESC`, since);
+  const top = await all(env, `SELECT o.plan_id, p.name, COUNT(*) n, COALESCE(SUM(o.amount_toman), 0) t FROM orders o LEFT JOIN plans p ON p.id = o.plan_id
+    WHERE o.status = 'paid' AND o.paid_at > ? AND o.kind = 'plan' GROUP BY o.plan_id ORDER BY n DESC, t DESC LIMIT 5`, since);
+  const lines = [crumb('📊 آمار', STAT_PERIODS[days]), '',
+    `💰 فروش: ${fa(c.sales)} سفارش · ${fa(c.toman)} تومان دریافتی`,
+    ...methods.map((m) => `   ${METHOD_FA[m.method] || m.method}: ${fa(m.n)} · ${fa(m.t)} تومان`),
+    ...(methods.some((m) => m.method === 'wallet') ? ['   (خرید با کیف پول در «دریافتی» حساب نشده؛ پولش موقع شارژ آمده)'] : []),
+    `🆕 ثبت‌نام تازه: ${fa(c.signups)}`, `🔁 تمدید (خرید روی اشتراک باز): ${fa(c.renewals)}`, '',
+    `✅ اشتراک فعال الان: ${fa(c.active)} · مصرف این دوره‌شان: ${gb(c.used)} گیگ`, '',
+    '🏆 پرفروش‌ترین پلن‌ها:', ...(top.length ? top.map((p, i) => `${i + 1}. ${p.name || '#' + p.plan_id} — ${fa(p.n)} فروش · ${fa(p.t)} تومان`) : ['   فروشی نبوده.'])];
+  return {
+    text: lines.join('\n'),
+    kb: [Object.entries(STAT_PERIODS).map(([k, label]) => b(`${String(days) === k ? '✅ ' : ''}${label}`, `m:st:${k}`)), [b('🔄 به‌روزرسانی', `m:st:${days}`)], nav('home')],
+  };
 }
 
 export const help = () => ({ text: `${crumb('🛡 سیستم', '❓ راهنما')}\n\n${HELP}`, kb: [nav('sys')] });
 
 export async function system() {
   return {
-    text: `${crumb('🛡 سیستم')}\n\nلاگ همه‌ی تغییرات مدیر (با برگرداندن تا ۱۰ دقیقه)، پشتیبان، همه‌ی تنظیمات و راهنما.`,
-    kb: [[b('📜 لاگ مدیر', 'm:sys.log'), b('💾 پشتیبان', 'm:x:sys|/backup')], [b('⚙️ همه‌ی تنظیمات', 'm:set'), b('❓ راهنما', 'm:help')], nav('home')],
+    text: `${crumb('🛡 سیستم')}\n\nلاگ همه‌ی تغییرات مدیر (با برگرداندن تا ۱۰ دقیقه)، پشتیبان، سلامت ربات و همگام‌سازی، همه‌ی تنظیمات، مدیرها و راهنما.`,
+    kb: [[b('📜 لاگ مدیر', 'm:sys.log'), b('💾 پشتیبان', 'm:x:sys|/backup')], [b('🩺 سلامت', 'm:sys.hl'), b('👥 مدیرها', 'm:sys.adm')],
+      [b('⚙️ همه‌ی تنظیمات', 'm:set'), b('❓ راهنما', 'm:help')], nav('home')],
   };
 }
 
-const TARGET_FA = { plan: '📦 پلن', panel: '🗂 پنل', setting: '⚙️', user: '👤 کاربر', coupon: '🏷 کد', order: '🧾 سفارش', server: '🖥 سرور', net: '📶 آمار شبکه' };
+// ---------------- broadcasts ----------------
+const BC_FA = { draft: '📝 پیش‌نویس', sending: '📤 در حال ارسال', done: '✅ تمام شد', stopped: '⏹ متوقف' };
+export async function broadcasts(env, cursor) {
+  const { AUDIENCES } = await import('./admin-actions.js');
+  const pg = await page(env, { select: 'id, audience, status, sent, failed, blocked, created_at', from: 'broadcasts', cursor, size: 6 });
+  const lines = pg.rows.map((r) => `#${r.id} · ${ymd(r.created_at)} · ${BC_FA[r.status] || r.status} · ${(AUDIENCES[r.audience] || {}).fa || r.audience} · ${fa(r.sent)} رسید`);
+  return {
+    text: [crumb('📣 پیام همگانی'), '', 'یک پیام متنی برای کاربرانی که با تلگرام وارد اپ شده‌اند. هر ۲ دقیقه چند نفر؛ هر وقت خواستی متوقفش کن.', '',
+      ...(lines.length ? lines : ['هنوز پیامی فرستاده نشده.'])].join('\n'),
+    kb: [[b('➕ پیام تازه', 'm:f:bcast')], ...pg.rows.map((r) => [b(`#${r.id} ${BC_FA[r.status] || r.status}`, `m:bcv:${r.id}`)]), ...pageRow('bc', pg), nav('home')],
+  };
+}
+
+export async function broadcast(env, id) {
+  const { AUDIENCES, audienceCount } = await import('./admin-actions.js');
+  const r = id > 0 ? await first(env, 'SELECT * FROM broadcasts WHERE id = ?', id) : null;
+  if (!r) return { text: crumb('📣 پیام همگانی') + '\n\nپیدا نشد.', kb: [nav('bc')] };
+  const total = r.status === 'draft' || r.status === 'sending' ? await audienceCount(env, r.audience) : null;
+  const done = r.sent + r.failed + r.blocked;
+  const preview = r.text.length > 300 ? r.text.slice(0, 300) + '…' : r.text;
+  return {
+    text: [crumb('📣 پیام همگانی', `#${r.id}`), '', `وضعیت: ${BC_FA[r.status] || r.status}`, `گیرنده‌ها: ${(AUDIENCES[r.audience] || {}).fa || r.audience}${total != null ? ` (الان ${fa(total)} نفر)` : ''}`,
+      `✅ رسید: ${fa(r.sent)} · 🚫 بلاک کرده: ${fa(r.blocked)} · ⚠️ ناموفق: ${fa(r.failed)}${r.status === 'sending' && total ? ` · پیشرفت حدود ${Math.min(100, Math.round((done / total) * 100))}٪` : ''}`,
+      `ساخته شده: ${ymd(r.created_at)}`, '', '— متن —', preview].join('\n'),
+    kb: [
+      ...(r.status === 'sending' ? [[b('⏹ توقف ارسال', `m:bcs:${r.id}`), b('🔄 به‌روزرسانی', `m:bcv:${r.id}`)]] : []),
+      ...(r.status === 'draft' ? [[b('📤 شروع ارسال', `m:bcgo:${r.id}`)]] : []),
+      nav('bc')],
+  };
+}
+
+// ---------------- system: health, admins ----------------
+const ago = (t, now = nowSec()) => (!t ? 'هرگز' : now - t < 120 ? `${fa(now - t)} ثانیه پیش` : now - t < 7200 ? `${fa(Math.round((now - t) / 60))} دقیقه پیش` : `${fa(Math.round((now - t) / 3600))} ساعت پیش`);
+// The webhook as Telegram sees it (never its address or secret), the background sync, and the broadcast queue.
+export async function health(env) {
+  const { tg, untrusted } = await import('./telegram.js');
+  const now = nowSec();
+  const w = (await tg(env, 'getWebhookInfo', {})) || null;
+  const info = w && w.ok ? w.result || {} : null;
+  const base = String(env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+  const c = await first(env, `SELECT (SELECT COUNT(*) FROM panel_accounts WHERE dirty = 1) dirty,
+    (SELECT COUNT(*) FROM panel_accounts WHERE dirty = 1 AND attempts >= 3) stuck,
+    (SELECT COUNT(*) FROM panel_accounts WHERE last_error IS NOT NULL AND last_error != '') errs,
+    (SELECT COUNT(*) FROM settings WHERE key LIKE 'panel_err_%' AND value != '') perr,
+    (SELECT COUNT(*) FROM broadcasts WHERE status = 'sending') bc`);
+  const jobs = await all(env, 'SELECT job, panel_id, run_at FROM sync_cursor ORDER BY run_at DESC LIMIT 6');
+  // Telegram's error text can carry the webhook address: anything that looks like a link is cut out
+  const errMsg = info && info.last_error_message ? untrusted(String(info.last_error_message).replace(/\S*:\/\/\S*/g, '[آدرس]').replace(/\b[\w-]+(\.[\w-]+)+(:\d+)?\S*/g, '[آدرس]')).slice(0, 150) : '';
+  const lines = [crumb('🛡 سیستم', '🩺 سلامت'), '', '🤖 وبهوک تلگرام',
+    !info ? '❌ جواب Telegram نیامد.' : !info.url ? '❌ ثبت نشده (هر دقیقه دوباره امتحان می‌شود).' : info.url === base + '/tg' ? '✅ به همین ورکر وصل است.' : '⚠️ به آدرس دیگری وصل است؛ هر دقیقه درست می‌شود.',
+    ...(info ? [`پیام‌های در صف: ${fa(info.pending_update_count || 0)}`, info.last_error_date ? `آخرین خطا: ${ago(info.last_error_date, now)}${errMsg ? ` — ${errMsg}` : ''}` : 'خطای اخیر: ندارد'] : []),
+    '', '🔄 همگام‌سازی پنل‌ها',
+    ...(jobs.length ? jobs.map((j) => `${j.job} · پنل #${j.panel_id} · ${ago(j.run_at, now)}`) : ['هنوز اجرا نشده.']),
+    `در صف تغییر روی پنل: ${fa(c.dirty)}${c.stuck ? ` (⚠️ ${fa(c.stuck)} تا بعد از ۳ تلاش هنوز نشده)` : ''}`,
+    `اکانت با خطای آخر: ${fa(c.errs)} · پنلی که ساخت اکانت را رد می‌کند: ${fa(c.perr)}`,
+    '', `📣 پیام همگانی در حال ارسال: ${fa(c.bc)}`];
+  return { text: lines.join('\n'), kb: [[b('🔄 به‌روزرسانی', 'm:sys.hl'), ...(c.perr || c.errs ? [b('🗂 پنل‌ها', 'm:pa')] : [])], nav('sys')] };
+}
+
+export async function admins(env) {
+  const { ROLE_FA } = await import('./admin-actions.js');
+  const rows = await all(env, 'SELECT tg_id, role, added_at FROM admins ORDER BY added_at, tg_id LIMIT 20');
+  return {
+    text: [crumb('🛡 سیستم', '👥 مدیرها'), '', `👑 مالک: ${env.TELEGRAM_CHAT_ID || '-'} (همه‌ی دسترسی‌ها؛ حذف نمی‌شود)`,
+      ...rows.map((r) => `${r.role === 'support' ? '🧾' : '👁'} ${r.tg_id} · ${ROLE_FA[r.role] || r.role} · از ${ymd(r.added_at)}`), '',
+      '🧾 پشتیبان: فقط کارهای منتظر و تأیید / رد رسیدها.', '👁 فقط دیدن: صفحه‌ها را می‌بیند (بدون تنظیمات)، چیزی را عوض نمی‌کند.',
+      'هر کار هر مدیر با آیدی‌اش در لاگ مدیر می‌ماند.'].join('\n'),
+    kb: [[b('➕ افزودن مدیر', 'm:f:addadm')], ...rows.map((r) => [b(`🗑 حذف ${r.tg_id} (${ROLE_FA[r.role] || r.role})`, `m:adr:${r.tg_id}`)]), nav('sys')],
+  };
+}
+
+const TARGET_FA = { plan: '📦 پلن', panel: '🗂 پنل', setting: '⚙️', user: '👤 کاربر', coupon: '🏷 کد', order: '🧾 سفارش', server: '🖥 سرور', net: '📶 آمار شبکه', broadcast: '📣 پیام همگانی', admin: '👥 مدیر' };
 const when = (t) => new Date(t * 1000).toISOString().slice(5, 16).replace('T', ' ');
 
-function logScreen(pg, title, route, back) {
+function logScreen(pg, title, route, back, owner = '') {
   const now = nowSec();
-  const lines = pg.rows.map((r) => `#${r.id} · ${when(r.created_at)} · ${r.action}${r.target_type ? ` · ${TARGET_FA[r.target_type] || r.target_type} ${r.target_id || ''}` : ''}${r.summary ? `\n   ${r.summary}` : ''}${r.undone_at ? ' ↩️' : ''}`);
+  const lines = pg.rows.map((r) => `#${r.id} · ${when(r.created_at)} · ${r.action}${r.admin_id && String(r.admin_id) !== String(owner) ? ` · 👤 ${r.admin_id}` : ''}${r.target_type ? ` · ${TARGET_FA[r.target_type] || r.target_type} ${r.target_id || ''}` : ''}${r.summary ? `\n   ${r.summary}` : ''}${r.undone_at ? ' ↩️' : ''}`);
   const undo = pg.rows.filter((r) => canUndo(r, now)).slice(0, 4).map((r) => b(`↩️ برگردان #${r.id}`, `m:undo:${r.id}`));
   return {
     text: `${title}\n\n${lines.join('\n') || 'هنوز چیزی ثبت نشده.'}${undo.length ? '\n\n↩️ تغییرهای ساده تا ۱۰ دقیقه برمی‌گردند.' : ''}`,
@@ -857,7 +955,7 @@ function logScreen(pg, title, route, back) {
 
 export async function auditLog(env, cursor) {
   const pg = await page(env, { from: 'admin_audit', cursor });
-  return logScreen(pg, crumb('🛡 سیستم', '📜 لاگ مدیر'), 'sys.log', 'sys');
+  return logScreen(pg, crumb('🛡 سیستم', '📜 لاگ مدیر'), 'sys.log', 'sys', env.TELEGRAM_CHAT_ID);
 }
 
 // one plan / panel / setting / user: its own changes ("history")
@@ -866,5 +964,5 @@ const HIST_BACK = { plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting:
 export async function history(env, type, id, cursor) {
   if (!HIST_BACK[type] || !/^[\w.-]{1,40}$/.test(String(id || ''))) return soon('📜 تاریخچه');
   const pg = await page(env, { from: 'admin_audit', where: 'target_type = ? AND target_id = ?', args: [type, String(id)], cursor });
-  return logScreen(pg, crumb('📜 تاریخچه', `${TARGET_FA[type] || type} ${id}`), `hist:${type}:${id}`, HIST_BACK[type](id));
+  return logScreen(pg, crumb('📜 تاریخچه', `${TARGET_FA[type] || type} ${id}`), `hist:${type}:${id}`, HIST_BACK[type](id), env.TELEGRAM_CHAT_ID);
 }

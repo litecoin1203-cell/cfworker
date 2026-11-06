@@ -43,6 +43,13 @@ export default {
   async scheduled(event, env, ctx) {
     // every minute: crypto deposits on the blockchain, one slice of the panel usage sync (quota and expiry
     // stops), and the Telegram webhook kept pointed at this Worker
+    // every 2 minutes, on its own invocation (its own subrequest budget): one page of the broadcast being sent
+    if (event && event.cron === '*/2 * * * *') {
+      ctx.waitUntil((async () => {
+        try { const { broadcastTick } = await import('./admin-actions.js'); await broadcastTick(env); } catch (e) { logError('broadcast failed', e); }
+      })());
+      return;
+    }
     if (event && event.cron && event.cron !== '30 20 * * *') {
       ctx.waitUntil((async () => {
         try { const { scanAll } = await import('./chainwatch.js'); await scanAll(env); } catch (e) { logError('chain scan failed', e); }

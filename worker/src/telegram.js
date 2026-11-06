@@ -43,7 +43,8 @@ const CMD_BTN = {
   '/panelgroups': (a) => (a[0] && a[1] ? [`👥 پنل #${a[0]}: ${a[1]}`, x(`/panelgroups ${a[0]} ${a[1]}`)] : a[0] ? [`👥 گروه/سرویس پنل #${a[0]}`, `m:w:groups:${a[0]}`] : PA),
   '/find': (a) => (a[0] ? [`👤 ${a[0]}`, x(`/find ${a[0]}`)] : ['🔎 جستجوی کاربر', 'm:w:find']),
   '/user': (a) => (a[0] ? [`👤 ${a[0]}`, x(`/find ${a[0]}`)] : ['🔎 جستجوی کاربر', 'm:w:find']),
-  '/grant': (a) => (a[0] && a[1] ? [`🎁 پلن ${a[1]} به ${a[0]}`, x(`/grant ${a[0]} ${a[1]}`)] : ['👤 کاربران', 'm:usr']),
+  // giving a plan is money: a button never grants by itself, it opens the users screen (card -> 🎁 -> "are you sure?")
+  '/grant': () => ['👤 کاربران', 'm:usr'],
   '/reset': () => ['👤 کاربران', 'm:usr'],
   '/link': () => ['👤 کاربران', 'm:usr'],
   '/plan': (a) => (a[0] ? [`📦 پلن #${a[0]}`, `m:p:${a[0]}`] : ['📦 پلن‌ها', 'm:pl']),
@@ -159,12 +160,24 @@ const buttons = (orderId) => ({
   ]],
 });
 
-// The admin is one person in their own private chat with the bot: the chat must be private and the sender must
-// be that same account. A group (or anyone else in a chat whose id matched) is never the admin.
-function isAdmin(env, chat, from) {
+// Who may use the admin bot, and as what. Always a private chat whose sender is the chat itself (a group, or
+// anyone else in a chat whose id matched, is never an admin). The owner is TELEGRAM_CHAT_ID and can do everything;
+// the admins table adds "support" (inbox and receipts) and "viewer" (read only). It is read on every update, so a
+// removed admin loses access with their next tap. Returns 'owner' | 'support' | 'viewer' | null.
+export async function adminRole(env, chat, from) {
   const id = String(env.TELEGRAM_CHAT_ID || '');
-  return !!id && !!chat && !!from && chat.type === 'private' && String(chat.id) === id && String(from.id) === id;
+  if (!chat || !from || chat.type !== 'private' || String(chat.id) !== String(from.id) || !/^\d{1,20}$/.test(String(chat.id))) return null;
+  if (id && String(chat.id) === id) return 'owner';
+  const r = await first(env, 'SELECT role FROM admins WHERE tg_id = ?', String(chat.id)).catch(() => null);
+  return r && (r.role === 'support' || r.role === 'viewer') ? r.role : null;
 }
+
+// Text from outside (a bank SMS, a Telegram display name, a panel's error) that goes into admin messages, which
+// buttonize() turns into buttons: its "/" becomes a look-alike, so "/grant someone 30" inside an SMS can never
+// turn into a one-tap button.
+export const untrusted = (s) => String(s ?? '').replace(/\//g, '∕');
+// settings whose value never appears in a chat (the SMS address key; the bridges are working configs)
+export const SECRET_SETTINGS = new Set(['sms_key', 'app_bridges']);
 
 // ---------------- webhook ----------------
 export async function handleWebhook(env, update) {
@@ -175,10 +188,14 @@ export async function handleWebhook(env, update) {
 
 async function onCallback(env, cq) {
   const chatId = cq.message?.chat?.id;
-  if (!isAdmin(env, cq.message?.chat, cq.from)) return tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: 'اجازه نداری' });
-  if (String(cq.data || '').startsWith('m:')) return (await import('./telegram-menu.js')).onMenu(env, cq);
+  // every tap is checked again here: who is tapping, and whether their role may press this button at all
+  const role = await adminRole(env, cq.message?.chat, cq.from);
+  const menu = await import('./telegram-menu.js');
+  if (!role || !menu.allowedTap(role, cq.data)) return tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: 'اجازه نداری' });
+  cq._role = role;
+  if (String(cq.data || '').startsWith('m:')) return menu.onMenu(env, cq);
   const [action, idStr] = String(cq.data || '').split(':');
-  if (action === 'cf' || action === 'cx' || action === 'lp') return onConfirm(env, cq, action !== 'cx');
+  if (action === 'cf' || action === 'cx' || action === 'lp') return onConfirm(env, cq, action !== 'cx', role);
   if (action === 'ts') {
     const { normSender } = await import('./sms.js');
     const list = String((await getSettings(env)).sms_senders || '').split(',').map(normSender).filter(Boolean);
@@ -188,6 +205,7 @@ async function onCallback(env, cq) {
     await tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: 'از این به بعد پیامک‌های این فرستنده خودکار تأیید می‌شوند', show_alert: true });
     return;
   }
+  if (!/^\d{1,12}$/.test(String(idStr || ''))) return tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: '' });
   const orderId = parseInt(idStr, 10);
   const order = await first(env, 'SELECT * FROM orders WHERE id = ?', orderId);
   const ack = (text, alert) => tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text: String(text || '').slice(0, 190), show_alert: !!alert });
@@ -281,12 +299,16 @@ async function askLinkConfirm(env, chatId, payload, check) {
   return tg(env, 'sendMessage', { chat_id: chatId, text: `⚠️ مطمئنی؟\n${check.summary}`, reply_markup: { inline_keyboard: rows } });
 }
 
-async function onConfirm(env, cq, yes) {
+// what a non-owner may confirm: support only approves a receipt; a viewer confirms nothing
+const CONFIRM_ROLES = { support: ['o_approve'], viewer: [] };
+
+async function onConfirm(env, cq, yes, role = null) {
   const chatId = cq.message?.chat?.id;
   const [, token, planStr] = String(cq.data || '').split(':');
   const ack = (text) => tg(env, 'answerCallbackQuery', { callback_query_id: cq.id, text });
   const row = await first(env, 'SELECT * FROM bot_confirm WHERE token = ?', token);
   if (!row || row.admin_id !== String(chatId)) return ack('پیدا نشد');
+  if (role !== 'owner' && yes && !(CONFIRM_ROLES[role] || []).includes(row.action)) return ack('اجازه نداری');
   const claim = await run(env, 'UPDATE bot_confirm SET used_at = ? WHERE token = ? AND used_at IS NULL AND expires_at >= ?', nowSec(), token, nowSec());
   if (!claim.meta.changes) return ack('این تأیید منقضی یا قبلاً استفاده شده است');
   if (!yes) { await editStatus(env, cq, '❌ لغو شد.'); return ack('لغو شد'); }
@@ -294,7 +316,7 @@ async function onConfirm(env, cq, yes) {
   // every confirmed change goes through the actions layer (same checks, same admin log as everywhere else)
   const ACTION = { drain_panel: 'panel.drain', grant: 'user.grant', link: 'user.link', del_coupon: 'coupon.delete',
     u_reset: 'user.reset_usage', u_end: 'user.end', u_tg: 'user.unlink_tg', u_del: 'user.delete', u_wallet: 'user.wallet',
-    o_approve: 'order.approve', o_refund: 'order.refund', del_plan: 'plan.delete', net_reset: 'net.reset' };
+    o_approve: 'order.approve', o_refund: 'order.refund', del_plan: 'plan.delete', net_reset: 'net.reset', bc_start: 'broadcast.start' };
   const ARGS = {
     drain_panel: () => ({ panelId: payload.panel_id }),
     grant: () => ({ userId: payload.user_id, planId: payload.plan_id }),
@@ -309,6 +331,7 @@ async function onConfirm(env, cq, yes) {
     o_refund: () => ({ orderId: payload.order_id }),
     del_plan: () => ({ id: payload.plan_id }),
     net_reset: () => ({ kind: payload.kind, id: payload.id }),
+    bc_start: () => ({ id: payload.id }),
   };
   // a user change comes back with a way to the card it came from
   const uid = payload.user_id || payload.userId;
@@ -317,6 +340,7 @@ async function onConfirm(env, cq, yes) {
   if (row.action.startsWith('o_') && payload.order_id) back = { inline_keyboard: [[{ text: '🧾 کارت سفارش', callback_data: `m:o:${payload.order_id}` }, homeBtn]] };
   if (row.action === 'del_plan') back = { inline_keyboard: [[{ text: '📦 پلن‌ها', callback_data: 'm:pl' }, homeBtn]] };
   if (row.action === 'net_reset') back = { inline_keyboard: [[{ text: '📶 اپراتورها', callback_data: 'm:nc' }, homeBtn]] };
+  if (row.action === 'bc_start' && payload.id) back = { inline_keyboard: [[{ text: '📣 پیشرفت ارسال', callback_data: `m:bcv:${parseInt(payload.id, 10)}` }, homeBtn]] };
   if (!ACTION[row.action]) return ack('پیدا نشد');
   let r;
   try { r = await runAction(env, chatId, ACTION[row.action], ARGS[row.action]()); } catch (e) {
@@ -405,8 +429,10 @@ export async function backupJson(env) {
   out.tables.users = out.tables.users.map(({ password_hash, ...u }) => u);
   // subscription links contain the panel address, which never goes into a chat
   out.tables.subscriptions = out.tables.subscriptions.map(({ sub_url, ...x }) => x);
-  out.tables.panel_accounts = out.tables.panel_accounts.map(({ sub_path, ...x }) => x);
-  out.tables.settings = out.tables.settings.filter((x) => x.key !== 'tg_webhook_sig' && x.key !== 'bot_wait' && !x.key.startsWith('panel_cred_'));
+  out.tables.panel_accounts = out.tables.panel_accounts.map(({ sub_path, last_error, ...x }) => x);
+  // undo data holds the value before a change, which can be the SMS key or a bridge config
+  out.tables.admin_audit = out.tables.admin_audit.map(({ undo_json, ...x }) => x);
+  out.tables.settings = out.tables.settings.filter((x) => x.key !== 'tg_webhook_sig' && x.key !== 'bot_wait' && !x.key.startsWith('panel_cred_') && !x.key.startsWith('panel_err_') && !SECRET_SETTINGS.has(x.key));
   return JSON.stringify(out);
 }
 
@@ -430,7 +456,9 @@ export const HELP = `راهنمای ربات Cloud Gold
 💳 روش‌های پرداخت — کارت، ولت‌ها، قیمت دلار، پیامک بانک
 📱 اپ Pleat — اطلاعیه، پشتیبانی، دامنه‌ها و پل‌ها، تست رایگان
 📶 شبکه — اپراتورها، گوگل، تجربه‌ی هر کاربر
-📊 آمار · 🛡 سیستم — لاگ مدیر، پشتیبان، همه‌ی تنظیمات
+📣 پیام همگانی — متن به کاربران تلگرامی (همه / اشتراک فعال / تمام‌شده / بدون پلن)، با پیش‌نمایش و توقف
+📊 آمار — امروز، ۷ و ۳۰ روز: فروش، روش پرداخت، ثبت‌نام، تمدید، پرفروش‌ترین پلن‌ها
+🛡 سیستم — لاگ مدیر، پشتیبان، سلامت وبهوک و همگام‌سازی، همه‌ی تنظیمات، مدیرهای پشتیبان و فقط‌دیدنی
 
 ↩️ تغییرهای ساده (قیمت، روشن/خاموش، تنظیمات) تا ۱۰ دقیقه با دکمه‌ی «برگردان» برمی‌گردند.
 ⚠️ کارهای پولی و حذف‌ها اول «مطمئنی؟» می‌پرسند.
@@ -457,8 +485,12 @@ async function onMessage(env, msg, opts = {}) {
   };
   // the result of a reversible change: an ↩️ undo button above the usual back button
   const sayDone = (r) => say(r.text, r.undoable ? { reply_markup: { inline_keyboard: [[{ text: '↩️ برگردان', callback_data: `m:undo:${r.auditId}` }], ...((opts.kb && opts.kb.inline_keyboard) || [])] } } : undefined);
+  // a screen (user card, order card) already has its buttons and holds text users wrote (names, receipt codes):
+  // it is sent as it is, never through buttonize()
+  const sayScreen = (scr) => tg(env, 'sendMessage', { chat_id: chatId, disable_web_page_preview: true, text: String(scr.text).slice(0, 4000), reply_markup: { inline_keyboard: scr.kb } });
   const cmd = text.split(/\s+/)[0].replace(/@\w+$/, '').toLowerCase();
-  const admin = isAdmin(env, msg.chat, msg.from);
+  const role = await adminRole(env, msg.chat, msg.from);
+  const admin = !!role;
   // app sign-in link (t.me/<bot>?start=L<nonce>): anyone, the admin too, gets a 6-digit code in a private chat
   const startArg = cmd === '/start' ? (text.split(/\s+/)[1] || '') : '';
   if (startArg.startsWith('L')) {
@@ -484,8 +516,11 @@ async function onMessage(env, msg, opts = {}) {
     // a button that stays under the chat's text box, so the menu is always one tap away
     if (cmd === '/start') await tg(env, 'sendMessage', { chat_id: chatId, text: 'همه‌ی کارها با دکمه است؛ لازم نیست دستوری تایپ کنی. دکمه‌ی «🏠 منو» همیشه پایین صفحه است.',
       reply_markup: { keyboard: [[{ text: MENU_BTN }]], resize_keyboard: true, is_persistent: true } });
-    return menu.sendHome(env, chatId);
+    return menu.sendHome(env, chatId, role);
   }
+  // support and viewer admins work only through the buttons of their own menu: no typed command, no form
+  // answer, no pasted bank SMS (each of those is an owner's job)
+  if (role !== 'owner') return say('همه‌ی کارها با دکمه است؛ دکمه‌ی «🏠 منو» را بزن.');
 
   // the menu asked a question ("write the email", "new price"...): this message is the answer
   if (text && !opts.kb) {
@@ -521,7 +556,7 @@ async function onMessage(env, msg, opts = {}) {
   if (text && !text.startsWith('/') && LOOKUP.test(text)) {
     const scr = await lookupCard(env, text, false);
     if (!scr) return say('🔎 کاربر یا سفارشی با این مشخصات پیدا نشد.', { reply_markup: { inline_keyboard: [[{ text: '👤 کاربران', callback_data: 'm:usr' }, { text: '🏠 منوی اصلی', callback_data: 'm:home' }]] } });
-    return say(scr.text, { reply_markup: { inline_keyboard: scr.kb } });
+    return sayScreen(scr);
   }
 
   if (cmd === '/panel') {
@@ -636,12 +671,12 @@ async function onMessage(env, msg, opts = {}) {
   if (cmd === '/order') { // the order search question (#id, a number, or a receipt / transfer code)
     const S = await import('./telegram-screens.js');
     const scr = await S.orderSearch(env, text.split(/\s+/).slice(1).join(' '));
-    return say(scr.text, { reply_markup: { inline_keyboard: scr.kb } });
+    return sayScreen(scr);
   }
   if (cmd === '/find' || cmd === '/user') {
     const scr = await lookupCard(env, text.split(/\s+/)[1] || '', true);
     if (!scr) return say('کاربری با این ایمیل / یوزرنیم تلگرام / آیدی عددی / شماره‌ی کاربر نیست.');
-    return say(scr.text, { reply_markup: { inline_keyboard: scr.kb } });
+    return sayScreen(scr);
   }
   if (cmd === '/reset') {
     const [, email, pass] = text.split(/\s+/);
@@ -786,7 +821,7 @@ async function onMessage(env, msg, opts = {}) {
   }
   if (cmd === '/settings') {
     const s = await getSettings(env);
-    return say(Object.entries(s).filter(([k]) => k in SETTING_DEFAULTS).map(([k, v]) => `${k} = ${v || '—'}`).join('\n'));
+    return say(Object.entries(s).filter(([k]) => k in SETTING_DEFAULTS).map(([k, v]) => `${k} = ${SECRET_SETTINGS.has(k) && v ? '••• (مخفی)' : untrusted(v) || '—'}`).join('\n'));
   }
   if (cmd === '/stats') {
     return say(await statsText(env));
@@ -813,7 +848,7 @@ export async function userInfo(env, u) {
   const { subscriptionOut } = await import('./account.js');
   const sub = await subscriptionOut(env, u);
   const sRow = await first(env, 'SELECT pg_username FROM subscriptions WHERE user_id = ?', u.id);
-  const lines = [`👤 ${u.email}`, ...(u.tg_id ? [`تلگرام: ${u.tg_username ? '@' + u.tg_username : '(بدون یوزرنیم)'} · آیدی ${u.tg_id}${u.tg_name ? ` · ${u.tg_name}` : ''}`] : []), `کیف پول: ${fa(u.wallet_balance)} تومان`, `کد دعوت: ${u.referral_code}`];
+  const lines = [`👤 ${u.email}`, ...(u.tg_id ? [`تلگرام: ${u.tg_username ? '@' + u.tg_username : '(بدون یوزرنیم)'} · آیدی ${u.tg_id}${u.tg_name ? ` · ${untrusted(u.tg_name)}` : ''}`] : []), `کیف پول: ${fa(u.wallet_balance)} تومان`, `کد دعوت: ${u.referral_code}`];
   if (sub) {
     lines.push(`پلن: ${sub.plan_name || '-'} · وضعیت: ${sub.status}${sub.live ? '' : ' (پنل جواب نداد)'}`);
     lines.push(`زمان: ${sub.unlimited_time ? 'نامحدود' : `${sub.days_left} روز (تا ${sub.expires_at.slice(0, 10)})`}`);
