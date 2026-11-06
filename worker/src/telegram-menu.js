@@ -609,16 +609,16 @@ export async function onMenu(env, cq) {
   if (route === 'ug') {
     const u = await first(env, 'SELECT id, email FROM users WHERE id = ?', int(0));
     if (!u) return ack('کاربر پیدا نشد');
-    const rows = await all(env, 'SELECT id, name, duration_days FROM plans WHERE is_active = 1 AND archived = 0 ORDER BY sort, id');
+    const rows = await all(env, 'SELECT id, name, duration_days, data_limit_gb FROM plans WHERE is_active = 1 AND archived = 0 ORDER BY sort, id');
     await show(env, cq, { text: `${S.crumb('👤 کاربران', u.email, '🎁 دادن پلن')}\n\n🎁 کدام پلن به ${u.email} داده شود؟`,
-      kb: [...rows.map((p) => [b(`${p.name} (${p.duration_days} روز)`, `m:ugp:${u.id}:${p.id}`)]), [b('🔙 برگشت', `m:u:${u.id}`), HOME]] });
+      kb: [...rows.map((p) => [b(`${p.name} (${p.data_limit_gb || 'نامحدود'} گیگ، ${p.duration_days} روز)`.slice(0, 60), `m:ugp:${u.id}:${p.id}`)]), [b('🔙 برگشت', `m:u:${u.id}`), HOME]] });
     return ack('');
   }
   if (route === 'ugp') { // money: asks first
     const u = await first(env, 'SELECT id, email FROM users WHERE id = ?', int(0));
     const p = await first(env, 'SELECT id, name, duration_days, data_limit_gb FROM plans WHERE id = ?', int(1));
     if (!u || !p) return ack('پیدا نشد');
-    await askConfirm(env, chatId, 'grant', { user_id: u.id, plan_id: p.id }, `پلن «${p.name}» (${p.duration_days} روز، ${p.data_limit_gb || 'نامحدود'} گیگ) به ${u.email} داده شود؟`);
+    await askConfirm(env, chatId, 'grant', { user_id: u.id, plan_id: p.id }, `پلن «${p.name}» (${p.data_limit_gb || 'نامحدود'} گیگ، ${p.duration_days} روز) به ${u.email} داده شود؟`);
     return ack('');
   }
   if (route === 'pt') {

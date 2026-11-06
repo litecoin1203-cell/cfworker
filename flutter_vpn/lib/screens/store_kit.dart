@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../api/models.dart';
 import '../design/backdrop.dart';
 import '../design/icons.dart';
 import '../design/scenes.dart';
@@ -362,4 +363,15 @@ class PaySteps extends StatelessWidget {
       ],
     );
   }
+}
+
+/// The store sells monthly data volume, so the data size is the big number
+/// and the duration is the small line under its unit. No cap shows ∞.
+String planBig(PlanInfo plan) =>
+    plan.dataLimitGb > 0 ? '${plan.dataLimitGb}' : '∞';
+
+String planUnit(PlanInfo plan, {required int days, bool free = false}) {
+  final top = plan.dataLimitGb > 0 ? 'GB' : 'No data cap';
+  final d = '$days day${days == 1 ? '' : 's'}${free ? ' free' : ''}';
+  return '$top\n$d';
 }
