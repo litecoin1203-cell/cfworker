@@ -56,6 +56,5 @@
             android:maxLines="1"
             android:textColor="@color/note_muted"
             android:textSize="13sp" />
-        </LinearLayout>
     </LinearLayout>
 </LinearLayout>
