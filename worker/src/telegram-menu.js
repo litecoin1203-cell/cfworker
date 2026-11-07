@@ -330,6 +330,7 @@ const SCREENS = {
   srvs: (env, a) => S.panelServerList(env, parseInt(a[0], 10)),
   srv: (env, a) => S.panelServer(env, parseInt(a[0], 10), a[1]),
   appl: (env, a) => S.appList(env, a[0]),
+  upd: (env) => S.appUpdate(env),
   nc: (env) => S.carriers(env),
   nca: (env, a) => S.carrier(env, parseInt(a[0], 10)),
   nsv: (env, a) => S.netServer(env, a[0]),
@@ -357,6 +358,7 @@ const ACTION_RISK = {
   cs: 'reversible', ct: 'reversible', ss: 'reversible', sdel: 'reversible',
   // panels, servers, the app, network (stage 4)
   pen: 'reversible', sh: 'reversible', sl: 'reversible', apm: 'reversible', apr: 'reversible', apc: 'reversible', apt: 'read', nrs: 'destructive',
+  upa: 'reversible', upf: 'reversible', upx: 'reversible',
   // broadcast, admins (stage 5)
   bcs: 'reversible', bcgo: 'destructive', adr: 'reversible',
 };
@@ -384,6 +386,10 @@ const USER_TAPS = {
   apm: (a) => ['app.list', { k: a[0], op: 'move', index: a[1], dir: 'u', tag: a[2] || '' }, `appl:${a[0]}`],
   apr: (a) => ['app.list', { k: a[0], op: 'remove', index: a[1], tag: a[2] || '' }, `appl:${a[0]}`],
   apc: (a) => ['setting.set', { key: ['announcement', 'support_url'].includes(a[0]) ? a[0] : '-', val: '' }, 'app'],
+  // Pleat's in-app update
+  upa: () => ['app.release', { op: 'announce' }, 'upd'],
+  upf: () => ['app.release', { op: 'force' }, 'upd'],
+  upx: () => ['app.release', { op: 'withdraw' }, 'upd'],
   // broadcast, admins (stage 5)
   bcs: (a) => ['broadcast.stop', { id: a[0] }, `bcv:${a[0]}`],
   adr: (a) => ['admin.remove', { tgId: a[0] }, 'sys.adm'],

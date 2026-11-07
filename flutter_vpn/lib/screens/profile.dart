@@ -149,6 +149,24 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 const SizedBox(height: 22),
                 _Identity(app: app),
                 const SizedBox(height: 14),
+                SurfaceCard(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 10, 8),
+                  child: _Row(
+                    icon: PIcon.refresh,
+                    title: app.appUpdate != null
+                        ? 'Pleat ${app.appUpdate!.version} is ready'
+                        : 'App version',
+                    body: app.appUpdate != null
+                        ? 'You have ${app.updater.version}. Update in a minute.'
+                        : (app.updater.version.isEmpty
+                              ? 'Pleat'
+                              : 'Pleat ${app.updater.version} · up to date'),
+                    trailing: app.appUpdate != null
+                        ? _RowAction('UPDATE', onTap: app.openUpdate)
+                        : const SizedBox.shrink(),
+                  ),
+                ),
+                const SizedBox(height: 14),
                 _UsageCard(app: app),
                 const SizedBox(height: 14),
                 SurfaceCard(

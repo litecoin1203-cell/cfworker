@@ -123,36 +123,63 @@ jobs:
         run: |
           API="${API_INPUT:-$API_VAR}"
           [ -z "$API" ] && echo "::warning::No CG_API_BASE set; the APK will say it has no server address."
-          flutter build apk --release --dart-define=PLEAT_API="$API" --dart-define=PLEAT_BRIDGE="$PLEAT_BRIDGE"
-      - name: Check APK
+          # One APK per phone type: each carries only its own engine, about a third of the old all-in-one file.
+          # Flutter adds 1000 x the type's number to the version code (arm64 2xxx), so they install over the old one.
+          flutter build apk --release --split-per-abi --dart-define=PLEAT_API="$API" --dart-define=PLEAT_BRIDGE="$PLEAT_BRIDGE"
+      - name: Check APKs
         run: |
-          apk=build/app/outputs/flutter-apk/app-release.apk
           aapt=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
-          "$aapt" dump badging "$apk" | grep -E "^(package|minSdkVersion|sdkVersion|targetSdkVersion|native-code)"
-          unzip -l "$apk" | grep -E "lib/[^/]+/lib(hev-socks5-tunnel|gojni|flutter)\.so" | awk '{print $4}'
-      # The APK of a manual run goes to the release "pleat-latest" (Releases page of the repo, file pleat.apk).
-      # Release files do not count toward the Actions artifact storage, which fills up and then refuses every
-      # upload. Pull requests and pushes only prove the app builds and keep nothing.
-      - name: Publish APK to the pleat-latest release
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            apk=build/app/outputs/flutter-apk/app-$abi-release.apk
+            echo "== $abi: $(du -h "$apk" | cut -f1)"
+            "$aapt" dump badging "$apk" | grep -E "^(package|minSdkVersion|sdkVersion|targetSdkVersion|native-code)"
+            libs=$(unzip -l "$apk" | grep -E "lib/$abi/lib(hev-socks5-tunnel|gojni|flutter)\.so" | awk '{print $4}')
+            echo "$libs"
+            [ "$(echo "$libs" | grep -c .)" = 3 ] || { echo "::error::$abi APK is missing an engine library"; exit 1; }
+          done
+      # The APKs of a manual run go to the release "pleat-latest" (Releases page of the repo). Release files do not
+      # count toward the Actions artifact storage, which fills up and then refuses every upload. Pull requests and
+      # pushes only prove the app builds and keep nothing.
+      #   pleat-<version>-<build>-<abi>.apk  one per phone type; the Worker passes them to the app's in-app update
+      #                                      (appupdate.js) once the admin announces the build in the bot. The last
+      #                                      3 builds are kept, so the announced one survives the next build.
+      #   pleat.apk                          the arm64 one (nearly every phone), to send by hand as before
+      - name: Publish APKs to the pleat-latest release
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cp build/app/outputs/flutter-apk/app-release.apk "$RUNNER_TEMP/pleat.apk"
-          ver=$(grep -E '^version:' pubspec.yaml | awk '{print $2}')
-          notes="Pleat $ver, built from ${GITHUB_SHA::7} on $(date -u +%Y-%m-%d). Install pleat.apk."
+          full=$(grep -E '^version:' pubspec.yaml | awk '{print $2}')
+          ver=${full%%+*}; build=${full##*+}
+          notes="Pleat $full, built from ${GITHUB_SHA::7} on $(date -u +%Y-%m-%d). Install pleat.apk (or the file for your phone type)."
           if gh release view pleat-latest >/dev/null 2>&1; then
-            gh release edit pleat-latest --title "Pleat $ver (latest build)" --notes "$notes" --prerelease
+            gh release edit pleat-latest --title "Pleat $full (latest build)" --notes "$notes" --prerelease
           else
-            gh release create pleat-latest --title "Pleat $ver (latest build)" --notes "$notes" --prerelease --target "$GITHUB_SHA"
+            gh release create pleat-latest --title "Pleat $full (latest build)" --notes "$notes" --prerelease --target "$GITHUB_SHA"
           fi
-          gh release upload pleat-latest "$RUNNER_TEMP/pleat.apk" --clobber
-          echo "### APK: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/pleat-latest" >> "$GITHUB_STEP_SUMMARY"
+          out=build/app/outputs/flutter-apk
+          files=()
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            cp "$out/app-$abi-release.apk" "$RUNNER_TEMP/pleat-$ver-$build-$abi.apk"
+            files+=("$RUNNER_TEMP/pleat-$ver-$build-$abi.apk")
+          done
+          cp "$out/app-arm64-v8a-release.apk" "$RUNNER_TEMP/pleat.apk"
+          gh release upload pleat-latest "${files[@]}" "$RUNNER_TEMP/pleat.apk" --clobber
+          # keep the files of the newest 3 builds
+          gh release view pleat-latest --json assets --jq '.assets[].name' > "$RUNNER_TEMP/assets.txt"
+          keep=$(grep -oE '^pleat-[0-9.]+-[0-9]+-' "$RUNNER_TEMP/assets.txt" | grep -oE '[0-9]+-$' | tr -d '-' | sort -un | tail -3)
+          while read -r name; do
+            b=$(echo "$name" | sed -nE 's/^pleat-[0-9.]+-([0-9]+)-.*\.apk$/\1/p')
+            if [ -n "$b" ] && ! echo "$keep" | grep -qx "$b"; then gh release delete-asset pleat-latest "$name" -y; fi
+          done < "$RUNNER_TEMP/assets.txt"
+          echo "### APKs: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/pleat-latest" >> "$GITHUB_STEP_SUMMARY"
+          ls -la "${files[@]}" | awk '{print "- " $9 ": " $5 " bytes"}' >> "$GITHUB_STEP_SUMMARY"
+          echo "Announce it to the users in the bot: 📱 اپ Pleat › 📲 نسخه‌ی اپ" >> "$GITHUB_STEP_SUMMARY"
       # Also as a run artifact while storage allows; a full storage no longer fails the build.
       - uses: actions/upload-artifact@v4
         if: github.event_name == 'workflow_dispatch'
         continue-on-error: true
         with:
           name: pleat-apk
-          path: flutter_vpn/build/app/outputs/flutter-apk/app-release.apk
+          path: flutter_vpn/build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
           retention-days: 3

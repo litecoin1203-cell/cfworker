@@ -2265,7 +2265,7 @@ const STAGE2_ACTIONS = ['user.add_days', 'user.add_gb', 'user.reset_usage', 'use
   'user.logout_all', 'user.block', 'user.unlink_tg', 'user.avatar_reset', 'user.email', 'user.delete', 'user.create'];
 const STAGE3_ACTIONS = ['order.approve', 'order.reject', 'order.cancel', 'order.refund', 'plan.move', 'plan.copy', 'plan.delete', 'plan.unarchive',
   'coupon.set', 'coupon.toggle'];
-const STAGE4_ACTIONS = ['panel.rename', 'panel.enable', 'server.hide', 'server.rename', 'app.list', 'net.reset'];
+const STAGE4_ACTIONS = ['panel.rename', 'panel.enable', 'server.hide', 'server.rename', 'app.list', 'net.reset', 'app.release'];
 const STAGE5_ACTIONS = ['broadcast.create', 'broadcast.start', 'broadcast.stop', 'admin.add', 'admin.remove'];
 section('admin panel stage 1: routes, screens, undo, forms, audit, query budget');
 {
@@ -3017,6 +3017,125 @@ section('admin panel stage 3: sales (orders, plans, coupons and referral, paymen
   const logged = new Set((await env.DB.prepare('SELECT DISTINCT action FROM admin_audit').all()).results.map((r) => r.action));
   const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !STAGE4_ACTIONS.includes(x) && !STAGE5_ACTIONS.includes(x));
   ok(!missing.length, 'every admin action has written an audit row: missing ' + missing.join(','));
+}
+
+section('Pleat in-app update: build on the private release, announce in the bot, download through the Worker');
+{
+  const upd = await import('../src/appupdate.js');
+  let tapN = 0;
+  const tap = (data) => tgWebhook({ callback_query: { id: 'up-' + (++tapN), data, message: { chat: { id: 12345 }, message_id: 907, text: 'menu' } } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const lastScreen = (n) => since(n).filter((c) => c.method === 'editMessageText' || c.method === 'sendMessage').pop();
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const acks = (n) => since(n).filter((c) => c.method === 'answerCallbackQuery').map((c) => String(c.body.text || '')).join(' | ');
+  const cfg = async () => (await call('GET', '/api/v1/app-config')).data.update;
+  const userTok = await signup('updater@example.com');
+
+  // no token yet: nothing is offered, the bot says what is missing
+  ok((await cfg()) === null, 'app-config has no update before one is announced');
+  let n = fakes.tg.calls.length;
+  await tap('m:upd');
+  ok(/PLEAT_DL_TOKEN/.test(lastScreen(n)?.body.text || ''), 'the update screen says the download token is missing');
+  n = fakes.tg.calls.length;
+  await tap('m:upa');
+  ok(/PLEAT_DL_TOKEN/.test(acks(n)), 'announcing without the token is refused with the reason');
+
+  // the private release: two builds' files, GitHub's signed address behind each asset
+  const bytes = {};
+  const asset = (id, name, size) => { bytes[id] = new Uint8Array(size).map((_, i) => (i * 7 + id) % 251); return { id, name, size, state: 'uploaded', digest: 'sha256:' + String(id % 10).repeat(64), updated_at: '2026-11-07T10:00:00Z' }; };
+  const release = { name: 'Pleat 1.2.19+22 (latest build)', body: 'Pleat 1.2.19+22, built from abcdef1234 on 2026-11-07.', assets: [
+    asset(11, 'pleat-1.2.18-21-arm64-v8a.apk', 50), asset(21, 'pleat-1.2.19-22-arm64-v8a.apk', 120), asset(22, 'pleat-1.2.19-22-armeabi-v7a.apk', 90),
+    asset(23, 'pleat-1.2.19-22-x86_64.apk', 130), { id: 30, name: 'pleat.apk', size: 120, digest: 'sha256:' + '9'.repeat(64) },
+  ] };
+  const seen = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const h = new Headers(init.headers || {});
+    if (url.startsWith('https://api.github.com/')) {
+      seen.push({ url, auth: h.get('authorization'), redirect: init.redirect });
+      if (h.get('authorization') !== 'Bearer gh-test') return new Response('{}', { status: 401 });
+      if (url.endsWith('/repos/litecoin1203-cell/cfworker/releases/tags/pleat-latest')) return Response.json(release);
+      const m = /\/releases\/assets\/(\d+)$/.exec(url);
+      if (m && bytes[m[1]]) return new Response(null, { status: 302, headers: { location: 'https://objects.gh.test/f/' + m[1] + '?sig=x' } });
+      return new Response('{}', { status: 404 });
+    }
+    if (url.startsWith('https://objects.gh.test/')) {
+      seen.push({ url, auth: h.get('authorization'), range: h.get('range') });
+      const b = bytes[/\/f\/(\d+)/.exec(url)[1]];
+      if (!b) return new Response('', { status: 404 });
+      const r = /^bytes=(\d+)-$/.exec(h.get('range') || '');
+      if (r) return new Response(b.slice(+r[1]), { status: 206, headers: { 'content-length': String(b.length - r[1]), 'content-range': `bytes ${r[1]}-${b.length - 1}/${b.length}` } });
+      return new Response(b, { headers: { 'content-length': String(b.length) } });
+    }
+    return realFetch(input, init);
+  };
+  env.PLEAT_DL_TOKEN = 'gh-test';
+  try {
+    const latest = await upd.latestBuild(env);
+    ok(latest && latest.version === '1.2.19' && latest.build === 22 && Object.keys(latest.abis).length === 3 && latest.commit === 'abcdef1', 'the newest build on the release is read with its three phone types');
+    ok(latest && latest.abis['arm64-v8a'].size === 120 && latest.abis['arm64-v8a'].sha256 === '1'.repeat(64), 'size and SHA-256 come from GitHub');
+
+    // the admin hears about the new build once
+    const told = [];
+    ok(await upd.checkNewBuild(env, async (t, kb) => told.push({ t, kb })), 'a new build is told to the admin');
+    ok(told.length === 1 && /1\.2\.19/.test(told[0].t) && flat(told[0].kb.inline_keyboard).includes('m:upd'), 'the note names the version and has the update button');
+    ok(!(await upd.checkNewBuild(env, async (t) => told.push({ t }))) && told.length === 1, 'the same build is told only once');
+
+    n = fakes.tg.calls.length;
+    await tap('m:upd');
+    let scr = lastScreen(n);
+    ok(/1\.2\.19/.test(scr?.body.text || '') && flat(scr.body.reply_markup.inline_keyboard).includes('m:upa'), 'the update screen shows the build and an announce button');
+    ok(!/(^|\n)\s*\//.test(scr?.body.text || ''), 'the update screen asks for no typed command');
+    ok((await cfg()) === null, 'nothing reaches the apps before the announcement');
+
+    await tap('m:upa');
+    let u = await cfg();
+    ok(u && u.version === '1.2.19' && u.build === 22 && u.force === false && u.tag === latest.tag, 'after announce app-config carries the build');
+    ok(u && u.abis['armeabi-v7a'].size === 90 && !('id' in u.abis['armeabi-v7a']), 'app-config gives size and hash per phone type, no GitHub ids');
+
+    // the download: signed-in users only, the announced build only, passed through with a resumed range
+    ok((await call('GET', `/api/v1/app/apk?tag=${u.tag}&abi=arm64-v8a`)).status === 401, 'the APK needs a signed-in user');
+    ok((await call('GET', `/api/v1/app/apk?tag=21-x&abi=arm64-v8a`, { token: userTok })).status === 410, 'an old tag gets 410 (read app-config again)');
+    ok((await call('GET', `/api/v1/app/apk?tag=${u.tag}&abi=mips`, { token: userTok })).status === 404, 'an unknown phone type gets 404');
+    seen.length = 0;
+    let r = await call('GET', `/api/v1/app/apk?tag=${u.tag}&abi=arm64-v8a`, { token: userTok });
+    let got = new Uint8Array(await r.res.arrayBuffer());
+    ok(r.status === 200 && got.length === 120 && got.every((x, i) => x === bytes[21][i]), 'the whole APK comes through');
+    ok(r.res.headers.get('content-type') === 'application/vnd.android.package-archive' && r.res.headers.get('content-length') === '120', 'it is sent as an APK with its length');
+    ok(seen[0].redirect === 'manual' && seen[1].auth === null, 'the token goes to GitHub only, never to the signed file address');
+    r = await call('GET', `/api/v1/app/apk?tag=${u.tag}&abi=arm64-v8a`, { token: userTok, headers: { range: 'bytes=100-' } });
+    got = new Uint8Array(await r.res.arrayBuffer());
+    ok(r.status === 206 && got.length === 20 && got[0] === bytes[21][100] && /^bytes 100-119\/120$/.test(r.res.headers.get('content-range') || ''), 'a dropped download resumes from where it stopped');
+    r = await call('GET', `/api/v1/app/apk?tag=${u.tag}&abi=arm64-v8a`, { token: userTok, headers: { range: 'bytes=0-5,7-9' } });
+    ok(r.status === 200 && !seen.pop().range, 'an odd Range header is not passed on');
+
+    // force on, undo it, withdraw
+    n = fakes.tg.calls.length;
+    await tap('m:upf');
+    ok((await cfg()).force === true, 'the admin can make the update a must');
+    const forced = await env.DB.prepare("SELECT id FROM admin_audit WHERE action = 'app.release' ORDER BY id DESC LIMIT 1").first();
+    await tap(`m:undo:${forced.id}`);
+    ok((await cfg()).force === false, 'making it a must can be undone');
+    n = fakes.tg.calls.length;
+    await tap('m:upa');
+    ok(/همین بیلد/.test(acks(n)), 'announcing the same build twice is refused');
+
+    // a rebuild that removed the announced file: the app is told it is gone
+    const keep = bytes[21];
+    delete bytes[21];
+    ok((await call('GET', `/api/v1/app/apk?tag=${u.tag}&abi=arm64-v8a`, { token: userTok })).status === 410, 'a file gone from the release gets 410');
+    bytes[21] = keep;
+
+    await tap('m:upx');
+    ok((await cfg()) === null, 'withdrawing stops the offer');
+    ok((await call('GET', `/api/v1/app/apk?tag=${u.tag}&abi=arm64-v8a`, { token: userTok })).status === 410, 'and the download with it');
+    ok(upd.cleanRelease({ version: '1.2', build: 3, abis: {} }) === null && upd.cleanRelease({ version: '1.2.3', build: 3, abis: { 'arm64-v8a': { size: 1, id: 1, sha256: 'zz' } } }) === null, 'a malformed build is ignored');
+  } finally {
+    globalThis.fetch = realFetch;
+    delete env.PLEAT_DL_TOKEN;
+    await env.DB.prepare("DELETE FROM settings WHERE key IN ('app_release', 'app_build_seen')").run();
+  }
 }
 
 section('admin panel stage 4: panels and servers, the Pleat app, network');

@@ -47,6 +47,35 @@ class MainActivity : FlutterActivity() {
         EventChannel(engine.dartExecutor.binaryMessenger, "pleat/tunnel/state")
             .setStreamHandler(TunnelHub.stream)
         pendingOpen = pendingOpen ?: intent?.getStringExtra(TunnelNote.EXTRA_OPEN)
+        MethodChannel(engine.dartExecutor.binaryMessenger, "pleat/update").setMethodCallHandler { call, result ->
+            when (call.method) {
+                "info" -> result.success(Updates.info(this))
+                "dir" -> result.success(Updates.dir(this).absolutePath)
+                "sha256" -> background(result, "") { Updates.sha256(java.io.File(call.argument<String>("path").orEmpty())) }
+                "canInstall" -> result.success(Updates.canInstall(this))
+                "allowInstalls" -> {
+                    try {
+                        Updates.allowInstalls(this)
+                        result.success(true)
+                    } catch (e: Exception) {
+                        result.success(false)
+                    }
+                }
+                "install" -> {
+                    val ok = try {
+                        Updates.install(this, java.io.File(call.argument<String>("path").orEmpty()))
+                    } catch (e: Exception) {
+                        false
+                    }
+                    result.success(ok)
+                }
+                "notify" -> {
+                    Updates.notify(this, call.argument<String>("title").orEmpty(), call.argument<String>("text").orEmpty())
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
         val channel = MethodChannel(engine.dartExecutor.binaryMessenger, "pleat/tunnel")
         tunnelChannel = channel
         channel
