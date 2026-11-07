@@ -916,6 +916,27 @@ Object.assign(ACTIONS, {
     },
     undo: (env, u) => ACTIONS['setting.set'].undo(env, u),
   },
+  // Pleat's in-app update (appupdate.js): announce the newest build, make it a must, or stop offering it
+  'app.release': {
+    risk: 'reversible', target: 'setting',
+    async apply(env, { op }) {
+      const { setRelease } = await import('./appupdate.js');
+      const r = await setRelease(env, op);
+      if (r.error) return fail('❌ ' + r.error);
+      const n = r.next;
+      const text = op === 'announce' ? `📢 نسخه‌ی ${n.version} به کاربرها اعلام شد. اپ‌ها وقتی باز شوند علامت و نوتیف آپدیت می‌بینند.`
+        : op === 'force' ? (n.force ? '⚠️ آپدیت اجباری شد: صفحه‌ی آپدیت در اپ تا آپدیت نکنند بسته نمی‌شود.' : '✅ آپدیت دیگر اجباری نیست.')
+          : '🛑 اعلام آپدیت برداشته شد؛ اپ‌ها دیگر آپدیتی نمی‌بینند.';
+      return { targetId: 'app_release', summary: `${op}${n ? ` ${n.version} (${n.tag})${n.force ? ' اجباری' : ''}` : ''}`, undo: { value: r.before || '' }, text };
+    },
+    async undo(env, u) {
+      const { saveRelease, cleanRelease } = await import('./appupdate.js');
+      let rel = null;
+      try { rel = u.value ? cleanRelease(JSON.parse(u.value)) : null; } catch (e) { rel = null; }
+      await saveRelease(env, rel);
+      return true;
+    },
+  },
   // removes the stats of one server (kind 's', id = skey) or one operator (kind 'a', id = asn), in one batch
   'net.reset': {
     risk: 'destructive', target: 'net',

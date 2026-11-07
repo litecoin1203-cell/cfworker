@@ -28,6 +28,8 @@ export async function appConfig(env) {
     // ways around filtering, kept by the app for its next launch (see app_api_bases / app_bridges)
     api_bases: splitList(s.app_api_bases).filter((b) => /^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(b)).slice(0, 8),
     bridges: splitList(s.app_bridges).filter((l) => /^(vless|vmess|trojan|ss|hysteria2|hy2|wireguard):\/\//i.test(l)).slice(0, 8),
+    // the Pleat build the admin announced in the bot (null = none); the app compares the build number
+    update: await (async () => { const u = await import('./appupdate.js'); return u.updateOut(await u.announced(env, s)); })(),
   });
 }
 

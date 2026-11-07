@@ -47,6 +47,10 @@ export default {
     if (event && event.cron === '*/2 * * * *') {
       ctx.waitUntil((async () => {
         try { const { broadcastTick } = await import('./admin-actions.js'); await broadcastTick(env); } catch (e) { logError('broadcast failed', e); }
+        // a new Pleat build on the release: told to the admin once (GitHub is asked every 10 minutes)
+        if (new Date().getUTCMinutes() % 10 < 2) {
+          try { const { checkNewBuild } = await import('./appupdate.js'); await checkNewBuild(env, (t, kb) => notifyAdmin(env, t, kb)); } catch (e) { logError('app build check failed', e); }
+        }
       })());
       return;
     }
@@ -161,7 +165,7 @@ async function route(request, env, p) {
   // everything below needs a logged-in user
   const authed = [
     '/me', '/trial', '/vpn', '/vpn/sub', '/vpn/servers', '/devices', '/orders', '/wallet', '/referral', '/coupons/check',
-    '/auth/change-password', '/auth/logout-all', '/me/packages', '/me/photo', '/me/email', '/me/avatar', '/me/telegram/start', '/me/telegram/verify', '/me/ip', '/net/report', '/net/rank', '/net/google',
+    '/app/apk', '/auth/change-password', '/auth/logout-all', '/me/packages', '/me/photo', '/me/email', '/me/avatar', '/me/telegram/start', '/me/telegram/verify', '/me/ip', '/net/report', '/net/rank', '/net/google',
   ];
   const needsAuth = authed.includes(p) || p.startsWith('/devices/') || p.startsWith('/orders/');
   if (!needsAuth) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
@@ -176,6 +180,12 @@ async function route(request, env, p) {
     const cf = request.cf || {};
     return json({ ip: String(request.headers.get('cf-connecting-ip') || '').slice(0, 45), cc: /^[A-Z]{2}$/.test(cf.country || '') ? cf.country : '',
       city: String(cf.city || '').slice(0, 60), region: String(cf.region || '').slice(0, 60) });
+  }
+  // the announced Pleat update (appupdate.js), passed through from the private release; limited per user (resumes are new requests)
+  if (p === '/app/apk' && m === 'GET') {
+    await rateLimit(env, 'RL_IP', 'apk:' + user.id);
+    const { apkDownload } = await import('./appupdate.js');
+    return apkDownload(env, request);
   }
   if (p === '/me/packages' && m === 'GET') return account.packages(env, user);
   if (p === '/me/photo' && m === 'GET') return account.photo(env, user);

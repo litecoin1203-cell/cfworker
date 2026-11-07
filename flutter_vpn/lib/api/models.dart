@@ -387,7 +387,10 @@ class AppConfig {
           if (c is Map) CoinOption.fromJson(c.cast<String, dynamic>()),
       ],
       minTopup = _int(j['min_topup_toman']),
-      referralPercent = _int(j['referral_percent']);
+      referralPercent = _int(j['referral_percent']),
+      update = j['update'] is Map
+          ? AppUpdate.fromJson((j['update'] as Map).cast<String, dynamic>())
+          : null;
   const AppConfig.empty()
     : supportUrl = '',
       announcement = '',
@@ -396,14 +399,43 @@ class AppConfig {
       cryptoEnabled = false,
       coins = const [],
       minTopup = 0,
-      referralPercent = 0;
+      referralPercent = 0,
+      update = null;
   final String supportUrl, announcement;
+
+  /// The Pleat build the store announced; null when there is none.
+  final AppUpdate? update;
   final bool cardEnabled, cardAuto, cryptoEnabled;
   final List<CoinOption> coins;
   final int minTopup, referralPercent;
 
   /// Ways to pay beyond the wallet, as the admin has them switched on.
   bool get canPayOnline => cardEnabled || cryptoEnabled || coins.isNotEmpty;
+}
+
+/// A Pleat build the store offers as an update (app-config `update`).
+/// [files] has one APK per phone type ("arm64-v8a" ...).
+class AppUpdate {
+  AppUpdate.fromJson(Map<String, dynamic> j)
+    : version = _str(j['version']),
+      build = _int(j['build']),
+      tag = _str(j['tag']),
+      force = j['force'] == true,
+      files = {
+        for (final e in ((j['abis'] as Map?) ?? const {}).entries)
+          if (e.value is Map &&
+              _int((e.value as Map)['size']) > 0 &&
+              RegExp(r'^[0-9a-f]{64}$')
+                  .hasMatch(_str((e.value as Map)['sha256'])))
+            '${e.key}': (
+              size: _int((e.value as Map)['size']),
+              sha256: _str((e.value as Map)['sha256']),
+            ),
+      };
+  final String version, tag;
+  final int build;
+  final bool force;
+  final Map<String, ({int size, String sha256})> files;
 }
 
 /// A coin the store takes directly. Only the English fields are kept.

@@ -70,3 +70,15 @@ jobs:
 
       - name: Deploy the Worker
         run: $WRANGLER deploy
+
+      # Pleat's in-app update reads the private release pleat-latest with a read-only token (fine-grained, this repo
+      # only, Contents: Read). It lives in the GitHub secret PLEAT_DL_TOKEN and is copied to the Worker here.
+      - name: Give the Worker the update download token
+        env:
+          PLEAT_DL_TOKEN: ${{ secrets.PLEAT_DL_TOKEN }}
+        run: |
+          if [ -z "$PLEAT_DL_TOKEN" ]; then
+            echo "::warning::GitHub secret PLEAT_DL_TOKEN is not set, so Pleat's in-app update stays off."
+            exit 0
+          fi
+          printf '%s' "$PLEAT_DL_TOKEN" | $WRANGLER secret put PLEAT_DL_TOKEN

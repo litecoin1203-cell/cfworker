@@ -11,6 +11,7 @@ import 'activity.dart';
 import 'home.dart';
 import 'locations.dart';
 import 'protect.dart';
+import 'update.dart';
 
 /// Scroll position of the visible tab, for shard parallax.
 class ShellScroll extends InheritedWidget {
@@ -61,9 +62,28 @@ class Shell extends StatefulWidget {
 
 class _ShellState extends State<Shell> {
   final _scroll = ValueNotifier<double>(0);
+  AppState? _app;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final app = AppScope.read(context);
+    if (app == _app) return;
+    _app?.updateSheet.removeListener(_showUpdate);
+    _app = app..updateSheet.addListener(_showUpdate);
+    // a must-update announced before this screen was built
+    if (app.mustUpdate) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _showUpdate());
+    }
+  }
+
+  void _showUpdate() {
+    if (mounted) showUpdateSheet(context);
+  }
 
   @override
   void dispose() {
+    _app?.updateSheet.removeListener(_showUpdate);
     _scroll.dispose();
     super.dispose();
   }
@@ -205,6 +225,19 @@ Future<void> showNotices(BuildContext context) {
                           ),
                           const SizedBox(height: 3),
                           Text(notices[i].body, style: PType.small()),
+                          if (notices[i].action == 'update') ...[
+                            const SizedBox(height: 10),
+                            PillButton(
+                              label: 'Update',
+                              icon: PIcon.refresh,
+                              height: 40,
+                              expand: false,
+                              onTap: () {
+                                Navigator.of(context).pop();
+                                app.openUpdate();
+                              },
+                            ),
+                          ],
                         ],
                       ),
                     ),

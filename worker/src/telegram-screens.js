@@ -687,7 +687,34 @@ export async function app(env) {
       [...TRIAL_GB_CHOICES.map((v) => b(`${v === trialGb ? '✅ ' : ''}${v === '0' ? 'تست: مثل پلن' : v + ' گیگ'}`, `m:ss:trial_data_gb:${v}`)), b('✏️', 'm:w:set:trial_data_gb')],
       [b('⏳ روزهای تست (پلن‌ها)', 'm:pl'), b('💰 حداقل شارژ', 'm:sk:min_topup_toman')],
       [b('🎁 دعوت و پاداش', 'm:ref'), b('💳 روش‌های پرداخت', 'm:pay')],
+      [b('📲 نسخه‌ی اپ و آپدیت', 'm:upd')],
       nav('home'),
+    ],
+  };
+}
+
+// Pleat's in-app update: the newest build the workflow uploaded, and the one the users are told about
+export async function appUpdate(env) {
+  const u = await import('./appupdate.js');
+  const latest = await u.latestBuild(env);
+  const cur = await u.announced(env);
+  const day = (t) => (t ? new Date(t * 1000).toISOString().slice(0, 10) : '—');
+  const lines = [crumb('📱 اپ Pleat', '📲 نسخه‌ی اپ'), ''];
+  if (!env.PLEAT_DL_TOKEN) lines.push('⚠️ توکن دانلود (PLEAT_DL_TOKEN) هنوز به سرور داده نشده. آن را در GitHub › Settings › Secrets بساز و «Deploy Cloud Gold server» را اجرا کن.', '');
+  lines.push(latest ? `📦 آخرین بیلد روی گیت‌هاب: ${latest.version} (بیلد ${latest.build}) · ${day(latest.built_at)}\n   ${u.sizes(latest)}` : '📦 آخرین بیلد روی گیت‌هاب: — (پیدا نشد)');
+  lines.push(cur ? `📢 اعلام‌شده به کاربرها: ${cur.version} (بیلد ${cur.build}) از ${day(cur.at)}${cur.force ? ' · ⚠️ اجباری' : ''}` : '📢 اعلام‌شده به کاربرها: — (اپ‌ها آپدیتی نمی‌بینند)');
+  const fresh = latest && (!cur || latest.tag !== cur.tag);
+  if (fresh && cur && latest.build <= cur.build) lines.push('', `⚠️ شماره‌ی بیلد جدید (${latest.build}) از اعلام‌شده (${cur.build}) بالاتر نیست؛ اپ‌هایی که بیلد ${cur.build} را دارند آن را آپدیت نمی‌بینند.`);
+  if (cur && latest && !fresh) lines.push('', '✅ آخرین بیلد همان اعلام‌شده است.');
+  lines.push('', 'بعد از اعلام، اپ‌هایی که نسخه‌ی قدیمی‌تر دارند علامت و نوتیف آپدیت می‌بینند و فایل مخصوص گوشی خودشان را از داخل اپ دانلود و نصب می‌کنند.',
+    'اجباری = صفحه‌ی آپدیت تا آپدیت نکنند بسته نمی‌شود.');
+  return {
+    text: lines.join('\n'),
+    kb: [
+      ...(fresh ? [[b(`📢 اعلام نسخه‌ی ${latest.version} به کاربرها`, 'm:upa')]] : []),
+      ...(cur ? [[b(cur.force ? '✅ اجباری نباشد' : '⚠️ آپدیت اجباری شود', 'm:upf'), b('🛑 برداشتن اعلام', 'm:upx')]] : []),
+      [b('🔄 تازه کن', 'm:upd')],
+      nav('app'),
     ],
   };
 }

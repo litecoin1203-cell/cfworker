@@ -15,6 +15,7 @@ import 'diagnose.dart';
 import 'exits.dart';
 import 'net_cache.dart';
 import 'tunnel.dart';
+import 'updater.dart';
 import 'xray_config.dart';
 
 enum Phase { idle, checking, handshaking, protected, dropped }
@@ -77,9 +78,12 @@ class Remote<T> {
 
 /// One notice in the bell sheet, derived from `/app-config` and `/me`.
 class Notice {
-  const Notice(this.title, this.body, {this.alert = false});
+  const Notice(this.title, this.body, {this.alert = false, this.action});
   final String title, body;
   final bool alert;
+
+  /// 'update': the notice carries an Update button.
+  final String? action;
 }
 
 /// App state. Account, plans, servers, usage and devices come from the
@@ -101,7 +105,46 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         candidates: _bridgeLinks,
       );
     }
+    updater = Updater(api)
+      ..onChange = notifyListeners
+      ..onGone = () => unawaited(loadConfig());
+    unawaited(updater.load().then((_) => _offerUpdate()));
     WidgetsBinding.instance.addObserver(this);
+  }
+
+  // ---- in-app update ----------------------------------------------------
+
+  late final Updater updater;
+
+  /// The announced build when it is newer than this install and has a file
+  /// for this phone; null otherwise.
+  AppUpdate? get appUpdate =>
+      updater.offers(config.update) ? config.update : null;
+
+  /// The store made this update a must: the sheet can't be closed.
+  bool get mustUpdate => appUpdate?.force ?? false;
+
+  /// Asks the shell to open the update sheet (notification tap, a forced
+  /// update, the Update buttons).
+  final updateSheet = ValueNotifier<int>(0);
+  void openUpdate() => updateSheet.value++;
+
+  /// When app-config was read last; read again on return after a while, so
+  /// an announcement reaches an app that stays open for days.
+  DateTime? _configAt;
+  static const configEvery = Duration(hours: 3);
+
+  /// One system notification per announced build, and the sheet at once
+  /// when the update is a must.
+  void _offerUpdate() {
+    final u = appUpdate;
+    if (u == null) return;
+    if (_prefs.getString('updateNoted') != u.tag) {
+      _prefs.setString('updateNoted', u.tag);
+      unawaited(updater.notify(u));
+    }
+    if (u.force) openUpdate();
+    notifyListeners();
   }
 
   /// The tunnel's API port and the bridge; null where the install has no
@@ -160,6 +203,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _beat();
     }
     if (signedIn && !me.loading) loadMe();
+    unawaited(updater.resumed());
+    final at = _configAt;
+    if (at == null || DateTime.now().difference(at) > configEvery) {
+      unawaited(loadConfig());
+    } else if (mustUpdate) {
+      openUpdate();
+    }
     // Back on screen, maybe on another network (home Wi-Fi, mobile data).
     unawaited(measureIfDue());
   }
@@ -497,11 +547,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       api.tokens.cache('plans', data);
       return list;
     });
+    await loadConfig();
+  }
+
+  /// The store's switches, announcement, extra addresses and update.
+  Future<void> loadConfig() async {
     try {
       final c = await api.get('/app-config');
       if (c is Map) {
         config = AppConfig.fromJson(c.cast<String, dynamic>());
+        _configAt = DateTime.now();
         _learnEdge(c);
+        _offerUpdate();
       }
       notifyListeners();
     } on ApiError {
@@ -1115,6 +1172,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   List<Notice> get notices {
     final out = <Notice>[];
+    final u = appUpdate;
+    if (u != null) {
+      out.add(
+        Notice(
+          'Update available',
+          'Pleat ${u.version} is ready. Your account and settings stay as they are.',
+          action: 'update',
+        ),
+      );
+    }
     if (config.announcement.trim().isNotEmpty) {
       out.add(Notice('From Cloud Gold', config.announcement.trim()));
     }
@@ -1995,6 +2062,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(
       tunnel.watchOpen((screen) {
         if (screen == 'locations') setTab(2);
+        if (screen == 'update') openUpdate();
       }),
     );
     tunnelAvailable = await tunnel.available();

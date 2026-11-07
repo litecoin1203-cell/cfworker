@@ -8,6 +8,7 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
+import '../state/updater.dart';
 import '../state/exits.dart';
 import 'location_detail.dart';
 import 'profile.dart';
@@ -43,6 +44,11 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.fromLTRB(20, 12, 12, 0),
               child: _Header(app: app),
             ),
+            if (app.appUpdate != null)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+                child: _UpdateBanner(app: app),
+              ),
             const SizedBox(height: 14),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -211,6 +217,64 @@ class _Header extends StatelessWidget {
           badge: app.hasUnseenNotices,
         ),
       ],
+    );
+  }
+}
+
+/// A new Pleat is out: one line and a button, until it is installed.
+class _UpdateBanner extends StatelessWidget {
+  const _UpdateBanner({required this.app});
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) {
+    final u = app.appUpdate!;
+    final up = app.updater;
+    final busy = up.step == UpdateStep.downloading && up.total > 0;
+    return SurfaceCard(
+      onTap: app.openUpdate,
+      label: 'Update Pleat',
+      padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: PColors.blue,
+              shape: BoxShape.circle,
+            ),
+            alignment: Alignment.center,
+            child: PIconView(PIcon.refresh, size: 18, color: PColors.onAccent),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Pleat ${u.version} is ready',
+                  style: PType.h3().copyWith(fontSize: 15),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  busy
+                      ? 'Downloading… ${(100 * up.received / up.total).floor()}%'
+                      : (u.force
+                            ? 'Needed to keep using Pleat.'
+                            : 'Tap to update.'),
+                  style: PType.small(),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          PIconView(PIcon.chevron, size: 18, color: PColors.muted),
+        ],
+      ),
     );
   }
 }

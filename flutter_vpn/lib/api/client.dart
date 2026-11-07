@@ -300,6 +300,113 @@ class ApiClient {
     );
   }
 
+  /// How long a download may go without a byte before the way is dropped.
+  static const _idle = Duration(seconds: 40);
+
+  /// Streams a Worker file (the update APK) into [out]. What [out] already
+  /// holds is kept and the rest asked for with a Range request, so a
+  /// dropped download goes on where it stopped, on whichever way answers
+  /// now (open line, tunnel or bridge). [onProgress] gets the bytes in the
+  /// file so far; [stop] returning true aborts with code `stopped`.
+  Future<void> download(
+    String path,
+    File out, {
+    void Function(int bytes)? onProgress,
+    bool Function()? stop,
+  }) async {
+    if (!configured) {
+      throw ApiError(0, 'no_server', 'This build has no server address.');
+    }
+    Object? lastError;
+    var refreshed = false;
+    for (var round = 0; round < 3; round++) {
+      final _Way way;
+      try {
+        way = await _pick(_ways(direct: false), direct: false);
+      } on ApiError {
+        if (lastError == null) rethrow;
+        break;
+      }
+      final have = await out.exists() ? await out.length() : 0;
+      HttpClientRequest? req;
+      try {
+        req = await _client(way.proxy)
+            .openUrl('GET', Uri.parse('${way.base}/api/v1$path'))
+            .timeout(_timeout);
+        final r = req;
+        r.persistentConnection = false;
+        _deviceHeaders.forEach(r.headers.set);
+        if (tokens.access != null) {
+          r.headers.set('authorization', 'Bearer ${tokens.access}');
+        }
+        if (have > 0) r.headers.set('range', 'bytes=$have-');
+        final res = await r.close().timeout(_timeout);
+        if (res.statusCode == 401 && !refreshed) {
+          await res.drain<void>();
+          refreshed = true;
+          if (await _refresh()) {
+            round--;
+            continue;
+          }
+          throw _error(401, null);
+        }
+        if (res.statusCode == 416) {
+          // Nothing left to send: the file is already whole (or too long,
+          // which the hash check then says).
+          await res.drain<void>();
+          return;
+        }
+        if (res.statusCode != 200 && res.statusCode != 206) {
+          final text = await res.transform(utf8.decoder).join();
+          dynamic data;
+          try {
+            data = jsonDecode(text);
+          } on FormatException {
+            data = null;
+          }
+          throw _error(res.statusCode, data);
+        }
+        _keep(way);
+        trace?.call('GET', path.split('?').first, res.statusCode);
+        var pos = res.statusCode == 206 ? have : 0;
+        onProgress?.call(pos);
+        final sink = out.openWrite(
+          mode: res.statusCode == 206 ? FileMode.append : FileMode.write,
+        );
+        try {
+          await for (final piece in res.timeout(_idle)) {
+            if (stop?.call() ?? false) {
+              r.abort();
+              throw ApiError(0, 'stopped', 'Download stopped.');
+            }
+            sink.add(piece);
+            pos += piece.length;
+            onProgress?.call(pos);
+            // the bridge carried a call: keep it up while the file flows
+            if (way.proxy != null && way.proxy == detours?.bridge) {
+              detours?.used();
+            }
+          }
+        } finally {
+          await sink.close();
+        }
+        return;
+      } on SocketException catch (e) {
+        lastError = e;
+      } on TimeoutException catch (e) {
+        lastError = e;
+      } on HttpException catch (e) {
+        lastError = e;
+      } on HandshakeException catch (e) {
+        req?.abort();
+        throw _offline(e);
+      }
+      req?.abort();
+      if (_good?.key == way.key) _good = null;
+    }
+    throw _offline(lastError);
+  }
+
   Future<dynamic> _send(
     String method,
     String path, {
@@ -698,5 +805,8 @@ class ApiClient {
     'coupon_in_use': 'This code is being used on another order.',
     'coupon_wrong_plan': 'This code isn’t for this plan.',
     'panel_unconfigured': 'Servers aren’t set up yet. Contact support.',
+    'update_gone': 'This update was replaced by a newer one. Check again.',
+    'update_unavailable':
+        'The update can’t be downloaded right now. Try again soon.',
   };
 }
