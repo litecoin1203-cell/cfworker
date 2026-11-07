@@ -144,11 +144,14 @@ async function claimTxid(env, orderId, txid, setReview) {
 }
 
 // Match fetched transfers to orders and confirm them. Returns [{orderId, result}]
-async function matchAndConfirm(env, orders, txsByKey, mode) {
+// maxSettle = orders delivered in this call. The cron run shares its 50 D1 queries with the usage sync and a
+// delivery costs about 15, so it delivers one and leaves the next for the next minute.
+async function matchAndConfirm(env, orders, txsByKey, mode, maxSettle = Infinity) {
   const { settle } = await import('./billing.js');
   const { notifyAdmin, sendCoinNotice } = await import('./telegram.js');
   const done = [];
   const claimed = new Set();
+  let settles = 0;
   const owners = await exactOwners(env);
   for (const o of orders) {
     const txs = txsByKey.get(o.coin + '|' + o.coin_address);
@@ -172,8 +175,10 @@ async function matchAndConfirm(env, orders, txsByKey, mode) {
       if (!(await txidTaken(env, t.txid, o.id))) { hit = t; fit = f; break; }
     }
     if (!hit) continue;
-    claimed.add(hit.txid);
     const auto = mode === 'auto' && fit === 'exact';
+    if (auto && settles >= maxSettle) continue; // delivered on the next run
+    if (auto) settles++;
+    claimed.add(hit.txid);
     if (!(await claimTxid(env, o.id, hit.txid, !auto))) continue; // another caller tied this transfer to another order first
     const user = await first(env, 'SELECT * FROM users WHERE id = ?', o.user_id);
     if (auto) {
@@ -217,8 +222,9 @@ export async function scanAll(env) {
   if (mode === 'off') return [];
   const orders = await candidates(env);
   if (!orders.length) return [];
-  return matchAndConfirm(env, orders, await fetchFor(orders), mode);
+  return matchAndConfirm(env, orders, await fetchFor(orders), mode, CRON_MAX);
 }
+const CRON_MAX = 1;
 
 // While the user watches the payment screen: check this order now (at most every 12 seconds).
 export async function checkOrder(env, order) {

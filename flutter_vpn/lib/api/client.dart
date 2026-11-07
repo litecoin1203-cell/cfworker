@@ -17,6 +17,9 @@ const apiBases = String.fromEnvironment('PLEAT_API');
 /// The Worker's error body is `{detail: {code, message}}`. [message] is
 /// what the screen shows: English for the codes Pleat knows, otherwise the
 /// server's own text.
+/// How asking for new tokens went.
+enum _Refresh { ok, refused, failed }
+
 class ApiError implements Exception {
   ApiError(this.status, this.code, this.message);
   final int status;
@@ -344,7 +347,7 @@ class ApiClient {
         if (res.statusCode == 401 && !refreshed) {
           await res.drain<void>();
           refreshed = true;
-          if (await _refresh()) {
+          if (await _refresh() == _Refresh.ok) {
             round--;
             continue;
           }
@@ -431,15 +434,25 @@ class ApiClient {
       raw,
       bridge,
     );
-    if (status == 401 && authed && !retried && await _refresh()) {
-      return _send(
-        method,
-        path,
-        body: body,
-        raw: raw,
-        retried: true,
-        bridge: bridge,
-      );
+    if (status == 401 && authed && !retried) {
+      switch (await _refresh()) {
+        case _Refresh.ok:
+          return _send(
+            method,
+            path,
+            body: body,
+            raw: raw,
+            retried: true,
+            bridge: bridge,
+          );
+        case _Refresh.failed:
+          // The server could not be asked (no network, a filtered line, a
+          // server error): the session may well be fine, so the user stays
+          // signed in and the call fails like any network error.
+          throw _lastRefreshError ?? _offline(null);
+        case _Refresh.refused:
+          break;
+      }
     }
     if (status >= 400) {
       final err = _error(status, data);
@@ -452,21 +465,32 @@ class ApiClient {
     return data;
   }
 
-  Future<bool> _refresh() async {
+  ApiError? _lastRefreshError;
+
+  /// New tokens for an expired access token. Only the server saying the
+  /// refresh token is no good (401 or 403) signs the user out; anything
+  /// else that stops the refresh is [_Refresh.failed] and keeps the tokens.
+  Future<_Refresh> _refresh() async {
     final r = tokens.refresh;
-    if (r == null) return false;
+    if (r == null) return _Refresh.refused;
+    _lastRefreshError = null;
     try {
       final (status, data) = await _roundTrip('POST', '/auth/refresh', {
         'refresh_token': r,
       }, false);
-      if (status != 200 || data is! Map) return false;
+      if (status == 401 || status == 403) return _Refresh.refused;
+      if (status != 200 || data is! Map) {
+        _lastRefreshError = _error(status, data);
+        return _Refresh.failed;
+      }
       await tokens.save(
         data['access_token'] as String,
         data['refresh_token'] as String,
       );
-      return true;
-    } on ApiError {
-      return false;
+      return _Refresh.ok;
+    } on ApiError catch (e) {
+      _lastRefreshError = e;
+      return _Refresh.failed;
     }
   }
 

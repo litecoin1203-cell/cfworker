@@ -5,15 +5,16 @@
 // not answer keeps its last value (stale) instead of counting as zero.
 //
 // Deciding and doing are separate: evaluate() only writes what each panel account should be (desired, dirty);
-// applyAccount() pushes that to the panel and is safe to repeat, so a stop that failed on a broken panel is
+// pushPending() pushes that to the panel and is safe to repeat, so a stop that failed on a broken panel is
 // simply tried again on the next run until the panel confirms it.
 //
-// The Free plan gives a cron run 10 ms of CPU and 50 subrequests, so runSync() does a bounded slice per run:
-// one page of one panel's users, a few pending pushes and a few missing accounts.
+// The Free plan gives a cron run 10 ms of CPU, 50 subrequests and 50 D1 queries, so runSync() does a bounded slice
+// per run (one page of one panel's users, a few pending pushes and a few missing accounts) with a fixed number of
+// queries however many users the page holds.
 import { first, all, run } from './db.js';
 import { nowSec, logError } from './util.js';
 import { PasarGuardError, parseExpire } from './pasarguard.js';
-import { adapterFor, getPanel, listPanels, panelsFor, recordHealth, accountsOf, groupIdsFor } from './panels.js';
+import { adapterFor, listPanels, panelsFor, pickPanels, recordHealth, accountsOf, groupIdsFor } from './panels.js';
 
 export const PAGE = 200;            // users read per panel request
 const PUSH_PER_RUN = 15;            // pending panel writes per cron run
@@ -27,39 +28,57 @@ const MB = 1024 * 1024;
 export const tolerance = (limit) => Math.max(Math.floor(limit / 20), 64 * MB);
 
 // ---------------- ledger ----------------
-// One reading of an account on a panel. remote = {used, expire, data_limit} or null when the panel did not answer.
-export async function observe(env, pa, remote) {
-  const sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', pa.user_id);
-  if (!sub || !sub.period_id) return;
-  const now = nowSec();
-  const c = await first(env, 'SELECT * FROM usage_counters WHERE period_id = ? AND panel_id = ?', sub.period_id, pa.panel_id);
-  if (!remote) {
-    if (c) await run(env, 'UPDATE usage_counters SET stale = 1 WHERE period_id = ? AND panel_id = ?', sub.period_id, pa.panel_id);
-    return;
+// A Free-plan invocation may send D1 at most 50 queries (a batch counts as one), so the ledger works on sets:
+// one read for all the accounts of a page, one batch for every write, and a row is only written when it changes
+// (an idle user costs no write at all, which also keeps the daily write allowance for real work).
+const st = (env, sql, ...args) => env.DB.prepare(sql).bind(...args);
+const LEDGER_SQL = `SELECT a.id, a.user_id, a.panel_id, a.remote_username, s.id AS sub_id, s.period_id, s.baselined,
+    c.period_id AS c_period, c.last_remote_bytes, c.baseline_pending, c.stale
+  FROM panel_accounts a JOIN subscriptions s ON s.user_id = a.user_id AND s.period_id IS NOT NULL
+  LEFT JOIN usage_counters c ON c.period_id = s.period_id AND c.panel_id = a.panel_id`;
+
+// The writes for readings of accounts (rows from LEDGER_SQL). readingOf(row) = {used, expire, data_limit}, null
+// when the panel did not answer, or undefined to leave the row alone. Returns the statements to batch.
+function ledgerWrites(env, rows, readingOf, now) {
+  const out = [];
+  for (const r of rows) {
+    const remote = readingOf(r);
+    if (remote === undefined) continue;
+    if (!remote) {
+      // the account stays counted at its last reading
+      if (r.c_period != null && !r.stale) out.push(st(env, 'UPDATE usage_counters SET stale = 1 WHERE period_id = ? AND panel_id = ?', r.period_id, r.panel_id));
+      continue;
+    }
+    const used = Math.max(0, remote.used || 0);
+    if (r.c_period == null) {
+      // first reading in this period: everything on this account belongs to it (new account, or the
+      // subscription that existed before the control plane)
+      out.push(st(env, `INSERT OR IGNORE INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at)
+        VALUES (?, ?, ?, ?, ?)`, r.period_id, r.panel_id, used, used, now));
+    } else if (r.baseline_pending) {
+      out.push(st(env, 'UPDATE usage_counters SET last_remote_bytes = ?, baseline_pending = 0, stale = 0, last_seen_at = ? WHERE period_id = ? AND panel_id = ?',
+        used, now, r.period_id, r.panel_id));
+    } else if (used !== r.last_remote_bytes || r.stale) {
+      // below the last reading = the panel's counter was reset; what it shows now is all new. The update is
+      // relative to the stored reading, so a reading another invocation already counted is not counted twice.
+      const delta = used >= r.last_remote_bytes ? used - r.last_remote_bytes : used;
+      out.push(st(env, `UPDATE usage_counters SET accounted_bytes = accounted_bytes + ?, last_remote_bytes = ?, stale = 0, last_seen_at = ?
+        WHERE period_id = ? AND panel_id = ? AND last_remote_bytes = ? AND baseline_pending = 0`, delta, used, now, r.period_id, r.panel_id, r.last_remote_bytes));
+    }
+    // a subscription from before the control plane takes its expiry and limit from panel 1 once
+    if (r.panel_id === 1 && !r.baselined) {
+      const exp = remote.expire || null, lim = remote.data_limit || 0;
+      out.push(st(env, 'UPDATE subscriptions SET expires_at = ?, data_limit_bytes = ?, baselined = 1 WHERE id = ? AND baselined = 0', exp, lim, r.sub_id));
+      out.push(st(env, 'UPDATE sub_periods SET expires_at = ?, limit_bytes = ? WHERE id = ? AND legacy = 1', exp, lim, r.period_id));
+      out.push(st(env, 'UPDATE panel_accounts SET desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ? WHERE id = ?',
+        lim, lim, exp, exp, r.id));
+    }
   }
-  const used = Math.max(0, remote.used || 0);
-  if (!c) {
-    // first reading in this period: everything on this account belongs to it (new account, or the
-    // subscription that existed before the control plane)
-    await run(env, `INSERT OR IGNORE INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at)
-      VALUES (?, ?, ?, ?, ?)`, sub.period_id, pa.panel_id, used, used, now);
-  } else if (c.baseline_pending) {
-    await run(env, 'UPDATE usage_counters SET last_remote_bytes = ?, baseline_pending = 0, stale = 0, last_seen_at = ? WHERE period_id = ? AND panel_id = ?',
-      used, now, sub.period_id, pa.panel_id);
-  } else {
-    // below the last reading = the panel's counter was reset; what it shows now is all new
-    const delta = used >= c.last_remote_bytes ? used - c.last_remote_bytes : used;
-    await run(env, `UPDATE usage_counters SET accounted_bytes = accounted_bytes + ?, last_remote_bytes = ?, stale = 0, last_seen_at = ?
-      WHERE period_id = ? AND panel_id = ?`, delta, used, now, sub.period_id, pa.panel_id);
-  }
-  // a subscription from before the control plane takes its expiry and limit from panel 1 once
-  if (pa.panel_id === 1 && !sub.baselined) {
-    const exp = remote.expire || null;
-    await run(env, `UPDATE subscriptions SET expires_at = ?, data_limit_bytes = ?, baselined = 1 WHERE id = ? AND baselined = 0`, exp, remote.data_limit || 0, sub.id);
-    await run(env, 'UPDATE sub_periods SET expires_at = ?, limit_bytes = ? WHERE id = ? AND legacy = 1', exp, remote.data_limit || 0, sub.period_id);
-    await run(env, 'UPDATE panel_accounts SET desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ? WHERE id = ?',
-      remote.data_limit || 0, remote.data_limit || 0, exp, exp, pa.id);
-  }
+  return out;
+}
+
+async function batch(env, stmts) {
+  if (stmts.length) await env.DB.batch(stmts);
 }
 
 export async function usedBytes(env, periodId) {
@@ -68,93 +87,136 @@ export async function usedBytes(env, periodId) {
 }
 
 // ---------------- decisions ----------------
-// Recompute one user's usage and state. Stops on quota or expiry (once: conditional update), and keeps each
-// panel's own data_limit at (its reading + what is left overall), so no single panel can go past the total.
-export async function evaluate(env, userId) {
-  const sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', userId);
-  if (!sub || !sub.period_id) return null;
+// Recompute these users' usage and state: two reads and one batch however many users. Stops on quota or expiry
+// (once: conditional updates, tied to the period that was read, so a renewal in between is never stopped), and
+// keeps each panel's own data_limit at (its reading + what is left overall), so no single panel can go past the
+// total. Returns Map user_id -> the subscription as decided (with used_bytes), for users that have a period.
+export async function evaluateMany(env, userIds) {
+  const result = new Map();
+  const ids = [...new Set(userIds.map(Number))];
+  if (!ids.length) return result;
   const now = nowSec();
-  const used = await usedBytes(env, sub.period_id);
-  await run(env, 'UPDATE subscriptions SET used_bytes = ?, used_at = ? WHERE id = ?', used, now, sub.id);
-  sub.used_bytes = used;
-  if (sub.state !== 'active') return sub;
-  let reason = null;
-  if (sub.expires_at && sub.expires_at <= now) reason = 'expired';
-  else if (sub.data_limit_bytes > 0 && used >= sub.data_limit_bytes) reason = 'quota';
-  if (reason) {
-    const r = await run(env, "UPDATE subscriptions SET state = 'stopped', stop_reason = ? WHERE id = ? AND state = 'active'", reason, sub.id);
-    if (r.meta.changes) {
-      await run(env, 'UPDATE sub_periods SET ended_at = ?, end_reason = ?, final_used_bytes = ? WHERE id = ? AND ended_at IS NULL', now, reason, used, sub.period_id);
-      await run(env, "UPDATE panel_accounts SET desired = 'stopped', dirty = 1, attempts = 0 WHERE user_id = ? AND desired = 'active'", userId);
-    }
-    return { ...sub, state: 'stopped', stop_reason: reason };
+  const subs = await all(env, `SELECT s.*, (SELECT COALESCE(SUM(c.accounted_bytes), 0) FROM usage_counters c WHERE c.period_id = s.period_id) AS sum_used
+    FROM subscriptions s WHERE s.user_id IN (SELECT value FROM json_each(?)) AND s.period_id IS NOT NULL`, JSON.stringify(ids));
+  const stmts = [];
+  const limited = [];
+  for (const row of subs) {
+    const { sum_used: used, ...sub } = row;
+    if (used !== sub.used_bytes) stmts.push(st(env, 'UPDATE subscriptions SET used_bytes = ?, used_at = ? WHERE id = ?', used, now, sub.id));
+    sub.used_bytes = used;
+    result.set(sub.user_id, sub);
+    if (sub.state !== 'active') continue;
+    let reason = null;
+    if (sub.expires_at && sub.expires_at <= now) reason = 'expired';
+    else if (sub.data_limit_bytes > 0 && used >= sub.data_limit_bytes) reason = 'quota';
+    if (reason) {
+      const stopped = "EXISTS (SELECT 1 FROM subscriptions WHERE id = ? AND period_id = ? AND state = 'stopped')";
+      stmts.push(st(env, "UPDATE subscriptions SET state = 'stopped', stop_reason = ? WHERE id = ? AND state = 'active' AND period_id = ?", reason, sub.id, sub.period_id));
+      stmts.push(st(env, `UPDATE sub_periods SET ended_at = ?, end_reason = ?, final_used_bytes = ? WHERE id = ? AND ended_at IS NULL AND ${stopped}`,
+        now, reason, used, sub.period_id, sub.id, sub.period_id));
+      stmts.push(st(env, `UPDATE panel_accounts SET desired = 'stopped', dirty = 1, attempts = 0 WHERE user_id = ? AND desired = 'active' AND ${stopped}`,
+        sub.user_id, sub.id, sub.period_id));
+      result.set(sub.user_id, { ...sub, state: 'stopped', stop_reason: reason });
+    } else if (sub.data_limit_bytes > 0) limited.push(sub);
   }
-  if (sub.data_limit_bytes > 0) {
-    const left = sub.data_limit_bytes - used;
-    const tol = tolerance(sub.data_limit_bytes);
-    const rows = await all(env, `SELECT a.id, a.applied_limit_bytes, c.last_remote_bytes FROM panel_accounts a
-      JOIN usage_counters c ON c.panel_id = a.panel_id AND c.period_id = ? WHERE a.user_id = ? AND a.desired = 'active'`, sub.period_id, userId);
+  if (limited.length) {
+    const bySub = new Map(limited.map((s) => [s.user_id, s]));
+    const rows = await all(env, `SELECT a.id, a.user_id, a.applied_limit_bytes, a.desired_limit_bytes, a.dirty, c.last_remote_bytes FROM panel_accounts a
+      JOIN subscriptions s ON s.user_id = a.user_id JOIN usage_counters c ON c.panel_id = a.panel_id AND c.period_id = s.period_id
+      WHERE a.user_id IN (SELECT value FROM json_each(?)) AND a.desired = 'active'`, JSON.stringify([...bySub.keys()]));
     for (const a of rows) {
+      const sub = bySub.get(a.user_id);
+      const left = sub.data_limit_bytes - sub.used_bytes;
+      const tol = tolerance(sub.data_limit_bytes);
       const want = a.last_remote_bytes + left;
       const near = left < 2 * tol; // close to the end every change matters
-      if (Math.abs(want - a.applied_limit_bytes) > tol || (near && want < a.applied_limit_bytes)) {
-        await run(env, 'UPDATE panel_accounts SET desired_limit_bytes = ?, dirty = 1 WHERE id = ?', want, a.id);
+      const drift = Math.abs(want - a.applied_limit_bytes) > tol || (near && want < a.applied_limit_bytes);
+      if (drift && !(a.dirty && a.desired_limit_bytes === want)) {
+        stmts.push(st(env, "UPDATE panel_accounts SET desired_limit_bytes = ?, dirty = 1 WHERE id = ? AND desired = 'active'", want, a.id));
       }
     }
   }
-  return sub;
+  await batch(env, stmts);
+  return result;
+}
+
+export async function evaluate(env, userId) {
+  return (await evaluateMany(env, [userId])).get(Number(userId)) ?? null;
 }
 
 // ---------------- enforcement ----------------
-// Push one account's desired state to its panel. Idempotent: disabling twice or rewriting the same limit is harmless.
-export async function applyAccount(env, pa) {
-  const panel = await getPanel(env, pa.panel_id);
-  if (!panel) return false;
-  try {
-    const pg = await adapterFor(env, panel);
-    if (pa.desired === 'active') {
-      await pg.modifyUser(pa.remote_username, { status: 'active', data_limit: pa.desired_limit_bytes || 0, expire: pa.desired_expire || 0, data_limit_reset_strategy: 'no_reset' });
-    } else {
-      await pg.setStatus(pa.remote_username, 'disabled'); // stopped or removed: switched off, never deleted
-    }
-    await run(env, `UPDATE panel_accounts SET applied = desired, applied_limit_bytes = desired_limit_bytes, applied_expire = desired_expire,
-      dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ? AND desired = ? AND desired_limit_bytes = ?`,
-      nowSec(), pa.id, pa.desired, pa.desired_limit_bytes);
-    return true;
-  } catch (e) {
-    const code = e instanceof PasarGuardError ? `panel_${e.status || 'net'}` : 'error';
-    await run(env, 'UPDATE panel_accounts SET attempts = attempts + 1, last_error = ? WHERE id = ?', code, pa.id);
-    if (!(e instanceof PasarGuardError)) logError('panel push failed', e, { account: pa.id });
-    return false;
-  }
+const panelOf = (a) => ({ id: a.panel_id, kind: a.kind, state: a.panel_state, cred_ref: a.cred_ref, options_json: a.options_json, label: a.panel_label });
+const PENDING_SQL = `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json, p.label AS panel_label
+  FROM panel_accounts a JOIN panels p ON p.id = a.panel_id`;
+
+// One adapter per panel for a whole invocation: opening a panel's login costs a D1 read, so it is done once.
+function adapterCache(env) {
+  const seen = new Map();
+  return (panel) => {
+    if (!seen.has(panel.id)) seen.set(panel.id, adapterFor(env, panel));
+    return seen.get(panel.id);
+  };
 }
 
-export async function pushPending(env, { userId = null, limit = PUSH_PER_RUN } = {}) {
-  const rows = userId
-    ? await all(env, 'SELECT * FROM panel_accounts WHERE dirty = 1 AND user_id = ?', userId)
-    : await all(env, 'SELECT * FROM panel_accounts WHERE dirty = 1 ORDER BY attempts, id LIMIT ?', limit);
+// Push accounts' desired state to their panels, then record every result in one batch. Idempotent: disabling
+// twice or rewriting the same limit is harmless. The applied row is written only if nothing changed the desired
+// state meanwhile, so a newer decision is pushed again on the next run.
+async function pushRows(env, rows, adapter = adapterCache(env)) {
+  const stmts = [];
   let done = 0;
-  for (const pa of rows) if (await applyAccount(env, pa)) done++;
+  for (const pa of rows) {
+    try {
+      const pg = await adapter(panelOf(pa));
+      if (pa.desired === 'active') {
+        await pg.modifyUser(pa.remote_username, { status: 'active', data_limit: pa.desired_limit_bytes || 0, expire: pa.desired_expire || 0, data_limit_reset_strategy: 'no_reset' });
+      } else {
+        await pg.setStatus(pa.remote_username, 'disabled'); // stopped or removed: switched off, never deleted
+      }
+      stmts.push(st(env, `UPDATE panel_accounts SET applied = desired, applied_limit_bytes = desired_limit_bytes, applied_expire = desired_expire,
+        dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ? AND desired = ? AND desired_limit_bytes = ?`,
+      nowSec(), pa.id, pa.desired, pa.desired_limit_bytes));
+      done++;
+    } catch (e) {
+      const code = e instanceof PasarGuardError ? `panel_${e.status || 'net'}` : 'error';
+      stmts.push(st(env, 'UPDATE panel_accounts SET attempts = attempts + 1, last_error = ? WHERE id = ?', code, pa.id));
+      if (!(e instanceof PasarGuardError)) logError('panel push failed', e, { account: pa.id });
+    }
+  }
+  await batch(env, stmts);
+  return done;
+}
+
+export async function pushPending(env, { userId = null, limit = PUSH_PER_RUN, adapter } = {}) {
+  const rows = userId
+    ? await all(env, `${PENDING_SQL} WHERE a.dirty = 1 AND a.user_id = ?`, userId)
+    : await all(env, `${PENDING_SQL} WHERE a.dirty = 1 ORDER BY a.attempts, a.id LIMIT ?`, limit);
+  const done = await pushRows(env, rows, adapter);
   return { tried: rows.length, done };
 }
 
 // Live reading of one user on all their panels (used by /me so the app shows fresh numbers), then decide and push.
 export async function refreshUser(env, userId) {
   const accounts = await accountsOf(env, userId);
+  const adapter = adapterCache(env);
+  const readings = new Map();
   let reached = 0, missing = 0;
   for (const a of accounts) {
     if (a.panel_state === 'disabled') continue;
     try {
-      const u = await (await adapterFor(env, { id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref })).getUser(a.remote_username);
+      const u = await (await adapter({ id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref, options_json: a.options_json })).getUser(a.remote_username);
       if (!u) { missing++; continue; }
       reached++;
-      await observe(env, a, { used: parseInt(u.used_traffic || 0, 10) || 0, expire: parseExpire(u.expire), data_limit: parseInt(u.data_limit || 0, 10) || 0 });
+      readings.set(a.id, { used: parseInt(u.used_traffic || 0, 10) || 0, expire: parseExpire(u.expire), data_limit: parseInt(u.data_limit || 0, 10) || 0 });
     } catch (e) {
-      await observe(env, a, null);
+      readings.set(a.id, null);
     }
   }
+  if (readings.size) {
+    const rows = await all(env, `${LEDGER_SQL} WHERE a.user_id = ?`, userId);
+    await batch(env, ledgerWrites(env, rows, (r) => readings.get(r.id), nowSec()));
+  }
   const sub = await evaluate(env, userId);
-  if (sub) await pushPending(env, { userId });
+  if (sub) await pushPending(env, { userId, adapter });
   return { reached, missing, accounts: accounts.length };
 }
 
@@ -163,14 +225,27 @@ export async function refreshUser(env, userId) {
 // data. Returns the account row; throws PasarGuardError when the panel refuses.
 export async function ensureAccount(env, user, panel, { expire, limit, hwid } = {}) {
   const pg = await adapterFor(env, panel);
-  let pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
+  const pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
   const now = nowSec();
   if (pa && (await pg.getUser(pa.remote_username))) return pa;
   const groups = await groupIdsFor(env, panel, pg);
+  const made = await createRemote(env, pg, user, { expire, limit, hwid, groups, name: pa ? pa.remote_username : null });
+  if (pa) {
+    await run(env, `UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = 'active',
+      desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ?, dirty = 0, attempts = 0, applied_at = ? WHERE id = ?`,
+      made.username, made.id, made.subPath, limit || 0, limit || 0, expire || null, expire || null, now, pa.id);
+  } else {
+    await insertAccount(env, user.id, panel.id, made, { expire, limit, now }).run();
+  }
+  return first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
+}
+
+// Make the account on the panel (a new random name when the one tried is taken). {username, id, subPath}
+async function createRemote(env, pg, user, { expire, limit, hwid, groups, name }) {
   const prefix = String(env.PASARGUARD_USERNAME_PREFIX || 'cg').toLowerCase().replace(/[^a-z0-9_]/g, '') || 'cg';
   let created = null, username = '';
   for (let attempt = 0; attempt < 3 && !created; attempt++) {
-    username = pa && attempt === 0 ? pa.remote_username : `${prefix}_${user.id}_${randomHex(2)}`.slice(0, 32);
+    username = name && attempt === 0 ? name : `${prefix}_${user.id}_${randomHex(2)}`.slice(0, 32);
     try {
       created = await pg.createUser(username, { expire, dataLimit: limit, groupIds: groups, hwidLimit: hwid || null, note: `Cloud Gold · ${user.email}` });
     } catch (e) {
@@ -180,18 +255,15 @@ export async function ensureAccount(env, user, panel, { expire, limit, hwid } = 
   }
   const subPath = pg.absoluteSubUrl(created.subscription_url || '');
   if (!subPath) throw new PasarGuardError('panel created the user but returned no subscription link', 0);
-  if (pa) {
-    await run(env, `UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = 'active',
-      desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ?, dirty = 0, attempts = 0, applied_at = ? WHERE id = ?`,
-      username, created.id ?? null, subPath, limit || 0, limit || 0, expire || null, expire || null, now, pa.id);
-  } else {
-    await run(env, `INSERT INTO panel_accounts (user_id, panel_id, remote_username, remote_id, sub_path, desired, applied,
-      desired_limit_bytes, applied_limit_bytes, desired_expire, applied_expire, applied_at, created_at)
-      VALUES (?, ?, ?, ?, ?, 'active', 'active', ?, ?, ?, ?, ?, ?)`,
-      user.id, panel.id, username, created.id ?? null, subPath, limit || 0, limit || 0, expire || null, expire || null, now, now);
-  }
-  return first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
+  return { username, id: created.id ?? null, subPath };
 }
+
+// The new account's row. Another path (the app opening at the same moment) may have made one first: then that
+// one stays, and this statement changes nothing instead of failing the batch it is in.
+const insertAccount = (env, userId, panelId, made, { expire, limit, now }) => st(env, `INSERT INTO panel_accounts (user_id, panel_id, remote_username, remote_id, sub_path, desired, applied,
+    desired_limit_bytes, applied_limit_bytes, desired_expire, applied_expire, applied_at, created_at)
+    VALUES (?, ?, ?, ?, ?, 'active', 'active', ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+userId, panelId, made.username, made.id, made.subPath, limit || 0, limit || 0, expire || null, expire || null, now, now);
 
 // An account that already exists on a panel (made there by hand and used with v2rayNG) becomes this user's
 // account on that panel: same username, UUID and link, nothing is created on the panel. The logical subscription
@@ -336,53 +408,54 @@ function randomHex(n) {
 }
 
 // ---------------- the cron job ----------------
-async function cursor(env, job, panelId) {
-  return (await first(env, 'SELECT offset FROM sync_cursor WHERE job = ? AND panel_id = ?', job, panelId))?.offset || 0;
-}
-async function setCursor(env, job, panelId, offset) {
-  await run(env, `INSERT INTO sync_cursor (job, panel_id, offset, run_at) VALUES (?, ?, ?, ?)
+const setCursor = (env, job, panelId, offset) => st(env, `INSERT INTO sync_cursor (job, panel_id, offset, run_at) VALUES (?, ?, ?, ?)
     ON CONFLICT(job, panel_id) DO UPDATE SET offset = excluded.offset, run_at = excluded.run_at`, job, panelId, offset, nowSec());
-}
+const healthWrite = (env, panelId, okNow, now = nowSec()) => okNow
+  ? st(env, 'UPDATE panels SET fail_streak = 0, health = MIN(100, health + 20), last_ok_at = ?, last_check_at = ? WHERE id = ?', now, now, panelId)
+  : st(env, 'UPDATE panels SET fail_streak = fail_streak + 1, health = MAX(0, health - 34), last_check_at = ? WHERE id = ?', now, panelId);
 
-// Read one page of one panel (round robin over panels that still have accounts to count).
-async function syncPage(env) {
-  const panels = (await listPanels(env)).filter((p) => ['active', 'rollout', 'draining'].includes(p.state));
+// Read one page of one panel (round robin over panels that still have accounts to count): one read for the
+// cursors, one for every account on the page, and one batch for all the writes. Returns the page's users.
+async function syncPage(env, allPanels, adapter) {
+  const panels = allPanels.filter((p) => ['active', 'rollout', 'draining'].includes(p.state));
   if (!panels.length) return null;
-  const turn = (await cursor(env, 'rr', 0)) % panels.length;
+  const cur = await all(env, "SELECT job, panel_id, offset FROM sync_cursor WHERE job IN ('rr', 'usage')");
+  const at = (job, id) => cur.find((c) => c.job === job && c.panel_id === id)?.offset || 0;
+  const turn = at('rr', 0) % panels.length;
   const panel = panels[turn];
-  const offset = await cursor(env, 'usage', panel.id);
-  const touched = new Set();
-  let wrapped = false;
+  const offset = at('usage', panel.id);
+  const now = nowSec();
+  const stmts = [];
+  let users = [], wrapped = false;
   try {
-    const page = await (await adapterFor(env, panel)).listUsage(offset, PAGE);
-    const names = page.users.map((u) => u.username);
-    const byName = Object.fromEntries(page.users.map((u) => [u.username, u]));
-    for (let i = 0; i < names.length; i += 90) { // D1 caps bound parameters per query
-      const chunk = names.slice(i, i + 90);
-      const rows = await all(env, `SELECT * FROM panel_accounts WHERE panel_id = ? AND remote_username IN (${chunk.map(() => '?').join(',')})`, panel.id, ...chunk);
-      for (const pa of rows) { await observe(env, pa, byName[pa.remote_username]); touched.add(pa.user_id); }
+    const page = await (await adapter(panel)).listUsage(offset, PAGE);
+    const byName = new Map(page.users.map((u) => [u.username, u]));
+    if (byName.size) {
+      const rows = await all(env, `${LEDGER_SQL} WHERE a.panel_id = ? AND a.remote_username IN (SELECT value FROM json_each(?))`,
+        panel.id, JSON.stringify([...byName.keys()]));
+      stmts.push(...ledgerWrites(env, rows, (r) => byName.get(r.remote_username), now));
+      users = rows.map((r) => r.user_id);
     }
-    await recordHealth(env, panel.id, true);
+    stmts.push(healthWrite(env, panel.id, true, now));
     const next = offset + page.users.length;
     wrapped = !page.users.length || next >= page.total;
-    await setCursor(env, 'usage', panel.id, wrapped ? 0 : next);
+    stmts.push(setCursor(env, 'usage', panel.id, wrapped ? 0 : next));
   } catch (e) {
-    await recordHealth(env, panel.id, false);
-    // this page's accounts stay counted at their last reading; mark them stale
-    await run(env, 'UPDATE usage_counters SET stale = 1 WHERE panel_id = ? AND period_id IN (SELECT period_id FROM subscriptions)', panel.id);
+    stmts.push(healthWrite(env, panel.id, false, now));
+    // this panel's accounts stay counted at their last reading; mark them stale
+    stmts.push(st(env, 'UPDATE usage_counters SET stale = 1 WHERE panel_id = ? AND stale = 0 AND period_id IN (SELECT period_id FROM subscriptions)', panel.id));
     wrapped = true; // do not stay stuck on a broken panel
   }
   if (wrapped) {
-    await setCursor(env, 'rr', 0, turn + 1);
-    if (panel.state === 'draining') await finishDrain(env, panel);
+    stmts.push(setCursor(env, 'rr', 0, turn + 1));
+    // a draining panel has been read one last time: switch its accounts off (kept in the database) and disable it
+    if (panel.state === 'draining') {
+      stmts.push(st(env, "UPDATE panel_accounts SET desired = 'removed', dirty = 1, attempts = 0 WHERE panel_id = ? AND desired != 'removed'", panel.id));
+      stmts.push(st(env, "UPDATE panels SET state = 'disabled', disabled_at = ? WHERE id = ? AND state = 'draining'", now, panel.id));
+    }
   }
-  return { panel: panel.id, touched: [...touched] };
-}
-
-// A draining panel has been read one last time: switch its accounts off (kept in the database) and disable it.
-async function finishDrain(env, panel) {
-  await run(env, "UPDATE panel_accounts SET desired = 'removed', dirty = 1, attempts = 0 WHERE panel_id = ? AND desired != 'removed'", panel.id);
-  await run(env, "UPDATE panels SET state = 'disabled', disabled_at = ? WHERE id = ? AND state = 'draining'", nowSec(), panel.id);
+  await batch(env, stmts);
+  return { panel: panel.id, touched: [...new Set(users)] };
 }
 
 // A panel that refused to create an account: remembered (settings panel_err_<id>) for the bot and for the app
@@ -431,22 +504,38 @@ async function createFor(env, s, panel) {
 }
 
 // Users with a running subscription who are missing an account on a panel they belong to (a new panel being
-// rolled out, or users of a removed panel). A few per run.
-async function createMissing(env, max = CREATE_PER_RUN) {
-  const panels = (await listPanels(env)).filter((p) => ['active', 'rollout'].includes(p.state));
+// rolled out, or users of a removed panel). A few per run: per panel one read and the panel's groups, then the
+// accounts are made on the panel and all their rows written in one batch.
+async function createMissing(env, allPanels, adapter, max = CREATE_PER_RUN) {
+  const panels = allPanels.filter((p) => ['active', 'rollout'].includes(p.state));
   let made = 0;
   for (const panel of panels) {
     if (made >= max) break;
     const rows = await all(env, `SELECT s.*, u.email FROM subscriptions s JOIN users u ON u.id = s.user_id
       WHERE s.state = 'active' AND u.is_active = 1 AND s.period_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM panel_accounts a WHERE a.user_id = s.user_id AND a.panel_id = ?)
       ORDER BY s.user_id LIMIT 50`, panel.id);
-    for (const s of rows) {
-      if (made >= max) break;
-      const mine = await panelsFor(env, s.user_id);
-      if (!mine.some((p) => p.id === panel.id)) continue;
-      if (await createFor(env, s, panel)) made++;
-      else break; // this panel refuses now; try it again next run
+    const want = rows.filter((s) => pickPanels(allPanels, s.user_id).some((p) => p.id === panel.id)).slice(0, max - made);
+    if (!want.length) continue;
+    const now = nowSec();
+    const stmts = [];
+    let failed = null, inserted = 0;
+    try {
+      const pg = await adapter(panel);
+      const groups = await groupIdsFor(env, panel, pg);
+      for (const s of want) {
+        const limit = s.data_limit_bytes > 0 ? Math.max(1, s.data_limit_bytes - s.used_bytes) : 0;
+        const acct = await createRemote(env, pg, { id: s.user_id, email: s.email }, { expire: s.expires_at, limit, groups });
+        stmts.push(insertAccount(env, s.user_id, panel.id, acct, { expire: s.expires_at, limit, now }));
+        inserted++;
+      }
+    } catch (e) {
+      failed = e; // this panel refuses now; what was made is kept, the rest is tried again next run
     }
+    if (inserted && !failed) stmts.push(st(env, 'DELETE FROM settings WHERE key = ?', `panel_err_${panel.id}`));
+    if (failed) stmts.push(healthWrite(env, panel.id, false, now));
+    await batch(env, stmts);
+    made += inserted;
+    if (failed) await noteCreateError(env, panel, failed);
   }
   return made;
 }
@@ -478,16 +567,25 @@ export async function panelProgress(env, panel) {
   return { want: want.length, have: want.filter((r) => has.has(r.user_id)).length };
 }
 
-// One cron slice. Returns what it did (for tests and logs).
+// One cron slice. Returns what it did (for tests and logs). Each part runs even when an earlier one failed, so
+// a broken panel or one bad row never stops expiry, pushes or new accounts.
 export async function runSync(env) {
   const out = { page: null, expired: 0, pushed: 0, created: 0 };
-  out.page = await syncPage(env);
-  for (const uid of out.page ? out.page.touched : []) await evaluate(env, uid);
-  // expiry needs no panel reading
-  const due = await all(env, "SELECT user_id FROM subscriptions WHERE state = 'active' AND expires_at IS NOT NULL AND expires_at <= ? LIMIT 50", nowSec());
-  for (const r of due) { await evaluate(env, r.user_id); out.expired++; }
-  const push = await pushPending(env);
-  out.pushed = push.done;
-  out.created = await createMissing(env, Math.max(2, Math.min(CREATE_PER_RUN, Math.floor((SUBREQ_BUDGET - push.tried) / 4))));
+  const panels = await listPanels(env);
+  const adapter = adapterCache(env);
+  const part = async (name, fn) => { try { await fn(); } catch (e) { logError(`sync ${name} failed`, e); } };
+  let due = [];
+  await part('page', async () => { out.page = await syncPage(env, panels, adapter); });
+  await part('evaluate', async () => {
+    // expiry needs no panel reading
+    due = await all(env, "SELECT user_id FROM subscriptions WHERE state = 'active' AND expires_at IS NOT NULL AND expires_at <= ? LIMIT 50", nowSec());
+    await evaluateMany(env, [...(out.page ? out.page.touched : []), ...due.map((r) => r.user_id)]);
+    out.expired = due.length;
+  });
+  let tried = 0;
+  await part('push', async () => { const push = await pushPending(env, { adapter }); out.pushed = push.done; tried = push.tried; });
+  await part('create', async () => {
+    out.created = await createMissing(env, panels, adapter, Math.max(2, Math.min(CREATE_PER_RUN, Math.floor((SUBREQ_BUDGET - tried) / 4))));
+  });
   return out;
 }

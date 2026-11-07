@@ -88,4 +88,85 @@ void main() {
       expect(hits, 3);
     },
   );
+
+  group('an expired session and a refresh that cannot get through', () {
+    late HttpServer srv;
+    late int refreshStatus;
+    setUp(() async {
+      srv = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      srv.listen((req) async {
+        req.response.headers.contentType = ContentType.json;
+        if (req.uri.path.endsWith('/auth/refresh') && refreshStatus == 0) {
+          // The line drops the refresh call, as a filtered network does.
+          (await req.response.detachSocket(writeHeaders: false)).destroy();
+          return;
+        }
+        if (req.uri.path.endsWith('/auth/refresh')) {
+          req.response.statusCode = refreshStatus;
+          req.response.write(
+            refreshStatus == 200
+                ? jsonEncode({'access_token': 'A2', 'refresh_token': 'R2'})
+                : '{}',
+          );
+        } else if (req.headers.value('authorization') == 'Bearer A2') {
+          req.response.write('{}');
+        } else {
+          req.response.statusCode = 401;
+          req.response.write('{}');
+        }
+        await req.response.close();
+      });
+    });
+    tearDown(() => srv.close(force: true));
+
+    (ApiClient, MemoryTokens, List<bool>) signedIn() {
+      final tokens = MemoryTokens(signedIn: true);
+      final out = <bool>[];
+      final c = ApiClient(tokens, bases: 'http://127.0.0.1:${srv.port}')
+        ..onSignedOut = () => out.add(true);
+      return (c, tokens, out);
+    }
+
+    test('a server error on refresh keeps the user signed in', () async {
+      refreshStatus = 503;
+      final (c, tokens, signedOut) = signedIn();
+      await expectLater(
+        c.get('/me'),
+        throwsA(isA<ApiError>().having((e) => e.status, 'status', 503)),
+      );
+      expect(tokens.access, 'a');
+      expect(tokens.refresh, 'r');
+      expect(signedOut, isEmpty);
+    });
+
+    test('no network on refresh keeps the user signed in', () async {
+      refreshStatus = 0;
+      final (c, tokens, signedOut) = signedIn();
+      await expectLater(
+        c.get('/me'),
+        throwsA(isA<ApiError>().having((e) => e.status, 'status', 0)),
+      );
+      expect(tokens.refresh, 'r');
+      expect(signedOut, isEmpty);
+    });
+
+    test('only a refused refresh token signs out', () async {
+      refreshStatus = 401;
+      final (c, tokens, signedOut) = signedIn();
+      await expectLater(
+        c.get('/me'),
+        throwsA(isA<ApiError>().having((e) => e.status, 'status', 401)),
+      );
+      expect(tokens.refresh, isNull);
+      expect(signedOut, [true]);
+    });
+
+    test('a working refresh retries the call with the new token', () async {
+      refreshStatus = 200;
+      final (c, tokens, signedOut) = signedIn();
+      expect(await c.get('/me'), isA<Map>());
+      expect(tokens.access, 'A2');
+      expect(signedOut, isEmpty);
+    });
+  });
 }

@@ -1,4 +1,5 @@
 // Drives the real Worker through many scenarios. Run: node --experimental-sqlite test/run.mjs
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { makeDB, installFakes } from './shim.mjs';
 import { hmacSha512Hex } from '../src/util.js';
 import { panelBases, decodeSub } from '../src/pasarguard.js';
@@ -6,7 +7,19 @@ import { fetchUsdRate, usdRateInfo } from '../src/usdrate.js';
 
 const PANEL = 'http://panel.test';
 const fakes = installFakes({ panelBase: PANEL });
-const worker = (await import('../src/index.js')).default;
+const realWorker = (await import('../src/index.js')).default;
+// Every request and cron run is one Worker invocation, and on the Free plan an invocation may send D1 at most
+// 50 queries (a batch is one); the 51st fails. Each invocation (with its waitUntil work, which inherits the async
+// context) is counted on its own, also when several run at once, and the suite fails if any went over.
+const QUERY_CAP = 50;
+const invocation = new AsyncLocalStorage();
+const overCap = [];
+const allInv = []; // every invocation's {label, q}, for tests that check one path's cost
+const counted = (label, fn) => { const st0 = { label, q: 0 }; allInv.push(st0); return invocation.run(st0, fn); };
+const worker = {
+  fetch: (req, e, c) => counted(`${req.method} ${new URL(req.url).pathname}`, () => realWorker.fetch(req, e, c)),
+  scheduled: (ev, e, c) => counted(`cron ${ev.cron || ''}`, () => realWorker.scheduled(ev, e, c)),
+};
 
 const env = {
   DB: makeDB(new URL('../migrations/0001_init.sql', import.meta.url).pathname),
@@ -22,6 +35,7 @@ const env = {
   TELEGRAM_CHAT_ID: '12345',
   TELEGRAM_WEBHOOK_SECRET: 'hook',
 };
+env.DB.onQuery = () => { const s = invocation.getStore(); if (s && ++s.q === QUERY_CAP + 1) overCap.push(s); };
 const _pending = [];
 const ctx = { waitUntil: (p) => { _pending.push(Promise.resolve(p)); } };
 async function drain() { const ps = _pending.splice(0); await Promise.all(ps); }
@@ -1152,7 +1166,8 @@ section('backup never contains password hashes');
 
 
 // ================= Phase 1: control plane over several panels =================
-const { runSync } = await import('../src/sync.js');
+const { runSync: runSyncRaw } = await import('../src/sync.js');
+const runSync = (e) => counted('runSync', () => runSyncRaw(e));
 const GB = 1024 ** 3;
 const P2 = 'http://panel2.test', P3 = 'http://panel3.test';
 const pg2 = fakes.addPanel(P2, 'n2.example.net');
@@ -3679,6 +3694,71 @@ section('admin panel stage 5: broadcast, stats, system, roles, security');
   ok(!missing.length, 'every admin action, stage 5 included, has written an audit row: missing ' + missing.join(','));
   await exec("DELETE FROM settings WHERE key IN ('sms_key', 'app_bridges', 'panel_cred_9')");
 }
+
+section('the Free plan\'s 50 D1 queries: a long order list, cron with 200 users');
+{
+  const rows = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).all()).results;
+  const lastQ = (label) => [...allInv].reverse().find((x) => x.label === label).q;
+  const q = (sql, ...a) => env.DB.prepare(sql).bind(...a);
+  const now = Math.floor(Date.now() / 1000);
+  const plan = (await call('GET', '/api/v1/plans')).data[0];
+
+  // 25 open card orders, a crypto quote that ran out, and a top-up that bought a plan
+  const tok = await signup('many-orders@example.com');
+  const uid = (await q('SELECT id FROM users WHERE email = ?', 'many-orders@example.com').first()).id;
+  for (let i = 0; i < 25; i++) await q("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, ?, 'card', 'pending', ?)", uid, plan.id, 100000 + i, now - i).run();
+  const paidId = (await q("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, 1, 'wallet', 'paid', ?)", uid, plan.id, now).run()).meta.last_row_id;
+  await q("INSERT INTO orders (user_id, kind, amount_toman, method, status, created_at, activate_plan_id, result_order_id) VALUES (?, 'topup', 5, 'card', 'paid', ?, ?, ?)", uid, now, plan.id, paidId).run();
+  const coinId = (await q("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at, coin, coin_amount, coin_address, coin_expires_at) VALUES (?, 'plan', ?, 9, 'coin', 'pending', ?, 'xlm', '1.5', 'GADDR', ?)", uid, plan.id, now - 7200, now - 60).run()).meta.last_row_id;
+  const list = await call('GET', '/api/v1/orders', { token: tok });
+  ok(list.status === 200 && list.data.length === 28, `order list with 28 orders answers -> ${list.status} ${list.data && list.data.length}`);
+  ok(lastQ('GET /api/v1/orders') <= 8, `the order list costs a handful of D1 queries, not one per order: ${lastQ('GET /api/v1/orders')}`);
+  const cards = list.data.filter((o) => o.method === 'card' && o.status === 'pending');
+  ok(cards.length === 25 && cards.every((o) => o.card && o.card.amount_rial === o.amount_toman * 10 && o.plan_name), 'every open card order still carries its card details and plan name');
+  ok(list.data.find((o) => o.kind === 'topup').plan_activated === true && list.data.find((o) => o.kind === 'topup').activate_plan_name, 'a top-up shows the plan it bought');
+  ok(list.data.find((o) => o.id === coinId).status === 'expired' && (await q('SELECT status FROM orders WHERE id = ?', coinId).first()).status === 'expired', 'a crypto quote that ran out is expired by the list');
+
+  // 200 users on panel 1, made straight in D1 and on the fake panel; one of them ran out of days
+  const seeded = [];
+  for (let i = 0; i < 200; i++) {
+    const id = 90000 + i, name = `cg_${id}_cap`;
+    await q('INSERT INTO users (id, email, password_hash, referral_code, created_at) VALUES (?, ?, ?, ?, ?)', id, `cap${id}@x.io`, 'x', 'CAP' + id, now).run();
+    const exp = i === 7 ? now - 10 : now + 30 * 86400;
+    const per = (await q('INSERT INTO sub_periods (user_id, plan_id, started_at, expires_at, limit_bytes) VALUES (?, ?, ?, ?, ?)', id, plan.id, now, exp, 50 * GB).run()).meta.last_row_id;
+    await q("INSERT INTO subscriptions (user_id, pg_username, plan_id, expires_at, data_limit_bytes, device_limit, period_id, state, baselined) VALUES (?, ?, ?, ?, ?, 2, ?, 'active', 1)", id, name, plan.id, exp, 50 * GB, per).run();
+    await q('INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, created_at, desired_limit_bytes, applied_limit_bytes) VALUES (?, 1, ?, ?, ?, ?, ?)', id, name, PANEL + '/sub/cap' + id + '/', now, 50 * GB, 50 * GB).run();
+    await q('INSERT INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at) VALUES (?, 1, 0, 0, ?)', per, now).run();
+    fakes.pg.users[name] = { id: 900000 + i, username: name, status: 'active', expire: exp, data_limit: 50 * GB, used_traffic: 5 * 1024 * 1024, token: 'cap' + id };
+    seeded.push({ id, name, per });
+  }
+  const panelsBefore = await rows("SELECT id, state FROM panels WHERE id != 1 AND state != 'disabled'");
+  await q("UPDATE panels SET state = 'disabled' WHERE id != 1").run(); // every run lands on panel 1
+  await q('DELETE FROM sync_cursor').run();
+  let writes = 0;
+  const realBatch = env.DB.batch;
+  env.DB.batch = (stmts) => { writes += stmts.length; return realBatch(stmts); };
+  const putsBefore = fakes.pg.puts;
+  const pages = Math.ceil(Object.keys(fakes.pg.users).length / 200);
+  for (let i = 0; i < pages; i++) { await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain(); ok(lastQ('cron * * * * *') <= 50, `cron page ${i + 1} of ${pages} stays within 50 D1 queries: ${lastQ('cron * * * * *')}`); }
+  const counted = await q('SELECT COUNT(*) c FROM usage_counters WHERE period_id IN (SELECT value FROM json_each(?)) AND accounted_bytes = ?', JSON.stringify(seeded.map((x) => x.per)), 5 * 1024 * 1024).first();
+  ok(counted.c === 200, `every one of the 200 users is counted after one pass: ${counted.c}`);
+  const late = await q('SELECT state, stop_reason FROM subscriptions WHERE user_id = ?', seeded[7].id).first();
+  ok(late.state === 'stopped' && late.stop_reason === 'expired', 'the user out of days is stopped in the same run');
+  ok(fakes.pg.users[seeded[7].name].status === 'disabled' && fakes.pg.puts > putsBefore, 'and switched off on the panel');
+  // nothing changed on the panel: a second pass reads but writes only the cursor and the panel health
+  await q("DELETE FROM sync_cursor WHERE job = 'usage'").run();
+  writes = 0;
+  for (let i = 0; i < pages; i++) { await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain(); }
+  ok(writes <= 4 * pages + 2, `an idle pass writes almost nothing (was about 2 rows per user): ${writes} statements for ${pages} page(s)`);
+  env.DB.batch = realBatch;
+  for (const p of panelsBefore) await q('UPDATE panels SET state = ? WHERE id = ?', p.state, p.id).run();
+  for (const x of seeded) delete fakes.pg.users[x.name];
+  for (const t of ['usage_counters WHERE period_id IN (SELECT id FROM sub_periods WHERE user_id >= 90000)', 'panel_accounts WHERE user_id >= 90000', 'subscriptions WHERE user_id >= 90000', 'sub_periods WHERE user_id >= 90000', 'users WHERE id >= 90000']) await env.DB.exec('DELETE FROM ' + t);
+}
+
+section('every request and cron run stays within the Free plan\'s 50 D1 queries');
+{ const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
+ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

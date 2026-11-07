@@ -13,15 +13,18 @@ function fixRow(row) {
 }
 
 class Stmt {
-  constructor(db, sql) { this.db = db; this.sql = sql; this.args = []; }
+  constructor(db, sql, owner) { this.db = db; this.sql = sql; this.args = []; this.owner = owner; }
+  counted() { if (this.owner && this.owner.onQuery) this.owner.onQuery(this.sql); }
   bind(...args) { this.args = args.map((a) => (a === undefined ? null : a)); return this; }
   async first(col) {
+    this.counted();
     const row = fixRow(this.db.prepare(this.sql).get(...this.args));
     if (col) return row ? row[col] : undefined;
     return row ?? null;
   }
-  async all() { return { results: this.db.prepare(this.sql).all(...this.args).map(fixRow), success: true }; }
+  async all() { this.counted(); return { results: this.db.prepare(this.sql).all(...this.args).map(fixRow), success: true }; }
   async run() {
+    this.counted();
     const r = this.db.prepare(this.sql).run(...this.args);
     return { success: true, meta: { changes: toNum(r.changes), last_row_id: toNum(r.lastInsertRowid) } };
   }
@@ -32,10 +35,14 @@ export function makeDB(schemaPath, { upto } = {}) {
   // apply every migration in order, like `wrangler d1 migrations apply`
   const dir = dirname(schemaPath);
   for (const f of readdirSync(dir).filter((x) => x.endsWith('.sql')).sort()) { if (upto && f > upto) break; db.exec(readFileSync(join(dir, f), 'utf8')); }
-  return {
-    prepare: (sql) => new Stmt(db, sql),
+  // onQuery(sql) is called once per query D1 would count against the per-invocation cap: each first/all/run,
+  // and a whole batch as one (tests use it to hold every request and cron run to the Free plan's 50)
+  const out = {
+    onQuery: null,
+    prepare: (sql) => new Stmt(db, sql, out),
     // like D1: the whole batch is one transaction, run without anything else in between, rolled back on error
     async batch(stmts) {
+      if (out.onQuery) out.onQuery('batch');
       db.exec('BEGIN');
       try {
         const out = stmts.map((s) => {
@@ -48,6 +55,7 @@ export function makeDB(schemaPath, { upto } = {}) {
     },
     exec: (sql) => db.exec(sql),
   };
+  return out;
 }
 
 // ---------------- fake PasarGuard + NOWPayments + Telegram over fetch ----------------

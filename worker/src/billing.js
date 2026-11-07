@@ -3,8 +3,8 @@ import { first, all, run, insert, getSettingInt, getSetting } from './db.js';
 import { PasarGuardError, pgOrThrow, parseExpire } from './pasarguard.js';
 import { nowSec } from './util.js';
 import { notifyAdmin, untrusted } from './telegram.js';
-import { panelsFor, getPanel, adapterFor } from './panels.js';
-import { ensureAccount, usedBytes } from './sync.js';
+import { listPanels, pickPanels, adapterFor } from './panels.js';
+import { ensureAccount } from './sync.js';
 
 const GB = 1024 ** 3;
 const DAY = 86400;
@@ -24,6 +24,9 @@ function randomHex(n) {
 // opts.days overrides plan.duration_days and opts.dataGb overrides plan.data_limit_gb (used for trials).
 // The new expiry is worked out from the control plane, not from a panel. Each panel gets the same expiry and
 // limit; a panel that fails is left marked for the sync job to retry. Fails only when no panel took it.
+// D1 work is a few reads and then one batch (one transaction) for every write, so a purchase costs about
+// 4 + one query per panel of the 50 an invocation may send, and the database never holds half a renewal.
+// opts.also = more statements for that same batch (the order's provisioned_at, so it is written together).
 export async function provision(env, user, plan, opts = {}) {
   if (typeof opts === 'number') opts = { days: opts };
   pgOrThrow(env); // the original panel must be configured, as before
@@ -31,26 +34,31 @@ export async function provision(env, user, plan, opts = {}) {
   const gb = opts.dataGb != null ? opts.dataGb : plan.data_limit_gb;
   const now = nowSec();
   const dataLimit = gb ? gb * GB : 0;
-  let sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
+  const sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
 
   // time left on a running plan carries over; an expired plan starts fresh from today
   const current = sub && sub.expires_at;
   const base = current && current > now && sub.stop_reason !== 'expired' ? current : now;
   const newExpire = base + days * DAY;
 
-  const targets = await panelsFor(env, user.id);
+  const panels = await listPanels(env);
+  const targets = pickPanels(panels, user.id);
   if (!targets.some((p) => p.id === 1)) {
-    const p1 = await getPanel(env, 1);
+    const p1 = panels.find((p) => p.id === 1);
     if (p1 && ['active', 'rollout'].includes(p1.state)) targets.unshift(p1);
   }
-  const results = []; // {panel, pa, used}
+  const mine = new Map((await all(env, 'SELECT * FROM panel_accounts WHERE user_id = ?', user.id)).map((a) => [a.panel_id, a]));
+  const st = (sql, ...args) => env.DB.prepare(sql).bind(...args);
+  const stmts = [];
+  const results = []; // {panel, name, subPath, used}
+  const failed = [];
   let firstError = null;
   for (const panel of targets) {
     try {
       const pg = await adapterFor(env, panel);
       // panel 1 keeps its own device limit (HWID); newer panels leave devices to the control plane
       const hwid = panel.id === 1 ? plan.device_limit || null : null;
-      let pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
+      let pa = mine.get(panel.id);
       if (!pa && panel.id === 1 && sub && sub.pg_username) {
         // subscription from before the control plane without its panel_accounts row
         await run(env, `INSERT OR IGNORE INTO panel_accounts (user_id, panel_id, remote_username, sub_path, created_at) VALUES (?, 1, ?, ?, ?)`,
@@ -58,61 +66,67 @@ export async function provision(env, user, plan, opts = {}) {
         pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1', user.id);
       }
       const remote = pa ? await pg.getUser(pa.remote_username) : null;
-      let used = 0;
       if (remote) {
-        const st = String(remote.status || '');
-        used = parseInt(remote.used_traffic || 0, 10) || 0;
-        if (dataLimit || st === 'limited') {
+        const status = String(remote.status || '');
+        let used = parseInt(remote.used_traffic || 0, 10) || 0;
+        if (dataLimit || status === 'limited') {
           try { await pg.resetUsage(pa.remote_username); used = 0; } catch (e) { /* not fatal: the new period starts from this reading */ }
         }
         const fields = { status: 'active', expire: newExpire, data_limit: dataLimit ? used + dataLimit : 0, data_limit_reset_strategy: 'no_reset' };
         if (hwid) fields.hwid_limit = hwid;
         const out = await pg.modifyUser(pa.remote_username, fields);
         const subPath = pg.absoluteSubUrl(out.subscription_url || '') || pa.sub_path;
-        await run(env, `UPDATE panel_accounts SET sub_path = ?, desired = 'active', applied = 'active', desired_limit_bytes = ?, applied_limit_bytes = ?,
+        stmts.push(st(`UPDATE panel_accounts SET sub_path = ?, desired = 'active', applied = 'active', desired_limit_bytes = ?, applied_limit_bytes = ?,
           desired_expire = ?, applied_expire = ?, dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ?`,
-          subPath, fields.data_limit, fields.data_limit, newExpire, newExpire, now, pa.id);
+        subPath, fields.data_limit, fields.data_limit, newExpire, newExpire, now, pa.id));
+        results.push({ panel, name: pa.remote_username, subPath, used });
       } else {
         pa = await ensureAccount(env, user, panel, { expire: newExpire, limit: dataLimit, hwid });
+        results.push({ panel, name: pa.remote_username, subPath: pa.sub_path, used: 0 });
       }
-      results.push({ panel, pa: await first(env, 'SELECT * FROM panel_accounts WHERE id = ?', pa.id), used });
     } catch (e) {
       if (!(e instanceof PasarGuardError)) throw e;
       firstError = firstError || e;
+      failed.push(panel.id);
       // try again from the sync job: the account (if any) must end up active with the new expiry and limit
-      await run(env, `UPDATE panel_accounts SET desired = 'active', desired_limit_bytes = ?, desired_expire = ?, dirty = 1, attempts = 0
-        WHERE user_id = ? AND panel_id = ?`, dataLimit, newExpire, user.id, panel.id);
+      stmts.push(st(`UPDATE panel_accounts SET desired = 'active', desired_limit_bytes = ?, desired_expire = ?, dirty = 1, attempts = 0
+        WHERE user_id = ? AND panel_id = ?`, dataLimit, newExpire, user.id, panel.id));
     }
   }
-  if (!results.length) throw firstError || new PasarGuardError('no panel is available', 0);
-
-  // close the old period (its usage stays in the history) and open the new one
-  if (sub && sub.period_id) {
-    const prevUsed = await usedBytes(env, sub.period_id);
-    await run(env, "UPDATE sub_periods SET ended_at = ?, end_reason = COALESCE(end_reason, 'renewed'), final_used_bytes = COALESCE(final_used_bytes, ?) WHERE id = ?",
-      now, prevUsed, sub.period_id);
+  if (!results.length) {
+    if (stmts.length) await env.DB.batch(stmts);
+    throw firstError || new PasarGuardError('no panel is available', 0);
   }
-  const periodId = await insert(env, 'sub_periods', { user_id: user.id, plan_id: plan.id, order_id: opts.orderId || null, source: opts.source || (opts.orderId ? 'order' : null), started_at: now, expires_at: newExpire, limit_bytes: dataLimit });
+
+  // close the old period (its usage stays in the history) and open the new one, in the same batch
+  if (sub && sub.period_id) {
+    stmts.push(st(`UPDATE sub_periods SET ended_at = ?, end_reason = COALESCE(end_reason, 'renewed'),
+      final_used_bytes = COALESCE(final_used_bytes, (SELECT COALESCE(SUM(accounted_bytes), 0) FROM usage_counters WHERE period_id = ?)) WHERE id = ?`,
+    now, sub.period_id, sub.period_id));
+  }
+  stmts.push(st('INSERT INTO sub_periods (user_id, plan_id, order_id, source, started_at, expires_at, limit_bytes) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    user.id, plan.id, opts.orderId || null, opts.source || (opts.orderId ? 'order' : null), now, newExpire, dataLimit));
+  const period = '(SELECT MAX(id) FROM sub_periods WHERE user_id = ?)'; // the period opened just above
   for (const r of results) {
-    await run(env, 'INSERT OR REPLACE INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at) VALUES (?, ?, ?, 0, ?)', periodId, r.panel.id, r.used, now);
+    stmts.push(st(`INSERT OR REPLACE INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at) VALUES (${period}, ?, ?, 0, ?)`,
+      user.id, r.panel.id, r.used, now));
   }
   // accounts that could not be updated now: their next reading only sets the starting point
-  for (const pa of await all(env, 'SELECT panel_id FROM panel_accounts WHERE user_id = ? AND dirty = 1', user.id)) {
-    await run(env, 'INSERT OR IGNORE INTO usage_counters (period_id, panel_id, baseline_pending, last_seen_at) VALUES (?, ?, 1, ?)', periodId, pa.panel_id, now);
-  }
-
+  stmts.push(st(`INSERT OR IGNORE INTO usage_counters (period_id, panel_id, baseline_pending, last_seen_at)
+    SELECT ${period}, panel_id, 1, ? FROM panel_accounts WHERE user_id = ? AND dirty = 1`, user.id, now, user.id));
   const p1 = results.find((r) => r.panel.id === 1);
-  if (!sub) {
-    await insert(env, 'subscriptions', { user_id: user.id, pg_username: p1 ? p1.pa.remote_username : '' });
-    sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
-  }
   const periodDays = Math.max(days, Math.ceil((newExpire - now) / DAY));
-  await run(env,
-    `UPDATE subscriptions SET plan_id = ?, expires_at = ?, data_limit_bytes = ?, device_limit = ?, period_days = ?, updated_at = ?,
-       period_id = ?, state = 'active', stop_reason = NULL, used_bytes = 0, used_at = ?, baselined = 1,
-       pg_username = COALESCE(?, pg_username), sub_url = COALESCE(?, sub_url) WHERE user_id = ?`,
-    plan.id, newExpire, dataLimit, plan.device_limit, periodDays, now, periodId, now,
-    p1 ? p1.pa.remote_username : null, p1 ? p1.pa.sub_path : null, user.id);
+  stmts.push(st(`INSERT INTO subscriptions (user_id, pg_username, plan_id, expires_at, data_limit_bytes, device_limit, period_days, updated_at,
+      period_id, state, stop_reason, used_bytes, used_at, baselined, sub_url)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ${period}, 'active', NULL, 0, ?, 1, ?)
+    ON CONFLICT(user_id) DO UPDATE SET plan_id = excluded.plan_id, expires_at = excluded.expires_at, data_limit_bytes = excluded.data_limit_bytes,
+      device_limit = excluded.device_limit, period_days = excluded.period_days, updated_at = excluded.updated_at, period_id = excluded.period_id,
+      state = 'active', stop_reason = NULL, used_bytes = 0, used_at = excluded.used_at, baselined = 1,
+      pg_username = COALESCE(?, subscriptions.pg_username), sub_url = COALESCE(?, subscriptions.sub_url)`,
+  user.id, p1 ? p1.name : '', plan.id, newExpire, dataLimit, plan.device_limit || 0, periodDays, now, user.id, now, p1 ? p1.subPath : '',
+  p1 ? p1.name : null, p1 ? p1.subPath : null));
+  stmts.push(...(opts.also || []));
+  await env.DB.batch(stmts);
   return { expires: newExpire, panels: results.length };
 }
 
@@ -234,7 +248,8 @@ async function deliver(env, order, quiet) {
   if (!done || !done.provisioned_at) {
     await claimCoupon(env, order, user, quiet);
     try {
-      await provision(env, user, plan, { orderId: order.id });
+      // provisioned_at is written in the same batch as the new period, so a retry never extends twice
+      await provision(env, user, plan, { orderId: order.id, also: [env.DB.prepare('UPDATE orders SET provisioned_at = ? WHERE id = ?').bind(nowSec(), order.id)] });
     } catch (e) {
       if (e instanceof PasarGuardError) {
         if (!quiet) {
@@ -244,7 +259,6 @@ async function deliver(env, order, quiet) {
       }
       throw e;
     }
-    await run(env, 'UPDATE orders SET provisioned_at = ? WHERE id = ?', nowSec(), order.id);
   }
   await referralCommission(env, user, order);
   await markPaid(env, order);
