@@ -9,12 +9,28 @@ import { bankOf, cardDigits } from './banks.js';
 import { coinById, walletKey, memoKey, enabledCoins, usdRate, prices, quoteAmount, cleanTxid } from './coins.js';
 import { sendCoinNotice } from './telegram.js';
 
-async function orderOut(env, o) {
-  const plan = o.plan_id ? await first(env, 'SELECT * FROM plans WHERE id = ?', o.plan_id) : null;
-  const target = o.activate_plan_id ? await first(env, 'SELECT * FROM plans WHERE id = ?', o.activate_plan_id) : null;
+const cardOpen = (o) => o.method === 'card' && ['pending', 'review', 'rejected'].includes(o.status);
+
+// What showing these orders needs, read once for all of them (the order list must stay a handful of D1 queries
+// however many orders the user has: an invocation may send at most 50).
+async function outContext(env, rows) {
+  const planIds = [...new Set(rows.flatMap((o) => [o.plan_id, o.activate_plan_id]).filter(Boolean))];
+  const resultIds = [...new Set(rows.map((o) => o.result_order_id).filter(Boolean))];
+  const plans = new Map(planIds.length
+    ? (await all(env, 'SELECT * FROM plans WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(planIds))).map((p) => [p.id, p]) : []);
+  const results = new Map(resultIds.length
+    ? (await all(env, 'SELECT id, status FROM orders WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(resultIds))).map((r) => [r.id, r.status]) : []);
+  const settings = rows.some(cardOpen) ? await getSettings(env) : null;
+  return { plans, results, settings };
+}
+
+async function orderOut(env, o, ctx = null) {
+  ctx = ctx || (await outContext(env, [o]));
+  const plan = o.plan_id ? ctx.plans.get(o.plan_id) || null : null;
+  const target = o.activate_plan_id ? ctx.plans.get(o.activate_plan_id) || null : null;
   let card = null;
-  if (o.method === 'card' && ['pending', 'review', 'rejected'].includes(o.status)) {
-    const s = await getSettings(env);
+  if (cardOpen(o)) {
+    const s = ctx.settings;
     const b = bankOf(s.card_number);
     card = {
       number: cardDigits(s.card_number), holder: s.card_holder, bank: s.card_bank || b.name, color1: b.c1, color2: b.c2,
@@ -24,8 +40,8 @@ async function orderOut(env, o) {
   }
   let activated = null;
   if (o.result_order_id) {
-    const r = await first(env, 'SELECT status FROM orders WHERE id = ?', o.result_order_id);
-    activated = r ? r.status === 'paid' : false;
+    const r = ctx.results.get(o.result_order_id);
+    activated = r ? r === 'paid' : false;
   }
   return {
     id: o.id, kind: o.kind, plan_id: o.plan_id, plan_name: plan ? planName(plan.name) : null,
@@ -67,8 +83,9 @@ async function uniqueSuffix(env, order) {
 }
 
 // a crypto quote that ran out without the user saying they paid is closed, so a stale price is never used
+const quoteRanOut = (o, now) => o.method === 'coin' && o.status === 'pending' && o.coin_expires_at && o.coin_expires_at < now;
 async function expireIfDue(env, o) {
-  if (o.method === 'coin' && o.status === 'pending' && o.coin_expires_at && o.coin_expires_at < nowSec()) {
+  if (quoteRanOut(o, nowSec())) {
     await run(env, "UPDATE orders SET status = 'expired' WHERE id = ? AND status = 'pending'", o.id);
     o.status = 'expired';
   }
@@ -209,8 +226,14 @@ export async function createOrder(env, user, body) {
 
 export async function listOrders(env, user) {
   const rows = await all(env, 'SELECT * FROM orders WHERE user_id = ? ORDER BY id DESC LIMIT 50', user.id);
-  for (const o of rows) await expireIfDue(env, o);
-  return json(await Promise.all(rows.map((o) => orderOut(env, o))));
+  const now = nowSec();
+  const due = rows.filter((o) => quoteRanOut(o, now));
+  if (due.length) {
+    await run(env, "UPDATE orders SET status = 'expired' WHERE id IN (SELECT value FROM json_each(?)) AND status = 'pending'", JSON.stringify(due.map((o) => o.id)));
+    for (const o of due) o.status = 'expired';
+  }
+  const ctx = await outContext(env, rows);
+  return json(await Promise.all(rows.map((o) => orderOut(env, o, ctx))));
 }
 
 async function ownOrder(env, user, orderId) {

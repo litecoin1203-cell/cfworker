@@ -124,7 +124,11 @@ export function bucketOf(userId, panelId) {
 // Panels this user should have an account on. A user is never left without a panel: if the only panels
 // that would take them are being rolled out to others, they get those (this is how users of a removed panel move).
 export async function panelsFor(env, userId) {
-  const panels = (await listPanels(env)).filter((p) => SERVING.includes(p.state));
+  return pickPanels(await listPanels(env), userId);
+}
+// The same choice from a panel list already read (the cron job reads it once for every user).
+export function pickPanels(allPanels, userId) {
+  const panels = allPanels.filter((p) => SERVING.includes(p.state));
   const picked = panels.filter((p) => p.state === 'active' || bucketOf(userId, p.id) < p.rollout_percent);
   return picked.length ? picked : panels;
 }
