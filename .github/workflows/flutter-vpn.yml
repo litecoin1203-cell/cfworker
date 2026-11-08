@@ -191,12 +191,20 @@ jobs:
             }
           }
           settingsEvaluated { settings ->
-            // only where the build lists its own plugin repositories (an empty list means the defaults)
+            // only where the build lists its own repositories (an empty list means the defaults)
             if (!settings.pluginManagement.repositories.isEmpty()) putFirst(settings.pluginManagement.repositories)
+            def drm = settings.dependencyResolutionManagement
+            if (!drm.repositories.isEmpty()) putFirst(drm.repositories)
+            // a build that takes its repositories from settings (Flutter's own Gradle plugin: FAIL_ON_PROJECT_REPOS)
+            // refuses project ones; there the mirror goes into the settings list above
+            def mode = drm.repositoriesMode.getOrNull()
+            settings.gradle.ext.centralMirrorInProjects = (mode == null || mode.toString() == 'PREFER_PROJECT')
           }
-          allprojects {
-            buildscript { putFirst(repositories) }
-            putFirst(repositories)
+          allprojects { p ->
+            def ext = p.gradle.ext
+            if (ext.has('centralMirrorInProjects') && !ext.centralMirrorInProjects) return
+            p.buildscript { putFirst(repositories) }
+            putFirst(p.repositories)
           }
           GRADLE
       # The Gradle wrapper tries its download once and stops on a 504; fetch the same file with retries
