@@ -376,3 +376,33 @@ export async function setAvatar(env, user, body) {
   const fresh = await first(env, 'SELECT * FROM users WHERE id = ?', user.id);
   return json(profileOut(fresh));
 }
+
+// ---------------- Telegram Mini App: initData ----------------
+// A Mini App gets "initData" from Telegram (a query string with user, auth_date and hash). Only someone holding
+// the bot token can produce a valid hash, so the server checks it before trusting anything inside:
+//   secret = HMAC_SHA256(key "WebAppData", bot token); hash = hex(HMAC_SHA256(secret, data_check_string))
+// data_check_string = every field except hash, "key=value", sorted by key, joined with "\n".
+// Returns { user, authDate, startParam } or null. maxAgeSec bounds how long a captured initData stays usable.
+export async function verifyInitData(botToken, initData, maxAgeSec, now = nowSec()) {
+  if (!botToken || typeof initData !== 'string' || !initData || initData.length > 4096) return null;
+  let params;
+  try { params = new URLSearchParams(initData); } catch (e) { return null; }
+  const hash = params.get('hash') || '';
+  if (!/^[0-9a-f]{64}$/.test(hash)) return null;
+  const pairs = [];
+  for (const [k, v] of params) if (k !== 'hash') pairs.push([k, v]);
+  pairs.sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  const check = pairs.map(([k, v]) => `${k}=${v}`).join('\n');
+  const te = new TextEncoder();
+  const k1 = await crypto.subtle.importKey('raw', te.encode('WebAppData'), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const secret = await crypto.subtle.sign('HMAC', k1, te.encode(botToken));
+  const k2 = await crypto.subtle.importKey('raw', secret, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const want = [...new Uint8Array(await crypto.subtle.sign('HMAC', k2, te.encode(check)))].map((x) => x.toString(16).padStart(2, '0')).join('');
+  if (!(await safeEqual(want, hash))) return null;
+  const authDate = parseInt(params.get('auth_date') || '', 10);
+  if (!Number.isFinite(authDate) || authDate > now + 60 || now - authDate > maxAgeSec) return null;
+  let user = null;
+  try { user = JSON.parse(params.get('user') || 'null'); } catch (e) { return null; }
+  if (!user || !/^\d{1,20}$/.test(String(user.id ?? ''))) return null;
+  return { user, authDate, startParam: params.get('start_param') || '' };
+}
