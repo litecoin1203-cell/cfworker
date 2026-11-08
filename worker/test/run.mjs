@@ -3939,6 +3939,71 @@ section('phases 1-5 fixes: open-order cap, stale quote, bad token, cancel race, 
   ok(meMs < 12000 && me.status === 200, `/me with a hung panel answers in ${meMs} ms (${me.status})`);
 }
 
+section('Mini App stage 0: initData check, probe page, report to the admin, bot buttons');
+{
+  const { verifyInitData } = await import('../src/auth.js');
+  const { createHmac } = await import('node:crypto');
+  // initData exactly as a Telegram client builds it, signed with the bot token (independent HMAC from node:crypto)
+  const sign = (fields, token = env.TELEGRAM_BOT_TOKEN) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(token).digest();
+    const hash = createHmac('sha256', secret).update(check).digest('hex');
+    return new URLSearchParams({ ...fields, hash }).toString();
+  };
+  const now = Math.floor(Date.now() / 1000);
+  const user = JSON.stringify({ id: 777001, first_name: 'Sara/grant', username: 'sara_t' });
+  const good = sign({ query_id: 'AAH', user, auth_date: String(now - 30) });
+  const v = await verifyInitData(env.TELEGRAM_BOT_TOKEN, good, 3600, now);
+  ok(v && v.user.id === 777001 && v.authDate === now - 30, 'valid initData is accepted and gives the Telegram user');
+  ok((await verifyInitData('other:token', good, 3600, now)) === null, 'initData signed for another bot is refused');
+  ok((await verifyInitData(env.TELEGRAM_BOT_TOKEN, good.replace('sara_t', 'sara_x'), 3600, now)) === null, 'a changed field is refused');
+  ok((await verifyInitData(env.TELEGRAM_BOT_TOKEN, good + '&extra=1', 3600, now)) === null, 'an added field is refused');
+  ok((await verifyInitData(env.TELEGRAM_BOT_TOKEN, sign({ user, auth_date: String(now - 7200) }), 3600, now)) === null, 'old initData is refused');
+  ok((await verifyInitData(env.TELEGRAM_BOT_TOKEN, sign({ user, auth_date: String(now + 3600) }), 3600, now)) === null, 'initData from the future is refused');
+  ok((await verifyInitData(env.TELEGRAM_BOT_TOKEN, sign({ auth_date: String(now) }), 3600, now)) === null, 'initData without a user is refused');
+  ok((await verifyInitData(env.TELEGRAM_BOT_TOKEN, 'user=1&auth_date=1&hash=zz', 3600, now)) === null, 'a malformed hash is refused');
+  ok((await verifyInitData(env.TELEGRAM_BOT_TOKEN, '', 3600, now)) === null && (await verifyInitData(env.TELEGRAM_BOT_TOKEN, { a: 1 }, 3600, now)) === null, 'empty or non-text initData is refused');
+  ok((await verifyInitData('', good, 3600, now)) === null, 'no bot token = nothing is accepted');
+
+  await botSet('app_api_bases', 'https://b.example.org');
+  const page = await call('GET', '/mini/probe');
+  const html = await page.res.text();
+  const csp = page.res.headers.get('content-security-policy') || '';
+  ok(page.status === 200 && /text\/html/.test(page.res.headers.get('content-type')) && /Connection test/.test(html), 'the probe page is served as HTML');
+  ok(/default-src 'none'/.test(csp) && /frame-ancestors/.test(csp) && page.res.headers.get('cache-control') === 'no-store', 'the probe page has a strict CSP and is not cached');
+  ok(html.includes('"others":["https://b.example.org"]') && !html.includes('"https://api.test"'), 'the page lists the other Worker addresses, not its own');
+  ok(!/#[0-9a-f]{6}/i.test(html.replace(/#(E7F1FA|FFFFFF|F2F6FB|14284B|2F89F5|16181D|8B93A7|1E74DB|1F9D55|E5484D|04080F|060D18|081120|2C3E5D|F2F3F5|9CA2B0|4E9BF6)\b/gi, '')), 'the page uses only Pleat palette colours');
+  ok(!/gold|cloud/i.test(html), 'no gold or clouds on the page');
+
+  const rep = (j, cf) => call('POST', '/api/v1/mini/probe', { json: j, cf });
+  ok((await rep({ steps: {} })).status === 401, 'a report without initData is refused');
+  ok((await rep({ init_data: good.replace('sara_t', 'x') })).status === 401, 'a report with forged initData is refused');
+  let n = fakes.tg.calls.length;
+  const r = await rep({ init_data: good, origin: 'https://api.test', platform: 'android', steps: { page: { ok: true, ms: 120 }, telegram: { ok: true }, api: { ok: true, ms: 340 }, sdk: { ok: false } },
+    others: [{ base: 'https://b.example.org', ok: false, ms: 10000 }, { base: 'https://evil.example', ok: true, ms: 1 }] }, { asn: 44244, country: 'IR' });
+  await drain();
+  const sent = fakes.tg.calls.slice(n).filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '12345').map((c) => String(c.body.text));
+  const t = sent.join('\n');
+  ok(r.status === 200 && sent.length === 1 && /نتیجه‌ی تست Mini App/.test(t), 'a valid report reaches the admin chat once');
+  ok(/777001/.test(t) && /@sara_t/.test(t) && /api\.test/.test(t) && /android/.test(t), 'the report names the user, the address and the platform');
+  ok(/API همین دامنه: ✅ 340ms/.test(t) && /telegram\.org: ❌/.test(t) && /❌ b\.example\.org/.test(t), 'the report shows each step');
+  ok(!/evil\.example/.test(t), 'addresses that are not the Worker\'s are dropped from the report');
+  ok(!/\/grant/.test(t), 'a "/" in the Telegram name cannot become a bot command');
+
+  const tap = (data) => tgWebhook({ callback_query: { id: 'mtp-' + data, data, message: { chat: { id: 12345 }, message_id: 991, text: 'menu' } } });
+  n = fakes.tg.calls.length;
+  await tap('m:app');
+  const appScr = fakes.tg.calls.slice(n).filter((c) => c.method === 'editMessageText').pop();
+  ok(appScr && appScr.body.reply_markup.inline_keyboard.flat().some((x) => x.callback_data === 'm:mtp'), 'the Pleat app screen has the Mini App test button');
+  n = fakes.tg.calls.length;
+  await tap('m:mtp');
+  const scr = fakes.tg.calls.slice(n).filter((c) => c.method === 'editMessageText').pop();
+  const urls = scr ? scr.body.reply_markup.inline_keyboard.flat().filter((x) => x.web_app).map((x) => x.web_app.url) : [];
+  ok(urls.join(' ') === 'https://api.test/mini/probe https://b.example.org/mini/probe', 'one web_app button per Worker address: ' + urls.join(' '));
+  ok(/VPN/.test(scr?.body.text || '') && scr.body.reply_markup.inline_keyboard.flat().some((x) => x.callback_data === 'm:home'), 'the test screen explains the steps and ends with home');
+  await botSet('app_api_bases', '');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

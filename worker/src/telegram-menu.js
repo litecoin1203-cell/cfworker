@@ -212,7 +212,7 @@ export function allowedTap(role, data) {
 }
 export function forRole(role, kb) {
   if (!role || role === 'owner') return kb;
-  const rows = (kb || []).map((row) => row.filter((x) => x.url || allowedTap(role, x.callback_data))).filter((row) => row.length);
+  const rows = (kb || []).map((row) => row.filter((x) => x.url || x.web_app || allowedTap(role, x.callback_data))).filter((row) => row.length);
   return rows.length ? rows : [[HOME]];
 }
 
@@ -332,6 +332,7 @@ const SCREENS = {
   srv: (env, a) => S.panelServer(env, parseInt(a[0], 10), a[1]),
   appl: (env, a) => S.appList(env, a[0]),
   upd: (env) => S.appUpdate(env),
+  mtp: (env) => S.miniProbe(env),
   nc: (env) => S.carriers(env),
   nca: (env, a) => S.carrier(env, parseInt(a[0], 10)),
   nsv: (env, a) => S.netServer(env, a[0]),

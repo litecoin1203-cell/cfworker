@@ -324,3 +324,117 @@ export async function startTrial(env, user, body, request) {
   const fresh = await first(env, 'SELECT * FROM users WHERE id = ?', user.id);
   return me(env, fresh);
 }
+
+// ---------------- Telegram Mini App, stage 0: can the page open in Iran at all? ----------------
+// A Mini App page is loaded by the phone's own web view over the normal internet, not through Telegram's proxy,
+// so a filtered domain would not open even when Telegram itself works. This throw-away probe page answers that
+// before any real Mini App is built: the admin opens it from the bot (📱 اپ Pleat › 🧪 تست Mini App) once per
+// domain, on each operator, with the VPN off, and the page reports what it could reach back to the bot.
+
+// The Worker's https addresses the probe can be opened on: PUBLIC_BASE_URL, then the extra API domains.
+export async function miniBases(env) {
+  const s = await getSettings(env);
+  const list = [String(env.PUBLIC_BASE_URL || ''), ...splitList(s.app_api_bases)]
+    .map((b) => b.trim().replace(/\/+$/, '').toLowerCase())
+    .filter((b) => /^https:\/\/[a-z0-9.-]+(:\d+)?$/.test(b));
+  return [...new Set(list)].slice(0, 8);
+}
+
+const PROBE_CSP = "default-src 'none'; script-src 'unsafe-inline' https://telegram.org; style-src 'unsafe-inline'; connect-src 'self' https:; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org";
+
+export async function miniProbePage(env, request) {
+  const origin = new URL(request.url).origin.toLowerCase();
+  const others = (await miniBases(env)).filter((b) => b !== origin);
+  const data = JSON.stringify({ others }).replace(/</g, '\\u003c');
+  return new Response(PROBE_HTML.replace('/*DATA*/null', data), {
+    headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'content-security-policy': PROBE_CSP,
+      'x-content-type-options': 'nosniff', 'referrer-policy': 'no-referrer' },
+  });
+}
+
+const msOf = (v) => (Number.isFinite(v) && v >= 0 && v < 120000 ? Math.round(v) : null);
+
+// POST /api/v1/mini/probe {init_data, origin, steps: {page|telegram|api|sdk: {ok, ms}}, others: [{base, ok, ms}]}
+// Only a page opened from Telegram (a valid initData) can report, so strangers cannot write into the admin chat.
+export async function miniProbeReport(env, body, request) {
+  const { verifyInitData } = await import('./auth.js');
+  const v = await verifyInitData(env.TELEGRAM_BOT_TOKEN, body?.init_data, 86400);
+  if (!v) throw err(401, 'bad_init_data', 'Open this page from the Telegram bot.');
+  const bases = await miniBases(env);
+  const host = (b) => b.replace(/^https:\/\//, '');
+  const origin = String(body?.origin || '').toLowerCase();
+  const steps = body && typeof body.steps === 'object' && body.steps ? body.steps : {};
+  const mark = (s) => (s && s.ok === true ? `✅ ${msOf(s.ms) ?? '?'}ms` : '❌');
+  const others = (Array.isArray(body?.others) ? body.others : []).filter((o) => o && bases.includes(String(o.base))).slice(0, 8);
+  const { ispOf } = await import('./netstats.js');
+  const net = ispOf(request);
+  const u = v.user;
+  const who = [u.first_name, u.last_name].filter(Boolean).join(' ').slice(0, 40);
+  const platform = String(body?.platform || '').replace(/[^\w.-]/g, '').slice(0, 20);
+  const lines = [
+    '🧪 نتیجه‌ی تست Mini App',
+    `👤 ${untrusted(who)}${u.username ? ' @' + untrusted(String(u.username).slice(0, 32)) : ''} (${u.id})`,
+    `📶 ${net.isp}${net.geoFa ? ' · ' + net.geoFa : ''}${net.country ? ' · ' + net.country : ''} · ${platform || '?'}`,
+    `🌐 دامنه: ${bases.includes(origin) ? host(origin) : 'نامشخص'}`,
+    '',
+    `صفحه باز شد: ${mark(steps.page)}`,
+    `داده‌ی تلگرام (initData): ${mark(steps.telegram)}`,
+    `API همین دامنه: ${mark(steps.api)}`,
+    `اسکریپت telegram.org: ${mark(steps.sdk)}`,
+    ...(others.length ? ['', 'دامنه‌های دیگر از همین گوشی:', ...others.map((o) => `${o.ok === true ? '✅' : '❌'} ${host(o.base)}${o.ok === true ? ` ${msOf(o.ms) ?? '?'}ms` : ''}`)] : []),
+  ];
+  await notifyAdmin(env, lines.join('\n'));
+  return json({ ok: true });
+}
+
+// The page: no build step, no outside file except the optional telegram.org script (whose loading is one of
+// the things being measured). Colours are Pleat's day/night palette (direction A). English, like Pleat.
+const PROBE_HTML = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Pleat · connection test</title>
+<style>
+:root{--ground:#E7F1FA;--surface:#FFFFFF;--field:#F2F6FB;--navy:#14284B;--blue:#2F89F5;--ink:#16181D;--muted:#8B93A7;--accent:#1E74DB;--safe:#1F9D55;--alert:#E5484D}
+:root.night{--ground:#04080F;--surface:#060D18;--field:#081120;--navy:#2C3E5D;--ink:#F2F3F5;--muted:#9CA2B0;--accent:#4E9BF6}
+*{box-sizing:border-box}body{margin:0;background:var(--ground);color:var(--ink);font:16px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:20px 16px 32px}
+.card{background:var(--surface);border-radius:30px;padding:22px 20px;max-width:520px;margin:0 auto 14px}
+h1{font-size:22px;margin:0 0 4px}p{margin:0;color:var(--muted);font-size:14px}
+.mark{width:44px;height:44px;margin-bottom:14px;position:relative}.mark i{position:absolute;width:28px;height:34px;border-radius:6px;transform:skewX(-14deg)}
+.mark i:first-child{left:4px;top:6px;background:var(--navy)}.mark i:last-child{left:14px;top:2px;background:var(--blue);opacity:.9}
+ul{list-style:none;margin:0;padding:0}li{display:flex;justify-content:space-between;gap:12px;padding:12px 0;border-bottom:1px solid var(--field)}li:last-child{border:0}
+.s{font-weight:600;white-space:nowrap}.ok{color:var(--safe)}.no{color:var(--alert)}.wait{color:var(--muted)}
+button{width:100%;border:0;border-radius:999px;padding:15px;font:600 16px system-ui,sans-serif;background:var(--blue);color:#fff;min-height:48px}
+button:active{background:var(--accent)}#note{margin-top:12px;text-align:center}
+@media (prefers-reduced-motion:no-preference){.wait{animation:p 1.2s ease-in-out infinite}@keyframes p{50%{opacity:.4}}}
+</style></head><body>
+<div class="card"><div class="mark" aria-hidden="true"><i></i><i></i></div>
+<h1>Connection test</h1><p>Checks whether this page and Pleat's server can be reached from your network. Turn the VPN off first.</p></div>
+<div class="card"><ul id="list"></ul></div>
+<div class="card"><button id="copy" type="button">Copy report</button><p id="note" role="status"></p></div>
+<script>
+(function(){
+var CFG=/*DATA*/null;var t0=performance.now();var night=false;
+var h=new URLSearchParams(location.hash.slice(1));var initData=h.get('tgWebAppData')||'';var platform=h.get('tgWebAppPlatform')||'';
+try{var tp=JSON.parse(h.get('tgWebAppThemeParams')||'{}');if(tp.bg_color){var c=parseInt(tp.bg_color.slice(1),16);night=((c>>16&255)*299+(c>>8&255)*587+(c&255)*114)/1000<128}else{night=matchMedia('(prefers-color-scheme: dark)').matches}}catch(e){}
+if(night)document.documentElement.classList.add('night');
+var R={page:{ok:true,ms:Math.round(t0)},telegram:{ok:!!initData},api:null,sdk:null};var others=[];
+var list=document.getElementById('list');
+function row(id,label){var li=document.createElement('li');li.innerHTML='<span></span><span class="s wait">checking…</span>';li.firstChild.textContent=label;li.id='r-'+id;list.appendChild(li)}
+function set(id,r){var s=document.querySelector('#r-'+id+' .s');s.className='s '+(r.ok?'ok':'no');s.textContent=r.ok?('OK'+(r.ms!=null?' · '+r.ms+' ms':'')):'Failed'}
+function timed(p,ms){return new Promise(function(res){var d=false;var to=setTimeout(function(){if(!d){d=true;res(false)}},ms);p.then(function(){if(!d){d=true;clearTimeout(to);res(true)}},function(){if(!d){d=true;clearTimeout(to);res(false)}})})}
+row('page','Page opened');row('telegram','Opened inside Telegram');row('api','Pleat server (this address)');row('sdk','telegram.org script');
+(CFG.others||[]).forEach(function(b,i){row('o'+i,b.replace('https://',''))});row('report','Result sent to admin');
+set('page',R.page);set('telegram',R.telegram);
+var a0=performance.now();var api=timed(fetch('/api/v1/ip',{cache:'no-store'}).then(function(r){if(!r.ok)throw 0}),10000).then(function(ok){R.api={ok:ok,ms:Math.round(performance.now()-a0)};set('api',R.api)});
+var s0=performance.now();var sdk=new Promise(function(res){var s=document.createElement('script');s.src='https://telegram.org/js/telegram-web-app.js';s.onload=function(){res(true)};s.onerror=function(){res(false)};document.head.appendChild(s);setTimeout(function(){res(false)},10000)}).then(function(ok){R.sdk={ok:ok,ms:Math.round(performance.now()-s0)};set('sdk',R.sdk);try{if(ok&&window.Telegram&&Telegram.WebApp){Telegram.WebApp.ready();Telegram.WebApp.expand()}}catch(e){}});
+var oth=(CFG.others||[]).map(function(b,i){var o0=performance.now();return timed(fetch(b+'/health',{mode:'no-cors',cache:'no-store'}),10000).then(function(ok){var r={base:b,ok:ok,ms:Math.round(performance.now()-o0)};others[i]=r;set('o'+i,r)})});
+Promise.all([api,sdk].concat(oth)).then(function(){
+ if(!initData){set('report',{ok:false});note('Open this page from the Telegram bot to send the result.');return}
+ fetch('/api/v1/mini/probe',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({init_data:initData,origin:location.origin,platform:platform,steps:R,others:others})})
+ .then(function(r){set('report',{ok:r.ok});note(r.ok?'Done. The result is in the bot.':'The result could not be sent. Use Copy report.')},function(){set('report',{ok:false});note('The result could not be sent. Use Copy report.')});
+});
+function note(t){document.getElementById('note').textContent=t}
+function text(){var l=['Pleat Mini App test','address: '+location.host,'platform: '+(platform||'?')];document.querySelectorAll('#list li').forEach(function(li){l.push(li.firstChild.textContent+': '+li.lastChild.textContent)});return l.join('\\n')}
+document.getElementById('copy').onclick=function(){var t=text();(navigator.clipboard?navigator.clipboard.writeText(t):Promise.reject()).then(function(){note('Copied.')},function(){prompt('Copy:',t)})};
+})();
+</script></body></html>`;

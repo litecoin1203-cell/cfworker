@@ -758,7 +758,7 @@ export async function app(env) {
       SET_CHOICES.trial_needs_telegram.map((v) => b(`${v === tgOnly ? '✅ ' : ''}${v === '1' ? '🔐 تست فقط با تلگرام تأییدشده' : 'تست برای همه'}`, `m:ss:trial_needs_telegram:${v}`)),
       [b('⏳ روزهای تست (پلن‌ها)', 'm:pl'), b('💰 حداقل شارژ', 'm:sk:min_topup_toman')],
       [b('🎁 دعوت و پاداش', 'm:ref'), b('💳 روش‌های پرداخت', 'm:pay')],
-      [b('📲 نسخه‌ی اپ و آپدیت', 'm:upd')],
+      [b('📲 نسخه‌ی اپ و آپدیت', 'm:upd'), b('🧪 تست Mini App', 'm:mtp')],
       nav('home'),
     ],
   };
@@ -787,6 +787,23 @@ export async function appUpdate(env) {
       [b('🔄 تازه کن', 'm:upd')],
       nav('app'),
     ],
+  };
+}
+
+// Mini App stage 0: one button per Worker address opens the probe page inside Telegram (web_app button); the
+// page sends its result back to this chat. Tells whether a Mini App can open on Iranian networks at all.
+export async function miniProbe(env) {
+  const { miniBases } = await import('./account.js');
+  const bases = await miniBases(env);
+  return {
+    text: [crumb('📱 اپ Pleat', '🧪 تست Mini App'), '',
+      'می‌خواهیم بفهمیم صفحه‌ی Mini App در ایران باز می‌شود یا نه.', '',
+      '۱. VPN گوشی را خاموش کن (Pleat و هر VPN دیگر). پروکسی تلگرام اشکالی ندارد.',
+      '۲. روی هر دکمه‌ی زیر بزن؛ صفحه‌ی تست داخل تلگرام باز می‌شود و حدود ۱۰ ثانیه طول می‌کشد.',
+      '۳. نتیجه خودکار همین‌جا برایت می‌آید. اگر صفحه اصلاً باز نشد، یعنی آن دامنه برای Mini App فیلتر است.',
+      '۴. همین کار را روی ایرانسل، همراه اول و Wi-Fi تکرار کن.', '',
+      bases.length ? `دامنه‌ها: ${fa(bases.length)}` : '⚠️ هیچ آدرس https پیدا نشد (PUBLIC_BASE_URL یا 🌐 دامنه‌ها).'].join('\n'),
+    kb: [...bases.map((base) => [{ text: '🧪 ' + base.replace(/^https:\/\//, ''), web_app: { url: base + '/mini/probe' } }]), nav('app')],
   };
 }
 

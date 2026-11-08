@@ -221,11 +221,13 @@ Key ideas:
 | Path | Auth | Handler |
 |---|---|---|
 | `GET /health` | none | `{ok:true}`; `?deep=1` also checks D1 and cron age (PR #45) |
+| `GET /mini/probe` | none | Mini App stage 0 probe page (HTML, strict CSP): tests whether a Mini App opens on Iranian networks |
 | `GET /pay/done` | none | return page after gateway payment (old `cloudgold://` deep link) |
 | `POST /sms` | key in `X-SMS-Key` header (was in the URL path until PR #45) | `sms.js` → `settle` |
 | `POST /tg` | `TELEGRAM_WEBHOOK_SECRET` (path + `X-Telegram-Bot-Api-Secret-Token`) + admin role per update | `telegram*.js` |
 | `GET /api/v1/app-config, /plans, /ip` | none | public settings: extra API bases, bridges, announcement |
 | `POST /api/v1/auth/register, login, tg/start, tg/verify, tg/register, refresh` | none; rate limited (IP/login/uid) | `auth.js` |
+| `POST /api/v1/mini/probe` | Telegram `initData` (HMAC with the bot token, ≤ 24 h); rate limited per IP | probe result → admin chat (`account.miniProbeReport`) |
 | `POST /api/v1/payments/nowpayments/ipn` | HMAC-SHA512 | `orders.js` → `settle` |
 | everything else under `/api/v1/` | Bearer access JWT (30 min) + `token_version` + `is_active` | account/orders/netstats/auth |
 
@@ -768,6 +770,13 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - The old `/credit <email> <amount> <note>` manual wallet top-up idea (offered, awaiting a yes) — if built, it
   must be a bot button flow, not a typed command.
 - PR #21 is most likely superseded by #22; check and close it.
+
+### Telegram Mini App (planned, stage 0 built)
+Discovery report and Mini App design: project file `miniapp-plan/01-discovery-and-roadmap.md`. Stage 0 only tests
+reachability: bot → 📱 اپ Pleat → 🧪 تست Mini App opens `/mini/probe` on each Worker address (web_app button); the
+page reports page / initData / same-domain API / telegram.org script / other addresses back to the admin chat.
+`auth.verifyInitData` is the reusable server-side check for stage 1. No Mini App screens exist yet; the next
+stage needs Ali's «برو» and depends on the stage 0 result on Irancell / MCI with the VPN off.
 
 ### Engineering audit
 15 phases (discovery → architecture → code → security → VPN → DB → API → performance → UX → mobile → testing →

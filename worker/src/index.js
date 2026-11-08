@@ -79,6 +79,8 @@ export default {
 
     try {
       if (path === '/health' && url.searchParams.get('deep') !== '1') return json({ ok: true });
+      // Mini App stage 0: a throw-away page that tests whether a Mini App opens on Iranian networks (account.js)
+      if (path === '/mini/probe' && request.method === 'GET') return account.miniProbePage(env, request);
       // for an outside uptime monitor: is the per-minute cron still running? (the panel sync stamps its cursor
       // every run while a panel is active). 503 when it has been quiet for 10 minutes. One read, no details.
       if (path === '/health') {
@@ -166,6 +168,10 @@ async function route(request, env, p) {
   if (p === '/auth/tg/register' && m === 'POST') {
     await rateLimit(env, 'RL_IP', 'register:' + ip);
     return auth.tgRegister(env, await body(request), H);
+  }
+  if (p === '/mini/probe' && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'miniprobe:' + ip);
+    return account.miniProbeReport(env, await body(request), request);
   }
   if (p === '/auth/refresh' && m === 'POST') {
     await rateLimit(env, 'RL_IP', 'refresh:' + ip);
