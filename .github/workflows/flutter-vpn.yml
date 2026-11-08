@@ -90,8 +90,19 @@ jobs:
           }
           # XRAY_LIB_TAG is AndroidLibXrayLite's tag; Xray-core has no release by that name (404), so the
           # desktop core for this check is Xray-core's latest release
-          get xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
-          unzip -oq "$dl/xray.zip" -d /tmp/xray
+          if get xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"; then
+            unzip -oq "$dl/xray.zip" -d /tmp/xray
+          else
+            # GitHub's release files answer 504 from some runners for a long time: the same core is also
+            # published as a container image on ghcr.io, which is served from elsewhere
+            echo "::warning::Xray zip unavailable, taking the core from its image ghcr.io/xtls/xray-core"
+            mkdir -p /tmp/xray /tmp/xrayimg
+            cid=$(docker create ghcr.io/xtls/xray-core:latest)
+            docker export "$cid" | tar -x -C /tmp/xrayimg
+            docker rm "$cid" > /dev/null
+            cp "$(find /tmp/xrayimg -type f -name xray | head -1)" /tmp/xray/xray
+          fi
+          chmod +x /tmp/xray/xray && /tmp/xray/xray version | head -1
           # The app's own geo files, so the Iran-direct rules are checked too (they also go into the APK).
           geo=android/app/src/main/assets/geo
           mkdir -p "$geo"
