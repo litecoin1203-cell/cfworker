@@ -9,3 +9,6 @@ worker/coverage/
 .agents/
 .claude/skills/
 skills-lock.json
+
+# the Mini App build (miniapp/ -> worker/public/), made by the deploy workflow
+worker/public/

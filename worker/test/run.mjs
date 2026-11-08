@@ -4004,6 +4004,80 @@ section('Mini App stage 0: initData check, probe page, report to the admin, bot 
   await botSet('app_api_bases', '');
 }
 
+section('Mini App stage 1: sign in with initData, one-tap account, Mini App tokens, bot buttons');
+{
+  const { createHmac } = await import('node:crypto');
+  const sign = (fields) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(env.TELEGRAM_BOT_TOKEN).digest();
+    return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+  };
+  const now = () => String(Math.floor(Date.now() / 1000));
+  const initFor = (id, extra = {}, user = {}) => sign({ query_id: 'AA', user: JSON.stringify({ id, first_name: 'Nima', username: 'Nima_Web', ...user }), auth_date: now(), ...extra });
+  const row = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first());
+
+  ok((await call('POST', '/api/v1/auth/tg/webapp', { json: {} })).status === 401, 'sign-in without initData is refused');
+  const forged = initFor(880001).replace('Nima', 'Evil');
+  ok((await call('POST', '/api/v1/auth/tg/webapp', { json: { init_data: forged } })).status === 401, 'forged initData is refused');
+  const old = sign({ user: JSON.stringify({ id: 880001 }), auth_date: String(Math.floor(Date.now() / 1000) - 3700) });
+  ok((await call('POST', '/api/v1/auth/tg/webapp', { json: { init_data: old } })).status === 401, 'initData older than an hour is refused');
+
+  // a new Telegram user: asked to make an account, nothing written yet
+  const first1 = await call('POST', '/api/v1/auth/tg/webapp', { json: { init_data: initFor(880001) } });
+  ok(first1.status === 200 && first1.data.need_account === true && first1.data.name === 'Nima' && !first1.data.access_token, 'a new Telegram user is asked to create an account');
+  ok(!(await row('SELECT id FROM users WHERE tg_id = 880001')), 'nothing is written before they tap Create account');
+
+  // invite code from the start link (startapp=ref_<code>)
+  const inviter = await signup('inviter-mini@example.com');
+  const refCode = (await call('GET', '/api/v1/me', { token: inviter })).data.referral_code;
+  const reg = await call('POST', '/api/v1/auth/tg/webapp/register', { json: { init_data: initFor(880001, { start_param: 'ref_' + refCode }) } });
+  ok(reg.status === 200 && reg.data.access_token && !reg.data.refresh_token, 'Create account gives an access token only (no refresh token in a web view)');
+  const u = await row('SELECT * FROM users WHERE tg_id = 880001');
+  const inv = await row('SELECT id FROM users WHERE referral_code = ?', refCode);
+  ok(u && u.tg_username === 'nima_web' && u.tg_name === 'Nima' && u.referred_by_id === inv.id, 'the account has the Telegram id, username, name and the inviter');
+  ok((await row('SELECT COUNT(*) c FROM devices WHERE user_id = ?', u.id)).c === 0, 'the Mini App is not counted as a VPN device');
+  const pw = await call('POST', '/api/v1/auth/login', { json: { login: '@nima_web', password: 'password123' } });
+  ok(pw.status === 401, 'the account has no password that could match');
+  const again = await call('POST', '/api/v1/auth/tg/webapp/register', { json: { init_data: initFor(880001) } });
+  ok(again.status === 200 && again.data.access_token && (await row('SELECT COUNT(*) c FROM users WHERE tg_id = 880001')).c === 1, 'tapping Create account twice signs in, no second account');
+
+  // sign-in later: same account; a changed username follows
+  const li = await call('POST', '/api/v1/auth/tg/webapp', { json: { init_data: initFor(880001, {}, { username: 'nima2' }) } });
+  ok(li.status === 200 && li.data.access_token, 'an existing Telegram user signs in');
+  ok((await row('SELECT tg_username FROM users WHERE tg_id = 880001')).tg_username === 'nima2', 'a new @username is saved');
+  const tok = li.data.access_token;
+  const meR = await call('GET', '/api/v1/me', { token: tok });
+  ok(meR.status === 200 && meR.data.telegram && meR.data.telegram.id === '880001', '/me works with a Mini App token');
+
+  // an account made in Pleat with Telegram signs in to the Mini App too, and never sees the panel address
+  const plan = await row('SELECT id FROM plans ORDER BY id LIMIT 1');
+  await env.DB.prepare('UPDATE users SET wallet_balance = 0 WHERE id = ?').bind(u.id).run();
+  for (const path of ['/vpn', '/vpn/servers', '/vpn/sub', '/devices']) {
+    const r = await call('GET', '/api/v1' + path, { token: tok });
+    ok(r.status === 403 && r.data.detail.code === 'use_pleat', `a Mini App token cannot read ${path}`);
+  }
+  ok(plan && !('sub_url' in (meR.data.subscription || {})), 'no subscription address in the Mini App');
+  ok((await call('GET', '/api/v1/wallet', { token: tok })).status === 200, 'the wallet is readable from the Mini App');
+
+  // a disabled account cannot sign in
+  await env.DB.prepare('UPDATE users SET is_active = 0 WHERE tg_id = 880001').run();
+  ok((await call('POST', '/api/v1/auth/tg/webapp', { json: { init_data: initFor(880001) } })).status === 403, 'a disabled account cannot sign in');
+  await env.DB.prepare('UPDATE users SET is_active = 1 WHERE tg_id = 880001').run();
+
+  // the bot: anyone who opens it gets the Open Pleat button; the menu button points at the Mini App
+  let n = fakes.tg.calls.length;
+  await tgWebhook({ message: { chat: { id: 880001, type: 'private' }, from: { id: 880001 }, text: '/start' } });
+  const hi = fakes.tg.calls.slice(n).find((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '880001');
+  const wa = hi && hi.body.reply_markup ? hi.body.reply_markup.inline_keyboard.flat().find((x) => x.web_app) : null;
+  ok(wa && wa.web_app.url === 'https://api.test/app/' && /Open Pleat/.test(hi.body.text), '/start shows an Open Pleat button for the Mini App');
+  await env.DB.prepare("DELETE FROM settings WHERE key = 'tg_webhook_sig'").run();
+  n = fakes.tg.calls.length;
+  const { ensureWebhook } = await import('../src/telegram.js');
+  await ensureWebhook(env);
+  const mb = fakes.tg.calls.slice(n).find((c) => c.method === 'setChatMenuButton');
+  ok(mb && mb.body.menu_button.type === 'web_app' && mb.body.menu_button.web_app.url === 'https://api.test/app/', 'the bot menu button opens the Mini App');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

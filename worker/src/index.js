@@ -169,6 +169,15 @@ async function route(request, env, p) {
     await rateLimit(env, 'RL_IP', 'register:' + ip);
     return auth.tgRegister(env, await body(request), H);
   }
+  // Telegram Mini App sign-in (initData signed by Telegram) and one-tap account
+  if (p === '/auth/tg/webapp' && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'webapp:' + ip);
+    return auth.webappLogin(env, await body(request));
+  }
+  if (p === '/auth/tg/webapp/register' && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'register:' + ip);
+    return auth.webappRegister(env, await body(request));
+  }
   if (p === '/mini/probe' && m === 'POST') {
     await rateLimit(env, 'RL_IP', 'miniprobe:' + ip);
     return account.miniProbeReport(env, await body(request), request);
@@ -189,6 +198,8 @@ async function route(request, env, p) {
   const needsAuth = authed.includes(p) || p.startsWith('/devices/') || p.startsWith('/orders/');
   if (!needsAuth) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
   const user = await requireUser(env, request);
+  // a Mini App token reads the account and buys; VPN configs stay with Pleat (no panel or node address in a web page)
+  if (user._mini && (p === '/vpn' || p.startsWith('/vpn/') || p.startsWith('/devices'))) throw err(403, 'use_pleat', 'Open the Pleat app for this.');
 
   if (p === '/auth/change-password' && m === 'POST') return auth.changePassword(env, user, await body(request));
   if (p === '/auth/logout-all' && m === 'POST') return auth.logoutAll(env, user);

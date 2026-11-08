@@ -4,6 +4,9 @@
   "name": "cloudgold",
   "main": "src/index.js",
   "compatibility_date": "2025-09-01",
+  // the Telegram Mini App: static files built from miniapp/ by the deploy (npm run build there). Requests for a
+  // file are answered by Cloudflare without running the Worker; everything else (the API, /tg, ...) reaches it.
+  "assets": { "directory": "public" },
   // Workers Logs for every request + Traces for a sample (traces need their own switch)
   "observability": {
     "enabled": true,

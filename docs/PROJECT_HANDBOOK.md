@@ -771,12 +771,20 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
   must be a bot button flow, not a typed command.
 - PR #21 is most likely superseded by #22; check and close it.
 
-### Telegram Mini App (planned, stage 0 built)
-Discovery report and Mini App design: project file `miniapp-plan/01-discovery-and-roadmap.md`. Stage 0 only tests
-reachability: bot → 📱 اپ Pleat → 🧪 تست Mini App opens `/mini/probe` on each Worker address (web_app button); the
-page reports page / initData / same-domain API / telegram.org script / other addresses back to the admin chat.
-`auth.verifyInitData` is the reusable server-side check for stage 1. No Mini App screens exist yet; the next
-stage needs Ali's «برو» and depends on the stage 0 result on Irancell / MCI with the VPN off.
+### Telegram Mini App (stage 1 built)
+- Stage 0 result (Ali's phone, 2026-11-08): with only Telegram's proxy the Mini App did **not** open; it opens with a
+  VPN on. Ali chose to build it anyway, for users who have a VPN on (e.g. Pleat connected). The probe stays at
+  `/mini/probe` (bot: 📱 اپ Pleat › 🧪 تست Mini App).
+- Code: `miniapp/` (Preact 10 + esbuild, pinned, lockfile; `npm test`, `npm run build` → `worker/public/`, gitignored).
+  Served by the same Worker as static assets (`wrangler.jsonc` `"assets": {"directory": "public"}`) at `/app/`;
+  headers/CSP in `miniapp/src/_headers`. The deploy workflow builds it before `wrangler deploy`.
+- Sign-in: `POST /api/v1/auth/tg/webapp` (`auth.webappLogin`, initData ≤ 1 h) → access token only, `src: "mini"`;
+  `{need_account}` for a new Telegram user; `POST /api/v1/auth/tg/webapp/register` makes the account in one tap
+  (no password: `DUMMY_HASH`; Pleat signs in with the Telegram code), invite via `startapp=ref_<CODE>`.
+  Mini App tokens are refused on `/vpn*` and `/devices` (`use_pleat`) and never get `sub_url`. No device row.
+- Bot: `/start` from a non-admin shows an "Open Pleat" web_app button; `ensureWebhook` (sig v3) sets the menu button.
+- Screens: Welcome (create account), Home (data left with pleats, days left with dots, wallet), Loading/Error/Empty.
+  English, Pleat day/night colours follow Telegram's theme. Stage 2 = plans and payments (needs «برو»).
 
 ### Engineering audit
 15 phases (discovery → architecture → code → security → VPN → DB → API → performance → UX → mobile → testing →

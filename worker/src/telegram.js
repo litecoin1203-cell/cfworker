@@ -6,6 +6,8 @@ import { runAction, PLAN_FIELDS } from './admin-actions.js';
 
 export { PLAN_FIELDS };
 
+// where the Telegram Mini App is served (static files in miniapp/, built into worker/public/app/)
+export const MINI_PATH = '/app/';
 const API = (env, method) => `https://api.telegram.org/bot${env.TELEGRAM_BOT_TOKEN}/${method}`;
 
 // ---------------- no typing: commands in bot text become buttons ----------------
@@ -257,7 +259,8 @@ export async function ensureWebhook(env) {
   if (!env.TELEGRAM_BOT_TOKEN || !secret || !base) return false;
   const { hmacHex } = await import('./util.js');
   // the "v2" bump re-registers once so the bot's command list (menu button) is set too
-  const want = await hmacHex(secret, base + '|' + env.TELEGRAM_BOT_TOKEN.slice(-6) + '|v2');
+  // "v3": also points every user's menu button at the Mini App
+  const want = await hmacHex(secret, base + '|' + env.TELEGRAM_BOT_TOKEN.slice(-6) + '|v3');
   const have = (await first(env, "SELECT value FROM settings WHERE key = 'tg_webhook_sig'"))?.value;
   if (have === want) return false;
   const r = await tg(env, 'setWebhook', { url: base + '/tg', secret_token: secret, allowed_updates: ['message', 'callback_query'] });
@@ -269,6 +272,8 @@ export async function ensureWebhook(env) {
       { command: 'help', description: 'همه‌ی دستورها' },
     ] });
   }
+  // the button left of the message box opens the Mini App for everyone (the admin too; their menu stays in the chat)
+  await tg(env, 'setChatMenuButton', { menu_button: { type: 'web_app', text: 'Pleat', web_app: { url: base + MINI_PATH } } });
   await setSetting(env, 'tg_webhook_sig', want);
   return true;
 }
@@ -500,10 +505,14 @@ async function onMessage(env, msg, opts = {}) {
     const r = await tgIssueCode(env, startArg.slice(1), msg.from);
     return tg(env, 'sendMessage', { chat_id: chatId, text: r.text, ...(r.html ? { parse_mode: 'HTML' } : {}) });
   }
-  // people who open the bot themselves (not from the app) are told how sign-in works; /id still shows the chat id
+  // people who open the bot themselves (not from the app) get the Mini App button and how app sign-in works;
+  // /id still shows the chat id
   if (cmd === '/start' && !admin && env.TELEGRAM_CHAT_ID) {
     if (msg.chat?.type !== 'private') return;
-    return tg(env, 'sendMessage', { chat_id: chatId, text: 'Hi! To sign in, open the Pleat app and tap "Continue with Telegram". This bot will then send you a 6-digit code.' });
+    const base = String(env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
+    return tg(env, 'sendMessage', { chat_id: chatId,
+      text: 'Hi! Tap "Open Pleat" to see your plan and data left (turn your VPN on first).\n\nUsing the Pleat app? Tap "Continue with Telegram" there and this bot will send you a 6-digit code.',
+      ...(/^https:\/\//.test(base) ? { reply_markup: { inline_keyboard: [[{ text: 'Open Pleat', web_app: { url: base + MINI_PATH } }]] } } : {}) });
   }
   if (cmd === '/id' || (cmd === '/start' && !admin)) {
     if (msg.chat?.type !== 'private') return say('ربات مدیریت فقط در چت خصوصی کار می‌کند. /id را در چت خصوصی با ربات بفرست.');
