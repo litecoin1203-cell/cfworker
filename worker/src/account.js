@@ -294,6 +294,9 @@ export async function startTrial(env, user, body, request) {
   const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', body.plan_id);
   if (!plan || !plan.is_active || plan.archived || plan.trial_days <= 0) throw err(400, 'no_trial', 'این پلن تست رایگان ندارد.');
   if (!(await trialAvailable(env, user))) throw err(400, 'trial_used', 'تست رایگان را قبلاً استفاده کرده‌ای.');
+  if (!user.tg_id && String((await getSettings(env)).trial_needs_telegram ?? '1') !== '0') {
+    throw err(403, 'trial_needs_telegram', 'برای تست رایگان اول تلگرامت را در پروفایل تأیید کن.');
+  }
   const deviceId = request.headers.get('x-device-id');
   if (deviceId) {
     const reused = await first(env, 'SELECT u.id FROM users u JOIN devices d ON d.user_id = u.id WHERE d.device_id = ? AND u.trial_used = 1 AND u.id != ?', deviceId, user.id);

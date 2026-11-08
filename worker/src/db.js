@@ -30,6 +30,9 @@ export const SETTING_DEFAULTS = {
   // for a phone with no plan yet; only the Worker's own addresses can cross it (enforced in the app)
   app_bridges: '',
   trial_data_gb: '0',
+  // 1 = the free trial only for an account with a verified Telegram (one per Telegram account; new emails cost
+  // nothing to make). 0 = any account, as before. Chosen by Ali 2026-11-08.
+  trial_needs_telegram: '1',
   // Cloud Gold Pay: dollar price in toman + your own wallet address per coin (empty = coin hidden)
   usd_rate_toman: '0',
   coin_minutes: '30',

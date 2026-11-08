@@ -591,6 +591,7 @@ export const SET_CHOICES = {
   card_unique: ['0', '1'],
   usd_rate_toman: ['0'],
   trial_data_gb: ['0', '1', '2', '5'],
+  trial_needs_telegram: ['1', '0'],
 };
 export async function paySettings(env) {
   const s = await getSettings(env);
@@ -618,12 +619,12 @@ export async function paySettings(env) {
 export const KEY_FA = {
   card_number: 'شماره کارت', card_holder: 'نام صاحب کارت', card_bank: 'بانک', usdt_rate_toman: 'قیمت تتر (قدیمی)',
   referral_percent: 'درصد پاداش دعوت', pg_group_ids: 'گروه‌های پنل', support_url: 'لینک پشتیبانی', min_topup_toman: 'حداقل شارژ',
-  announcement: 'اطلاعیه‌ی اپ', trial_data_gb: 'حجم تست رایگان (0 = مثل پلن)', usd_rate_toman: 'قیمت دستی دلار (0 = خودکار)',
+  announcement: 'اطلاعیه‌ی اپ', trial_data_gb: 'حجم تست رایگان (0 = مثل پلن)', trial_needs_telegram: 'تست فقط با تلگرام تأییدشده', usd_rate_toman: 'قیمت دستی دلار (0 = خودکار)',
   coin_minutes: 'مهلت پرداخت ارز (دقیقه)', card_unique: 'مبلغ یکتا (1 روشن، 0 خاموش)', card_auto: 'تأیید پیامکی کارت',
   sms_senders: 'فرستنده‌های بانکی', sms_key: 'کلید آدرس پیامک', coin_auto: 'تأیید ارز دیجیتال',
   app_api_bases: 'دامنه‌های اضافه‌ی اپ (ضد فیلتر)', app_bridges: 'لینک‌های پل اپ (ضد فیلتر)',
 };
-const APP_KEYS = ['announcement', 'support_url', 'app_api_bases', 'app_bridges', 'trial_data_gb', 'min_topup_toman'];
+const APP_KEYS = ['announcement', 'support_url', 'app_api_bases', 'app_bridges', 'trial_data_gb', 'trial_needs_telegram', 'min_topup_toman'];
 // which screen a setting belongs to (its back button)
 const PAY_KEYS = ['usd_rate_toman', 'coin_minutes', 'min_topup_toman', 'card_unique', 'sms_key'];
 export const keyParent = (key) => (key.startsWith('wallet_') ? 'wl' : key === 'referral_percent' ? 'ref' : key === 'sms_senders' ? 'snd'
@@ -672,12 +673,13 @@ export async function app(env) {
   const trials = await all(env, 'SELECT name, trial_days FROM plans WHERE trial_days > 0 AND is_active = 1 AND archived = 0 ORDER BY sort, id LIMIT 4');
   const ann = String(s.announcement || '');
   const trialGb = String(s.trial_data_gb || '0');
+  const tgOnly = String(s.trial_needs_telegram ?? '1') === '0' ? '0' : '1';
   return {
     text: [crumb('📱 اپ Pleat'), '',
       `📢 اطلاعیه:${ann ? `\n«${ann.slice(0, 300)}${ann.length > 300 ? '…' : ''}»` : ' — (چیزی در اپ نشان داده نمی‌شود)'}`,
       `🛟 پشتیبانی: ${s.support_url || '—'}`,
       `🌐 دامنه‌های اضافه: ${fa(bases)} · 🌉 پل‌ها: ${fa(bridges)}`,
-      `🎁 تست رایگان: ${trials.length ? trials.map((p) => `${p.name} ${fa(p.trial_days)} روز`).join('، ') : 'هیچ پلنی تست ندارد'} · حجم: ${trialGb === '0' ? 'مثل پلن' : trialGb + ' گیگ'}`,
+      `🎁 تست رایگان: ${trials.length ? trials.map((p) => `${p.name} ${fa(p.trial_days)} روز`).join('، ') : 'هیچ پلنی تست ندارد'} · حجم: ${trialGb === '0' ? 'مثل پلن' : trialGb + ' گیگ'} · ${tgOnly === '1' ? 'فقط تلگرام تأییدشده' : 'برای همه'}`,
       `💰 حداقل شارژ: ${fa(s.min_topup_toman)} تومان · 🎁 پاداش دعوت: ${fa(s.referral_percent)}٪`, '',
       'روزهای تست رایگان روی هر پلن تنظیم می‌شود (📦 پلن‌ها › پلن › روز تست).'].join('\n'),
     kb: [
@@ -685,6 +687,7 @@ export async function app(env) {
       [b('🛟 ✏️ لینک پشتیبانی', 'm:w:set:support_url'), ...(s.support_url ? [b('🧹 پاک کردن', 'm:apc:support_url')] : [])],
       [b(`🌐 دامنه‌ها (${fa(bases)})`, 'm:appl:d'), b(`🌉 پل‌ها (${fa(bridges)})`, 'm:appl:b')],
       [...TRIAL_GB_CHOICES.map((v) => b(`${v === trialGb ? '✅ ' : ''}${v === '0' ? 'تست: مثل پلن' : v + ' گیگ'}`, `m:ss:trial_data_gb:${v}`)), b('✏️', 'm:w:set:trial_data_gb')],
+      SET_CHOICES.trial_needs_telegram.map((v) => b(`${v === tgOnly ? '✅ ' : ''}${v === '1' ? '🔐 تست فقط با تلگرام تأییدشده' : 'تست برای همه'}`, `m:ss:trial_needs_telegram:${v}`)),
       [b('⏳ روزهای تست (پلن‌ها)', 'm:pl'), b('💰 حداقل شارژ', 'm:sk:min_topup_toman')],
       [b('🎁 دعوت و پاداش', 'm:ref'), b('💳 روش‌های پرداخت', 'm:pay')],
       [b('📲 نسخه‌ی اپ و آپدیت', 'm:upd')],

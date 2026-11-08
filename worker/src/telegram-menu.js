@@ -533,7 +533,7 @@ export async function checkHealth(base) {
 const NET_TABLE_FA = { net_stats: 'آمار روزانه', net_geo: 'آمار استانی', net_votes: 'رأی کاربران', net_speed_votes: 'رأی سرعت',
   user_net_srv: 'تجربه‌ی هر کاربر', user_net: 'شبکه‌های کاربران', google_probe: 'تست گوگل', google_votes: 'رأی تست گوگل' };
 // where a one-tap setting comes back to
-const SET_BACK = { referral_percent: 'ref', trial_data_gb: 'app' };
+const SET_BACK = { referral_percent: 'ref', trial_data_gb: 'app', trial_needs_telegram: 'app' };
 
 // onCallback in telegram.js has already checked that the tap came from the admin in their private chat.
 export async function onMenu(env, cq) {

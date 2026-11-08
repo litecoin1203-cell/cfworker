@@ -131,6 +131,8 @@ section('card purchase -> telegram -> approve -> servers');
   await botSet('card_number', '6037991234567893');
   await botSet('card_unique', '0'); // the older tests expect round amounts; unique amounts are tested below
   await botSet('card_holder', 'Ali');
+  // the older tests start trials on email accounts; the Telegram-only rule is tested below
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('trial_needs_telegram', '0')").run();
   const tok = await signup('buyer@example.com', { device: 'buyer-phone' });
   const plans = (await call('GET', '/api/v1/plans')).data;
   const monthly = plans.find((p) => p.name === 'یک ماهه');
@@ -3855,6 +3857,19 @@ section('phases 1-5 fixes: open-order cap, stale quote, bad token, cancel race, 
   const { throttled } = await import('../src/util.js');
   for (let i = 0; i < 2500; i++) throttled('__testBag', i, 60000);
   ok(globalThis.__testBag.size <= 2000, 'throttle memory is bounded: ' + globalThis.__testBag.size);
+
+  // S8: the free trial only for a verified Telegram account (Ali's choice), switched by a bot button
+  await set('trial_needs_telegram', '1');
+  const trialPlanX = (await q('SELECT * FROM plans WHERE trial_days > 0 AND is_active = 1 AND archived = 0 LIMIT 1').first());
+  const te = await signup('trialmail@example.com', { device: 'tm1' });
+  const r8 = await call('POST', '/api/v1/trial', { token: te, json: { plan_id: trialPlanX.id }, headers: { 'x-device-id': 'tm1' } });
+  ok(r8.status === 403 && r8.data.detail.code === 'trial_needs_telegram', 'email-only account gets no trial: ' + r8.status);
+  await q("UPDATE users SET tg_id = 778899001 WHERE email = 'trialmail@example.com'").run();
+  const r8b = await call('POST', '/api/v1/trial', { token: te, json: { plan_id: trialPlanX.id }, headers: { 'x-device-id': 'tm1' } });
+  ok(r8b.status === 200, 'the same account with a verified Telegram gets it: ' + r8b.status);
+  await tgWebhook({ callback_query: { id: 'x', data: 'm:ss:trial_needs_telegram:0', from: { id: 12345 }, message: { chat: { id: 12345, type: 'private' }, message_id: 1 } } });
+  ok((await q("SELECT value FROM settings WHERE key = 'trial_needs_telegram'").first()).value === '0', 'the bot button switches it off');
+  await set('trial_needs_telegram', '0');
 
   // AD2: a panel that never answers holds the app for at most the user-path deadline, not 15 s
   const tp = await signup('slow@example.com', { device: 'slow1' });
