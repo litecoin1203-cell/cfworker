@@ -4078,6 +4078,87 @@ section('Mini App stage 1: sign in with initData, one-tap account, Mini App toke
   ok(mb && mb.body.menu_button.type === 'web_app' && mb.body.menu_button.web_app.url === 'https://api.test/app/', 'the bot menu button opens the Mini App');
 }
 
+section('Mini App admin panel: admin sign-in, roles, reads, actions with confirm and undo, per-panel view');
+{
+  const { createHmac } = await import('node:crypto');
+  const sign = (fields) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(env.TELEGRAM_BOT_TOKEN).digest();
+    return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+  };
+  const initFor = (id, name = 'Ali') => sign({ user: JSON.stringify({ id, first_name: name }), auth_date: String(Math.floor(Date.now() / 1000)) });
+  const row = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first());
+  const A = (method, path, token, json) => call(method, '/api/v1/admin' + path, { token, json });
+
+  // who gets in
+  ok((await A('POST', '/auth', null, { init_data: initFor(777555) })).status === 403, 'a non-admin Telegram user cannot open the admin panel');
+  ok((await A('POST', '/auth', null, { init_data: initFor(12345).replace('Ali', 'X') })).status === 401, 'forged initData cannot open the admin panel');
+  const au = await A('POST', '/auth', null, { init_data: initFor(12345) });
+  ok(au.status === 200 && au.data.role === 'owner' && au.data.access_token, 'the owner (TELEGRAM_CHAT_ID) signs in as owner');
+  const T = au.data.access_token;
+  ok((await A('GET', '/dashboard')).status === 401, 'admin routes need the admin token');
+  const userTok = await signup('admin-mini-target@example.com');
+  ok((await A('GET', '/dashboard', userTok)).status === 401, 'an app user token is not an admin token');
+  const wl = await call('POST', '/api/v1/auth/tg/webapp', { json: { init_data: initFor(12345) } });
+  ok(wl.status === 200 && wl.data.admin === 'owner', 'the Mini App sign-in tells the page this person is an admin');
+
+  // reads
+  const dash = await A('GET', '/dashboard', T);
+  ok(dash.status === 200 && dash.data.users >= 1 && 'review' in dash.data && 'sales_week' in dash.data, 'dashboard numbers');
+  const target = await row("SELECT id FROM users WHERE email = 'admin-mini-target@example.com'");
+  const list = await A('GET', '/users?q=%23' + target.id, T);
+  ok(list.status === 200 && list.data.users.length === 1 && list.data.users[0].id === target.id, 'find a user by #id');
+  const byMail = await A('GET', '/users?q=admin-mini-tar', T);
+  ok(byMail.data.users.some((u) => u.id === target.id), 'find a user by part of the email');
+  ok((await A('GET', '/users?filter=nope', T)).data.filter === 'all', 'an unknown filter falls back to all');
+
+  // actions: unknown, money without confirm, money with confirm, reversible with undo
+  ok((await A('POST', '/action', T, { name: 'nope', args: {} })).status === 404, 'an unknown action is refused');
+  ok((await A('POST', '/action', T, { name: 'constructor', args: {} })).status === 404, 'object built-ins are not actions');
+  const plan = await row('SELECT id FROM plans WHERE is_active = 1 ORDER BY id LIMIT 1');
+  const noConfirm = await A('POST', '/action', T, { name: 'user.grant', args: { userId: target.id, planId: plan.id } });
+  ok(noConfirm.status === 409 && !(await row('SELECT id FROM subscriptions WHERE user_id = ?', target.id)), 'a money action without confirm does nothing');
+  const g = await A('POST', '/action', T, { name: 'user.grant', args: { userId: target.id, planId: plan.id }, confirm: true });
+  ok(g.status === 200 && g.data.ok === true && !!(await row('SELECT id FROM subscriptions WHERE user_id = ?', target.id)), 'giving a plan works after confirm: ' + JSON.stringify(g.data));
+  ok(!!(await row("SELECT id FROM admin_audit WHERE action = 'user.grant' AND admin_id = '12345' AND target_id = ?", String(target.id))), 'the change is in the admin log under the admin');
+  const before = (await row('SELECT expires_at FROM subscriptions WHERE user_id = ?', target.id)).expires_at;
+  const d = await A('POST', '/action', T, { name: 'user.add_days', args: { userId: target.id, days: 5 } });
+  const after = (await row('SELECT expires_at FROM subscriptions WHERE user_id = ?', target.id)).expires_at;
+  ok(d.data.ok && d.data.undoable && d.data.audit_id && (after === null || after - before === 5 * 86400), 'add days works and can be undone');
+  const un = await A('POST', '/undo', T, { audit_id: d.data.audit_id });
+  ok(un.data.ok && (await row('SELECT expires_at FROM subscriptions WHERE user_id = ?', target.id)).expires_at === before, 'undo puts it back');
+  const bad = await A('POST', '/action', T, { name: 'user.add_days', args: { userId: target.id, days: 0 } });
+  ok(bad.status === 422 && bad.data.ok === false && /روز/.test(bad.data.error), 'the bot\'s own validation answers bad input');
+
+  // the user card and the live per-panel view
+  const card = await A('GET', '/users/' + target.id, T);
+  ok(card.status === 200 && card.data.subscription && card.data.subscription.status === 'active' && !card.data.subscription.sub_url, 'user card: subscription, no subscription address');
+  ok('last_seen' in card.data && 'online' in card.data && 'started_at' in card.data.subscription, 'user card: last connection, online, start date');
+  const pv = await A('GET', `/users/${target.id}/panels`, T);
+  ok(pv.status === 200 && pv.data.panels.length >= 1 && pv.data.panels[0].username && 'online' in pv.data.panels[0], 'per-panel view: account, usage, dates, last connection: ' + JSON.stringify(pv.data.panels[0]));
+  ok(!JSON.stringify(pv.data).includes('panel.test'), 'no panel address in the per-panel view');
+  ok((await A('GET', '/users?filter=act', T)).data.users.some((u) => u.id === target.id && u.sub && u.sub.active), 'the "active" filter lists the user with a plan');
+  ok(!(await A('GET', '/users?filter=none', T)).data.users.some((u) => u.id === target.id), 'and the "no plan" filter does not');
+
+  // inbox and the receipt photo
+  const o = (await env.DB.prepare("INSERT INTO orders (user_id, kind, amount_toman, method, status, receipt_file_id, created_at) VALUES (?, 'topup', 50000, 'card', 'review', 'file-1', ?)").bind(target.id, Math.floor(Date.now() / 1000)).run()).meta.last_row_id;
+  const ib = await A('GET', '/inbox', T);
+  ok(ib.data.orders.some((x) => x.id === o && x.has_receipt), 'the receipt waits in the inbox');
+  const rc = await A('GET', `/orders/${o}/receipt`, T);
+  ok(rc.status === 200 && rc.res.headers.get('content-type') === 'image/jpeg' && rc.res.headers.get('cache-control').includes('no-store'), 'the receipt photo comes through the Worker');
+  const rj = await A('POST', '/action', T, { name: 'order.reject', args: { orderId: o } });
+  ok(rj.data.ok && (await row('SELECT status FROM orders WHERE id = ?', o)).status === 'rejected', 'reject from the inbox');
+
+  // roles: a viewer reads but cannot change anything; a removed admin is out at once
+  await env.DB.prepare("INSERT INTO admins (tg_id, role, added_at) VALUES ('900900', 'viewer', 1)").run();
+  const vt = (await A('POST', '/auth', null, { init_data: initFor(900900) })).data.access_token;
+  ok((await A('GET', '/dashboard', vt)).status === 200, 'a viewer can read');
+  const vw = await A('POST', '/action', vt, { name: 'user.add_days', args: { userId: target.id, days: 1 } });
+  ok(vw.status === 422 && vw.data.ok === false, 'a viewer cannot change anything');
+  await env.DB.prepare("DELETE FROM admins WHERE tg_id = '900900'").run();
+  ok((await A('GET', '/dashboard', vt)).status === 403, 'a removed admin is out with their next request');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

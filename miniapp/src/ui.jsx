@@ -18,11 +18,11 @@ export function Header({ name }) {
   );
 }
 
-export const Card = ({ children, class: cls = '' }) => <section class={'card ' + cls}>{children}</section>;
+export const Card = ({ children, class: cls = '', onClick }) => <section class={'card ' + cls} onClick={onClick}>{children}</section>;
 
-export function Button({ children, onClick, busy, kind = 'primary' }) {
+export function Button({ children, onClick, busy, kind = 'primary', type = 'button' }) {
   return (
-    <button type="button" class={'btn ' + kind} onClick={onClick} disabled={busy} aria-busy={busy ? 'true' : 'false'}>
+    <button type={type} class={'btn ' + kind} onClick={onClick} disabled={busy} aria-busy={busy ? 'true' : 'false'}>
       {busy ? <span class="spin" aria-hidden="true" /> : null}{children}
     </button>
   );

@@ -190,6 +190,28 @@ async function route(request, env, p) {
   // crypto webhook (no auth, signature-checked)
   if (p === '/payments/nowpayments/ipn' && m === 'POST') return orders.nowpaymentsIpn(env, request);
 
+  // the admin panel in the Telegram Mini App (admin-api.js): sign in with initData, then an admin token
+  if (p.startsWith('/admin/')) {
+    const adm = await import('./admin-api.js');
+    if (p === '/admin/auth' && m === 'POST') {
+      await rateLimit(env, 'RL_LOGIN', 'admin:' + ip);
+      return adm.adminAuth(env, await body(request));
+    }
+    const admin = await adm.requireAdmin(env, request);
+    const url = new URL(request.url);
+    if (p === '/admin/dashboard' && m === 'GET') return adm.dashboard(env);
+    if (p === '/admin/inbox' && m === 'GET') return adm.inbox(env);
+    if (p === '/admin/users' && m === 'GET') return adm.users(env, url);
+    if (p === '/admin/plans' && m === 'GET') return adm.plans(env);
+    let mm;
+    if ((mm = p.match(/^\/admin\/users\/(\d{1,12})$/)) && m === 'GET') return adm.user(env, mm[1]);
+    if ((mm = p.match(/^\/admin\/users\/(\d{1,12})\/panels$/)) && m === 'GET') return adm.userPanels(env, mm[1]);
+    if ((mm = p.match(/^\/admin\/orders\/(\d{1,12})\/receipt$/)) && m === 'GET') return adm.receipt(env, mm[1]);
+    if (p === '/admin/action' && m === 'POST') return adm.action(env, admin, await body(request));
+    if (p === '/admin/undo' && m === 'POST') return adm.undo(env, admin, await body(request));
+    return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
+  }
+
   // everything below needs a logged-in user
   const authed = [
     '/me', '/trial', '/vpn', '/vpn/sub', '/vpn/servers', '/devices', '/orders', '/wallet', '/referral', '/coupons/check',

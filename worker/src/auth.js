@@ -435,12 +435,17 @@ async function webappTokens(env, user, id) {
 }
 
 // POST /auth/tg/webapp {init_data}: the account of this Telegram user, or {need_account: true} when there is none.
+// An admin also gets admin: <role>, so the page opens the admin panel (which signs in on its own, /admin/auth).
 export async function webappLogin(env, body) {
   const id = await webappUser(env, body);
+  const { adminRole } = await import('./telegram.js');
+  const sid = String(id.tgId);
+  const admin = (await adminRole(env, { id: sid, type: 'private' }, { id: sid })) || null;
   const user = await first(env, 'SELECT * FROM users WHERE tg_id = ?', id.tgId);
-  if (!user) return json({ need_account: true, name: id.name });
+  if (!user) return json({ need_account: true, name: id.name, admin });
   if (!user.is_active) throw err(403, 'account_disabled', 'This account is disabled.');
-  return webappTokens(env, user, id);
+  const res = await webappTokens(env, user, id);
+  return json({ ...(await res.json()), admin });
 }
 
 // POST /auth/tg/webapp/register {init_data}: one tap makes the account. It has no password (a hash that never

@@ -1,6 +1,6 @@
 # Cloudflare Workers static assets: response headers for the Mini App
 /app/*
-  Content-Security-Policy: default-src 'none'; script-src 'self' https://telegram.org; style-src 'self'; connect-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org
+  Content-Security-Policy: default-src 'none'; script-src 'self' https://telegram.org; style-src 'self'; connect-src 'self'; img-src 'self' data: blob:; base-uri 'none'; form-action 'none'; frame-ancestors https://web.telegram.org https://*.telegram.org
   X-Content-Type-Options: nosniff
   Referrer-Policy: no-referrer
 /app/

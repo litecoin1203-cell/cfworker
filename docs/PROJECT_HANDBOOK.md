@@ -785,6 +785,14 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - Bot: `/start` from a non-admin shows an "Open Pleat" web_app button; `ensureWebhook` (sig v3) sets the menu button.
 - Screens: Welcome (create account), Home (data left with pleats, days left with dots, wallet), Loading/Error/Empty.
   English, Pleat day/night colours follow Telegram's theme. Stage 2 = plans and payments (needs «برو»).
+- **Admin panel in the Mini App (Ali's priority, 2026-11-08)**: an admin who opens `/app/` lands on a Persian RTL admin
+  panel (`miniapp/src/admin/`). Server: `worker/src/admin-api.js` under `/api/v1/admin/*`. Sign-in `POST /admin/auth`
+  (initData → 15-min token `typ: admin`; role from the bot's `adminRole`, re-read on every request). Reads: dashboard,
+  inbox (+ receipt photo proxied from Telegram), users (search/filters), user card (subscription, start, last
+  connection/online, wallet, orders, devices), live per-panel view. Writes: `POST /admin/action {name, args, confirm}`
+  runs `admin-actions.runAction` (same validation, roles, audit, undo); money/destructive need `confirm: true`;
+  `POST /admin/undo`. Stage A = dashboard, receipts, users; B = orders/plans/coupons/payments; C = panels/servers/app/
+  network; D = broadcast/stats/system.
 
 ### Engineering audit
 15 phases (discovery → architecture → code → security → VPN → DB → API → performance → UX → mobile → testing →

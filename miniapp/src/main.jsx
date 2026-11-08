@@ -4,6 +4,7 @@ import { ready, haptic } from './tg.js';
 import { signIn, createAccount, me } from './api.js';
 import { gb, money, statusOf, pleatsLeft, dayDots, firstName } from './format.js';
 import { Header, Card, Button, Chip, Pleats, Dots, Skeleton, ErrorState, EmptyState } from './ui.jsx';
+import { AdminApp } from './admin/App.jsx';
 
 function Welcome({ name, onCreate }) {
   const [busy, setBusy] = useState(false);
@@ -57,12 +58,16 @@ function Home({ data }) {
   );
 }
 
+let userView = false;
+
 function App() {
   const [state, setState] = useState({ phase: 'loading' });
   const load = useCallback(async () => {
     setState({ phase: 'loading' });
     try {
       const s = await signIn();
+      // admins land on the admin panel (their own account is one tap away)
+      if (s.admin && !userView) return setState({ phase: 'admin' });
       if (s.need_account) return setState({ phase: 'welcome', name: s.name });
       const data = await me();
       setState({ phase: 'home', data });
@@ -72,6 +77,7 @@ function App() {
   }, []);
   useEffect(() => { ready().then(load); }, []);
 
+  if (state.phase === 'admin') return <AdminApp onSwitch={() => { userView = true; document.documentElement.dir = 'ltr'; document.documentElement.lang = 'en'; load(); }} />;
   const name = state.phase === 'home' ? ((state.data.telegram && state.data.telegram.name) || '') : '';
   let body;
   if (state.phase === 'loading') body = <Skeleton />;

@@ -8,7 +8,7 @@ export class ApiError extends Error {
   constructor(status, code, message) { super(message); this.status = status; this.code = code; }
 }
 
-async function request(path, { method = 'GET', body, auth = true, timeoutMs = 15000 } = {}) {
+export async function request(path, { method = 'GET', body, auth = true, timeoutMs = 15000 } = {}) {
   const ctl = typeof AbortController === 'function' ? new AbortController() : null;
   const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
   let res;
@@ -46,9 +46,9 @@ export async function signIn() {
   const data = initData();
   if (!data) throw new ApiError(0, 'no_telegram', 'Open Pleat from the Telegram bot.');
   const r = await request('/auth/tg/webapp', { method: 'POST', body: { init_data: data }, auth: false });
-  if (r.need_account) return { need_account: true, name: r.name || '' };
+  if (r.need_account) return { need_account: true, name: r.name || '', admin: r.admin || null };
   token = r.access_token;
-  return { ok: true };
+  return { ok: true, admin: r.admin || null };
 }
 
 export async function createAccount() {
