@@ -10,6 +10,13 @@ import 'dart:math' as math;
 
 const socksPort = 10808;
 
+/// The SOCKS port needs a login: without one any app on the phone could
+/// send its traffic out through the exit (and past Android's per-app VPN
+/// rules). The native side puts a fresh random login here on every start
+/// and gives the same one to hev; this value is only a stand-in.
+const socksUserStandIn = 'pleat';
+const socksPassStandIn = 'set-at-start';
+
 /// Pleat is left out of its own tun, so its calls to the Worker would
 /// leave on the filtered line even while the tunnel is up. The core also
 /// listens here (HTTP, with a password only this install knows) and the
@@ -117,7 +124,13 @@ String xrayConfig(
           'listen': '127.0.0.1',
           'port': socksPort,
           'protocol': 'socks',
-          'settings': {'auth': 'noauth', 'udp': true},
+          'settings': {
+            'auth': 'password',
+            'accounts': [
+              {'user': socksUserStandIn, 'pass': socksPassStandIn},
+            ],
+            'udp': true,
+          },
           'sniffing': {
             'enabled': true,
             'destOverride': ['http', 'tls', 'quic'],

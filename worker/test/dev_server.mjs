@@ -35,6 +35,8 @@ async function seed() {
   await bot('/set support_url https://t.me/cloudgold');
   await bot('/set usdt_rate_toman 70000');
   await bot('/set usd_rate_toman 100000');
+  // the live app test starts a trial on an email account (the Telegram-only rule has its own Worker test)
+  await bot('/set trial_needs_telegram 0');
   for (const [k, v] of Object.entries({
     xlm: 'G' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.repeat(2).slice(0, 55), xrp: 'rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe',
     trx: 'TN3W4H6rK2ce4vX9YnFQHwKENnHjoxb3m9', sol: '7EcDhSYGxXyscszYEp35KHN8vvw3svAuLKTzXwCFLtV',

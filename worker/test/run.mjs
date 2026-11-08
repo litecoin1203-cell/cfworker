@@ -131,6 +131,8 @@ section('card purchase -> telegram -> approve -> servers');
   await botSet('card_number', '6037991234567893');
   await botSet('card_unique', '0'); // the older tests expect round amounts; unique amounts are tested below
   await botSet('card_holder', 'Ali');
+  // the older tests start trials on email accounts; the Telegram-only rule is tested below
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('trial_needs_telegram', '0')").run();
   const tok = await signup('buyer@example.com', { device: 'buyer-phone' });
   const plans = (await call('GET', '/api/v1/plans')).data;
   const monthly = plans.find((p) => p.name === 'یک ماهه');
@@ -230,7 +232,7 @@ section('wallet purchase refunds when panel is down');
   env.PASARGUARD_URL = 'http://panel.down';   // make provisioning fail
   const buy = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: annual.id, method: 'wallet' } });
   env.PASARGUARD_URL = savedUrl;
-  ok(buy.status === 400 && buy.data.detail.code === 'provision_failed', 'purchase fails when panel down');
+  ok(buy.status === 400 && buy.data.detail.code === 'activation_failed', 'purchase fails when panel down');
   const w = await call('GET', '/api/v1/wallet', { token: tok });
   ok(w.data.balance === 500000, 'wallet refunded in full');
 }
@@ -320,7 +322,7 @@ section('settle is claimed once under concurrent confirmations');
   const savedUrl = env.PASARGUARD_URL; env.PASARGUARD_URL = 'http://panel.down';
   const f = await settle(env, await get(o3.data.id), { quiet: true }).catch((e) => e);
   env.PASARGUARD_URL = savedUrl;
-  ok(f && f.code === 'provision_failed' && (await get(o3.data.id)).status === 'pending', 'failed settle releases the claim');
+  ok(f && f.code === 'activation_failed' && (await get(o3.data.id)).status === 'pending', 'failed settle releases the claim');
 }
 
 section('telegram webhook needs the secret path and header');
@@ -1960,7 +1962,7 @@ section('a new panel reaches existing users: at once when the app loads servers,
 {
   const { getPanel } = await import('../src/panels.js');
   const { panelProgress } = await import('../src/sync.js');
-  const N = 'http://newp.test';
+  const N = 'https://newp.test';
   const np = fakes.addPanel(N, 'nn.example.net', 'pasarguard');
   const lastId = async () => (await env.DB.prepare('SELECT MAX(id) id FROM panels').first()).id;
   const tokA = await signup('na@example.com', { device: 'na-phone' });
@@ -1998,10 +2000,10 @@ section('a new panel reaches existing users: at once when the app loads servers,
   ok(after.have === after.want, 'background job finished the rest: ' + JSON.stringify(after));
 
   // a panel that refuses: admin told once, the app does not wait on it, the bot shows the error
-  const np2 = fakes.addPanel('http://newq.test', 'nq.example.net', 'pasarguard');
+  const np2 = fakes.addPanel('https://newq.test', 'nq.example.net', 'pasarguard');
   await admin('/addpanel pasarguard خراب');
   const qid = await lastId();
-  await tgWebhook({ message: { chat: { id: 12345 }, message_id: 9101, text: `http://newq.test admin8 pass8pass` } });
+  await tgWebhook({ message: { chat: { id: 12345 }, message_id: 9101, text: `https://newq.test admin8 pass8pass` } });
   await admin(`/rollout ${qid} 100`);
   np2.failCreate = 'Admin users limit reached';
   const msgs = fakes.tg.messages.length;
@@ -3754,6 +3756,136 @@ section('the Free plan\'s 50 D1 queries: a long order list, cron with 200 users'
   for (const p of panelsBefore) await q('UPDATE panels SET state = ? WHERE id = ?', p.state, p.id).run();
   for (const x of seeded) delete fakes.pg.users[x.name];
   for (const t of ['usage_counters WHERE period_id IN (SELECT id FROM sub_periods WHERE user_id >= 90000)', 'panel_accounts WHERE user_id >= 90000', 'subscriptions WHERE user_id >= 90000', 'sub_periods WHERE user_id >= 90000', 'users WHERE id >= 90000']) await env.DB.exec('DELETE FROM ' + t);
+}
+
+section('phases 1-5 fixes: open-order cap, stale quote, bad token, cancel race, limits, email, http panels, SMS key, slow panel');
+{
+  const q = (sql, ...a) => env.DB.prepare(sql).bind(...a);
+  const set = (k, v) => q('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', k, v).run();
+  const plan = (await call('GET', '/api/v1/plans')).data.find((p) => p.price_toman > 0);
+  await set('card_number', '6037991234567893');
+  // S1: one account can keep at most 3 unpaid card orders; fresh ones are not closed for it
+  const t1 = await signup('cap1@example.com', { device: 'cap1' });
+  const made = [];
+  for (let i = 0; i < 4; i++) made.push(await call('POST', '/api/v1/orders', { token: t1, json: { plan_id: plan.id, method: 'card' } }));
+  ok(made.slice(0, 3).every((r) => r.status === 201) && made[3].status === 429 && made[3].data.detail.code === 'too_many_open_orders',
+    'fourth fresh unpaid card order -> 429 too_many_open_orders: ' + made.map((r) => r.status).join(','));
+  // an order idle for more than 30 minutes with no receipt is closed to make room
+  await q('UPDATE orders SET created_at = created_at - 3600 WHERE id = ?', made[0].data.id).run();
+  const r5 = await call('POST', '/api/v1/orders', { token: t1, json: { plan_id: plan.id, method: 'card' } });
+  ok(r5.status === 201 && (await q('SELECT status FROM orders WHERE id = ?', made[0].data.id).first()).status === 'cancelled', 'an idle old order is closed and the new one is made');
+  // an order waiting on the admin (receipt sent) is never closed by this
+  await q("UPDATE orders SET status = 'review', created_at = created_at - 3600 WHERE id = ?", made[1].data.id).run();
+  await q('UPDATE orders SET created_at = created_at - 3600 WHERE id IN (?, ?)', made[2].data.id, r5.data.id).run();
+  const r6 = await call('POST', '/api/v1/orders', { token: t1, json: { plan_id: plan.id, method: 'card' } });
+  ok(r6.status === 201 && (await q('SELECT status FROM orders WHERE id = ?', made[1].data.id).first()).status === 'review', 'an order in review stays open');
+  const amounts = await q("SELECT amount_toman a, COUNT(*) c FROM orders WHERE method = 'card' AND status IN ('pending','review') GROUP BY amount_toman HAVING c > 1").all();
+  ok(!amounts.results.length, 'no two open card orders share an amount');
+  // S9: new orders are rate-limited per account
+  const limiter = (n) => { const seen = new Map(); return { limit: async ({ key }) => { const c = (seen.get(key) || 0) + 1; seen.set(key, c); return { success: c <= n }; } }; };
+  env.RL_IP = limiter(0);
+  const lim = await call('POST', '/api/v1/orders', { token: t1, json: { plan_id: plan.id, method: 'card' } });
+  const limRef = await call('POST', '/api/v1/auth/refresh', { json: { refresh_token: 'x' } });
+  ok(lim.status === 429 && limRef.status === 429, 'orders and token refresh are rate-limited: ' + lim.status + ',' + limRef.status);
+  delete env.RL_IP;
+  // S12: email and @username of one account share one login limit
+  const tg = await q("UPDATE users SET tg_username = 'capone' WHERE email = 'cap1@example.com'").run();
+  env.RL_LOGIN = limiter(5);
+  const tries = [];
+  for (let i = 0; i < 3; i++) tries.push((await call('POST', '/api/v1/auth/login', { json: { login: 'cap1@example.com', password: 'wrong' + i } })).status);
+  for (let i = 0; i < 3; i++) tries.push((await call('POST', '/api/v1/auth/login', { json: { login: '@capone', password: 'wrong' + i } })).status);
+  ok(tg.meta.changes === 1 && tries[5] === 429, 'sixth wrong password for one account via two names -> 429: ' + tries.join(','));
+  delete env.RL_LOGIN;
+
+  // C4: cancel after the order was paid elsewhere does not undo it
+  const t2 = await signup('cancel@example.com', { device: 'cancel1' });
+  const o2 = await call('POST', '/api/v1/orders', { token: t2, json: { plan_id: plan.id, method: 'card' } });
+  await q("UPDATE orders SET status = 'paid' WHERE id = ?", o2.data.id).run();
+  const c2 = await call('POST', `/api/v1/orders/${o2.data.id}/cancel`, { token: t2 });
+  ok(c2.status === 400 && (await q('SELECT status FROM orders WHERE id = ?', o2.data.id).first()).status === 'paid', 'cancel of a paid order is refused and changes nothing');
+
+  // S3: a quote that ran out long ago is matched but not activated by itself
+  const XLM = 'G' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.repeat(2).slice(0, 55);
+  await set('wallet_xlm', XLM); await set('wallet_xlm_memo', ''); await set('usd_rate_toman', '100000'); await set('coin_auto', 'auto');
+  const t3 = await signup('stale@example.com', { device: 'stale1' });
+  const o3 = await call('POST', '/api/v1/orders', { token: t3, json: { plan_id: plan.id, method: 'coin', coin: 'xlm' } });
+  ok(o3.status === 201, 'coin order made: ' + o3.status);
+  await q('UPDATE orders SET coin_expires_at = ? WHERE id = ?', Math.floor(Date.now() / 1000) - 3 * 3600, o3.data.id).run();
+  globalThis.__chain = globalThis.__chain || { xlm: [], xrp: [], trx: [], ton: [], algo: [] };
+  globalThis.__chain.xlm.push({ type: 'payment', to: XLM, asset_type: 'native', amount: o3.data.coin.amount, transaction_hash: 'c'.repeat(64), transaction_successful: true, created_at: new Date().toISOString(), transaction: { memo: null } });
+  const tgBefore = fakes.tg.messages.length;
+  globalThis.__cgChk = {};
+  const g3 = await call('GET', '/api/v1/orders/' + o3.data.id, { token: t3 });
+  ok(g3.data.status === 'review', 'stale quote paid with the old amount -> review, not paid: ' + g3.data.status);
+  ok(fakes.tg.messages.slice(tgBefore).some((m) => (m.text || '').includes('منقضی شده بود')), 'the admin is told the price ran out');
+  // a payment within the grace time is still activated by itself
+  const o4 = await call('POST', '/api/v1/orders', { token: t3, json: { plan_id: plan.id, method: 'coin', coin: 'xlm' } });
+  await q('UPDATE orders SET coin_expires_at = ? WHERE id = ?', Math.floor(Date.now() / 1000) - 10 * 60, o4.data.id).run();
+  globalThis.__chain.xlm.push({ type: 'payment', to: XLM, asset_type: 'native', amount: o4.data.coin.amount, transaction_hash: 'd'.repeat(64), transaction_successful: true, created_at: new Date().toISOString(), transaction: { memo: null } });
+  globalThis.__cgChk = {};
+  const g4 = await call('GET', '/api/v1/orders/' + o4.data.id, { token: t3 });
+  ok(g4.data.status === 'paid', 'paid 10 minutes after the quote ran out -> still activated: ' + g4.data.status);
+  globalThis.__chain.xlm.length = 0;
+
+  // S4: a token with a broken signature part is a 401, not a 500
+  ok((await call('GET', '/api/v1/me', { token: 'eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.%%%' })).status === 401, 'malformed token -> 401');
+
+  // S13: a new address can't carry a bot command
+  const bad = await call('POST', '/api/v1/auth/register', { json: { email: '/start@x.io', password: 'password123' } });
+  ok(bad.status === 422, 'email with "/" refused at sign-up: ' + bad.status);
+
+  // S14: a panel login over plain http is refused
+  const { parseCred } = await import('../src/panels.js');
+  ok(parseCred('http://p.example.com admin pw').error === 'http' && parseCred('https://p.example.com admin pw').cred, 'panel address must be https');
+
+  // S5: the SMS key may come in a header (kept out of request logs); a wrong key is still 404
+  await set('sms_key', 'k'.repeat(32));
+  const sh = await call('POST', '/sms', { headers: { 'x-sms-key': 'k'.repeat(32) }, json: { from: 'x', text: 'hello' } });
+  const sw = await call('POST', '/sms', { headers: { 'x-sms-key': 'wrong' }, json: { from: 'x', text: 'hello' } });
+  ok(sh.status === 200 && sw.status === 404, 'SMS key in the header works, a wrong one is refused: ' + sh.status + ',' + sw.status);
+
+  // AD7: deep health tells an outside monitor whether the cron runs
+  await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain();
+  const hd = await call('GET', '/health?deep=1');
+  ok(hd.status === 200 && hd.data.ok === true && hd.data.cron_age_sec < 600, 'deep health ok after a cron run: ' + JSON.stringify(hd.data));
+  await q('UPDATE sync_cursor SET run_at = run_at - 3600').run();
+  const hs = await call('GET', '/health?deep=1');
+  ok(hs.status === 503 && hs.data.ok === false, 'deep health 503 when the cron has been quiet: ' + JSON.stringify(hs.data));
+  ok((await call('GET', '/health')).status === 200, 'plain health unchanged');
+
+  // C10: the in-memory throttles stay bounded
+  const { throttled } = await import('../src/util.js');
+  for (let i = 0; i < 2500; i++) throttled('__testBag', i, 60000);
+  ok(globalThis.__testBag.size <= 2000, 'throttle memory is bounded: ' + globalThis.__testBag.size);
+
+  // S8: the free trial only for a verified Telegram account (Ali's choice), switched by a bot button
+  await set('trial_needs_telegram', '1');
+  const trialPlanX = (await q('SELECT * FROM plans WHERE trial_days > 0 AND is_active = 1 AND archived = 0 LIMIT 1').first());
+  const te = await signup('trialmail@example.com', { device: 'tm1' });
+  const r8 = await call('POST', '/api/v1/trial', { token: te, json: { plan_id: trialPlanX.id }, headers: { 'x-device-id': 'tm1' } });
+  ok(r8.status === 403 && r8.data.detail.code === 'trial_needs_telegram', 'email-only account gets no trial: ' + r8.status);
+  await q("UPDATE users SET tg_id = 778899001 WHERE email = 'trialmail@example.com'").run();
+  const r8b = await call('POST', '/api/v1/trial', { token: te, json: { plan_id: trialPlanX.id }, headers: { 'x-device-id': 'tm1' } });
+  ok(r8b.status === 200, 'the same account with a verified Telegram gets it: ' + r8b.status);
+  await tgWebhook({ callback_query: { id: 'x', data: 'm:ss:trial_needs_telegram:0', from: { id: 12345 }, message: { chat: { id: 12345, type: 'private' }, message_id: 1 } } });
+  ok((await q("SELECT value FROM settings WHERE key = 'trial_needs_telegram'").first()).value === '0', 'the bot button switches it off');
+  await set('trial_needs_telegram', '0');
+
+  // AD2: a panel that never answers holds the app for at most the user-path deadline, not 15 s
+  const tp = await signup('slow@example.com', { device: 'slow1' });
+  await admin(`/grant slow@example.com ${tenGb.id}`);
+  const keep = setInterval(() => {}, 500); // Node's AbortSignal.timeout timer alone doesn't keep the process alive
+  fakes.pg.hang = true;
+  let t0 = Date.now();
+  const sv = await call('GET', '/api/v1/vpn/servers', { token: tp, headers: { 'x-device-id': 'slow1' } });
+  const svMs = Date.now() - t0;
+  t0 = Date.now();
+  const me = await call('GET', '/api/v1/me', { token: tp });
+  const meMs = Date.now() - t0;
+  fakes.pg.hang = false;
+  clearInterval(keep);
+  ok(svMs < 7000 && [200, 503].includes(sv.status), `server list with a hung panel answers in ${svMs} ms (${sv.status})`);
+  ok(meMs < 12000 && me.status === 200, `/me with a hung panel answers in ${meMs} ms (${me.status})`);
 }
 
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');

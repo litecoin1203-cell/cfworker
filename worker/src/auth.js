@@ -1,7 +1,7 @@
 // Accounts: register / login / refresh / change-password. Email + password, or Telegram (6-digit code from the
 // bot, then a password; later logins with @username or numeric Telegram id + password).
 import { first, run, insert, touchDevice } from './db.js';
-import { json, err, hashPassword, verifyPassword, signJwt, verifyJwt, jwtSecret, cleanEmail, randomCode, nowSec, hmacHex, safeEqual, rateLimit } from './util.js';
+import { json, err, hashPassword, verifyPassword, signJwt, verifyJwt, jwtSecret, cleanEmail, cleanNewEmail, randomCode, nowSec, hmacHex, safeEqual, rateLimit } from './util.js';
 
 const ACCESS_MIN = 30;
 const REFRESH_DAYS = 60;
@@ -40,7 +40,7 @@ const dev = (body, headers) => ({
 });
 
 export async function register(env, body, headers) {
-  const email = cleanEmail(body.email);
+  const email = cleanNewEmail(body.email);
   // addresses of Telegram accounts are made up by the server; nobody may take one by email first
   if (email.endsWith('@' + TG_DOMAIN)) throw err(422, 'invalid_input', 'یک ایمیل درست وارد کن.', 'email');
   checkPassword(body.password);
@@ -95,6 +95,8 @@ export async function findUserByLogin(env, v) {
 
 export async function login(env, body, headers) {
   const user = await findUserByLogin(env, body.login ?? body.email);
+  // also limited per account: email, @username and Telegram id each had their own 5 tries a minute
+  if (user) await rateLimit(env, 'RL_LOGIN', 'uid:' + user.id);
   // an unknown email still costs one hash, so the response time doesn't tell which emails have accounts
   const stored = user ? user.password_hash : DUMMY_HASH;
   if (!(await verifyPassword(body.password || '', stored, env.SECRET_KEY)) || !user) {
@@ -333,7 +335,7 @@ export async function setEmail(env, user, body) {
     if (!user.tg_id) throw err(422, 'invalid_input', 'Verify your Telegram account before removing your email.', 'email');
     email = tgEmail(user.tg_id);
   } else {
-    try { email = cleanEmail(raw); } catch (e) { throw err(422, 'invalid_input', 'Enter a real email address.', 'email'); }
+    try { email = cleanNewEmail(raw); } catch (e) { throw err(422, 'invalid_input', 'Enter a real email address.', 'email'); }
     if (email.endsWith('@' + TG_DOMAIN)) throw err(422, 'invalid_input', 'Enter a real email address.', 'email');
   }
   if (email !== user.email) {

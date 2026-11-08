@@ -11,6 +11,8 @@
     <!-- In-app update: Android's installer opens on Pleat's own new APK (the person confirms it). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <application
+        android:allowBackup="false"
+        android:fullBackupContent="false"
         android:label="Pleat"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">

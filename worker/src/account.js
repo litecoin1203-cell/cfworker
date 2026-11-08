@@ -1,6 +1,6 @@
 // Public config, plans, profile, the VPN subscription (from the control plane), the unified server list, devices and the free trial.
 import { first, all, run, getSettings, getSettingInt } from './db.js';
-import { json, err, nowSec } from './util.js';
+import { json, err, nowSec, deadline } from './util.js';
 import { PasarGuard, PasarGuardError } from './pasarguard.js';
 import { provision } from './billing.js';
 import { collectLinks, flagToCc } from './panels.js';
@@ -178,7 +178,7 @@ export async function photo(env, user) {
   const path = f && f.ok && f.result && f.result.file_path;
   if (!path || (f.result.file_size || 0) > 200000) return none;
   try {
-    const res = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${path}`);
+    const res = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${path}`, { signal: deadline(8000) });
     if (!res.ok) return none;
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (bytes.length > 200000) return none;
@@ -227,8 +227,8 @@ async function checkDevice(env, user, sub, deviceId, model) {
     const countRow = await first(env, 'SELECT COUNT(*) c FROM devices WHERE user_id = ? AND last_seen >= ?', user.id, since);
     if (countRow.c >= sub.device_limit) throw err(403, 'device_limit', `این پلن روی ${sub.device_limit} گوشی کار می‌کند. یک گوشی قدیمی را از «اشتراک من» حذف کن.`);
   }
-  if (!dev) await run(env, 'INSERT INTO devices (user_id, device_id, model, last_seen) VALUES (?,?,?,?)', user.id, deviceId, model || '', nowSec());
-  else await run(env, 'UPDATE devices SET last_seen = ? WHERE id = ?', nowSec(), dev.id);
+  await run(env, `INSERT INTO devices (user_id, device_id, model, last_seen) VALUES (?, ?, ?, ?)
+    ON CONFLICT(user_id, device_id) DO UPDATE SET last_seen = excluded.last_seen`, user.id, deviceId, model || '', nowSec());
 }
 
 export async function vpn(env, user, request) {
@@ -294,6 +294,9 @@ export async function startTrial(env, user, body, request) {
   const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', body.plan_id);
   if (!plan || !plan.is_active || plan.archived || plan.trial_days <= 0) throw err(400, 'no_trial', 'این پلن تست رایگان ندارد.');
   if (!(await trialAvailable(env, user))) throw err(400, 'trial_used', 'تست رایگان را قبلاً استفاده کرده‌ای.');
+  if (!user.tg_id && String((await getSettings(env)).trial_needs_telegram ?? '1') !== '0') {
+    throw err(403, 'trial_needs_telegram', 'برای تست رایگان اول تلگرامت را در پروفایل تأیید کن.');
+  }
   const deviceId = request.headers.get('x-device-id');
   if (deviceId) {
     const reused = await first(env, 'SELECT u.id FROM users u JOIN devices d ON d.user_id = u.id WHERE d.device_id = ? AND u.trial_used = 1 AND u.id != ?', deviceId, user.id);

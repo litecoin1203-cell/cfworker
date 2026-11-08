@@ -78,13 +78,23 @@ export default {
     const path = url.pathname;
 
     try {
-      if (path === '/health') return json({ ok: true });
+      if (path === '/health' && url.searchParams.get('deep') !== '1') return json({ ok: true });
+      // for an outside uptime monitor: is the per-minute cron still running? (the panel sync stamps its cursor
+      // every run while a panel is active). 503 when it has been quiet for 10 minutes. One read, no details.
+      if (path === '/health') {
+        const { first } = await import('./db.js');
+        const row = await first(env, 'SELECT MAX(run_at) t FROM sync_cursor').catch(() => null);
+        const age = row && row.t ? Math.max(0, Math.floor(Date.now() / 1000) - row.t) : null;
+        const ok = age !== null && age < 600;
+        return json({ ok, cron_age_sec: age }, ok ? 200 : 503);
+      }
       if (path === '/pay/done') return payDonePage(url.searchParams.get('cancelled'));
 
-      // bank SMS forwarded from the admin's phone (secret key in the path)
-      if (path.startsWith('/sms/') && request.method === 'POST') {
+      // bank SMS forwarded from the admin's phone. The secret key goes in the X-SMS-Key header (kept out of
+      // request logs); the older form with the key in the path still works.
+      if ((path === '/sms' || path.startsWith('/sms/')) && request.method === 'POST') {
         const { smsWebhook } = await import('./sms.js');
-        return await smsWebhook(env, request, path.slice(5));
+        return await smsWebhook(env, request, request.headers.get('x-sms-key') || path.slice(5));
       }
 
       // Telegram webhook at /tg, checked by the secret_token header Telegram sends (the Worker registers it
@@ -157,7 +167,10 @@ async function route(request, env, p) {
     await rateLimit(env, 'RL_IP', 'register:' + ip);
     return auth.tgRegister(env, await body(request), H);
   }
-  if (p === '/auth/refresh' && m === 'POST') return auth.refresh(env, await body(request));
+  if (p === '/auth/refresh' && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'refresh:' + ip);
+    return auth.refresh(env, await body(request));
+  }
 
   // crypto webhook (no auth, signature-checked)
   if (p === '/payments/nowpayments/ipn' && m === 'POST') return orders.nowpaymentsIpn(env, request);
@@ -218,14 +231,24 @@ async function route(request, env, p) {
   if (p === '/wallet' && m === 'GET') return orders.wallet(env, user);
   if (p === '/referral' && m === 'GET') return orders.referral(env, user);
   if (p === '/orders' && m === 'GET') return orders.listOrders(env, user);
-  if (p === '/orders' && m === 'POST') return orders.createOrder(env, user, await body(request));
+  // new orders, receipts and "I paid" are limited per account (each one messages the admin or reserves an amount)
+  if (p === '/orders' && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'order:' + user.id);
+    return orders.createOrder(env, user, await body(request));
+  }
 
   let mm;
   if ((mm = p.match(/^\/devices\/(\d+)$/)) && m === 'DELETE') return account.removeDevice(env, user, parseInt(mm[1], 10));
   if ((mm = p.match(/^\/orders\/(\d+)$/)) && m === 'GET') return orders.getOrder(env, user, parseInt(mm[1], 10));
-  if ((mm = p.match(/^\/orders\/(\d+)\/receipt$/)) && m === 'POST') return orders.uploadReceipt(env, user, parseInt(mm[1], 10), request);
+  if ((mm = p.match(/^\/orders\/(\d+)\/receipt$/)) && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'receipt:' + user.id);
+    return orders.uploadReceipt(env, user, parseInt(mm[1], 10), request);
+  }
   if ((mm = p.match(/^\/orders\/(\d+)\/cancel$/)) && m === 'POST') return orders.cancelOrder(env, user, parseInt(mm[1], 10));
-  if ((mm = p.match(/^\/orders\/(\d+)\/paid$/)) && m === 'POST') return orders.markCoinPaid(env, user, parseInt(mm[1], 10), await body(request));
+  if ((mm = p.match(/^\/orders\/(\d+)\/paid$/)) && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'paid:' + user.id);
+    return orders.markCoinPaid(env, user, parseInt(mm[1], 10), await body(request));
+  }
 
   return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
 }

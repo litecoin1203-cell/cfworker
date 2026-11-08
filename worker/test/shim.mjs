@@ -93,6 +93,8 @@ export function installFakes({ panelBase }) {
     if (base) {
       const pg = panels[base];
       if (pg.down) throw new TypeError('fetch failed');
+      // a panel that accepts the connection and never answers: only the caller's deadline ends the wait
+      if (pg.hang) return new Promise((_, rej) => { const sg = init.signal; if (sg) sg.addEventListener('abort', () => rej(sg.reason || new Error('aborted'))); });
       const path = url.slice(base.length);
       if (path.startsWith('/api/users?')) {
         const q = new URL(url).searchParams;

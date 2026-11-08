@@ -83,6 +83,22 @@ export async function safeEqual(a, b) {
 
 // Per-key request limits from the Workers Rate Limiting bindings in wrangler.jsonc. A missing binding
 // (local runs) or a failing limiter lets the request through: the limiter must never lock users out.
+// A deadline for an outside call, so one slow service can't hold a request or the cron until the Worker is killed.
+export const deadline = (ms) => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined);
+
+// "Done this in the last ms?" kept in the isolate's memory. Old entries are dropped once the bag grows, so a
+// long-lived isolate doesn't keep one entry per user and order forever.
+export function throttled(bag, id, ms) {
+  const m = (globalThis[bag] instanceof Map ? globalThis[bag] : (globalThis[bag] = new Map()));
+  const now = Date.now();
+  const t = m.get(id);
+  if (t && now - t < ms) return true;
+  if (m.size >= 2000) for (const [k, v] of m) if (now - v >= ms) m.delete(k);
+  if (m.size >= 2000) m.delete(m.keys().next().value);
+  m.set(id, now);
+  return false;
+}
+
 export async function rateLimit(env, binding, key) {
   const limiter = env[binding];
   if (!limiter || !key) return;
@@ -132,7 +148,9 @@ export async function verifyJwt(token, secret) {
   const parts = String(token || '').split('.');
   if (parts.length !== 3) return null;
   const data = `${parts[0]}.${parts[1]}`;
-  const ok = await crypto.subtle.verify('HMAC', await hmacKey(secret), bytesFromB64url(parts[2]), enc.encode(data));
+  let sig;
+  try { sig = bytesFromB64url(parts[2]); } catch (e) { return null; } // not base64url: a broken token, not a server error
+  const ok = await crypto.subtle.verify('HMAC', await hmacKey(secret), sig, enc.encode(data));
   if (!ok) return null;
   let payload;
   try { payload = JSON.parse(dec.decode(bytesFromB64url(parts[1]))); } catch (e) { return null; }
@@ -150,6 +168,13 @@ export const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[A-Za-z]{2,}$/;
 export function cleanEmail(v) {
   v = String(v || '').trim().toLowerCase();
   if (v.length > 254 || !EMAIL_RE.test(v)) throw err(422, 'invalid_input', 'یک ایمیل درست وارد کن.', 'email');
+  return v;
+}
+// A new address may not hold characters that mean something in the admin's Telegram messages: "/start@x.io"
+// became a tappable command there. Existing addresses still log in through cleanEmail.
+export function cleanNewEmail(v) {
+  v = cleanEmail(v);
+  if (/[/\\<>"'`]/.test(v)) throw err(422, 'invalid_input', 'یک ایمیل درست وارد کن.', 'email');
   return v;
 }
 

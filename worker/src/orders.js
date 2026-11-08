@@ -8,6 +8,7 @@ import { planName } from './account.js';
 import { bankOf, cardDigits } from './banks.js';
 import { coinById, walletKey, memoKey, enabledCoins, usdRate, prices, quoteAmount, cleanTxid } from './coins.js';
 import { sendCoinNotice } from './telegram.js';
+import { QUOTE_GRACE_SEC } from './chainwatch.js';
 
 const cardOpen = (o) => o.method === 'card' && ['pending', 'review', 'rejected'].includes(o.status);
 
@@ -71,15 +72,42 @@ function coinInfo(o) {
   };
 }
 
-// 1..99 toman, avoiding an amount that another open card order already uses
+// 1..99 toman, avoiding an amount that another open card order already uses. The amounts in use are read in one
+// query (one query per try went over the 50 an invocation may send once ~45 orders shared a price).
 async function uniqueSuffix(env, order) {
   const since = nowSec() - 36 * 3600;
+  const taken = new Set((await all(env, "SELECT amount_toman a FROM orders WHERE method = 'card' AND id != ? AND amount_toman BETWEEN ? AND ? AND status IN ('pending','review','rejected') AND created_at > ?",
+    order.id, order.amount_toman + 1, order.amount_toman + 99, since)).map((r) => r.a));
   for (let i = 0; i < 99; i++) {
     const sfx = ((order.id * 37 + i) % 99) + 1;
-    const clash = await first(env, "SELECT id FROM orders WHERE method = 'card' AND id != ? AND amount_toman = ? AND status IN ('pending','review') AND created_at > ?", order.id, order.amount_toman + sfx, since);
-    if (!clash) return sfx;
+    if (!taken.has(order.amount_toman + sfx)) return sfx;
   }
   return (order.id % 99) + 1;
+}
+
+// Unpaid orders one person may keep per payment method. A new one first closes that person's oldest orders that
+// can no longer be paid by themselves: a card order with no receipt after 30 minutes (the bank SMS of a real transfer
+// has come by then), a crypto order whose quote ran out past the grace time. If that doesn't make room, it is refused.
+// Without a cap one account could fill the 99 unique card amounts of a plan (nobody could buy it by card) or the
+// chain watcher's window (nobody's crypto payment was confirmed by itself).
+export const OPEN_PER_METHOD = 3;
+const CARD_IDLE_SEC = 30 * 60;
+async function makeRoomFor(env, user, method) {
+  const now = nowSec();
+  const open = await all(env, "SELECT id, status, created_at, coin_expires_at, txid FROM orders WHERE user_id = ? AND method = ? AND status IN ('pending','review','expired','rejected') AND created_at > ? ORDER BY id DESC",
+    user.id, method, now - 48 * 3600);
+  if (open.length < OPEN_PER_METHOD) return;
+  const done = (o) => (o.status === 'pending' || o.status === 'expired') && !o.txid && (method === 'coin'
+    ? !!o.coin_expires_at && now > o.coin_expires_at + QUOTE_GRACE_SEC
+    : now - o.created_at > CARD_IDLE_SEC);
+  const drop = open.filter(done).map((o) => o.id);
+  if (open.length - drop.length >= OPEN_PER_METHOD) {
+    throw err(429, 'too_many_open_orders', 'چند سفارش پرداخت‌نشده‌ی تازه داری. اگر پرداخت کرده‌ای منتظر تأیید بمان، وگرنه نیم ساعت دیگر دوباره امتحان کن.');
+  }
+  if (drop.length) {
+    await run(env, "UPDATE orders SET status = 'cancelled' WHERE id IN (SELECT value FROM json_each(?)) AND status IN ('pending','expired') AND txid IS NULL",
+      JSON.stringify(drop));
+  }
 }
 
 // a crypto quote that ran out without the user saying they paid is closed, so a stale price is never used
@@ -157,6 +185,7 @@ export async function createOrder(env, user, body) {
   const method = body.method;
   if (!['wallet', 'card', 'crypto', 'coin'].includes(method)) throw err(422, 'invalid_input', 'روش پرداخت را انتخاب کن.', 'method');
   if (method === 'coin' && !coinById(body.coin)) throw err(422, 'invalid_input', 'یک ارز دیجیتال انتخاب کن.', 'coin');
+  if (method !== 'wallet') await makeRoomFor(env, user, method);
   let orderId;
   if (body.plan_id) {
     const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', body.plan_id);
@@ -265,7 +294,13 @@ export async function markCoinPaid(env, user, orderId, body) {
   const same = txid && (await first(env, "SELECT id FROM orders WHERE txid = ? AND id != ? AND status IN ('review','paid')", txid, order.id));
   if (same) throw err(409, 'txid_used', 'این هش تراکنش قبلاً برای سفارش دیگری ثبت شده است.', 'txid');
   const wasReview = order.status === 'review';
-  await run(env, "UPDATE orders SET status = 'review', txid = COALESCE(?, txid), admin_note = NULL WHERE id = ? AND status NOT IN ('paid', 'settling')", txid || null, order.id);
+  // the duplicate check is repeated inside the write, so two orders claiming one transfer at once can't both pass
+  const w = await run(env, `UPDATE orders SET status = 'review', txid = COALESCE(?, txid), admin_note = NULL WHERE id = ? AND status NOT IN ('paid', 'settling')
+      AND (? IS NULL OR NOT EXISTS (SELECT 1 FROM orders o2 WHERE o2.txid = ? AND o2.id != ? AND o2.status IN ('review','paid')))`,
+  txid || null, order.id, txid || null, txid || null, order.id);
+  if (txid && !w.meta.changes && !(await first(env, "SELECT 1 FROM orders WHERE id = ? AND status IN ('paid','settling')", order.id))) {
+    throw err(409, 'txid_used', 'این هش تراکنش قبلاً برای سفارش دیگری ثبت شده است.', 'txid');
+  }
   const fresh = await first(env, 'SELECT * FROM orders WHERE id = ?', order.id);
   if (!wasReview || txid) await sendCoinNotice(env, fresh, user);
   return json(await orderOut(env, fresh));
@@ -311,7 +346,9 @@ export async function uploadReceipt(env, user, orderId, request) {
 export async function cancelOrder(env, user, orderId) {
   const order = await expireIfDue(env, await ownOrder(env, user, orderId));
   if (!['pending', 'expired'].includes(order.status)) throw err(400, 'bad_state', 'فقط سفارش پرداخت‌نشده لغو می‌شود.');
-  await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ?", order.id);
+  // conditional: a bank SMS or a transfer may have settled it since it was read
+  const r = await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ? AND status IN ('pending','expired')", order.id);
+  if (!r.meta.changes) throw err(400, 'bad_state', 'فقط سفارش پرداخت‌نشده لغو می‌شود.');
   return json(await orderOut(env, await first(env, 'SELECT * FROM orders WHERE id = ?', order.id)));
 }
 

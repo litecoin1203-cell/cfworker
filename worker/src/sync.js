@@ -14,7 +14,7 @@
 import { first, all, run } from './db.js';
 import { nowSec, logError } from './util.js';
 import { PasarGuardError, parseExpire } from './pasarguard.js';
-import { adapterFor, listPanels, panelsFor, pickPanels, recordHealth, accountsOf, groupIdsFor } from './panels.js';
+import { adapterFor, listPanels, panelsFor, pickPanels, recordHealth, accountsOf, groupIdsFor, USER_PATH_MS, userPathMs } from './panels.js';
 
 export const PAGE = 200;            // users read per panel request
 const PUSH_PER_RUN = 15;            // pending panel writes per cron run
@@ -150,10 +150,10 @@ const PENDING_SQL = `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.o
   FROM panel_accounts a JOIN panels p ON p.id = a.panel_id`;
 
 // One adapter per panel for a whole invocation: opening a panel's login costs a D1 read, so it is done once.
-function adapterCache(env) {
+function adapterCache(env, timeoutMs = 0) {
   const seen = new Map();
   return (panel) => {
-    if (!seen.has(panel.id)) seen.set(panel.id, adapterFor(env, panel));
+    if (!seen.has(panel.id)) seen.set(panel.id, adapterFor(env, panel, { timeoutMs }));
     return seen.get(panel.id);
   };
 }
@@ -197,20 +197,22 @@ export async function pushPending(env, { userId = null, limit = PUSH_PER_RUN, ad
 // Live reading of one user on all their panels (used by /me so the app shows fresh numbers), then decide and push.
 export async function refreshUser(env, userId) {
   const accounts = await accountsOf(env, userId);
-  const adapter = adapterCache(env);
+  // the app is waiting: panels are read at the same time, each with the short user-path deadline
+  const adapter = adapterCache(env, USER_PATH_MS);
   const readings = new Map();
   let reached = 0, missing = 0;
-  for (const a of accounts) {
-    if (a.panel_state === 'disabled') continue;
+  await Promise.all(accounts.filter((a) => a.panel_state !== 'disabled').map(async (a) => {
     try {
-      const u = await (await adapter({ id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref, options_json: a.options_json })).getUser(a.remote_username);
-      if (!u) { missing++; continue; }
+      const pg = await adapter({ id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref, options_json: a.options_json });
+      pg.timeoutMs = userPathMs(a);
+      const u = await pg.getUser(a.remote_username);
+      if (!u) { missing++; return; }
       reached++;
       readings.set(a.id, { used: parseInt(u.used_traffic || 0, 10) || 0, expire: parseExpire(u.expire), data_limit: parseInt(u.data_limit || 0, 10) || 0 });
     } catch (e) {
       readings.set(a.id, null);
     }
-  }
+  }));
   if (readings.size) {
     const rows = await all(env, `${LEDGER_SQL} WHERE a.user_id = ?`, userId);
     await batch(env, ledgerWrites(env, rows, (r) => readings.get(r.id), nowSec()));

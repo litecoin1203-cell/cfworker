@@ -833,7 +833,11 @@ class ApiClient {
     'panel_unavailable': 'Servers can’t be reached right now. Try again soon.',
     'no_trial': 'This plan has no free trial.',
     'trial_used': 'The free trial was already used.',
+    'trial_needs_telegram':
+        'Verify your Telegram in Profile first, then start the free trial.',
     'provision_failed': 'The trial couldn’t start right now. Try again soon.',
+    'activation_failed': 'Your plan couldn’t be activated yet. Support was told and will fix it soon.',
+    'too_many_open_orders': 'You have several unpaid orders. If you paid, wait for the check. Otherwise try again in 30 minutes.',
     'plan_not_found': 'This plan isn’t available.',
     'insufficient_balance': 'Your wallet balance isn’t enough for this plan.',
     'wrong_password': 'The current password is wrong.',

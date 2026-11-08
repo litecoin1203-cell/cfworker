@@ -52,9 +52,10 @@ function short(text) {
   return text.slice(0, 300);
 }
 
-async function timedFetch(url, init = {}) {
+// ms: an adapter made for the app's own request waits less (see userPath in panels.js) than the cron and the bot
+async function timedFetch(url, init = {}, ms) {
   const opts = { ...init };
-  if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(TIMEOUT_MS);
+  if (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) opts.signal = AbortSignal.timeout(ms || TIMEOUT_MS);
   return fetch(url, opts);
 }
 
@@ -93,7 +94,7 @@ export class PasarGuard {
       const body = new URLSearchParams({ username: this.username, password: this.password, grant_type: 'password' });
       let r;
       try {
-        r = await timedFetch(`${base}/api/admin/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body });
+        r = await timedFetch(`${base}/api/admin/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body }, this.timeoutMs);
       } catch (e) {
         last = new PasarGuardError(`cannot reach panel (${e.name === 'TimeoutError' ? 'timeout' : e.message})`, 0);
         continue;
@@ -131,7 +132,7 @@ export class PasarGuard {
         method,
         headers: await this._headers(),
         body: body === undefined ? undefined : JSON.stringify(body),
-      });
+      }, this.timeoutMs);
     } catch (e) {
       if (e instanceof PasarGuardError) throw e;
       throw new PasarGuardError(`cannot reach panel (${e.name === 'TimeoutError' ? 'timeout' : e.message})`, 0);
@@ -234,7 +235,7 @@ export class PasarGuard {
     const headers = { 'user-agent': CORE_UA, accept: '*/*' };
     for (const [k, v] of Object.entries(fwd)) if (v) headers[k] = v;
     let r;
-    try { r = await timedFetch(url, { headers }); } catch (e) { throw new PasarGuardError(`cannot reach subscription (${e.name === 'TimeoutError' ? 'timeout' : e.message})`, 0); }
+    try { r = await timedFetch(url, { headers }, this.timeoutMs); } catch (e) { throw new PasarGuardError(`cannot reach subscription (${e.name === 'TimeoutError' ? 'timeout' : e.message})`, 0); }
     const text = await r.text().catch(() => '');
     return { status: r.status, text, userinfo: r.headers.get('subscription-userinfo') || '' };
   }
@@ -242,7 +243,7 @@ export class PasarGuard {
   // Share links (vless://, vmess://...) for the user, one per line.
   async subscriptionLinks(subUrl) {
     try {
-      const r = await timedFetch(this.linksUrl(subUrl), { headers: { 'user-agent': CORE_UA } });
+      const r = await timedFetch(this.linksUrl(subUrl), { headers: { 'user-agent': CORE_UA } }, this.timeoutMs);
       if (r.ok) {
         const lines = decodeSub(await r.text());
         if (lines.length) return lines;

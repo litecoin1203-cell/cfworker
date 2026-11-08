@@ -11,10 +11,9 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import java.io.File
-import java.net.HttpURLConnection
-import java.net.InetSocketAddress
-import java.net.Proxy
-import java.net.URL
+import java.security.SecureRandom
+import org.json.JSONArray
+import org.json.JSONObject
 import libv2ray.CoreCallbackHandler
 import libv2ray.CoreController
 import libv2ray.Libv2ray
@@ -227,6 +226,12 @@ class PleatVpnService : VpnService() {
             }
         }
 
+        // A fresh login for the local SOCKS port, known only to the core and
+        // hev: without it any app on the phone could use the exit.
+        val user = randomToken(12)
+        val pass = randomToken(24)
+        val locked = lockSocks(config, user, pass)
+
         Engine.init(this)
         val c = Libv2ray.newCoreController(object : CoreCallbackHandler {
             override fun startup(): Long = 0
@@ -234,7 +239,7 @@ class PleatVpnService : VpnService() {
             override fun onEmitStatus(code: Long, message: String?): Long = 0
         })
         core = c
-        c.startLoop(config, 0)
+        c.startLoop(locked, 0)
         if (!c.isRunning) error("core did not start")
         running = c
 
@@ -249,6 +254,8 @@ class PleatVpnService : VpnService() {
               port: $SOCKS_PORT
               address: 127.0.0.1
               udp: 'udp'
+              username: '$user'
+              password: '$pass'
             misc:
               tcp-read-write-timeout: 300000
               udp-read-write-timeout: 60000
@@ -259,23 +266,44 @@ class PleatVpnService : VpnService() {
         hevRunning = true
     }
 
-    /** One request through the exit; true when it answers. Gives up early once [current] turns false. */
+    /**
+     * One request through the exit, made by the core itself (the same routes
+     * as the tun's traffic; the SOCKS port now wants a login). True when it
+     * answers. Gives up early once [current] turns false.
+     */
     private fun probe(current: () -> Boolean): Boolean {
-        val proxy = Proxy(Proxy.Type.SOCKS, InetSocketAddress("127.0.0.1", SOCKS_PORT))
         repeat(3) {
             if (!current()) return false
             try {
-                val conn = URL(Engine.TEST_URL).openConnection(proxy) as HttpURLConnection
-                conn.connectTimeout = 6000
-                conn.readTimeout = 6000
-                val code = conn.responseCode
-                conn.disconnect()
-                if (code == 204 || code == 200) return true
+                val ms = core?.measureDelay(Engine.TEST_URL) ?: -1L
+                if (ms >= 0) return true
             } catch (e: Exception) {
-                Thread.sleep(800)
+                // no answer this time
             }
+            Thread.sleep(800)
         }
         return false
+    }
+
+    /** Letters and digits only, so the value is safe in hev's YAML and the core's JSON. */
+    private fun randomToken(n: Int): String {
+        val abc = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
+        val rnd = SecureRandom()
+        return String(CharArray(n) { abc[rnd.nextInt(abc.length)] })
+    }
+
+    /** The config with [user]/[pass] as the only login of its "socks" inbound. */
+    private fun lockSocks(config: String, user: String, pass: String): String {
+        val json = JSONObject(config)
+        val inbounds = json.optJSONArray("inbounds") ?: return config
+        for (i in 0 until inbounds.length()) {
+            val ib = inbounds.optJSONObject(i) ?: continue
+            if (ib.optString("tag") != "socks") continue
+            val settings = ib.optJSONObject("settings") ?: JSONObject().also { ib.put("settings", it) }
+            settings.put("auth", "password")
+            settings.put("accounts", JSONArray().put(JSONObject().put("user", user).put("pass", pass)))
+        }
+        return json.toString()
     }
 
     /** The core and hev only; the tun and the network watch stay. */

@@ -1104,7 +1104,7 @@ async function actorAllowed(env, actor, name) {
 
 // a real, free email address (not a made-up Telegram one, not a deleted one)
 export async function checkEmail(env, raw) {
-  const { cleanEmail } = await import('./util.js');
+  const { cleanNewEmail: cleanEmail } = await import('./util.js');
   const { TG_DOMAIN } = await import('./auth.js');
   let email;
   try { email = cleanEmail(raw); } catch (e) { return { error: 'این ایمیل درست نیست.' }; }

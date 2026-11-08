@@ -1,7 +1,7 @@
 // Telegram admin bot: receipts with Approve/Reject buttons, panel diagnostics, discount codes, plans, backups.
 // You run the whole shop from your Telegram chat.
 import { first, run, all, insert, getSettings, setSetting, SETTING_DEFAULTS } from './db.js';
-import { nowSec } from './util.js';
+import { nowSec, deadline } from './util.js';
 import { runAction, PLAN_FIELDS } from './admin-actions.js';
 
 export { PLAN_FIELDS };
@@ -83,6 +83,7 @@ export async function tg(env, method, body) {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(body),
+      signal: deadline(10000),
     });
     return r.json();
   } catch (e) { return null; }
@@ -99,7 +100,7 @@ async function sendDocument(env, chatId, filename, content, caption) {
   form.set('chat_id', String(chatId));
   if (caption) form.set('caption', caption);
   form.set('document', new Blob([content], { type: 'application/json' }), filename);
-  try { const r = await fetch(API(env, 'sendDocument'), { method: 'POST', body: form }); return r.json(); } catch (e) { return null; }
+  try { const r = await fetch(API(env, 'sendDocument'), { method: 'POST', body: form, signal: deadline(20000) }); return r.json(); } catch (e) { return null; }
 }
 
 // Forward an uploaded receipt photo (raw bytes) to the admin with Approve/Reject buttons.
@@ -117,7 +118,7 @@ export async function sendReceipt(env, order, user, bytes, filename, contentType
   form.set('reply_markup', JSON.stringify(buttons(order.id)));
   form.set('photo', new Blob([bytes], { type: contentType || 'image/jpeg' }), filename || 'receipt.jpg');
   try {
-    const r = await fetch(API(env, 'sendPhoto'), { method: 'POST', body: form });
+    const r = await fetch(API(env, 'sendPhoto'), { method: 'POST', body: form, signal: deadline(20000) });
     const data = await r.json();
     return data?.result?.photo?.slice(-1)[0]?.file_id || null;
   } catch (e) { return null; }
@@ -617,7 +618,7 @@ async function onMessage(env, msg, opts = {}) {
     const { cred, error } = parseCred(body);
     if (error) {
       await menu.setWait(env, `/panelcred ${panel.id}`, `pp:${panel.id}`, true);
-      return say(`❌ ${{ url: 'آدرس پنل درست نیست.', json: 'JSON درست نیست.' }[error] || 'باید سه چیز باشد: آدرس، یوزرنیم، رمز.'} دوباره بفرست:\n\n${menu.CRED_PROMPT}`);
+      return say(`❌ ${{ url: 'آدرس پنل درست نیست.', http: 'آدرس پنل باید https باشد (با http رمز پنل بدون رمزنگاری فرستاده می‌شود).', json: 'JSON درست نیست.' }[error] || 'باید سه چیز باشد: آدرس، یوزرنیم، رمز.'} دوباره بفرست:\n\n${menu.CRED_PROMPT}`);
     }
     await savePanelCred(env, panel, cred);
     await audit(env, chatId, 'panel.cred', 'panel', panel.id, 'ورود پنل عوض شد');
@@ -763,8 +764,10 @@ async function onMessage(env, msg, opts = {}) {
       '۱) روی گوشی‌ای که پیامک بانک می‌آید، اپ رایگان «Incoming SMS to URL forwarder» را نصب کن (از F-Droid یا صفحه‌ی Releases گیت‌هاب).',
       '۲) در اپ یک قانون بساز:',
       '   Sender: *  (یا شماره‌ی بانک)',
-      `   URL: ${base}/sms/${k}`,
+      `   URL: ${base}/sms`,
+      `   Headers: {"X-SMS-Key": "${k}"}`,
       '   بقیه را دست نزن (JSON پیش‌فرض درست است) → Test → Save',
+      `   (اپ‌هایی که هدر ندارند: URL را ${base}/sms/${k} بگذار؛ کار می‌کند ولی کلید در لاگ درخواست‌ها می‌ماند.)`,
       '۳) اولین پیامک واریز که آمد، در تلگرام دکمه‌ی «🏦 این فرستنده بانک من است» را بزن. از آن به بعد خودکار تأیید می‌شود.',
       '',
       `فرستنده‌های بانکی مورد اعتماد: ${senders.length ? senders.join('، ') : 'هنوز هیچ'}`,
