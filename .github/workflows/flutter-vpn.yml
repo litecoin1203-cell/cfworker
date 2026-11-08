@@ -73,24 +73,30 @@ jobs:
           XRAY_DUMP=/tmp/xray-configs flutter test test/xray_config_test.dart
           dl=~/.cache/pleat-dl
           mkdir -p "$dl"
-          # get URL NAME: fresh copy into the cache, or keep the cached one when GitHub keeps failing
+          # get NAME URL...: a fresh copy into the cache from the first URL that answers, or keep the cached
+          # one when GitHub keeps failing
           get() {
-            if curl -fsSL --retry 8 --retry-delay 15 --retry-all-errors --max-time 300 -o "$dl/$2.new" "$1"; then
-              mv "$dl/$2.new" "$dl/$2"
-            elif test -s "$dl/$2"; then
-              echo "::warning::$2: GitHub did not answer, using the cached copy"
+            name=$1; shift
+            for url in "$@"; do
+              if curl -fsSL --retry 6 --retry-delay 15 --retry-all-errors --max-time 300 -o "$dl/$name.new" "$url"; then
+                mv "$dl/$name.new" "$dl/$name"; return 0
+              fi
+            done
+            if test -s "$dl/$name"; then
+              echo "::warning::$name: GitHub did not answer, using the cached copy"
             else
-              echo "::error::$2: download failed and there is no cached copy"; return 1
+              echo "::error::$name: download failed and there is no cached copy"; return 1
             fi
           }
-          get "https://github.com/XTLS/Xray-core/releases/download/${XRAY_LIB_TAG}/Xray-linux-64.zip" xray.zip
+          get xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_LIB_TAG}/Xray-linux-64.zip" \
+            "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
           unzip -oq "$dl/xray.zip" -d /tmp/xray
           # The app's own geo files, so the Iran-direct rules are checked too (they also go into the APK).
           geo=android/app/src/main/assets/geo
           mkdir -p "$geo"
           base="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
-          get "$base/geoip.dat" geoip.dat
-          get "$base/geosite.dat" geosite.dat
+          get geoip.dat "$base/geoip.dat"
+          get geosite.dat "$base/geosite.dat"
           cp "$dl/geoip.dat" "$dl/geosite.dat" "$geo/"
           test -s "$geo/geoip.dat" && test -s "$geo/geosite.dat"
           export XRAY_LOCATION_ASSET="$PWD/$geo"
@@ -117,12 +123,27 @@ jobs:
           git -C hev-socks5-tunnel submodule update --init --recursive
           bash compile-hevtun.sh
       - name: Download Xray core (libv2ray.aar)
+        id: aar
+        continue-on-error: true # a GitHub 504 falls back to the cached copy below
         uses: robinraju/release-downloader@v1.11
         with:
           repository: 2dust/AndroidLibXrayLite
           tag: ${{ env.XRAY_LIB_TAG }}
           fileName: libv2ray.aar
           out-file-path: flutter_vpn/android/app/libs/
+      - name: Keep or use the cached libv2ray.aar
+        run: |
+          dl=~/.cache/pleat-dl
+          aar=android/app/libs/libv2ray.aar
+          mkdir -p "$dl" android/app/libs
+          if [ "${{ steps.aar.outcome }}" = success ] && test -s "$aar"; then
+            cp "$aar" "$dl/libv2ray-${XRAY_LIB_TAG}.aar"
+          elif test -s "$dl/libv2ray-${XRAY_LIB_TAG}.aar"; then
+            echo "::warning::libv2ray.aar: GitHub did not answer, using the cached copy"
+            cp "$dl/libv2ray-${XRAY_LIB_TAG}.aar" "$aar"
+          else
+            echo "::error::libv2ray.aar: download failed and there is no cached copy"; exit 1
+          fi
       - name: Signing key
         env:
           KEYSTORE_B64: ${{ secrets.APP_KEYSTORE_BASE64 }}
