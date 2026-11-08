@@ -56,19 +56,62 @@ jobs:
           node --experimental-sqlite ../worker/test/dev_server.mjs > /tmp/worker.log 2>&1 &
           for i in $(seq 1 30); do curl -sf http://127.0.0.1:8787/health && break; sleep 1; done
           flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1:8787
+      # Downloads from GitHub releases (Xray core, geo files) sometimes answer 504 for minutes. The last good
+      # copies are kept in the Actions cache: a fresh download is always tried first (with long retries), and
+      # only when GitHub keeps failing the cached copy is used, so a GitHub outage no longer fails the build.
+      - name: Week of the cached downloads
+        id: dl-week
+        run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
+      - name: Restore cached downloads
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pleat-dl
+          key: pleat-dl-${{ env.XRAY_LIB_TAG }}-${{ steps.dl-week.outputs.week }}
+          restore-keys: pleat-dl-
       - name: Check generated configs with the real Xray core
         run: |
           XRAY_DUMP=/tmp/xray-configs flutter test test/xray_config_test.dart
-          # GitHub release downloads sometimes answer 504 for a minute; retry.
-          curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_LIB_TAG}/Xray-linux-64.zip" \
-            || curl -fsSL --retry 5 --retry-delay 10 -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"
-          unzip -oq /tmp/xray.zip -d /tmp/xray
-          # The app's own geo files, so the Iran-direct rules are checked too.
+          dl=~/.cache/pleat-dl
+          mkdir -p "$dl"
+          # get NAME URL...: a fresh copy into the cache from the first URL that answers, or keep the cached
+          # one when GitHub keeps failing
+          get() {
+            name=$1; shift
+            for url in "$@"; do
+              if curl -fsSL --retry 10 --retry-delay 20 --retry-all-errors --max-time 300 -o "$dl/$name.new" "$url"; then
+                mv "$dl/$name.new" "$dl/$name"; return 0
+              fi
+            done
+            if test -s "$dl/$name"; then
+              echo "::warning::$name: GitHub did not answer, using the cached copy"
+            else
+              echo "::error::$name: download failed and there is no cached copy"; return 1
+            fi
+          }
+          # XRAY_LIB_TAG is AndroidLibXrayLite's tag; Xray-core has no release by that name (404), so the
+          # desktop core for this check is Xray-core's latest release
+          if get xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"; then
+            unzip -oq "$dl/xray.zip" -d /tmp/xray
+          else
+            # GitHub's release files answer 504 from some runners for a long time: the same core is also
+            # published as a container image on ghcr.io, which is served from elsewhere
+            echo "::warning::Xray zip unavailable, taking the core from its image ghcr.io/xtls/xray-core"
+            mkdir -p /tmp/xray /tmp/xrayimg
+            cid=$(docker create ghcr.io/xtls/xray-core:latest)
+            docker export "$cid" | tar -x -C /tmp/xrayimg
+            docker rm "$cid" > /dev/null
+            cp "$(find /tmp/xrayimg -type f -name xray | head -1)" /tmp/xray/xray
+          fi
+          chmod +x /tmp/xray/xray && /tmp/xray/xray version | head -1
+          # The app's own geo files, so the Iran-direct rules are checked too (they also go into the APK).
           geo=android/app/src/main/assets/geo
           mkdir -p "$geo"
           base="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
-          curl -fL --retry 5 --retry-delay 10 -o "$geo/geoip.dat" "$base/geoip.dat"
-          curl -fL --retry 5 --retry-delay 10 -o "$geo/geosite.dat" "$base/geosite.dat"
+          # second source: the same release branch through jsDelivr (listed in that project's README)
+          mirror="https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release"
+          get geoip.dat "$base/geoip.dat" "$mirror/geoip.dat"
+          get geosite.dat "$base/geosite.dat" "$mirror/geosite.dat"
+          cp "$dl/geoip.dat" "$dl/geosite.dat" "$geo/"
           test -s "$geo/geoip.dat" && test -s "$geo/geosite.dat"
           export XRAY_LOCATION_ASSET="$PWD/$geo"
           for f in /tmp/xray-configs/*.json; do
@@ -94,12 +137,27 @@ jobs:
           git -C hev-socks5-tunnel submodule update --init --recursive
           bash compile-hevtun.sh
       - name: Download Xray core (libv2ray.aar)
+        id: aar
+        continue-on-error: true # a GitHub 504 falls back to the cached copy below
         uses: robinraju/release-downloader@v1.11
         with:
           repository: 2dust/AndroidLibXrayLite
           tag: ${{ env.XRAY_LIB_TAG }}
           fileName: libv2ray.aar
           out-file-path: flutter_vpn/android/app/libs/
+      - name: Keep or use the cached libv2ray.aar
+        run: |
+          dl=~/.cache/pleat-dl
+          aar=android/app/libs/libv2ray.aar
+          mkdir -p "$dl" android/app/libs
+          if [ "${{ steps.aar.outcome }}" = success ] && test -s "$aar"; then
+            cp "$aar" "$dl/libv2ray-${XRAY_LIB_TAG}.aar"
+          elif test -s "$dl/libv2ray-${XRAY_LIB_TAG}.aar"; then
+            echo "::warning::libv2ray.aar: GitHub did not answer, using the cached copy"
+            cp "$dl/libv2ray-${XRAY_LIB_TAG}.aar" "$aar"
+          else
+            echo "::error::libv2ray.aar: download failed and there is no cached copy"; exit 1
+          fi
       - name: Signing key
         env:
           KEYSTORE_B64: ${{ secrets.APP_KEYSTORE_BASE64 }}
@@ -110,6 +168,70 @@ jobs:
           else
             echo "::warning::APP_KEYSTORE_BASE64 is not set. Signing with this runner's debug key: uninstall an older Pleat before installing this APK."
           fi
+      # Gradle itself is downloaded from GitHub releases too (services.gradle.org redirects there): keep it
+      - name: Restore Gradle
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: pleat-gradle-${{ hashFiles('flutter_vpn/android/gradle/wrapper/gradle-wrapper.properties') }}
+      # Maven Central now answers some big jars (the Kotlin compiler) with a redirect to GitHub releases, which
+      # answer 504 at times, and Gradle does not fall through to the next repository on an error. Google's full
+      # mirror of Maven Central serves the files itself: an init script puts it first in every build (the app,
+      # its plugins and Flutter's own Gradle plugin); google() and the others stay behind it.
+      - name: Maven Central through Google's mirror
+        run: |
+          mkdir -p ~/.gradle/init.d
+          cat > ~/.gradle/init.d/central-mirror.gradle <<'GRADLE'
+          def mirrorUrl = 'https://maven-central.storage-download.googleapis.com/maven2/'
+          def putFirst = { handler ->
+            if (handler.findByName('centralMirror') == null) {
+              def repo = handler.maven { name = 'centralMirror'; url = mirrorUrl }
+              handler.remove(repo)
+              handler.addFirst(repo)
+            }
+          }
+          settingsEvaluated { settings ->
+            // only where the build lists its own repositories (an empty list means the defaults)
+            if (!settings.pluginManagement.repositories.isEmpty()) putFirst(settings.pluginManagement.repositories)
+            def drm = settings.dependencyResolutionManagement
+            if (!drm.repositories.isEmpty()) putFirst(drm.repositories)
+            // a build that takes its repositories from settings (Flutter's own Gradle plugin: FAIL_ON_PROJECT_REPOS)
+            // refuses project ones; there the mirror goes into the settings list above
+            def mode = drm.repositoriesMode.getOrNull()
+            settings.gradle.ext.centralMirrorInProjects = (mode == null || mode.toString() == 'PREFER_PROJECT')
+          }
+          allprojects { p ->
+            def ext = p.gradle.ext
+            if (ext.has('centralMirrorInProjects') && !ext.centralMirrorInProjects) return
+            p.buildscript { putFirst(repositories) }
+            putFirst(p.repositories)
+          }
+          GRADLE
+      # The Gradle wrapper tries its download once and stops on a 504; fetch the same file with retries
+      # into the place the wrapper looks first (dists/<name>/<base36 md5 of the URL>/), so it only unzips it.
+      - name: Fetch Gradle with retries
+        run: |
+          url=$(grep '^distributionUrl=' android/gradle/wrapper/gradle-wrapper.properties | cut -d= -f2- | sed 's/\\:/:/g')
+          name=$(basename "$url" .zip)
+          hash=$(python3 - "$url" <<'PY'
+          import hashlib, sys
+          n = int(hashlib.md5(sys.argv[1].encode()).hexdigest(), 16)
+          digits, out = '0123456789abcdefghijklmnopqrstuvwxyz', ''
+          while n:
+              n, r = divmod(n, 36)
+              out = digits[r] + out
+          print(out or '0')
+          PY
+          )
+          dir=~/.gradle/wrapper/dists/$name/$hash
+          if ls "$dir"/*.ok > /dev/null 2>&1; then echo "Gradle $name already installed"; exit 0; fi
+          mkdir -p "$dir"
+          if ! unzip -tq "$dir/$name.zip" > /dev/null 2>&1; then
+            curl -fsSL --retry 10 --retry-delay 20 --retry-all-errors -o "$dir/$name.zip.part" "$url"
+            mv "$dir/$name.zip.part" "$dir/$name.zip"
+            unzip -tq "$dir/$name.zip" > /dev/null
+          fi
+          echo "Gradle $name ready in $dir"
       - name: Build APK
         env:
           API_INPUT: ${{ github.event.inputs.api_base }}
