@@ -1,0 +1,65 @@
+/* Pleat direction A: sky blue by day, the same blue on dark navy by night (flutter_vpn/lib/design/tokens.dart). */
+:root {
+  --ground: #E7F1FA; --surface: #FFFFFF; --field: #F2F6FB; --navy: #14284B; --blue: #2F89F5; --ice: #A9D4F5;
+  --mist: #D7E9FA; --ink: #16181D; --muted: #8B93A7; --accent: #1E74DB; --on-accent: #FFFFFF;
+  --safe: #1F9D55; --alert: #E5484D;
+  color-scheme: light;
+}
+:root.night {
+  --ground: #04080F; --surface: #060D18; --field: #081120; --navy: #2C3E5D; --ice: #18447A; --mist: #0C182D;
+  --ink: #F2F3F5; --muted: #9CA2B0; --accent: #4E9BF6;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--ground); color: var(--ink); }
+body {
+  font: 16px/1.45 "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  padding: max(12px, env(safe-area-inset-top)) 16px max(24px, env(safe-area-inset-bottom));
+  -webkit-text-size-adjust: 100%;
+}
+main { max-width: 520px; margin: 0 auto; }
+.top { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 14px; }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 20px; letter-spacing: -.2px; }
+.who { width: 36px; height: 36px; border-radius: 50%; background: var(--mist); color: var(--accent); display: grid; place-items: center; font-weight: 700; }
+.stack { display: grid; gap: 12px; }
+.card { background: var(--surface); border-radius: 30px; padding: 20px; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.label { font-weight: 600; }
+.sub { color: var(--muted); font-size: 14px; margin: 6px 0 0; }
+.big { display: flex; align-items: baseline; gap: 8px; margin: 14px 0 12px; }
+.big b { font-size: 52px; line-height: 1; letter-spacing: -1.5px; }
+.big span { color: var(--muted); font-weight: 600; }
+.chip { font-size: 13px; font-weight: 600; padding: 5px 11px; border-radius: 999px; background: var(--field); white-space: nowrap; }
+.chip.safe { color: var(--safe); } .chip.alert { color: var(--alert); } .chip.muted { color: var(--muted); }
+.pleats { display: flex; gap: 5px; height: 34px; }
+.pleats i { flex: 1; background: var(--mist); border-radius: 5px; transform: skewX(-14deg); }
+.pleats i.on { background: var(--blue); }
+.pleats i.on:nth-child(3n+2) { background: var(--accent); }
+.days { margin-top: 18px; }
+.dots { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.dots i { width: 9px; height: 9px; border-radius: 50%; background: var(--mist); }
+.dots i.on { background: var(--navy); }
+:root.night .dots i.on { background: var(--blue); }
+.line { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; }
+.note { color: var(--muted); font-size: 15px; }
+.note b { color: var(--ink); }
+.state { text-align: center; padding: 28px 22px; }
+.state h2 { margin: 12px 0 6px; font-size: 20px; }
+.state p { margin: 0 0 18px; color: var(--muted); }
+.glyph { width: 52px; height: 52px; margin: 0 auto; border-radius: 18px; background: var(--field); display: grid; place-items: center; font-weight: 700; font-size: 24px; }
+.glyph.alert { color: var(--alert); }
+.btn { width: 100%; min-height: 50px; border: 0; border-radius: 999px; font-family: inherit; font-size: 16px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 10px; cursor: pointer; }
+.btn.primary { background: var(--blue); color: var(--on-accent); }
+.btn.primary:active { background: var(--accent); }
+.btn:disabled { opacity: .75; }
+.btn:focus-visible { outline: 3px solid var(--ice); outline-offset: 2px; }
+.err { color: var(--alert); margin: 12px 0 0; font-size: 14px; }
+.spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin .8s linear infinite; }
+.sk { height: 14px; border-radius: 8px; background: var(--field); margin: 10px 0; }
+.sk.w40 { width: 40%; } .sk.w60 { width: 60%; } .sk.big { height: 44px; width: 50%; margin: 16px 0; } .sk.bar { height: 34px; }
+@media (prefers-reduced-motion: no-preference) {
+  .sk { animation: pulse 1.3s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .45; } }
+}
+@media (prefers-reduced-motion: reduce) { .spin { animation: none; } }
+@keyframes spin { to { transform: rotate(360deg); } }

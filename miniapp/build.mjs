@@ -1,0 +1,21 @@
+// Builds the Mini App into ../worker/public, which the Worker serves as static assets (wrangler.jsonc "assets").
+// One bundle (Preact + the app), one stylesheet, one page. No file is fetched from outside at build or run time,
+// except Telegram's own telegram-web-app.js, which the page loads optionally (it also works from the URL hash).
+import { build } from 'esbuild';
+import { mkdir, copyFile, rm, writeFile, readFile } from 'node:fs/promises';
+import { createHash } from 'node:crypto';
+
+const out = new URL('../worker/public/', import.meta.url).pathname;
+await rm(out, { recursive: true, force: true });
+await mkdir(out + 'app', { recursive: true });
+const r = await build({
+  entryPoints: ['src/main.jsx'], bundle: true, minify: true, format: 'esm', target: 'es2020',
+  jsx: 'automatic', jsxImportSource: 'preact', outfile: out + 'app/app.js', legalComments: 'none', metafile: true,
+});
+await copyFile('src/styles.css', out + 'app/styles.css');
+// file names stay fixed; a content hash in the query string makes Telegram's web view pick up a new build
+const ver = createHash('sha256').update(await readFile(out + 'app/app.js')).update(await readFile(out + 'app/styles.css')).digest('hex').slice(0, 10);
+await writeFile(out + 'app/index.html', (await readFile('src/index.html', 'utf8')).replaceAll('__V__', ver));
+await copyFile('src/_headers', out + '_headers');
+const kb = Object.values(r.metafile.outputs).reduce((n, o) => n + o.bytes, 0) / 1024;
+console.log(`Mini App built: ${kb.toFixed(1)} KB of JS, version ${ver}`);

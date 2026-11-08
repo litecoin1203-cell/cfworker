@@ -122,7 +122,8 @@ export async function me(env, user, request) {
     wallet_balance: user.wallet_balance, referral_code: user.referral_code,
     created_at: new Date(user.created_at * 1000).toISOString(),
     trial_available: await trialAvailable(env, user),
-    subscription: await subscriptionOut(env, user, true, { withSubUrl: !centralApp(request) }),
+    // the Mini App never gets the panel subscription address (only the old app did)
+    subscription: await subscriptionOut(env, user, true, { withSubUrl: !user._mini && !centralApp(request) }),
   });
 }
 

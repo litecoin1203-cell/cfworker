@@ -3,9 +3,9 @@ name: Test Cloud Gold server
 
 on:
   push:
-    paths: ['worker/**', '.github/workflows/test-worker.yml']
+    paths: ['worker/**', 'miniapp/**', '.github/workflows/test-worker.yml']
   pull_request:
-    paths: ['worker/**', '.github/workflows/test-worker.yml']
+    paths: ['worker/**', 'miniapp/**', '.github/workflows/test-worker.yml']
 
 permissions:
   contents: read
@@ -23,3 +23,19 @@ jobs:
           node-version: '22'   # the tests use node:sqlite
       - name: Run the tests with coverage (fails under 80% of lines)
         run: npm run coverage
+
+  # the Telegram Mini App (miniapp/): unit tests and a build, which is what the deploy ships
+  miniapp:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: miniapp
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+      - name: Build (fails on any compile error)
+        run: npm run build && test -s ../worker/public/app/index.html && test -s ../worker/public/app/app.js

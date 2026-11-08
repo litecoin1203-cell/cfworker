@@ -1,0 +1,17 @@
+{
+  "name": "pleat-miniapp",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Pleat inside Telegram: the account, data and days left. Built into worker/public/app/ and served by the Worker.",
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node --test test/format.test.js"
+  },
+  "dependencies": {
+    "preact": "10.29.8"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  }
+}

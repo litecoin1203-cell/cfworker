@@ -68,6 +68,11 @@ jobs:
       - name: Apply database migrations
         run: $WRANGLER d1 migrations apply cloudgold --remote
 
+      # the Telegram Mini App is served by the same Worker as static files (wrangler.jsonc "assets": public/)
+      - name: Build the Telegram Mini App
+        working-directory: miniapp
+        run: npm ci --no-audit --no-fund && npm test && npm run build
+
       - name: Deploy the Worker
         run: $WRANGLER deploy
 

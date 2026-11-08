@@ -26,6 +26,7 @@ export async function requireUser(env, request) {
   const user = await first(env, 'SELECT * FROM users WHERE id = ?', parseInt(payload.sub, 10));
   if (!user || user.token_version !== payload.ver) throw err(401, 'token_invalid', 'نشست تمام شده؛ دوباره وارد شو.');
   if (!user.is_active) throw err(403, 'account_disabled', 'این حساب غیرفعال شده است.');
+  if (payload.src === 'mini') user._mini = true; // signed in from the Telegram Mini App (see webappLogin)
   return user;
 }
 
@@ -405,4 +406,59 @@ export async function verifyInitData(botToken, initData, maxAgeSec, now = nowSec
   try { user = JSON.parse(params.get('user') || 'null'); } catch (e) { return null; }
   if (!user || !/^\d{1,20}$/.test(String(user.id ?? ''))) return null;
   return { user, authDate, startParam: params.get('start_param') || '' };
+}
+
+// ---------------- Telegram Mini App: sign in with initData ----------------
+// The Mini App opens inside Telegram, which hands it initData signed with the bot token. That signature is the
+// whole login: the numeric Telegram id is the identity, exactly as with the 6-digit code. The Mini App gets only a
+// 30-minute access token marked src=mini (no refresh token in a web view); when it runs out the page signs in
+// again with the initData it still has. No device row is written: the Mini App is not a VPN device.
+const WEBAPP_MAX_AGE = 3600; // initData older than an hour is refused (a captured one stops working)
+
+async function webappUser(env, body) {
+  const v = await verifyInitData(env.TELEGRAM_BOT_TOKEN, body && body.init_data, WEBAPP_MAX_AGE);
+  if (!v) throw err(401, 'bad_init_data', 'Close Pleat and open it again from the Telegram bot.');
+  const u = v.user;
+  return {
+    v, tgId: Number(u.id),
+    username: /^[A-Za-z][A-Za-z0-9_]{3,31}$/.test(String(u.username || '')) ? String(u.username).toLowerCase() : null,
+    name: [u.first_name, u.last_name].filter(Boolean).join(' ').slice(0, 64),
+  };
+}
+
+async function webappTokens(env, user, id) {
+  if (id.username !== (user.tg_username || null) || id.name !== (user.tg_name || '')) await setTgUsername(env, user.id, id.tgId, id.username, id.name);
+  return json({
+    access_token: await signJwt({ sub: String(user.id), ver: user.token_version, typ: 'access', src: 'mini' }, jwtSecret(env), ACCESS_MIN * 60),
+    token_type: 'bearer', expires_in: ACCESS_MIN * 60,
+  });
+}
+
+// POST /auth/tg/webapp {init_data}: the account of this Telegram user, or {need_account: true} when there is none.
+export async function webappLogin(env, body) {
+  const id = await webappUser(env, body);
+  const user = await first(env, 'SELECT * FROM users WHERE tg_id = ?', id.tgId);
+  if (!user) return json({ need_account: true, name: id.name });
+  if (!user.is_active) throw err(403, 'account_disabled', 'This account is disabled.');
+  return webappTokens(env, user, id);
+}
+
+// POST /auth/tg/webapp/register {init_data}: one tap makes the account. It has no password (a hash that never
+// matches); the person signs in to Pleat later with "Continue with Telegram", which needs none. A start link like
+// t.me/<bot>?startapp=ref_<CODE> carries an invite code. Asking twice just signs in.
+export async function webappRegister(env, body) {
+  const id = await webappUser(env, body);
+  let user = await first(env, 'SELECT * FROM users WHERE tg_id = ?', id.tgId);
+  if (!user) {
+    const ref = /^ref_([A-Za-z0-9]{4,16})$/.exec(id.v.startParam || '');
+    try {
+      await insert(env, 'users', { email: tgEmail(id.tgId), password_hash: DUMMY_HASH, tg_id: id.tgId,
+        ...(await newUserFields(env, { referral_code: ref ? ref[1] : '' })) });
+    } catch (e) {
+      if (!/UNIQUE/i.test(String(e && e.message))) throw e; // made at the same moment by a second tap
+    }
+    user = await first(env, 'SELECT * FROM users WHERE tg_id = ?', id.tgId);
+  }
+  if (!user.is_active) throw err(403, 'account_disabled', 'This account is disabled.');
+  return webappTokens(env, user, id);
 }
