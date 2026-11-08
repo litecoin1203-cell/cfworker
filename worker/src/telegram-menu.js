@@ -308,6 +308,7 @@ const SCREENS = {
   o: (env, a) => S.order(env, parseInt(a[0], 10)),
   or: (env, a) => S.orders(env, a[0], a[1], a[2]),
   un: (env, a) => S.userNets(env, parseInt(a[0], 10) || 0),
+  upa: (env, a) => S.userPanels(env, parseInt(a[0], 10)),
   pl: (env) => S.plans(env),
   p: (env, a) => S.plan(env, parseInt(a[0], 10)),
   pla: (env) => S.plansArchived(env),

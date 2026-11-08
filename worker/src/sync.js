@@ -50,20 +50,22 @@ function ledgerWrites(env, rows, readingOf, now) {
       continue;
     }
     const used = Math.max(0, remote.used || 0);
+    // the panel's last-connection time rides along on a write that happens anyway (usage moved): no extra D1 writes
+    const online = remote.online || null;
     if (r.c_period == null) {
       // first reading in this period: everything on this account belongs to it (new account, or the
       // subscription that existed before the control plane)
-      out.push(st(env, `INSERT OR IGNORE INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at)
-        VALUES (?, ?, ?, ?, ?)`, r.period_id, r.panel_id, used, used, now));
+      out.push(st(env, `INSERT OR IGNORE INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at, online_at)
+        VALUES (?, ?, ?, ?, ?, ?)`, r.period_id, r.panel_id, used, used, now, online));
     } else if (r.baseline_pending) {
-      out.push(st(env, 'UPDATE usage_counters SET last_remote_bytes = ?, baseline_pending = 0, stale = 0, last_seen_at = ? WHERE period_id = ? AND panel_id = ?',
-        used, now, r.period_id, r.panel_id));
+      out.push(st(env, 'UPDATE usage_counters SET last_remote_bytes = ?, baseline_pending = 0, stale = 0, last_seen_at = ?, online_at = COALESCE(?, online_at) WHERE period_id = ? AND panel_id = ?',
+        used, now, online, r.period_id, r.panel_id));
     } else if (used !== r.last_remote_bytes || r.stale) {
       // below the last reading = the panel's counter was reset; what it shows now is all new. The update is
       // relative to the stored reading, so a reading another invocation already counted is not counted twice.
       const delta = used >= r.last_remote_bytes ? used - r.last_remote_bytes : used;
-      out.push(st(env, `UPDATE usage_counters SET accounted_bytes = accounted_bytes + ?, last_remote_bytes = ?, stale = 0, last_seen_at = ?
-        WHERE period_id = ? AND panel_id = ? AND last_remote_bytes = ? AND baseline_pending = 0`, delta, used, now, r.period_id, r.panel_id, r.last_remote_bytes));
+      out.push(st(env, `UPDATE usage_counters SET accounted_bytes = accounted_bytes + ?, last_remote_bytes = ?, stale = 0, last_seen_at = ?, online_at = COALESCE(?, online_at)
+        WHERE period_id = ? AND panel_id = ? AND last_remote_bytes = ? AND baseline_pending = 0`, delta, used, now, online, r.period_id, r.panel_id, r.last_remote_bytes));
     }
     // a subscription from before the control plane takes its expiry and limit from panel 1 once
     if (r.panel_id === 1 && !r.baselined) {
@@ -208,7 +210,7 @@ export async function refreshUser(env, userId) {
       const u = await pg.getUser(a.remote_username);
       if (!u) { missing++; return; }
       reached++;
-      readings.set(a.id, { used: parseInt(u.used_traffic || 0, 10) || 0, expire: parseExpire(u.expire), data_limit: parseInt(u.data_limit || 0, 10) || 0 });
+      readings.set(a.id, { used: parseInt(u.used_traffic || 0, 10) || 0, expire: parseExpire(u.expire), data_limit: parseInt(u.data_limit || 0, 10) || 0, online: parseExpire(u.online_at) });
     } catch (e) {
       readings.set(a.id, null);
     }
@@ -242,16 +244,42 @@ export async function ensureAccount(env, user, panel, { expire, limit, hwid } = 
   return first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
 }
 
-// Make the account on the panel (a new random name when the one tried is taken). {username, id, subPath}
+// The account's name on the panel follows the user's Telegram @username (what the admin sees in the panel), so
+// it is readable there; the numeric Telegram id / user id in the database stays the identity. The name is
+// fixed at creation: a later @username change does not rename it (Marzban's subscription token depends on it).
+// Rules of all three panels: 3-32 characters of [a-zA-Z0-9_@.-] (Marzban, Rebecca), no two specials in a row
+// (PasarGuard). Telegram usernames are [a-z0-9_]{5,32}, so a sanitized one fits as it is.
+export function panelNameBase(user) {
+  const tg = String(user.tg_username || '').toLowerCase().replace(/[^a-z0-9_]/g, '').replace(/_+/g, '_').replace(/^_+|_+$/g, '').slice(0, 32).replace(/_+$/, '');
+  if (tg.length >= 3) return tg;
+  if (user.tg_id) return `tg${user.tg_id}`.slice(0, 32);
+  return null;
+}
+const fit = (base, suffix) => `${base.slice(0, 32 - suffix.length).replace(/_+$/, '')}${suffix}`;
+// The names tried in order: the @username, then with the user id, then with a random tail. Without Telegram
+// the old cg_<id>_<random> name is used.
+export function panelNames(user, prefix = 'cg') {
+  const base = panelNameBase(user);
+  if (!base) return [`${prefix}_${user.id}_${randomHex(2)}`.slice(0, 32), `${prefix}_${user.id}_${randomHex(2)}`.slice(0, 32), `${prefix}_${user.id}_${randomHex(3)}`.slice(0, 32)];
+  return [base, fit(base, `_${user.id}`), fit(base, `_${randomHex(2)}`)];
+}
+
+// Make the account on the panel; a name the panel says is taken (409) moves on to the next one. {username, id, subPath}
 async function createRemote(env, pg, user, { expire, limit, hwid, groups, name }) {
   const prefix = String(env.PASARGUARD_USERNAME_PREFIX || 'cg').toLowerCase().replace(/[^a-z0-9_]/g, '') || 'cg';
+  if (user.tg_id === undefined) {
+    const row = await first(env, 'SELECT tg_id, tg_username FROM users WHERE id = ?', user.id);
+    user = { ...user, tg_id: row ? row.tg_id : null, tg_username: row ? row.tg_username : null };
+  }
+  const names = panelNames(user, prefix);
+  if (name) names.unshift(name);
   let created = null, username = '';
-  for (let attempt = 0; attempt < 3 && !created; attempt++) {
-    username = name && attempt === 0 ? name : `${prefix}_${user.id}_${randomHex(2)}`.slice(0, 32);
+  for (let attempt = 0; attempt < names.length && !created; attempt++) {
+    username = names[attempt];
     try {
-      created = await pg.createUser(username, { expire, dataLimit: limit, groupIds: groups, hwidLimit: hwid || null, note: `Cloud Gold · ${user.email}` });
+      created = await pg.createUser(username, { expire, dataLimit: limit, groupIds: groups, hwidLimit: hwid || null, note: noteFor(user) });
     } catch (e) {
-      if (e instanceof PasarGuardError && e.status === 409 && attempt < 2) continue; // name taken, try another
+      if (e instanceof PasarGuardError && e.status === 409 && attempt < names.length - 1) continue; // name taken, try the next
       throw e;
     }
   }
@@ -259,6 +287,7 @@ async function createRemote(env, pg, user, { expire, limit, hwid, groups, name }
   if (!subPath) throw new PasarGuardError('panel created the user but returned no subscription link', 0);
   return { username, id: created.id ?? null, subPath };
 }
+const noteFor = (user) => ['Pleat', `#${user.id}`, user.tg_id ? `tg ${user.tg_id}` : '', user.email && !/@telegram\./.test(user.email) ? user.email : ''].filter(Boolean).join(' · ');
 
 // The new account's row. Another path (the app opening at the same moment) may have made one first: then that
 // one stays, and this statement changes nothing instead of failing the batch it is in.
@@ -495,7 +524,7 @@ export async function createError(env, panelId) {
 async function createFor(env, s, panel) {
   const left = s.data_limit_bytes > 0 ? Math.max(1, s.data_limit_bytes - s.used_bytes) : 0;
   try {
-    await ensureAccount(env, { id: s.user_id, email: s.email }, panel, { expire: s.expires_at, limit: left });
+    await ensureAccount(env, { id: s.user_id, email: s.email, tg_id: s.tg_id, tg_username: s.tg_username }, panel, { expire: s.expires_at, limit: left });
   } catch (e) {
     await recordHealth(env, panel.id, false);
     await noteCreateError(env, panel, e);
@@ -513,7 +542,7 @@ async function createMissing(env, allPanels, adapter, max = CREATE_PER_RUN) {
   let made = 0;
   for (const panel of panels) {
     if (made >= max) break;
-    const rows = await all(env, `SELECT s.*, u.email FROM subscriptions s JOIN users u ON u.id = s.user_id
+    const rows = await all(env, `SELECT s.*, u.email, u.tg_id, u.tg_username FROM subscriptions s JOIN users u ON u.id = s.user_id
       WHERE s.state = 'active' AND u.is_active = 1 AND s.period_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM panel_accounts a WHERE a.user_id = s.user_id AND a.panel_id = ?)
       ORDER BY s.user_id LIMIT 50`, panel.id);
     const want = rows.filter((s) => pickPanels(allPanels, s.user_id).some((p) => p.id === panel.id)).slice(0, max - made);
@@ -526,7 +555,7 @@ async function createMissing(env, allPanels, adapter, max = CREATE_PER_RUN) {
       const groups = await groupIdsFor(env, panel, pg);
       for (const s of want) {
         const limit = s.data_limit_bytes > 0 ? Math.max(1, s.data_limit_bytes - s.used_bytes) : 0;
-        const acct = await createRemote(env, pg, { id: s.user_id, email: s.email }, { expire: s.expires_at, limit, groups });
+        const acct = await createRemote(env, pg, { id: s.user_id, email: s.email, tg_id: s.tg_id, tg_username: s.tg_username }, { expire: s.expires_at, limit, groups });
         stmts.push(insertAccount(env, s.user_id, panel.id, acct, { expire: s.expires_at, limit, now }));
         inserted++;
       }
@@ -546,7 +575,7 @@ async function createMissing(env, allPanels, adapter, max = CREATE_PER_RUN) {
 // configs are in this very answer. At most one panel per request, and never a panel that is unhealthy or
 // refused a create in the last minutes (the app must not wait on a broken panel).
 export async function ensureMissingFor(env, userId) {
-  const s = await first(env, `SELECT s.*, u.email FROM subscriptions s JOIN users u ON u.id = s.user_id
+  const s = await first(env, `SELECT s.*, u.email, u.tg_id, u.tg_username FROM subscriptions s JOIN users u ON u.id = s.user_id
     WHERE s.user_id = ? AND s.state = 'active' AND s.period_id IS NOT NULL`, userId);
   if (!s || (s.expires_at && s.expires_at <= nowSec())) return false;
   const have = new Set((await all(env, 'SELECT panel_id FROM panel_accounts WHERE user_id = ?', userId)).map((r) => r.panel_id));

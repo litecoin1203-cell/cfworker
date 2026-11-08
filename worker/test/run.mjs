@@ -1229,6 +1229,53 @@ section('acceptance: 2 + 4 + 5 GB on three panels = 11 GB; a 10 GB plan stops on
   ok(puts.join() === puts2.join(), 'stopping again changes nothing (idempotent): ' + puts + ' / ' + puts2);
 }
 
+section('panel accounts are named after the Telegram @username; taken names and users without one fall back');
+{
+  const { panelNames, panelNameBase } = await import('../src/sync.js');
+  ok(panelNameBase({ id: 5, tg_username: 'Ali__Gold_' }) === 'ali_gold', 'sanitized: lower case, no double or trailing underscore');
+  ok(panelNameBase({ id: 5, tg_id: 777, tg_username: null }) === 'tg777', 'no @username: tg<numeric id>');
+  ok(panelNameBase({ id: 5, email: 'a@b.c' }) === null, 'no Telegram: no Telegram name');
+  const long = panelNames({ id: 123456, tg_username: 'a'.repeat(32) });
+  ok(long.every((n) => n.length <= 32 && /^[a-z0-9_]+$/.test(n) && !/__/.test(n)) && long[1].endsWith('_123456'), 'every candidate fits all three panels: ' + long.join(','));
+  ok(/^cg_9_[0-9a-f]{4}$/.test(panelNames({ id: 9 })[0]), 'email-only users keep the old cg_<id>_<random> name');
+
+  await signup('tgname@example.com', { device: 'tgn-phone' });
+  const id1 = await userId('tgname@example.com');
+  await env.DB.prepare('UPDATE users SET tg_id = 900001, tg_username = ? WHERE id = ?').bind('gold_ali', id1).run();
+  // someone made "gold_ali" on panel 2 by hand: that panel answers 409 and the next name is used
+  pg2.users['gold_ali'] = { id: 4242, username: 'gold_ali', status: 'active', expire: 0, data_limit: 0, used_traffic: 0, token: 'hand' };
+  await admin(`/grant tgname@example.com ${tenGb.id}`);
+  const rows = (await env.DB.prepare('SELECT panel_id, remote_username FROM panel_accounts WHERE user_id = ? ORDER BY panel_id').bind(id1).all()).results;
+  ok(rows.length === 3, 'one account on each panel');
+  ok(rows[0].remote_username === 'gold_ali' && rows[2].remote_username === 'gold_ali', 'named after the @username: ' + rows.map((r) => r.remote_username));
+  ok(rows[1].remote_username === `gold_ali_${id1}` && pg2.users['gold_ali'].id === 4242, 'taken on panel 2 -> gold_ali_<id>, the hand-made account untouched');
+  ok(fakes.pg.users['gold_ali'].note.includes('tg 900001'), 'the panel note carries the numeric Telegram id');
+  // the user changes @username in Telegram: the panel name stays (it is fixed at creation)
+  await env.DB.prepare('UPDATE users SET tg_username = ? WHERE id = ?').bind('new_name', id1).run();
+  await admin(`/grant tgname@example.com ${tenGb.id}`);
+  const again = (await env.DB.prepare('SELECT remote_username FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(id1).first()).remote_username;
+  ok(again === 'gold_ali', 'renewal keeps the same panel account after an @username change');
+
+  section('bot: per-panel usage, dates, last connection and online now');
+  const now = Math.floor(Date.now() / 1000);
+  fakes.pg.users['gold_ali'].used_traffic = 1 * GB;
+  fakes.pg.users['gold_ali'].online_at = new Date((now - 30) * 1000).toISOString().replace('Z', '');
+  pg2.users[`gold_ali_${id1}`].used_traffic = 2 * GB;
+  pg2.users[`gold_ali_${id1}`].online_at = new Date((now - 3 * 3600) * 1000).toISOString();
+  await syncRounds(3);
+  const stored = (await env.DB.prepare('SELECT MAX(online_at) m FROM usage_counters WHERE period_id = (SELECT period_id FROM subscriptions WHERE user_id = ?)').bind(id1).first()).m;
+  ok(Math.abs(stored - (now - 30)) <= 1, 'the last connection is stored with the usage reading: ' + stored);
+  const S = await import('../src/telegram-screens.js');
+  const scr = await S.userPanels(env, id1);
+  ok(scr.text.includes('👤 gold_ali') && scr.text.includes(`👤 gold_ali_${id1}`), 'each panel account by name');
+  ok(scr.text.includes('🟢 الان آنلاین') && scr.text.includes('۳') === false && /3 ساعت پیش/.test(scr.text), 'online now on panel 1, 3 hours ago on panel 2');
+  ok(scr.text.includes('جمع مصرف: 3.00') && scr.text.includes('ساخت: 2026-11-01'), 'total and creation date shown');
+  ok(scr.kb.flat().some((x) => x.callback_data === `m:upa:${id1}`), 'refresh is a button');
+  const card = await S.userCard(env, id1);
+  ok(card.text.includes('آخرین اتصال: 🟢 الان آنلاین') && card.kb.flat().some((x) => x.callback_data === `m:upa:${id1}`), 'user card shows last connection and the panels button');
+  ok(S.seenFa(null) === 'هنوز وصل نشده' && S.seenFa(now - 5 * 86400, now).startsWith('5 روز پیش'), 'never / days ago');
+}
+
 section('a broken panel is never counted as zero; the stop is retried until it sticks');
 {
   const tok = await signup('r@example.com', { device: 'r-phone' });
@@ -1537,7 +1584,11 @@ section('acceptance: an existing user keeps account, link and session through th
   await DB2.prepare("INSERT INTO subscriptions (user_id, pg_username, plan_id, expires_at, data_limit_bytes, device_limit, sub_url, updated_at) VALUES (1, 'cg_1_abcd', 1, ?, ?, 2, 'http://panel.test/sub/oldtoken/', ?)")
     .bind(now + 86400 * 10, 50 * GB, now - 86400).run();
   fakes.pg.users['cg_1_abcd'] = { id: 999, username: 'cg_1_abcd', status: 'active', expire: now + 86400 * 12, data_limit: 50 * GB, used_traffic: 7 * GB, token: 'oldtoken' };
-  DB2.exec((await import('node:fs')).readFileSync(new URL('../migrations/0011_control_plane.sql', import.meta.url), 'utf8'));
+  { // then every later migration, like a deploy does
+    const fs = await import('node:fs');
+    const dir = new URL('../migrations/', import.meta.url);
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith('.sql') && x > '0010_indexes.sql').sort()) DB2.exec(fs.readFileSync(new URL(f, dir), 'utf8'));
+  }
   const env2 = { ...env, DB: DB2 };
   const oldToken = await signJwt({ sub: '1', ver: 0, typ: 'access' }, env.SECRET_KEY, 600);
   const req = new Request('https://api.test/api/v1/me', { headers: { authorization: 'Bearer ' + oldToken } });
