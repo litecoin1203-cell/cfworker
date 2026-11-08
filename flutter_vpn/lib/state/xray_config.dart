@@ -57,27 +57,52 @@ const _privateCidrs = [
 /// [forTest]: no inbound, for a throw-away core that only measures delay.
 ///
 /// [api]: also listen on [tunnelApiPort] for the app's own calls.
+///
+/// [backups]: more exits (smart connect). The core itself then watches all
+/// of them and carries traffic through the one that answers fastest, so a
+/// dead exit is left behind even while the app sleeps (screen off), when
+/// its own checks can't run. Backups that can't be built are left out.
 String xrayConfig(
   String link, {
   bool localDirect = false,
   bool forTest = false,
   ProxyLogin? api,
+  List<String> backups = const [],
 }) {
   final proxy = outboundOf(link);
+  final spares = <Map<String, Object?>>[];
+  if (!forTest) {
+    for (final b in backups) {
+      try {
+        spares.add({...outboundOf(b), 'tag': 'proxy-${spares.length + 1}'});
+      } on FormatException {
+        // not runnable here: the primary and the other backups still are
+      }
+    }
+  }
   // WireGuard looks its server's name up with the core's own DNS, whose
   // queries leave through the first outbound: WireGuard itself, which can't
   // send anything before it knows where its server is. That name is asked
   // of the phone's own resolver instead (Pleat is outside its tunnel), so
   // an exit given by name no longer times out while one given by IP works.
-  final wgHost = _wireguardHost(proxy);
+  final wgHosts = [
+    for (final o in [proxy, ...spares]) ?_wireguardHost(o),
+  ];
+  // QUIC over an exit that carries UDP inside TCP (VLESS, VMess, Trojan) is
+  // TCP-in-TCP: slow, and it stalls on any loss. Refused, apps fall back to
+  // TCP at once. Exits that carry UDP as UDP keep it.
+  final udpNative = const {'hysteria', 'wireguard', 'shadowsocks'};
+  final blockQuic =
+      localDirect ||
+      [proxy, ...spares].any((o) => !udpNative.contains(o['protocol']));
   return jsonEncode({
     'log': {'loglevel': 'warning'},
     'dns': {
       'servers': [
-        if (wgHost != null)
+        if (wgHosts.isNotEmpty)
           {
             'address': 'localhost',
-            'domains': ['full:$wgHost'],
+            'domains': [for (final h in wgHosts) 'full:$h'],
             'skipFallback': true,
           },
         '1.1.1.1',
@@ -103,20 +128,41 @@ String xrayConfig(
     ],
     'outbounds': [
       proxy,
+      ...spares,
       {'tag': 'direct', 'protocol': 'freedom'},
       {'tag': 'block', 'protocol': 'blackhole'},
     ],
+    if (spares.isNotEmpty)
+      'observatory': {
+        'subjectSelector': ['proxy'],
+        'probeURL': 'https://www.gstatic.com/generate_204',
+        // every 2 minutes: often enough to leave a dead exit, rare enough
+        // for the battery and the plan's data
+        'probeInterval': '2m',
+        'enableConcurrency': true,
+      },
     'routing': {
       'domainStrategy': 'AsIs',
+      if (spares.isNotEmpty)
+        'balancers': [
+          {
+            'tag': 'exits',
+            'selector': ['proxy'],
+            'strategy': {'type': 'leastPing'},
+            // before the first round of checks: the exit the app picked
+            'fallbackTag': 'proxy',
+          },
+        ],
       'rules': [
         {'type': 'field', 'ip': _privateCidrs, 'outboundTag': 'direct'},
-        if (localDirect) ...[
+        if (blockQuic)
           {
             'type': 'field',
             'network': 'udp',
             'port': '443',
             'outboundTag': 'block',
           },
+        if (localDirect) ...[
           {
             'type': 'field',
             'domain': ['domain:ir', 'geosite:category-ir'],
@@ -128,6 +174,8 @@ String xrayConfig(
             'outboundTag': 'direct',
           },
         ],
+        if (spares.isNotEmpty)
+          {'type': 'field', 'network': 'tcp,udp', 'balancerTag': 'exits'},
       ],
     },
   });
@@ -476,6 +524,14 @@ Map<String, Object?> _shadowsocks(String link) {
   }
   final colon = userinfo.indexOf(':');
   if (colon < 0) throw const FormatException('bad ss');
+  // obfs-local / v2ray-plugin wrap the traffic in another layer the core
+  // doesn't speak: built without it, the exit would only time out.
+  final plugin = _query(link)['plugin'];
+  if (plugin != null && plugin.split(';').first.trim().isNotEmpty) {
+    throw FormatException(
+      'Shadowsocks plugin ${plugin.split(';').first} is not supported',
+    );
+  }
   final u = Uri.parse('ss://x@$hostPort');
   return {
     'tag': 'proxy',

@@ -38,6 +38,9 @@ class PleatVpnService : VpnService() {
         const val EXTRA_CONFIG = "config"
         private const val SOCKS_PORT = 10808
 
+        /** How long a failed start keeps the tun (blocking) for the app's next try. */
+        private const val FAILED_HOLD_MS = 20_000L
+
         /** The running core, for live delay checks from the app. */
         @Volatile
         var running: CoreController? = null
@@ -151,12 +154,29 @@ class PleatVpnService : VpnService() {
         TunnelHub.set("starting")
         ops.execute {
             if (gen != generation) return@execute
+            // A switch to another exit (or a retry) keeps the running tun
+            // until the new one is up: closing it first let every app on
+            // the phone leave outside the VPN, with the real IP, for as long
+            // as the new exit took to answer. Android hands the routes to the
+            // new tun in place, so there is never a moment without one.
+            val old = tun
+            tun = null
             val ok = try {
-                teardown()
+                stopEngine()
                 start(config)
                 probe { gen == generation }
             } catch (e: Throwable) {
                 false
+            } finally {
+                // The new tun took over: the old one goes. No new tun (the
+                // start failed before it): the old one stays, blocking.
+                if (old != null && old !== tun) {
+                    if (tun != null) {
+                        try { old.close() } catch (e: Exception) {}
+                    } else {
+                        tun = old
+                    }
+                }
             }
             if (gen != generation) return@execute
             if (ok) {
@@ -167,6 +187,13 @@ class PleatVpnService : VpnService() {
                     upSince = System.currentTimeMillis()
                     redraw()
                 }
+            } else if (tun != null) {
+                // The tun stays, blocking: the app either tries the next exit
+                // (another begin, which takes this tun over) or stops. If
+                // neither comes (the app isn't running, an always-on start),
+                // it is closed after a while as before.
+                TunnelHub.set("failed")
+                main.postDelayed({ if (gen == generation) stopTunnel("failed") }, FAILED_HOLD_MS)
             } else stopTunnel("failed")
         }
     }
@@ -251,12 +278,8 @@ class PleatVpnService : VpnService() {
         return false
     }
 
-    private fun teardown() {
-        if (watching) {
-            try { connectivity.unregisterNetworkCallback(underlying) } catch (e: Exception) {}
-            watching = false
-            handed = null
-        }
+    /** The core and hev only; the tun and the network watch stay. */
+    private fun stopEngine() {
         if (hevRunning) {
             try { TProxyService.TProxyStopService() } catch (e: Exception) {}
             hevRunning = false
@@ -264,6 +287,15 @@ class PleatVpnService : VpnService() {
         running = null
         try { core?.stopLoop() } catch (e: Exception) {}
         core = null
+    }
+
+    private fun teardown() {
+        if (watching) {
+            try { connectivity.unregisterNetworkCallback(underlying) } catch (e: Exception) {}
+            watching = false
+            handed = null
+        }
+        stopEngine()
         try { tun?.close() } catch (e: Exception) {}
         tun = null
     }

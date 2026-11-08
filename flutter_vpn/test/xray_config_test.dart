@@ -255,6 +255,83 @@ void main() {
     );
   });
 
+  test('smart connect: backups go into the core with a balancer', () {
+    final c = jsonDecode(
+      xrayConfig(
+        'vless://u@de1.example.com:443?security=tls&type=ws#x',
+        backups: [
+          'trojan://p@us1.example.com:443#y',
+          'tuic://x@h:443', // not runnable: left out
+          'wireguard://AQEB%3D@wg.example.com:51820?publickey=p#z',
+        ],
+      ),
+    ) as Map;
+    final tags = [for (final o in c['outbounds'] as List) (o as Map)['tag']];
+    expect(tags, ['proxy', 'proxy-1', 'proxy-2', 'direct', 'block']);
+    expect(c['observatory']['subjectSelector'], ['proxy']);
+    final bal = (c['routing']['balancers'] as List).single as Map;
+    expect(bal['strategy'], {'type': 'leastPing'});
+    expect(bal['fallbackTag'], 'proxy');
+    final rules = c['routing']['rules'] as List;
+    expect(rules.last, {
+      'type': 'field',
+      'network': 'tcp,udp',
+      'balancerTag': 'exits',
+    });
+    // the WireGuard backup's name is still looked up outside the tunnel
+    expect(((c['dns']['servers'] as List).first as Map)['domains'], [
+      'full:wg.example.com',
+    ]);
+    // one exit only: no balancer, as before
+    final one = jsonDecode(xrayConfig('trojan://p@us1.example.com:443#y'));
+    expect((one as Map).containsKey('observatory'), false);
+    expect((one['routing'] as Map).containsKey('balancers'), false);
+    // the throw-away test core never gets backups
+    final t = jsonDecode(
+      xrayConfig(
+        'trojan://p@us1.example.com:443#y',
+        forTest: true,
+        backups: ['trojan://p@us2.example.com:443#z'],
+      ),
+    );
+    expect((t as Map)['outbounds'] as List, hasLength(3));
+  });
+
+  test('QUIC is refused on exits that carry UDP inside TCP', () {
+    bool blocks(String link) =>
+        ((jsonDecode(xrayConfig(link)) as Map)['routing']['rules'] as List).any(
+          (r) => (r as Map)['port'] == '443' && r['network'] == 'udp',
+        );
+    expect(
+      blocks('vless://u@de1.example.com:443?security=tls&type=ws#x'),
+      true,
+    );
+    expect(blocks('trojan://p@us1.example.com:443#y'), true);
+    expect(blocks('ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#x'), false);
+    expect(blocks('hy2://pw@1.2.3.4:8443#x'), false);
+  });
+
+  test('shadowsocks with a plugin is refused with a clear reason', () {
+    expect(
+      () => outboundOf(
+        'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388/?plugin=obfs-local%3Bobfs%3Dhttp#x',
+      ),
+      throwsA(
+        isA<FormatException>().having(
+          (e) => e.message,
+          'message',
+          contains('obfs-local'),
+        ),
+      ),
+    );
+    expect(
+      outboundOf(
+        'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388/?plugin=#x',
+      )['protocol'],
+      'shadowsocks',
+    );
+  });
+
   test('unsupported protocols are refused, not guessed', () {
     expect(() => outboundOf('tuic://x@h:443'), throwsFormatException);
     expect(() => outboundOf('vless://u@h:0'), throwsFormatException);
@@ -316,6 +393,15 @@ void main() {
     File(
       '$out/ping_test.json',
     ).writeAsStringSync(xrayConfig(samples['vless_reality']!, forTest: true));
+    // Smart connect: three exits of different kinds behind the balancer.
+    File('$out/smart_backups.json').writeAsStringSync(
+      xrayConfig(
+        samples['vless_ws_tls']!,
+        localDirect: true,
+        api: (user: 'u1', pass: 'p1'),
+        backups: [samples['wireguard']!, samples['hysteria2']!],
+      ),
+    );
     // The tunnel with the app's own API port, and the bridge.
     const login = (user: 'u1', pass: 'p1');
     File('$out/tunnel_api.json').writeAsStringSync(
@@ -391,8 +477,14 @@ void main() {
     expect(rules[1]['outboundTag'], 'block');
     expect(rules[2]['domain'], contains('geosite:category-ir'));
     expect(rules[3]['ip'], ['geoip:ir']);
+    // without local direct: private ranges direct and (Trojan carries UDP
+    // inside TCP) QUIC refused, nothing else
     final plain = jsonDecode(xrayConfig('trojan://p@us1.example.com:443#x'));
-    expect(plain['routing']['rules'], hasLength(1));
+    expect(plain['routing']['rules'], hasLength(2));
+    final ss = jsonDecode(
+      xrayConfig('ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#x'),
+    );
+    expect(ss['routing']['rules'], hasLength(1));
   });
 
   test('test config has no inbound, so it never takes the tunnel port', () {

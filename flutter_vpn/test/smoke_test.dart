@@ -143,6 +143,28 @@ void main() {
   );
 
   testWidgets(
+    'another exit while connected: the tunnel is handed over, never stopped',
+    (tester) async {
+      final tunnel = FakeTunnel();
+      final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+      await app.connect(app.exits[1].id);
+      tunnel.emit(TunnelState.up);
+      expect(app.phase, Phase.protected);
+      final first = tunnel.started;
+      await app.connect(app.exits[0].id);
+      // stopping would close the tun and let apps out with the real IP
+      expect(tunnel.stopped, isFalse);
+      expect(tunnel.started, isNot(first));
+      expect(app.phase, Phase.handshaking);
+      tunnel.emit(TunnelState.up);
+      expect(app.phase, Phase.protected);
+      await app.disconnect();
+      expect(tunnel.stopped, isTrue);
+      await tester.pump(const Duration(seconds: 1));
+    },
+  );
+
+  testWidgets(
     'Cancel while connecting goes idle at once and stops the tunnel',
     (tester) async {
       final tunnel = FakeTunnel();
