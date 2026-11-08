@@ -74,7 +74,7 @@ export async function setSetting(env, key, value) {
 
 export async function touchDevice(env, userId, deviceId, model) {
   if (!deviceId) return;
-  const dev = await first(env, 'SELECT id FROM devices WHERE user_id = ? AND device_id = ?', userId, deviceId);
-  if (dev) await run(env, 'UPDATE devices SET last_seen = ? WHERE id = ?', nowSec(), dev.id);
-  else await insert(env, 'devices', { user_id: userId, device_id: deviceId, model: model || '', last_seen: nowSec() });
+  // one statement: two sign-ins from the same phone at once no longer hit the UNIQUE index (a 500)
+  await run(env, `INSERT INTO devices (user_id, device_id, model, last_seen) VALUES (?, ?, ?, ?)
+    ON CONFLICT(user_id, device_id) DO UPDATE SET last_seen = excluded.last_seen`, userId, deviceId, model || '', nowSec());
 }

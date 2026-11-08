@@ -7,7 +7,7 @@
 // 2) Per server, globally: how Google sees its exit IP (country, Gemini availability, "unusual traffic"
 //    wall), measured by phones through that exact config. Lets users pick configs that work with Gemini.
 import { all, run, first } from './db.js';
-import { json, nowSec } from './util.js';
+import { json, nowSec, throttled } from './util.js';
 
 const ISP_FA = {
   197207: 'همراه اول', 44244: 'ایرانسل', 57218: 'رایتل', 58224: 'مخابرات', 12880: 'زیرساخت', 48159: 'زیرساخت',
@@ -43,12 +43,7 @@ export function ispOf(request) {
 const bucketNow = () => Math.floor(nowSec() / 10800);
 const day = () => Math.floor(nowSec() / 86400);
 const KEY_RE = /^[a-z0-9]{6,16}$/;
-const throttle = (bag, id, ms) => {
-  const t = (globalThis[bag] = globalThis[bag] || {});
-  if (t[id] && Date.now() - t[id] < ms) return true;
-  t[id] = Date.now();
-  return false;
-};
+const throttle = throttled;
 
 // The server key the apps send: FNV-1a of "type|host|port", identical to Pleat's serverKey and CgVpn.serverKey.
 export function serverKey(link) {
@@ -86,12 +81,14 @@ export function serverKey(link) {
   return 'k' + h.toString(16).padStart(8, '0');
 }
 
-// remembers which servers this user has (from /vpn/servers), so /net/report counts only those
+// remembers which servers this user has (from /vpn/servers), so /net/report counts only those. Written only when
+// the list changed (or once a day): every app open used to cost a D1 write.
 export async function rememberKeys(env, user, servers) {
   const keys = {};
   for (const s of servers) { const k = serverKey(s.link); if (k) keys[k] = String(s.name || '').slice(0, 40); }
   await run(env, `INSERT INTO user_skeys (user_id, keys, at) VALUES (?,?,?)
-    ON CONFLICT(user_id) DO UPDATE SET keys = excluded.keys, at = excluded.at`, user.id, JSON.stringify(keys), nowSec());
+    ON CONFLICT(user_id) DO UPDATE SET keys = excluded.keys, at = excluded.at
+    WHERE user_skeys.keys != excluded.keys OR user_skeys.at < excluded.at - 86400`, user.id, JSON.stringify(keys), nowSec());
 }
 
 async function ownKeys(env, user) {

@@ -3,6 +3,7 @@
 // 30-minute price lock, and the admin confirms the transfer from Telegram with one tap.
 import { getSettings, getSetting, setSetting } from './db.js';
 import { usdRateInfo } from './usdrate.js';
+import { deadline } from './util.js';
 
 // Only networks where sending costs almost nothing (no Tether, no high-fee chains like BTC/ETH).
 // `decimals` = how precisely the amount is shown and matched. `memo` = networks where exchange wallets need a
@@ -62,7 +63,7 @@ const STALE_OK_SEC = 6 * 3600;
 
 async function fromCoinGecko() {
   const ids = COINS.map((c) => c.gecko).join(',');
-  const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`, { headers: { accept: 'application/json' } });
+  const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`, { headers: { accept: 'application/json' }, signal: deadline(8000) });
   if (!r.ok) throw new Error('coingecko ' + r.status);
   const j = await r.json();
   const out = {};
@@ -71,7 +72,7 @@ async function fromCoinGecko() {
 }
 async function fromCryptoCompare() {
   const syms = COINS.map((c) => c.symbol).join(',');
-  const r = await fetch(`https://min-api.cryptocompare.com/data/pricemulti?fsyms=${syms}&tsyms=USD`, { headers: { accept: 'application/json' } });
+  const r = await fetch(`https://min-api.cryptocompare.com/data/pricemulti?fsyms=${syms}&tsyms=USD`, { headers: { accept: 'application/json' }, signal: deadline(8000) });
   if (!r.ok) throw new Error('cryptocompare ' + r.status);
   const j = await r.json();
   const out = {};

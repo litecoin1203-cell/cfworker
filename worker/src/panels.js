@@ -57,6 +57,8 @@ export function parseCred(text) {
   let u;
   try { u = new URL(/^https?:\/\//i.test(c.url) ? c.url : 'https://' + c.url); } catch (e) { return { error: 'url' }; }
   if (!/^https?:$/.test(u.protocol) || !u.hostname.includes('.')) return { error: 'url' };
+  // the panel login and every user's link would cross the network in clear text
+  if (u.protocol !== 'https:') return { error: 'http' };
   const out = { url: u.href };
   if (c.api_key) out.api_key = String(c.api_key);
   else { out.username = String(c.username); out.password = String(c.password); }
@@ -81,11 +83,11 @@ export function options(panel) {
 
 // The adapter for a panel. kind 'auto' (and any unknown kind) gives the shared API client, enough to log in
 // and detect the real type; such a panel cannot take users until /paneltest has set its kind.
-export async function adapterFor(env, panel, { probe = false } = {}) {
+export async function adapterFor(env, panel, { probe = false, timeoutMs = 0 } = {}) {
   const cred = await credOf(env, panel);
   if (!cred) throw new PasarGuardError(`login for this panel is not set: send it with /panelcred ${panel.id} (or Workers Secret ${panel.cred_ref}, JSON with a "url")`, 0);
   const Cls = ADAPTERS[panel.kind];
-  if (Cls) return new Cls(env, cred);
+  if (Cls) { const a = new Cls(env, cred); if (timeoutMs) a.timeoutMs = timeoutMs; return a; }
   if (probe) return new PasarGuard(env, cred);
   if (panel.kind === 'auto') throw new PasarGuardError(`panel type not known yet: run /paneltest ${panel.id}`, 0);
   throw new PasarGuardError(`no adapter for panel type ${panel.kind}`, 0);
@@ -133,8 +135,13 @@ export function pickPanels(allPanels, userId) {
   return picked.length ? picked : panels;
 }
 
+// While the app waits, a panel gets 5 seconds, and one that failed its last checks gets 2.5 (the cron, which has
+// time, keeps 15). One dead panel used to hold /me and the server list for 15 seconds per panel, one after another.
+export const USER_PATH_MS = 5000;
+export const userPathMs = (a) => ((a.fail_streak || 0) >= 3 ? USER_PATH_MS / 2 : USER_PATH_MS);
+
 export async function accountsOf(env, userId) {
-  return all(env, `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json FROM panel_accounts a
+  return all(env, `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json, p.fail_streak FROM panel_accounts a
     JOIN panels p ON p.id = a.panel_id WHERE a.user_id = ? ORDER BY a.panel_id`, userId);
 }
 
@@ -316,12 +323,13 @@ export async function collectLinks(env, userId, fwd = {}) {
   const links = [], labels = {};
   const ov = await overridesFor(env, accounts.map((a) => a.panel_id));
   let reached = 0, deviceLimit = false, missing = 0;
-  for (const a of accounts) {
+  // every panel is asked at the same time; the answers are then read in panel order, so the list stays stable
+  const fetchOne = async (a) => {
+    const pg = await adapterFor(env, panelOfAccount(a), { timeoutMs: userPathMs(a) }).catch(() => null);
+    if (!pg) return null;
     let raw;
-    const pg = await adapterFor(env, panelOfAccount(a)).catch(() => null);
-    if (!pg) continue;
     try { raw = await pg.subscriptionRaw(a.sub_path, fwd); }
-    catch (e) { continue; } // an unreachable panel only removes its own configs
+    catch (e) { return null; } // an unreachable panel only removes its own configs
     let found = raw.status >= 200 && raw.status < 300 ? decodeSub(raw.text) : [];
     // A panel whose rules answer the v2rayNG agent with Xray JSON (or refuse it, 406) gives no share links
     // here; its explicit /links format does, with the same device check.
@@ -332,6 +340,13 @@ export async function collectLinks(env, userId, fwd = {}) {
         found = raw.status >= 200 && raw.status < 300 ? decodeSub(raw.text) : [];
       } catch (e) { /* keep the first answer */ }
     }
+    return { raw, found };
+  };
+  const answers = await Promise.all(accounts.map(fetchOne));
+  for (let i = 0; i < accounts.length; i++) {
+    const a = accounts[i];
+    if (!answers[i]) continue;
+    const { raw, found } = answers[i];
     if (raw.status === 403 || raw.status === 429) { deviceLimit = true; continue; }
     if (raw.status === 404) { missing++; continue; }
     if (raw.status < 200 || raw.status >= 300) continue;

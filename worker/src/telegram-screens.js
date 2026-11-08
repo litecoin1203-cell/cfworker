@@ -948,6 +948,7 @@ export async function health(env) {
     !info ? '❌ جواب Telegram نیامد.' : !info.url ? '❌ ثبت نشده (هر دقیقه دوباره امتحان می‌شود).' : info.url === base + '/tg' ? '✅ به همین ورکر وصل است.' : '⚠️ به آدرس دیگری وصل است؛ هر دقیقه درست می‌شود.',
     ...(info ? [`پیام‌های در صف: ${fa(info.pending_update_count || 0)}`, info.last_error_date ? `آخرین خطا: ${ago(info.last_error_date, now)}${errMsg ? ` — ${errMsg}` : ''}` : 'خطای اخیر: ندارد'] : []),
     '', '🔄 همگام‌سازی پنل‌ها',
+    ...(jobs.length && now - jobs[0].run_at > 300 ? [`⚠️ کرون ${ago(jobs[0].run_at, now)} است که اجرا نشده.`] : []),
     ...(jobs.length ? jobs.map((j) => `${j.job} · پنل #${j.panel_id} · ${ago(j.run_at, now)}`) : ['هنوز اجرا نشده.']),
     `در صف تغییر روی پنل: ${fa(c.dirty)}${c.stuck ? ` (⚠️ ${fa(c.stuck)} تا بعد از ۳ تلاش هنوز نشده)` : ''}`,
     `اکانت با خطای آخر: ${fa(c.errs)} · پنلی که ساخت اکانت را رد می‌کند: ${fa(c.perr)}`,

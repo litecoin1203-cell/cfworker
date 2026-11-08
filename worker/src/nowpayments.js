@@ -1,5 +1,5 @@
 // NOWPayments crypto invoices + IPN signature check (HMAC-SHA512 over sorted-key JSON).
-import { hmacSha512Hex, timingSafeEqual } from './util.js';
+import { hmacSha512Hex, timingSafeEqual, deadline } from './util.js';
 
 export const PAID_STATES = new Set(['finished', 'confirmed']);
 export const FAILED_STATES = new Set(['failed', 'expired', 'refunded']);
@@ -27,6 +27,7 @@ export async function createInvoice(env, orderId, usd, description) {
     method: 'POST',
     headers: { 'x-api-key': env.NOWPAYMENTS_API_KEY, 'content-type': 'application/json' },
     body: JSON.stringify(body),
+    signal: deadline(10000),
   });
   if (!r.ok) throw new Error(`NOWPayments error ${r.status}: ${(await r.text()).slice(0, 200)}`);
   const data = await r.json();

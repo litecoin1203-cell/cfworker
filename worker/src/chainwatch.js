@@ -10,9 +10,11 @@
 // - received must be >= the quote (and at most 2% more); a slightly smaller amount goes to manual review
 import { first, all, run, getSetting } from './db.js';
 import { coinById } from './coins.js';
-import { nowSec } from './util.js';
+import { nowSec, throttled } from './util.js';
 
 const TIMEOUT_MS = 8000;
+// a transfer this long after its quote ran out is still confirmed by itself (slow wallet, busy network)
+export const QUOTE_GRACE_SEC = 30 * 60;
 const LOOKBACK_SEC = 48 * 3600;
 
 async function getJson(url, init) {
@@ -111,7 +113,8 @@ export async function autoMode(env) {
 async function candidates(env, onlyId) {
   const since = nowSec() - LOOKBACK_SEC;
   const coins = autoCoins().map((c) => `'${c}'`).join(',');
-  const sql = `SELECT * FROM orders WHERE method = 'coin' AND coin IN (${coins}) AND status IN ('pending','review','expired') AND created_at > ?` + (onlyId ? ' AND id = ?' : ' ORDER BY id LIMIT 40');
+  // newest first: a pile of old unanswered orders can't keep a fresh payment out of the window
+  const sql = `SELECT * FROM orders WHERE method = 'coin' AND coin IN (${coins}) AND status IN ('pending','review','expired') AND created_at > ?` + (onlyId ? ' AND id = ?' : ' ORDER BY id DESC LIMIT 40');
   return onlyId ? all(env, sql, since, onlyId) : all(env, sql, since);
 }
 
@@ -175,7 +178,9 @@ async function matchAndConfirm(env, orders, txsByKey, mode, maxSettle = Infinity
       if (!(await txidTaken(env, t.txid, o.id))) { hit = t; fit = f; break; }
     }
     if (!hit) continue;
-    const auto = mode === 'auto' && fit === 'exact';
+    // a quote that ran out long ago carries an old price: such a transfer is matched, but the admin decides
+    const stale = !!o.coin_expires_at && nowSec() > o.coin_expires_at + QUOTE_GRACE_SEC;
+    const auto = mode === 'auto' && fit === 'exact' && !stale;
     if (auto && settles >= maxSettle) continue; // delivered on the next run
     if (auto) settles++;
     claimed.add(hit.txid);
@@ -195,7 +200,9 @@ async function matchAndConfirm(env, orders, txsByKey, mode, maxSettle = Infinity
     } else {
       const fresh2 = await first(env, 'SELECT * FROM orders WHERE id = ?', o.id);
       const diff = (n) => (Number(n) / 10 ** w.precision).toFixed(w.precision);
-      await sendCoinNotice(env, fresh2, user, fit === 'under'
+      await sendCoinNotice(env, fresh2, user, stale && fit === 'exact'
+        ? `⚠️ واریز دقیقاً با مبلغ سفارش جور است، ولی قیمت این سفارش ${Math.round((nowSec() - o.coin_expires_at) / 60)} دقیقه پیش منقضی شده بود (قیمت ارز ممکن است عوض شده باشد). خودت تصمیم بگیر.`
+        : fit === 'under'
         ? `⚠️ واریز روی بلاک‌چین پیدا شد ولی ${diff(want - hit.units)} کمتر از مبلغ سفارش است (احتمالاً کارمزد صرافی). خودت تصمیم بگیر.`
         : fit === 'over'
           ? `⚠️ واریز روی بلاک‌چین پیدا شد ولی ${diff(hit.units - want)} بیشتر از مبلغ دقیق سفارش است. مطمئن شو مال همین کاربر است، بعد تأیید کن.`
@@ -231,9 +238,7 @@ export async function checkOrder(env, order) {
   if (!order || order.method !== 'coin' || !WATCHERS[order.coin] || !['pending', 'review', 'expired'].includes(order.status)) return null;
   const mode = await autoMode(env);
   if (mode === 'off' || (order.status === 'review' && order.txid && mode !== 'auto')) return null;
-  const seen = (globalThis.__cgChk = globalThis.__cgChk || {});
-  if (seen[order.id] && Date.now() - seen[order.id] < 12000) return null;
-  seen[order.id] = Date.now();
+  if (throttled('__cgChk', order.id, 12000)) return null;
   const orders = await candidates(env, order.id);
   if (!orders.length) return null;
   const r = await matchAndConfirm(env, orders, await fetchFor(orders), mode);

@@ -255,7 +255,7 @@ async function deliver(env, order, quiet) {
         if (!quiet) {
           await notifyAdmin(env, `⚠️ ساخت اکانت روی پنل برای سفارش #${order.id} (${user.email}) انجام نشد.\n\nخطای پنل:\n${untrusted(e.message)}\n\nبعد از رفع مشکل، دکمه‌ی زیر را بزن.`, order.method === 'wallet' ? undefined : retryButton(order.id));
         }
-        throw new BillingError('provision_failed', 'فعال‌سازی اشتراک الان ممکن نشد. پشتیبانی خبردار شد و به‌زودی درستش می‌کند.');
+        throw new BillingError('activation_failed', 'فعال‌سازی اشتراک الان ممکن نشد. پشتیبانی خبردار شد و به‌زودی درستش می‌کند.');
       }
       throw e;
     }
@@ -296,7 +296,7 @@ export async function payWithWallet(env, user, order) {
   } catch (e) {
     // refund what we just deducted, keeping idempotency via a distinct reason
     await walletApply(env, user, order.amount_toman, 'refund', order.id, `بازگشت وجه سفارش #${order.id}`);
-    await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ?", order.id);
+    await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ? AND status NOT IN ('paid', 'settling')", order.id);
     await releaseCoupon(env, order);
     throw e;
   }
