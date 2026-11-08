@@ -81,7 +81,7 @@ export function installFakes({ panelBase }) {
   }
   function outUser(u) {
     return { id: u.id, username: u.username, status: u.status, expire: u.expire, data_limit: u.data_limit,
-      used_traffic: u.used_traffic || 0, subscription_url: `/sub/${u.token}/` };
+      used_traffic: u.used_traffic || 0, subscription_url: `/sub/${u.token}/`, online_at: u.online_at ?? null, created_at: u.created_at ?? '2026-11-01T10:00:00' };
   }
 
   globalThis.fetch = async (input, init = {}) => {
@@ -115,6 +115,7 @@ export function installFakes({ panelBase }) {
         const b = JSON.parse(body);
         pg.createLog.push(b);
         if (pg.failCreate) return resText(JSON.stringify({ detail: pg.failCreate }), 400);
+        if (pg.users[b.username]) return resText('{"detail":"User already exists"}', 409);
         if (pg.kind === 'rebecca') {
           if (!(b.service_id > 0)) return resText('{"detail":"service_id is required. Users must be assigned to a service."}', 400);
           if (b.inbounds && Object.keys(b.inbounds).length) return resText('{"detail":"Manual inbound selection has been removed"}', 400);

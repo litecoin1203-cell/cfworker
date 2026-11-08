@@ -256,13 +256,14 @@ export class PasarGuard {
 
   // ---- control plane adapter contract ----
 
-  // One page of users with their counted traffic: {users: [{username, id, used, status, expire, data_limit}], total}.
+  // One page of users with their counted traffic: {users: [{username, id, used, status, expire, data_limit, online}], total}.
+  // online = the panel's online_at (last time the user's traffic was seen), unix seconds or null.
   // One request covers a whole page, so the chunked sync stays inside the Worker's subrequest limit.
   async listUsage(offset = 0, limit = 200) {
     const data = await this._json('GET', `/api/users?offset=${offset}&limit=${limit}`);
     const users = (data.users || []).map((u) => ({
       username: u.username, id: u.id ?? null, used: parseInt(u.used_traffic || 0, 10) || 0, status: u.status || '',
-      expire: parseExpire(u.expire), data_limit: parseInt(u.data_limit || 0, 10) || 0,
+      expire: parseExpire(u.expire), data_limit: parseInt(u.data_limit || 0, 10) || 0, online: parseExpire(u.online_at),
     }));
     return { users, total: Number.isFinite(data.total) ? data.total : offset + users.length };
   }

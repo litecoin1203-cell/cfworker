@@ -123,14 +123,16 @@ export const userKb = (uid) => ({ inline_keyboard: [
   [b('📱 دستگاه‌ها', `m:udv:${uid}`), b('🛡 امنیت و حساب', `m:usec:${uid}`)],
   [b('🎁 دادن پلن', `m:ug:${uid}`), b('🔗 وصل اکانت پنل', `m:w:link:${uid}`)],
   [b('🧾 سفارش‌ها', `m:uo:${uid}`), b('📶 تجربه اتصال', `m:un:${uid}`)],
-  [b('🔄 زنده از پنل', `m:u:${uid}:live`), b('📜 تاریخچه', `m:hist:user:${uid}`)],
+  [b('🗂 پنل‌های کاربر', `m:upa:${uid}`), b('🔄 زنده از پنل', `m:u:${uid}:live`)],
+  [b('📜 تاریخچه', `m:hist:user:${uid}`)],
   [b('🔙 کاربران', 'm:usr'), HOME],
 ] });
 
 // One user, from the database only (a few queries); "live" first reads every panel for fresh usage.
 async function userFacts(env, id) {
   return first(env, `SELECT u.*, s.state, s.stop_reason, s.expires_at, s.data_limit_bytes, s.used_bytes, s.period_id, s.plan_id, p.name plan_name,
-      (SELECT COUNT(*) FROM devices WHERE user_id = u.id) devs, (SELECT COUNT(*) FROM orders WHERE user_id = u.id) ords
+      (SELECT COUNT(*) FROM devices WHERE user_id = u.id) devs, (SELECT COUNT(*) FROM orders WHERE user_id = u.id) ords,
+      (SELECT MAX(online_at) FROM usage_counters WHERE period_id = s.period_id) online_at
     FROM users u LEFT JOIN subscriptions s ON s.user_id = u.id LEFT JOIN plans p ON p.id = s.plan_id WHERE u.id = ?`, id);
 }
 const STOP_FA = { quota: 'حجم تمام شد', expired: 'زمان تمام شد', admin: 'قطع به دست مدیر' };
@@ -160,9 +162,75 @@ export async function userCard(env, id, mode) {
     `💰 کیف پول: ${fa(u.wallet_balance)} تومان`,
     `📱 دستگاه: ${fa(u.devs)} · 🧾 سفارش: ${fa(u.ords)}`,
     `🗂 پنل‌ها: ${pas.map((a) => `${a.label}${a.desired === 'active' ? '' : ' (خاموش)'}`).join('، ') || '—'}`,
+    ...(u.period_id ? [`🕒 آخرین اتصال: ${seenFa(u.online_at)}`] : []),
     `📶 اپراتورها: ${nets || 'هنوز گزارشی نیامده'}`,
     ...(mode === 'live' ? [] : ['', 'عددها از آخرین خواندن پنل‌هاست؛ برای عدد همین لحظه «🔄 زنده از پنل» را بزن.'])];
   return { text: lines.join('\n'), kb: userKb(u.id).inline_keyboard };
+}
+
+// When the panel last saw the user's traffic (online_at). "Online now" = seen in the last ONLINE_SEC: the panels
+// update online_at while traffic flows, Rebecca also says is_online itself.
+export const ONLINE_SEC = 120;
+export function seenFa(t, now = nowSec()) {
+  if (!t) return 'هنوز وصل نشده';
+  const d = Math.max(0, now - t);
+  if (d < ONLINE_SEC) return '🟢 الان آنلاین';
+  if (d < 3600) return `${fa(Math.round(d / 60))} دقیقه پیش`;
+  if (d < 2 * 86400) return `${fa(Math.round(d / 3600))} ساعت پیش`;
+  return `${fa(Math.floor(d / 86400))} روز پیش (${ymd(t)})`;
+}
+const dateFa = (t) => (t ? ymd(t) : 'نامحدود');
+
+// 🗂 the user's account on every panel, read live from the panels at the same time (one request per panel,
+// short deadline). Nothing is written: the stored numbers stay with the sync job.
+export async function userPanels(env, id) {
+  const u = await userFacts(env, id);
+  if (!u) return missing('🗂 پنل‌های کاربر');
+  const { accountsOf, adapterFor, userPathMs } = await import('./panels.js');
+  const { parseExpire } = await import('./pasarguard.js');
+  const accounts = await accountsOf(env, id);
+  const period = u.period_id ? await first(env, 'SELECT started_at FROM sub_periods WHERE id = ?', u.period_id) : null;
+  const counted = new Map(u.period_id ? (await all(env, 'SELECT panel_id, accounted_bytes, online_at FROM usage_counters WHERE period_id = ?', u.period_id)).map((c) => [c.panel_id, c]) : []);
+  const labels = new Map((await all(env, 'SELECT id, label FROM panels')).map((p) => [p.id, p.label]));
+  const live = await Promise.all(accounts.map(async (a) => {
+    if (a.panel_state === 'disabled') return { off: true };
+    try {
+      const pg = await adapterFor(env, { id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref, options_json: a.options_json }, { timeoutMs: userPathMs(a) });
+      const r = await pg.getUser(a.remote_username);
+      return r ? { r } : { gone: true };
+    } catch (e) { return { err: true }; }
+  }));
+  const now = nowSec();
+  const head = [crumb('👤 کاربران', who(u), '🗂 پنل‌ها'), '',
+    ...(u.period_id ? [
+      `📊 جمع مصرف: ${gb(u.used_bytes || 0)} از ${u.data_limit_bytes ? gb(u.data_limit_bytes) + ' گیگ' : 'نامحدود'}`,
+      `📅 شروع: ${period ? ymd(period.started_at) : '—'} · انقضا: ${dateFa(u.expires_at)}`,
+      `وضعیت: ${u.state === 'active' && (!u.expires_at || u.expires_at > now) ? '🟢 فعال' : `🔴 ${STOP_FA[u.stop_reason] || 'متوقف'}`}`,
+    ] : ['📦 اشتراک: ندارد'])];
+  const blocks = accounts.map((a, i) => {
+    const x = live[i];
+    const c = counted.get(a.panel_id);
+    const top = `🗂 #${a.panel_id} ${labels.get(a.panel_id) || ''} · 👤 ${a.remote_username}`;
+    if (x.off) return [top, 'پنل خارج شده؛ اکانت خاموش است.'];
+    if (x.gone) return [top, '⚠️ این اکانت روی پنل پیدا نشد.'];
+    const stored = c ? `حساب‌شده در این دوره: ${gb(c.accounted_bytes || 0)} گیگ` : '';
+    if (x.err) return [top, `⚠️ پنل جواب نداد. ${stored ? stored + ' (آخرین خواندن)' : ''}`.trim(), `🕒 آخرین اتصال: ${seenFa(c && c.online_at, now)}`];
+    const r = x.r;
+    const status = String(r.status || '');
+    const on = status === 'active';
+    const used = parseInt(r.used_traffic || 0, 10) || 0, lim = parseInt(r.data_limit || 0, 10) || 0;
+    const online = parseExpire(r.online_at);
+    const isOnline = r.is_online === true || (online && now - online < ONLINE_SEC);
+    return [top,
+      `${on ? '🟢 روشن' : `🔴 ${status === 'limited' ? 'حجم پر' : status === 'expired' ? 'منقضی' : 'خاموش'}`}${isOnline ? ' · 🟢 الان آنلاین' : ''}`,
+      `📊 مصرف روی پنل: ${gb(used)} گیگ · سقف این پنل: ${lim ? gb(lim) + ' گیگ' : 'نامحدود'}`,
+      ...(c && c.accounted_bytes !== used ? [`   حساب‌شده در این دوره: ${gb(c.accounted_bytes || 0)} گیگ`] : []),
+      `📅 ساخت: ${dateFa(parseExpire(r.created_at))} · انقضا: ${dateFa(parseExpire(r.expire))}`,
+      `🕒 آخرین اتصال: ${isOnline ? '🟢 الان آنلاین' : seenFa(online, now)}`];
+  });
+  const text = [...head, '', blocks.length ? blocks.map((l) => l.join('\n')).join('\n\n') : 'روی هیچ پنلی اکانت ندارد.', '',
+    'سقف هر پنل = مصرف همان پنل + باقیمانده‌ی کل؛ وقتی جمع به حجم پلن برسد همه‌ی پنل‌ها با هم خاموش می‌شوند.'].join('\n');
+  return { text, kb: [[b('🔄 دوباره بخوان', `m:upa:${id}`)], nav(`u:${id}`)] };
 }
 
 const missing = (title) => ({ text: crumb('👤 کاربران', title) + '\n\nکاربر پیدا نشد.', kb: [nav('usr')] });
