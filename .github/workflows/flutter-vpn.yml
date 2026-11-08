@@ -107,8 +107,10 @@ jobs:
           geo=android/app/src/main/assets/geo
           mkdir -p "$geo"
           base="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
-          get geoip.dat "$base/geoip.dat"
-          get geosite.dat "$base/geosite.dat"
+          # second source: the same release branch through jsDelivr (listed in that project's README)
+          mirror="https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release"
+          get geoip.dat "$base/geoip.dat" "$mirror/geoip.dat"
+          get geosite.dat "$base/geosite.dat" "$mirror/geosite.dat"
           cp "$dl/geoip.dat" "$dl/geosite.dat" "$geo/"
           test -s "$geo/geoip.dat" && test -s "$geo/geosite.dat"
           export XRAY_LOCATION_ASSET="$PWD/$geo"
