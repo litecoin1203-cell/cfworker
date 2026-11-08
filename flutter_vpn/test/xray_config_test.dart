@@ -486,7 +486,9 @@ void main() {
     // IPv6 still leaves directly
     expect(rules[4]['ip'], ['::/0']);
     expect(rules[4]['outboundTag'], 'block');
-    expect(c['routing']['domainStrategy'], 'IPIfNonMatch');
+    // a name is never resolved to pick a route: the start check would then be
+    // routed by the address the core resolved, and nothing came up at all
+    expect(c['routing']['domainStrategy'], 'AsIs');
     // without local direct: private ranges direct and (Trojan carries UDP
     // inside TCP) QUIC refused, nothing else
     final plain = jsonDecode(xrayConfig('trojan://p@us1.example.com:443#x'));
@@ -513,8 +515,13 @@ void main() {
     final v6 = rules.firstWhere((r) => (r['ip'] as List?)?.first == '::/0');
     expect(v6['outboundTag'], 'block');
     expect(rules.indexOf(v6), greaterThan(0));
-    // nothing is resolved for routing when there are no IP rules to match
+    // only traffic from the tun: the core's own requests, the start check
+    // above all, must never be refused by this rule
+    expect(v6['inboundTag'], ['socks']);
+    // and a name is never resolved to pick a route, so this rule can only
+    // ever see an address the phone itself gave us
     expect(c['routing']['domainStrategy'], 'AsIs');
+    expect(c['dns']['queryStrategy'], 'UseIPv4');
   });
 
   test('test config has no inbound, so it never takes the tunnel port', () {
