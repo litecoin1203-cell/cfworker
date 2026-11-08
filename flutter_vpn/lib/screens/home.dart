@@ -568,6 +568,10 @@ class _StageLine extends StatelessWidget {
         'Handshaking with ${app.exit?.title}. Tap to cancel.',
         PColors.blue,
       ),
+      Phase.protected when app.exitSilent => (
+        '${app.exit?.title} isn’t answering. Pick another exit.',
+        PColors.alert,
+      ),
       Phase.protected => (
         'Protected. ${app.exit?.protocol} to ${app.exit?.title}.',
         PColors.safe,

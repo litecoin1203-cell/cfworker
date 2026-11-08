@@ -1697,7 +1697,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _connect(String? id, {required bool failover}) async {
     if (id != null && !failover) pinned = true;
     if (id != null && id != exitId) {
-      if (phase == Phase.protected) await _endTunnel(log: true);
+      // Another exit while connected: the running tunnel is kept and the
+      // new exit takes it over (the service swaps them without closing the
+      // tun), so no app leaves outside the VPN in between.
+      if (phase == Phase.protected) {
+        _attempt++;
+        _stopTimers();
+        _logSession();
+      }
       exitId = id;
       _save();
     }
@@ -1771,6 +1778,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           target.server.link,
           localDirect: localDirect && geoAvailable,
           api: _detours?.login,
+          backups: _backupsFor(target),
         );
       } on FormatException {
         if (smartConnect && _failover()) return;
@@ -1787,10 +1795,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       // instead of spinning.
       _handshake = Timer(const Duration(seconds: 45), () {
         if (stale() || phase != Phase.handshaking) return;
-        tunnel.stop();
+        unawaited(_stopTunnel());
         _fail('The exit didn’t answer. Try another one.');
       });
       _pushNote(target);
+      _tunnelHeld = true;
       await tunnel.start(config);
     } on ApiError catch (e) {
       if (!stale()) _fail(e.message);
@@ -1805,6 +1814,22 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       if (!stale()) _fail('The tunnel didn’t start.');
     }
+  }
+
+  /// Smart connect without a pinned exit: the next two best exits go into
+  /// the core with the picked one, and the core moves to whichever answers
+  /// while the app can't watch (screen off, app asleep).
+  List<String> _backupsFor(Exit target) {
+    if (!smartConnect || pinned) return const [];
+    final next =
+        exits
+            .where(
+              (e) =>
+                  e.id != target.id && !e.unreachable && !_tried.contains(e.id),
+            )
+            .toList()
+          ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
+    return [for (final e in next.take(2)) e.server.link];
   }
 
   /// Smart connect: the exit that failed is reported, the next best is
@@ -1840,7 +1865,22 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return false;
   }
 
+  /// A tunnel was started and not stopped since: a failed or abandoned try
+  /// must stop it, because the service keeps a failed tun (blocking) for
+  /// the next exit instead of opening a gap.
+  bool _tunnelHeld = false;
+
+  /// Connected, but the exit stopped answering the live pings (smart
+  /// connect off, so it isn't swapped). Home says so.
+  bool exitSilent = false;
+
+  Future<void> _stopTunnel() {
+    _tunnelHeld = false;
+    return tunnel.stop();
+  }
+
   void _fail(String message) {
+    if (_tunnelHeld) unawaited(_stopTunnel());
     phase = Phase.idle;
     tunnelMessage = message;
     progressNote = null;
@@ -1881,6 +1921,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
     } else if (s == TunnelState.off &&
         (phase == Phase.protected || phase == Phase.handshaking)) {
+      _tunnelHeld = false;
       // Disconnect on the notification: the person's own stop, as the
       // Home control's, so no "dropped" and no failover.
       _attempt++;
@@ -1892,6 +1933,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _save();
       notifyListeners();
     } else if (s == TunnelState.down && phase == Phase.protected) {
+      _tunnelHeld = false;
       _logSession();
       _stopTimers();
       phase = Phase.dropped;
@@ -1982,6 +2024,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (ms != null) {
       _misses = 0;
       _okStreak++;
+      exitSilent = false;
       e.measured = ms;
       e.measuredAt = DateTime.now();
       if (!_reported) {
@@ -1994,7 +2037,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _okStreak = 0;
-    if (++_misses < 2 || !smartConnect) return;
+    if (++_misses < 2) return;
+    if (!smartConnect) {
+      // The person picked this exit and turned smart connect off: it isn't
+      // swapped, but Home must stop saying everything is fine.
+      if (!exitSilent) {
+        exitSilent = true;
+        notifyListeners();
+      }
+      return;
+    }
     _misses = 0;
     _logSession();
     _stopTimers();
@@ -2003,7 +2055,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     tunnelMessage = null;
     notifyListeners();
     if (!_failover()) {
-      await tunnel.stop();
+      await _stopTunnel();
       phase = Phase.dropped;
       tunnelMessage = '${e.title} stopped answering.';
       _save();
@@ -2030,6 +2082,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   void _stopTimers() {
+    exitSilent = false;
     _watch?.cancel();
     _pulse?.cancel();
     _handshake?.cancel();
@@ -2079,6 +2132,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     if (await tunnel.current() != TunnelState.up) return;
     tunnel.listen(_onTunnel);
+    _tunnelHeld = true;
     phase = Phase.handshaking;
     _onTunnel(TunnelState.up);
   }
@@ -2089,7 +2143,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     await loadMe();
     final s = subscription;
     if (phase == Phase.protected && (s == null || !s.active)) {
-      await tunnel.stop();
+      await _stopTunnel();
       _logSession();
       _stopTimers();
       phase = Phase.dropped;
@@ -2109,7 +2163,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     progressNote = null;
     phase = Phase.idle;
     notifyListeners();
-    await tunnel.stop();
+    await _stopTunnel();
   }
 
   Future<void> disconnect() async {
@@ -2126,7 +2180,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     phase = Phase.idle;
     connectedAt = null;
     _save();
-    if (running) await tunnel.stop();
+    if (running || _tunnelHeld) await _stopTunnel();
   }
 
   /// The one control: idle → connect, busy → cancel, protected → off.

@@ -158,6 +158,36 @@ jobs:
           else
             echo "::error::libv2ray.aar: download failed and there is no cached copy"; exit 1
           fi
+      # The check above uses Xray-core's latest release, but the app ships the core inside libv2ray.aar,
+      # which is built from a commit of its own (no desktop release has that version). The same core is
+      # built here from the version the library itself records, and every config is checked with it too,
+      # so a field the app's core doesn't know fails here instead of on the phone.
+      - name: Restore Go modules for the app's core
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/.cache/go-build
+          key: pleat-xray-app-${{ env.XRAY_LIB_TAG }}
+      - name: Check generated configs with the app's own core version
+        run: |
+          unzip -p android/app/libs/libv2ray.aar jni/x86_64/libgojni.so > /tmp/gojni.so
+          info=$(go version -m /tmp/gojni.so)
+          ver=$(printf '%s\n' "$info" | awk '$1 == "dep" && $2 == "github.com/xtls/xray-core" {print $3; exit}')
+          rep=$(printf '%s\n' "$info" | awk 'f && $1 == "=>" {print $2 "@" $3; exit} {f = ($1 == "dep" && $2 == "github.com/xtls/xray-core")}')
+          if [ -z "$ver" ]; then echo "::error::libv2ray.aar names no xray-core version"; exit 1; fi
+          echo "app core: xray-core $ver ${rep:+(replaced by $rep)}"
+          mkdir -p /tmp/xray-app && cd /tmp/xray-app
+          rm -f go.mod go.sum && go mod init xray-app > /dev/null 2>&1
+          go mod edit -require="github.com/xtls/xray-core@$ver"
+          if [ -n "$rep" ]; then go mod edit -replace="github.com/xtls/xray-core=$rep"; fi
+          GOTOOLCHAIN=auto GOFLAGS=-mod=mod go build -o /tmp/xray-app/xray github.com/xtls/xray-core/main
+          /tmp/xray-app/xray version | head -1
+          export XRAY_LOCATION_ASSET="$GITHUB_WORKSPACE/flutter_vpn/android/app/src/main/assets/geo"
+          for f in /tmp/xray-configs/*.json; do
+            echo "== $(basename "$f")"
+            /tmp/xray-app/xray run -test -c "$f"
+          done
       - name: Signing key
         env:
           KEYSTORE_B64: ${{ secrets.APP_KEYSTORE_BASE64 }}
