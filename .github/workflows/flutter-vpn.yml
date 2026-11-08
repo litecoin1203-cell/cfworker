@@ -166,6 +166,12 @@ jobs:
           else
             echo "::warning::APP_KEYSTORE_BASE64 is not set. Signing with this runner's debug key: uninstall an older Pleat before installing this APK."
           fi
+      # Gradle itself is downloaded from GitHub releases too (services.gradle.org redirects there): keep it
+      - name: Restore Gradle
+        uses: actions/cache@v4
+        with:
+          path: ~/.gradle/wrapper/dists
+          key: pleat-gradle-${{ hashFiles('flutter_vpn/android/gradle/wrapper/gradle-wrapper.properties') }}
       - name: Build APK
         env:
           API_INPUT: ${{ github.event.inputs.api_base }}
