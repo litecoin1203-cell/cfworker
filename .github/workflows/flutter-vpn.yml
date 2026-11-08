@@ -174,6 +174,31 @@ jobs:
         with:
           path: ~/.gradle/wrapper/dists
           key: pleat-gradle-${{ hashFiles('flutter_vpn/android/gradle/wrapper/gradle-wrapper.properties') }}
+      # Maven Central now answers some big jars (the Kotlin compiler) with a redirect to GitHub releases, which
+      # answer 504 at times, and Gradle does not fall through to the next repository on an error. Google's full
+      # mirror of Maven Central serves the files itself: an init script puts it first in every build (the app,
+      # its plugins and Flutter's own Gradle plugin); google() and the others stay behind it.
+      - name: Maven Central through Google's mirror
+        run: |
+          mkdir -p ~/.gradle/init.d
+          cat > ~/.gradle/init.d/central-mirror.gradle <<'GRADLE'
+          def mirrorUrl = 'https://maven-central.storage-download.googleapis.com/maven2/'
+          def putFirst = { handler ->
+            if (handler.findByName('centralMirror') == null) {
+              def repo = handler.maven { name = 'centralMirror'; url = mirrorUrl }
+              handler.remove(repo)
+              handler.addFirst(repo)
+            }
+          }
+          settingsEvaluated { settings ->
+            // only where the build lists its own plugin repositories (an empty list means the defaults)
+            if (!settings.pluginManagement.repositories.isEmpty()) putFirst(settings.pluginManagement.repositories)
+          }
+          allprojects {
+            buildscript { putFirst(repositories) }
+            putFirst(repositories)
+          }
+          GRADLE
       # The Gradle wrapper tries its download once and stops on a 504; fetch the same file with retries
       # into the place the wrapper looks first (dists/<name>/<base36 md5 of the URL>/), so it only unzips it.
       - name: Fetch Gradle with retries
