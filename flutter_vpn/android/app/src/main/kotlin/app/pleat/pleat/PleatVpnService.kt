@@ -205,8 +205,12 @@ class PleatVpnService : VpnService() {
             .addRoute("0.0.0.0", 0)
             .addAddress("fd66:6c65:6174::1", 126)
             .addRoute("::", 0)
+            // IPv4 only: a query to an IPv6 resolver would be an address the
+            // sniffer cannot name, which the core refuses so apps fall back to
+            // IPv4 at once. The names it answers with may still be IPv6; those
+            // reach the exit by name.
             .addDnsServer("1.1.1.1")
-            .addDnsServer("2606:4700:4700::1111")
+            .addDnsServer("1.0.0.1")
             .addDisallowedApplication(packageName)
             .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) setMetered(false) }
             .establish() ?: error("VPN permission revoked")

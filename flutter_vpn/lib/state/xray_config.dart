@@ -115,7 +115,9 @@ String xrayConfig(
         '1.1.1.1',
         '8.8.8.8',
       ],
-      'queryStrategy': 'UseIP',
+      // the core's own lookups (a direct exit, a WireGuard endpoint) stay on
+      // IPv4: an address it resolves may be one this path cannot carry
+      'queryStrategy': 'UseIPv4',
     },
     'inbounds': [
       if (!forTest)
@@ -161,9 +163,12 @@ String xrayConfig(
         'enableConcurrency': true,
       },
     'routing': {
-      // The destination is now a name, so the ip rules of the Iran split
-      // (geoip:ir) only match once it is resolved for the routing decision.
-      'domainStrategy': localDirect ? 'IPIfNonMatch' : 'AsIs',
+      // Never resolve a name to decide a route: the core would then hand the
+      // exit whatever it resolved (an IPv6 the exit may not have), and the
+      // start check would be routed by that address too. Iranian sites are
+      // matched by name below; traffic the sniffer could not name keeps its
+      // address, so geoip:ir still matches exactly the traffic with no name.
+      'domainStrategy': 'AsIs',
       if (spares.isNotEmpty)
         'balancers': [
           {
@@ -199,8 +204,11 @@ String xrayConfig(
         // phone's own address. An IPv6 one is refused at once instead of
         // waiting on an exit that may not have IPv6, so the app falls straight
         // back to IPv4. Named traffic is not an address and is unaffected.
+        // Only what comes from the tun: the core's own requests, above all the
+        // start check and the connection check, are never touched by this.
         {
           'type': 'field',
+          'inboundTag': ['socks'],
           'ip': ['::/0'],
           'outboundTag': 'block',
         },
@@ -230,7 +238,9 @@ String bridgeConfig(String link, List<String> hosts, ProxyLogin login) {
         '1.1.1.1',
         '8.8.8.8',
       ],
-      'queryStrategy': 'UseIP',
+      // the core's own lookups (a direct exit, a WireGuard endpoint) stay on
+      // IPv4: an address it resolves may be one this path cannot carry
+      'queryStrategy': 'UseIPv4',
     },
     'inbounds': [_apiInbound(bridgePort, login)],
     'outbounds': [
