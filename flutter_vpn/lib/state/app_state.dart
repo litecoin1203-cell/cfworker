@@ -116,6 +116,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   late final Updater updater;
 
+  /// The installed Pleat for reports, e.g. "Pleat 1.2.20+23 (arm64-v8a)".
+  /// ApiClient.appVersion is the Worker contract version, not this.
+  String get appLabel => updater.known
+      ? 'Pleat ${updater.version}+${updater.build} (${updater.abi})'
+      : ApiClient.appVersion;
+
   /// The announced build when it is newer than this install and has a file
   /// for this phone; null otherwise.
   AppUpdate? get appUpdate =>
@@ -1279,8 +1285,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// Exits tested at once; the native test pool has as many threads.
   static const _probeLanes = 6;
 
-  /// A working exit answers in a second or two; 10 s covers a slow one.
-  static const _probeDeadline = Duration(seconds: 10);
+  /// A working exit answers in a second or two. The native side gives
+  /// each test 10 s from when it really starts and answers "no answer in
+  /// 10 s"; this is only a safety net, above the core's own worst case
+  /// (2 tries of 12 s), so a test still queued is never counted as dead.
+  static const _probeDeadline = Duration(seconds: 25);
 
   /// Bumped by Cancel: running exit tests start no new ones.
   int _testGen = 0;
@@ -1577,7 +1586,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final r = await tunnel.trace(config);
     if (r == null) return null;
     final b = StringBuffer()
-      ..writeln('Pleat exit trace · ${ApiClient.appVersion}')
+      ..writeln('Pleat exit trace · $appLabel')
       ..writeln('${e.label} · ${e.protocol} · ${transportOf(e.server.link)}')
       ..writeln('Link: ${linkShape(e.server.link)}')
       ..writeln(

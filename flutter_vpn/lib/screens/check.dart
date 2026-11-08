@@ -189,7 +189,7 @@ class _CheckScreenState extends State<CheckScreen> {
           context,
           report(
             exits,
-            app: ApiClient.appVersion,
+            app: app.appLabel,
             device: '${app.api.deviceModel}, Android ${app.api.osVersion}',
             at: _testedAt!,
           ),

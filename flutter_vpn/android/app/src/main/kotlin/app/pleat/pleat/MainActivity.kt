@@ -7,6 +7,8 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -22,6 +24,16 @@ class MainActivity : FlutterActivity() {
         const val ASK_VPN = 41
         const val PICK_IMAGE = 42
         const val ASK_NOTES = 43
+
+        /**
+         * One server test's budget, counted from when it really starts.
+         * The core's own test can't be told a deadline: it tries twice
+         * with 12 s each, so a server that never answers held a lane for
+         * up to 24 s while the app had given up after 10 s, and the next
+         * servers waited in the queue and were reported as timeouts
+         * without ever being tried.
+         */
+        const val PING_BUDGET_MS = 10_000L
         // Read whole (a phone photo can be over 8 MB), then made small by shrink().
         const val MAX_IMAGE = 25 * 1024 * 1024
     }
@@ -30,6 +42,15 @@ class MainActivity : FlutterActivity() {
 
     /** Server tests run a few at a time, off the main thread (as many as AppState's lanes). */
     private val tests = Executors.newFixedThreadPool(6)
+
+    /** Server tests only: as many at a time as AppState's lanes, nothing else queued in front of them. */
+    private val pings = Executors.newFixedThreadPool(6)
+
+    /**
+     * The core's test runs here so a lane can walk away from it at
+     * [PING_BUDGET_MS]; a test left behind ends by itself within 24 s.
+     */
+    private val cores = Executors.newCachedThreadPool()
 
     /** Download tests run one by one: side by side they would split the line. */
     private val speeds = Executors.newSingleThreadExecutor()
@@ -140,13 +161,25 @@ class MainActivity : FlutterActivity() {
                             return@setMethodCallHandler
                         }
                         // The delay in ms, or the core's reason as text (addresses blanked).
-                        background(result) {
-                            Engine.init(this)
-                            try {
-                                libv2ray.Libv2ray.measureOutboundDelay(config, Engine.TEST_URL).toInt()
-                            } catch (e: Exception) {
-                                blank(e.message.orEmpty().ifEmpty { e.javaClass.simpleName }).take(200)
+                        pings.execute {
+                            val value: Any = try {
+                                Engine.init(this)
+                                val test = cores.submit<Int> {
+                                    libv2ray.Libv2ray.measureOutboundDelay(config, Engine.TEST_URL).toInt()
+                                }
+                                try {
+                                    test.get(PING_BUDGET_MS, TimeUnit.MILLISECONDS)
+                                } catch (e: TimeoutException) {
+                                    test.cancel(true)
+                                    "no answer in ${PING_BUDGET_MS / 1000} s (timeout)"
+                                } catch (e: java.util.concurrent.ExecutionException) {
+                                    val c = e.cause ?: e
+                                    blank(c.message.orEmpty().ifEmpty { c.javaClass.simpleName }).take(200)
+                                }
+                            } catch (e: Throwable) {
+                                -1
                             }
+                            main.post { result.success(value) }
                         }
                     }
                     "trace" -> {
