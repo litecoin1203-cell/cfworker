@@ -131,10 +131,16 @@ String xrayConfig(
             ],
             'udp': true,
           },
+          // The phone resolves the name and hands the core an address. With
+          // routeOnly the core kept that address, so a site the phone resolved
+          // to IPv6 was asked of an exit with no IPv6 at all: Google hung
+          // while Telegram (IPv4) worked. The sniffed name now replaces the
+          // address, so the exit resolves it and uses what it can reach, the
+          // way v2rayNG does it.
           'sniffing': {
             'enabled': true,
             'destOverride': ['http', 'tls', 'quic'],
-            'routeOnly': true,
+            'routeOnly': false,
           },
         },
       if (!forTest && api != null) _apiInbound(tunnelApiPort, api),
@@ -155,7 +161,9 @@ String xrayConfig(
         'enableConcurrency': true,
       },
     'routing': {
-      'domainStrategy': 'AsIs',
+      // The destination is now a name, so the ip rules of the Iran split
+      // (geoip:ir) only match once it is resolved for the routing decision.
+      'domainStrategy': localDirect ? 'IPIfNonMatch' : 'AsIs',
       if (spares.isNotEmpty)
         'balancers': [
           {
@@ -187,6 +195,15 @@ String xrayConfig(
             'outboundTag': 'direct',
           },
         ],
+        // Traffic the sniffer could not name (no HTTP, TLS or QUIC) keeps the
+        // phone's own address. An IPv6 one is refused at once instead of
+        // waiting on an exit that may not have IPv6, so the app falls straight
+        // back to IPv4. Named traffic is not an address and is unaffected.
+        {
+          'type': 'field',
+          'ip': ['::/0'],
+          'outboundTag': 'block',
+        },
         if (spares.isNotEmpty)
           {'type': 'field', 'network': 'tcp,udp', 'balancerTag': 'exits'},
       ],

@@ -482,14 +482,39 @@ void main() {
     expect(rules[1]['outboundTag'], 'block');
     expect(rules[2]['domain'], contains('geosite:category-ir'));
     expect(rules[3]['ip'], ['geoip:ir']);
+    // the Iran rules are read before IPv6 is refused, so an Iranian site on
+    // IPv6 still leaves directly
+    expect(rules[4]['ip'], ['::/0']);
+    expect(rules[4]['outboundTag'], 'block');
+    expect(c['routing']['domainStrategy'], 'IPIfNonMatch');
     // without local direct: private ranges direct and (Trojan carries UDP
     // inside TCP) QUIC refused, nothing else
     final plain = jsonDecode(xrayConfig('trojan://p@us1.example.com:443#x'));
-    expect(plain['routing']['rules'], hasLength(2));
+    expect(plain['routing']['rules'], hasLength(3));
     final ss = jsonDecode(
       xrayConfig('ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#x'),
     );
-    expect(ss['routing']['rules'], hasLength(1));
+    expect(ss['routing']['rules'], hasLength(2));
+  });
+
+  test('a site the phone resolved to IPv6 is still reached through the exit', () {
+    final c = jsonDecode(xrayConfig('trojan://p@us1.example.com:443#x'));
+    // the sniffed name replaces the address, so the exit resolves it itself
+    // (an exit with no IPv6 used to hang on Google while Telegram worked)
+    final sniff = c['inbounds'][0]['sniffing'];
+    expect(sniff['enabled'], isTrue);
+    expect(sniff['destOverride'], contains('tls'));
+    expect(sniff['routeOnly'], isFalse);
+    final rules = c['routing']['rules'] as List;
+    // an address the sniffer could not name: private ranges still leave
+    // directly, any other IPv6 is refused at once (the app falls back to IPv4)
+    expect(rules.first['ip'], contains('fe80::/10'));
+    expect(rules.first['outboundTag'], 'direct');
+    final v6 = rules.firstWhere((r) => (r['ip'] as List?)?.first == '::/0');
+    expect(v6['outboundTag'], 'block');
+    expect(rules.indexOf(v6), greaterThan(0));
+    // nothing is resolved for routing when there are no IP rules to match
+    expect(c['routing']['domainStrategy'], 'AsIs');
   });
 
   test('test config has no inbound, so it never takes the tunnel port', () {
