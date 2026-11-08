@@ -430,6 +430,11 @@ void main() {
     ]);
     final plain = jsonDecode(xrayConfig('trojan://p@us1.example.com:443#x'));
     expect((plain['inbounds'] as List).map((i) => i['tag']), ['socks']);
+    // the local SOCKS port wants a login (the native side sets a random one)
+    final socks = (plain['inbounds'] as List).first;
+    expect(socks['listen'], '127.0.0.1');
+    expect(socks['settings']['auth'], 'password');
+    expect((socks['settings']['accounts'] as List), hasLength(1));
     final test = jsonDecode(
       xrayConfig(
         'trojan://p@us1.example.com:443#x',
