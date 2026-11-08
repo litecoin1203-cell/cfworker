@@ -116,6 +116,49 @@ void main() {
     expect(proxy.hits, isEmpty);
   });
 
+  test(
+    'while the tunnel is up a quicker open line never wins the race',
+    () async {
+      // The tunnel's port answers after the open line would have: through
+      // a far exit that is the usual case, and the Home screen then showed
+      // the phone's own IP.
+      final slow = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      slow.listen((req) async {
+        await Future<void>.delayed(const Duration(milliseconds: 900));
+        req.response.headers.contentType = ContentType.json;
+        req.response.write(jsonEncode({'via': 'tunnel'}));
+        await req.response.close();
+      });
+      final c = ApiClient(MemoryTokens(), bases: '${a.url},${b.url}')
+        ..detours = (FakeDetours()..tunnel = 'u:p@127.0.0.1:${slow.port}');
+      expect(await c.get('/me'), {'via': 'tunnel'});
+      expect(await c.get('/me/ip'), {'via': 'tunnel'});
+      expect(a.hits, isEmpty);
+      expect(b.hits, isEmpty);
+      await slow.close(force: true);
+    },
+  );
+
+  test('/me/ip never leaves on the open line', () async {
+    final dead = Uri.parse(await deadUrl()).port;
+    final d = FakeDetours()
+      ..tunnel = 'u:p@127.0.0.1:$dead'
+      ..bridgeOffer = 'u:p@127.0.0.1:${proxy.port}';
+    final c = ApiClient(MemoryTokens(), bases: a.url)..detours = d;
+    await expectLater(
+      c.get('/me/ip'),
+      throwsA(isA<ApiError>().having((e) => e.status, 'status', 0)),
+    );
+    // without a tunnel at all it isn't sent either
+    d.tunnel = null;
+    await expectLater(
+      c.get('/me/ip'),
+      throwsA(isA<ApiError>().having((e) => e.status, 'status', 0)),
+    );
+    expect(a.hits, isNot(contains('/api/v1/me/ip')));
+    expect(d.opened, 0);
+  });
+
   test('a dead tunnel port falls back to the open line', () async {
     final dead = Uri.parse(await deadUrl()).port;
     final c = ApiClient(MemoryTokens(), bases: a.url)

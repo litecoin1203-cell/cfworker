@@ -500,6 +500,11 @@ class ApiClient {
   /// network instead.
   static bool _openLineOnly(String path) => path.startsWith('/net/');
 
+  /// `/me/ip` shows where the tunnel comes out: asked on the open line it
+  /// would show the phone's own address under "Through", so it only ever
+  /// crosses the tunnel, and fails when the tunnel can't carry it.
+  static bool _tunnelOnly(String path) => path == '/me/ip';
+
   Future<(int, dynamic)> _roundTrip(
     String method,
     String path,
@@ -510,16 +515,17 @@ class ApiClient {
   ]) async {
     Object? lastError;
     final direct = _openLineOnly(path);
+    final tunnelOnly = _tunnelOnly(path);
     // A GET is safe to send twice: a dropped or reset connection gets one
     // fresh try, then (when there is another way) one on a newly picked
     // way. A POST is never repeated, so an order or a trial can't happen
     // twice.
     final isGet = method == 'GET';
     for (var round = 0; round < (isGet ? 2 : 1); round++) {
-      final ways = _ways(direct: direct);
+      final ways = _ways(direct: direct, tunnelOnly: tunnelOnly);
       final _Way way;
       try {
-        way = await _pick(ways, direct: direct, bridge: bridge);
+        way = await _pick(ways, direct: direct, bridge: bridge && !tunnelOnly);
       } on ApiError {
         if (lastError == null) rethrow;
         break;
@@ -601,13 +607,19 @@ class ApiClient {
   /// Every way in order of preference: the tunnel's port (it already
   /// crossed an exit), the open line, then a running bridge. Each starts
   /// from the address that answered last.
-  List<_Way> _ways({required bool direct}) {
+  List<_Way> _ways({required bool direct, bool tunnelOnly = false}) {
     final order = [
       for (var i = 0; i < _bases.length; i++)
         _bases[(_base + i) % _bases.length],
     ];
     final tunnel = direct ? null : detours?.tunnel;
     final bridge = direct ? null : detours?.bridge;
+    if (tunnelOnly) {
+      return [
+        if (tunnel != null)
+          for (final b in order) _Way(b, tunnel),
+      ];
+    }
     return [
       if (tunnel != null)
         for (final b in order) _Way(b, tunnel),
@@ -633,6 +645,8 @@ class ApiClient {
       // A tunnel that came up since is preferred over the open line.
       if (good.proxy != null || ways.first.proxy == null) return good;
     }
+    // Nothing to try (a tunnel-only call while the tunnel is down).
+    if (ways.isEmpty) throw _offline(null);
     // One way and nothing else to try: no need to ask first.
     if (ways.length == 1 && (direct || detours == null)) return ways.first;
     // The calls of a screen go out together; they share one race.
@@ -655,8 +669,22 @@ class ApiClient {
     required bool direct,
     required bool bridge,
   }) async {
-    final (way, error) = await _race(ways);
+    // While the tunnel is up its port is asked on its own first. In one
+    // race the open line, a few hundred milliseconds behind, often answered
+    // before the exit did (it is farther away), and the calls then left
+    // outside the tunnel: the Home screen showed the phone's own IP.
+    // The open line is asked only when the tunnel's port doesn't answer.
+    final tunnelWays = ways
+        .where((w) => w.proxy != null && w.proxy == detours?.tunnel)
+        .toList();
+    final rest = ways.where((w) => !tunnelWays.contains(w)).toList();
+    var (way, error) = await _race(tunnelWays.isEmpty ? ways : tunnelWays);
     if (way != null) return way;
+    if (tunnelWays.isNotEmpty && rest.isNotEmpty) {
+      final (w2, e2) = await _race(rest);
+      if (w2 != null) return w2;
+      error = e2 ?? error;
+    }
     final d = detours;
     if (bridge && !direct && d != null && d.tunnel == null) {
       _Way? found;
