@@ -172,6 +172,31 @@ jobs:
         with:
           path: ~/.gradle/wrapper/dists
           key: pleat-gradle-${{ hashFiles('flutter_vpn/android/gradle/wrapper/gradle-wrapper.properties') }}
+      # The Gradle wrapper tries its download once and stops on a 504; fetch the same file with retries
+      # into the place the wrapper looks first (dists/<name>/<base36 md5 of the URL>/), so it only unzips it.
+      - name: Fetch Gradle with retries
+        run: |
+          url=$(grep '^distributionUrl=' android/gradle/wrapper/gradle-wrapper.properties | cut -d= -f2- | sed 's/\\:/:/g')
+          name=$(basename "$url" .zip)
+          hash=$(python3 - "$url" <<'PY'
+          import hashlib, sys
+          n = int(hashlib.md5(sys.argv[1].encode()).hexdigest(), 16)
+          digits, out = '0123456789abcdefghijklmnopqrstuvwxyz', ''
+          while n:
+              n, r = divmod(n, 36)
+              out = digits[r] + out
+          print(out or '0')
+          PY
+          )
+          dir=~/.gradle/wrapper/dists/$name/$hash
+          if ls "$dir"/*.ok > /dev/null 2>&1; then echo "Gradle $name already installed"; exit 0; fi
+          mkdir -p "$dir"
+          if ! unzip -tq "$dir/$name.zip" > /dev/null 2>&1; then
+            curl -fsSL --retry 10 --retry-delay 20 --retry-all-errors -o "$dir/$name.zip.part" "$url"
+            mv "$dir/$name.zip.part" "$dir/$name.zip"
+            unzip -tq "$dir/$name.zip" > /dev/null
+          fi
+          echo "Gradle $name ready in $dir"
       - name: Build APK
         env:
           API_INPUT: ${{ github.event.inputs.api_base }}
