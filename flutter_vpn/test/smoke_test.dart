@@ -6,6 +6,7 @@ import 'package:pleat/design/tokens.dart';
 import 'package:pleat/design/widgets.dart';
 import 'package:pleat/main.dart';
 import 'package:pleat/screens/checkout.dart';
+import 'package:pleat/screens/login.dart';
 import 'package:pleat/screens/onboarding.dart';
 import 'package:pleat/screens/profile.dart';
 import 'package:pleat/screens/shell.dart';
@@ -771,8 +772,13 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
     }
     expect(find.text('Verify your Telegram'), findsOneWidget);
+    // six digits verify on their own; the boxes turn green, then Continue
     await tester.enterText(find.byType(TextField), '123456');
-    await tester.tap(find.text('VERIFY'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Verified'), findsOneWidget);
+    await tester.tap(find.text('CONTINUE'));
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
@@ -782,6 +788,47 @@ void main() {
     expect(find.text('VERIFIED'), findsOneWidget);
     expect(find.text('Telegram  @ali_vpn'), findsOneWidget);
     expect(find.text('Backup login · optional'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('Sign in: login and password on one sheet; Create account tab', (
+    tester,
+  ) async {
+    await _boot(tester, {'onboarded': true}, signedIn: false);
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(find.text('Welcome back'), findsOneWidget);
+    expect(find.text('Telegram'), findsOneWidget);
+    expect(find.text('Gmail'), findsOneWidget);
+    // Create account: the two passwords must match
+    await tester.tap(find.text('Create account'));
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Join Pleat'), findsOneWidget);
+    await tester.enterText(find.byType(TextField).at(0), 'ali@example.com');
+    await tester.enterText(find.byType(TextField).at(1), 'password1');
+    await tester.enterText(find.byType(TextField).at(2), 'password2');
+    await tester.tap(find.text('CREATE ACCOUNT'));
+    await tester.pump();
+    expect(find.text('The two passwords don’t match.'), findsOneWidget);
+    // back to Sign in: wrong password, then the right one
+    await tester.tap(find.text('Sign in'));
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    await tester.enterText(find.byType(TextField).at(0), 'ali@example.com');
+    await tester.enterText(find.byType(TextField).at(1), 'password0');
+    await tester.tap(find.text('SIGN IN'));
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('Email or password is wrong.'), findsOneWidget);
+    await tester.enterText(find.byType(TextField).at(1), 'password1');
+    await tester.tap(find.text('SIGN IN'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(Shell), findsOneWidget);
     await tester.pump(const Duration(seconds: 3));
   });
 
