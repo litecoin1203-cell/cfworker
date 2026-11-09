@@ -111,6 +111,45 @@ void main() {
     await tester.pump(const Duration(seconds: 2));
   });
 
+  testWidgets('Locations marks Iran-tunnel configs, and the panel for admins', (
+    tester,
+  ) async {
+    FakeApi.extraServers = [
+      {
+        'index': 3,
+        'name': 'DE 2',
+        'country_code': 'DE',
+        'protocol': 'vless',
+        'link': 'vless://u@de2.example.com:443?type=tcp#x',
+        'panel': 2,
+        'tunnel': true,
+      },
+    ];
+    addTearDown(() => FakeApi.extraServers = []);
+    final (app, _) = await _boot(tester, {'onboarded': true});
+    final de2 = app.exits.firstWhere((e) => e.label == 'DE 2');
+    expect(de2.server.panel, 2);
+    expect(de2.server.tunnel, isTrue);
+    final de1 = app.exits.firstWhere((e) => e.label == 'DE 1');
+    expect(de1.server.panel, 0);
+    expect(de1.server.tunnel, isFalse);
+    app.setTab(2);
+    await tester.pump(const Duration(milliseconds: 800));
+    await tester.tap(find.text('2 servers  ·  VLESS'));
+    await tester.pump(const Duration(milliseconds: 400));
+    // one tunnel badge and one panel tag: DE 1 has neither
+    expect(find.text('IR TUNNEL'), findsOneWidget);
+    expect(find.text('P2'), findsOneWidget);
+    expect(find.text('P0'), findsNothing);
+    final labels = find
+        .byType(Semantics)
+        .evaluate()
+        .map((e) => (e.widget as Semantics).properties.label ?? '')
+        .where((l) => l.contains('DE 2'));
+    expect(labels, contains('Open Germany, DE 2, Iran tunnel, panel 2'));
+    await tester.pump(const Duration(seconds: 2));
+  });
+
   testWidgets('without a tunnel engine connect never reaches Protected', (
     tester,
   ) async {

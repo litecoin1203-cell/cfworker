@@ -184,7 +184,16 @@ class PlanInfo {
 /// One config from `/vpn/servers`. [link] stays in memory for the tunnel
 /// and is never shown, logged or put in an accessibility label.
 class Server {
-  Server._(this.index, this.name, this.cc, this.protocol, this.link, this.key);
+  Server._(
+    this.index,
+    this.name,
+    this.cc,
+    this.protocol,
+    this.link,
+    this.key, {
+    this.panel = 0,
+    this.tunnel = false,
+  });
 
   factory Server.fromJson(Map<String, dynamic> j) {
     final link = _str(j['link']);
@@ -200,6 +209,8 @@ class Server {
       _str(j['protocol']).toLowerCase(),
       link,
       end == null ? 'i${_int(j['index'])}' : serverKey(end),
+      panel: _int(j['panel']),
+      tunnel: j['tunnel'] == true,
     );
   }
 
@@ -214,6 +225,13 @@ class Server {
 
   /// Anonymous stable key, the same `k` the Cloud Gold app reports.
   final String key;
+
+  /// The panel this config came from (1, 2, ...). The Worker sends it to
+  /// admins only; 0 for everyone else, and then no tag is drawn.
+  final int panel;
+
+  /// The config enters through Iran (a panel's "Tunnel" group).
+  final bool tunnel;
 
   String get country => cc.isEmpty ? 'Unknown country' : countryName(cc);
   String get flag => flagOf(cc);

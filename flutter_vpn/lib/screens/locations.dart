@@ -501,7 +501,10 @@ class _ExitRow extends StatelessWidget {
     final net = AppScope.of(context).network;
     return Pressable(
       onTap: onOpen,
-      label: 'Open ${exit.title}, ${exit.label}',
+      label:
+          'Open ${exit.title}, ${exit.label}'
+          '${exit.server.tunnel ? ', Iran tunnel' : ''}'
+          '${exit.server.panel > 0 ? ', panel ${exit.server.panel}' : ''}',
       radius: 20,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
@@ -518,12 +521,31 @@ class _ExitRow extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(
-                    sub ? exit.label : exit.title,
-                    style: PType.h3().copyWith(fontSize: 16),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
+                  if (exit.server.panel <= 0 && !exit.server.tunnel)
+                    Text(
+                      sub ? exit.label : exit.title,
+                      style: PType.h3().copyWith(fontSize: 16),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    )
+                  else
+                    // the marks follow the name and move to a second line
+                    // on a narrow phone rather than cut it
+                    Wrap(
+                      spacing: 6,
+                      runSpacing: 4,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      children: [
+                        Text(
+                          sub ? exit.label : exit.title,
+                          style: PType.h3().copyWith(fontSize: 16),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        if (exit.server.panel > 0) PanelTag(exit.server.panel),
+                        if (exit.server.tunnel) const TunnelBadge(),
+                      ],
+                    ),
                   const SizedBox(height: 4),
                   Text(
                     sub
@@ -578,6 +600,78 @@ class _ExitRow extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Which panel a config came from, "P1". Only admins get the number.
+class PanelTag extends StatelessWidget {
+  const PanelTag(this.panel, {super.key});
+  final int panel;
+
+  @override
+  Widget build(BuildContext context) {
+    return ExcludeSemantics(
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(5, 1, 5, 1),
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: PColors.muted.withValues(alpha: 0.4)),
+        ),
+        child: Text(
+          'P$panel',
+          style: PType.meta(color: PColors.muted).copyWith(
+            fontSize: 10,
+            height: 1.35,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.4,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// A config that enters through Iran (panel 1's "Tunnel" group): a slanted
+/// shard, navy by day and blue by night, so it reads apart from the tag.
+class TunnelBadge extends StatelessWidget {
+  const TunnelBadge({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final fill = PColors.current.isDark ? PColors.blue : PColors.navy;
+    return ExcludeSemantics(
+      child: Transform(
+        transform: Matrix4.skewX(-0.24),
+        alignment: Alignment.center,
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(6, 2, 7, 2),
+          decoration: BoxDecoration(
+            color: fill,
+            borderRadius: BorderRadius.circular(5),
+          ),
+          child: Transform(
+            transform: Matrix4.skewX(0.24),
+            alignment: Alignment.center,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                PIconView(PIcon.tunnel, size: 11, color: PColors.onDeep),
+                const SizedBox(width: 4),
+                Text(
+                  'IR TUNNEL',
+                  style: PType.meta(color: PColors.onDeep).copyWith(
+                    fontSize: 10,
+                    height: 1.35,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 0.5,
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
