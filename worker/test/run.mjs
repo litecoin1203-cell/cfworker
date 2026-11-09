@@ -1270,9 +1270,9 @@ section('panel accounts are named after the Telegram @username; taken names and 
   ok(scr.text.includes('👤 gold_ali') && scr.text.includes(`👤 gold_ali_${id1}`), 'each panel account by name');
   ok(scr.text.includes('🟢 الان آنلاین') && scr.text.includes('۳') === false && /3 ساعت پیش/.test(scr.text), 'online now on panel 1, 3 hours ago on panel 2');
   ok(scr.text.includes('جمع مصرف: 3.00') && scr.text.includes('ساخت: 2026-11-01'), 'total and creation date shown');
-  ok(scr.kb.flat().some((x) => x.callback_data === `m:upa:${id1}`), 'refresh is a button');
+  ok(scr.kb.flat().some((x) => x.callback_data === `m:uac:${id1}`), 'refresh is a button');
   const card = await S.userCard(env, id1);
-  ok(card.text.includes('آخرین اتصال: 🟢 الان آنلاین') && card.kb.flat().some((x) => x.callback_data === `m:upa:${id1}`), 'user card shows last connection and the panels button');
+  ok(card.text.includes('آخرین اتصال: 🟢 الان آنلاین') && card.kb.flat().some((x) => x.callback_data === `m:uac:${id1}`), 'user card shows last connection and the panels button');
   ok(S.seenFa(null) === 'هنوز وصل نشده' && S.seenFa(now - 5 * 86400, now).startsWith('5 روز پیش'), 'never / days ago');
 }
 
@@ -2330,7 +2330,7 @@ section('panel info rows dressed as configs are not servers');
 }
 
 const STAGE2_ACTIONS = ['user.add_days', 'user.add_gb', 'user.reset_usage', 'user.pause', 'user.end', 'user.plan_name', 'user.wallet', 'user.device_remove',
-  'user.logout_all', 'user.block', 'user.unlink_tg', 'user.avatar_reset', 'user.email', 'user.delete', 'user.create'];
+  'user.logout_all', 'user.block', 'user.unlink_tg', 'user.unlink_panel', 'user.avatar_reset', 'user.email', 'user.delete', 'user.create'];
 const STAGE3_ACTIONS = ['order.approve', 'order.reject', 'order.cancel', 'order.refund', 'plan.move', 'plan.copy', 'plan.delete', 'plan.unarchive',
   'coupon.set', 'coupon.toggle'];
 const STAGE4_ACTIONS = ['panel.rename', 'panel.enable', 'server.hide', 'server.rename', 'app.list', 'net.reset', 'app.release'];
@@ -2506,6 +2506,98 @@ section('admin panel stage 1: routes, screens, undo, forms, audit, query budget'
   console.log('    most D1 statements on one screen: ' + maxQ);
   ok(maxQ > 0 && !over.length, `≤6 D1 statements on each of ${budgetScreens.length} screens with 1000 users: ` + over.join(' '));
   await env.DB.prepare("DELETE FROM users WHERE email LIKE 'bulk%@example.com'").run();
+}
+
+section('unlink a panel account from an app user (bot + Mini App action)');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const A = { chat: { id: 12345 } };
+  let mid = 7000;
+  const tap = (data, text = 'menu') => tgWebhook({ callback_query: { id: 'ux-' + (mid++), data, message: { ...A, message_id: 960, text } } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const kbOf = (c) => flat(c && c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard);
+  const ask = (n) => since(n).filter((c) => c.method === 'sendMessage' && /مطمئنی/.test(c.body.text)).pop();
+
+  // the user's panels screen opens (it used to share its route with the app-update announce button)
+  ok(menu.routeOf('m:uac:5').kind === 'screen' && menu.routeOf('m:upa').kind === 'action', 'user panels and app announce are different routes');
+  const relBefore = await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE action = 'app.release'").first();
+
+  await signup('unl@example.com');
+  await admin(`/grant unl@example.com ${tenGb.id}`);
+  const id = await userId('unl@example.com');
+  const p1 = panelUser(fakes.pg, 'unl@example.com'), p2 = panelUser(pg2, 'unl@example.com');
+  ok(p1 && p2, 'the user has an account on both panels');
+  let n = fakes.tg.calls.length;
+  await tap(`m:uac:${id}`);
+  const scr = since(n).find((c) => c.method === 'editMessageText');
+  ok(scr && scr.body.text.includes('پنل‌ها') && kbOf(scr).includes(`m:uux:${id}:1`) && kbOf(scr).includes(`m:uux:${id}:2`) && kbOf(scr).includes(`m:w:link:${id}`),
+    'the panels screen has an unlink button per account and a link button');
+  ok((await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE action = 'app.release'").first()).c === relBefore.c, 'opening it announces nothing');
+
+  // unlink + switch off on panel 2
+  n = fakes.tg.calls.length;
+  await tap(`m:uux:${id}:2`);
+  let q = ask(n);
+  ok(q && q.body.text.includes(p2.username) && kbOf(q).some((d) => /^lp:[0-9a-f]{18}:1$/.test(d)) && kbOf(q).some((d) => /^lp:[0-9a-f]{18}:0$/.test(d)), 'asks first, with switch-off and unlink-only');
+  ok(!!(await env.DB.prepare('SELECT 1 x FROM panel_accounts WHERE user_id = ? AND panel_id = 2').bind(id).first()), 'nothing changes before the answer');
+  n = fakes.tg.calls.length;
+  await tap(kbOf(q).find((d) => d.endsWith(':1')), q.body.text);
+  ok(!(await env.DB.prepare('SELECT 1 x FROM panel_accounts WHERE user_id = ? AND panel_id = 2').bind(id).first()), 'the link to panel 2 is gone');
+  ok(p2.status === 'disabled' && pg2.users[p2.username], 'switched off on panel 2, not deleted');
+  ok(since(n).some((c) => c.method === 'editMessageText' && c.body.text.includes('جدا شد') && c.body.text.includes('اکانت تازه')), 'the result says it is free and a fresh account may follow');
+  ok(!!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE action = 'user.unlink_panel' AND target_id = ?").bind(String(id)).first()), 'unlink is in the admin log');
+
+  // unlink only on panel 1: the panel account is left as it was and the old panel-1 fields let go of it
+  n = fakes.tg.calls.length;
+  await tap(`m:uux:${id}:1`);
+  q = ask(n);
+  await tap(kbOf(q).find((d) => d.endsWith(':0')), q.body.text);
+  ok(!(await env.DB.prepare('SELECT 1 x FROM panel_accounts WHERE user_id = ? AND panel_id = 1 AND remote_username = ?').bind(id, p1.username).first()), 'the link to panel 1 is gone');
+  ok(p1.status === 'active', 'unlink-only leaves the panel account on');
+  const s1 = await env.DB.prepare('SELECT pg_username FROM subscriptions WHERE user_id = ?').bind(id).first();
+  ok(s1.pg_username !== p1.username, 'the subscription no longer points at it');
+  n = fakes.tg.calls.length;
+  await tap(`m:uux:${id}:1`);
+  ok(!ask(n) || !(await env.DB.prepare('SELECT 1 x FROM panel_accounts WHERE user_id = ? AND panel_id = 1 AND remote_username = ?').bind(id, p1.username).first()), 'a gone link is not asked about again');
+
+  // now it can go to someone else
+  await signup('unl2@example.com');
+  const id2 = await userId('unl2@example.com');
+  n = fakes.tg.calls.length;
+  await admin(`/link unl2@example.com ${p1.username}`);
+  q = ask(n);
+  ok(!!q, 'the unlinked account can be linked to another user: ' + lastText());
+
+  // still owned by someone: the refusal leads to that user's panels
+  n = fakes.tg.calls.length;
+  await signup('unl3@example.com');
+  const holder = await env.DB.prepare("SELECT a.remote_username FROM panel_accounts a JOIN users u ON u.id = a.user_id WHERE a.panel_id = 1 AND u.email NOT LIKE 'deleted+%' AND u.email != 'unl3@example.com' LIMIT 1").first();
+  ok(!!holder, 'some live user holds a panel-1 account');
+  {
+    n = fakes.tg.calls.length;
+    await admin(`/link unl3@example.com ${holder.remote_username}`);
+    const r = since(n).filter((c) => c.method === 'sendMessage').pop();
+    ok(r && r.body.text.includes('جدا') && kbOf(r).some((d) => /^m:uac:\d+$/.test(d)), 'a taken account is refused with a button to its owner');
+  }
+
+  // a user deleted before this change still held a 'removed' row: that row counts as free
+  const ghost = (fakes.pg.users['ghost_old'] = { id: 7777, username: 'ghost_old', status: 'disabled', expire: 0, data_limit: 0, used_traffic: 0, token: 'tok_ghost', note: '' });
+  const old = await env.DB.prepare("INSERT INTO users (email, password_hash, referral_code, created_at, is_active) VALUES ('deleted+99999@invalid', 'x', 'GHOST01', 1, 0) RETURNING id").first();
+  await env.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, created_at) VALUES (?, 1, 'ghost_old', '/sub/tok_ghost/', 'removed', 'removed', 1)").bind(old.id).run();
+  n = fakes.tg.calls.length;
+  await admin('/link unl3@example.com ghost_old');
+  q = ask(n);
+  ok(!!q, 'an account held by an old deleted user is offered: ' + lastText());
+  await tap(kbOf(q).find((d) => d.startsWith('lp:') && d.endsWith(':0')), q.body.text);
+  const g = await env.DB.prepare("SELECT user_id FROM panel_accounts WHERE panel_id = 1 AND remote_username = 'ghost_old'").first();
+  ok(g && g.user_id === (await userId('unl3@example.com')) && ghost.username === 'ghost_old', 'and linked to the new user');
+
+  // the Mini App path: destructive, needs confirm
+  const acts = await import('../src/admin-actions.js');
+  ok(acts.ACTIONS['user.unlink_panel'].risk === 'destructive', 'unlink is destructive (Mini App asks, server refuses without confirm)');
+  const none = await acts.runAction(env, 12345, 'user.unlink_panel', { userId: id2, panelId: 2 });
+  ok(none.ok === false, 'unlinking an account the user does not have is refused');
 }
 
 section('admin panel stage 2: users (card, subscription, wallet, devices, security, delete)');
@@ -2739,7 +2831,19 @@ section('admin panel stage 2: users (card, subscription, wallet, devices, securi
   await tap(cf.yes, cf.text);
   const del = await urow(id);
   ok(del.email === `deleted+${id}@invalid` && del.is_active === 0 && del.tg_id === null, 'deleted: email rewritten, account off');
-  ok((await env.DB.prepare("SELECT COUNT(*) c FROM panel_accounts WHERE user_id = ? AND desired != 'removed'").bind(id).first()).c === 0, 'every panel account is marked removed');
+  ok((await env.DB.prepare('SELECT COUNT(*) c FROM panel_accounts WHERE user_id = ?').bind(id).first()).c === 0, 'the deleted user holds no panel account any more');
+  ok(a.status === 'disabled' && b2.status === 'disabled' && pg2.users[b2.username] && fakes.pg.users[a.username], 'its panel accounts are switched off, not deleted');
+  ok(since(n).some((c) => c.method === 'editMessageText' && c.body.text.includes('آزاد') && c.body.text.includes(a.username)), 'the result names the freed accounts');
+  // a freed account can be linked to another app user
+  await signup('s2heir@example.com');
+  const heir = await userId('s2heir@example.com');
+  n = fakes.tg.calls.length;
+  await admin(`/link s2heir@example.com ${a.username}`);
+  const lc = since(n).find((c) => c.method === 'sendMessage' && c.body.text.includes('مطمئنی'));
+  ok(!!lc, 'linking the freed account to another user asks, it is not refused: ' + lastText());
+  await tap(kbOf(lc).find((d) => d.startsWith('lp:') && d.endsWith(':0')), lc.body.text);
+  const moved = await env.DB.prepare('SELECT user_id FROM panel_accounts WHERE panel_id = 1 AND remote_username = ?').bind(a.username).first();
+  ok(moved && moved.user_id === heir, 'the panel account now belongs to the new user');
   ok((await env.DB.prepare('SELECT COUNT(*) c FROM wallet_tx WHERE user_id = ?').bind(id).first()).c === txBefore, 'wallet history kept');
   const again = await call('POST', '/api/v1/auth/register', { json: { email: 's2new@example.com', password: 'password123', device_id: 'new-phone' } });
   ok(again.status === 200 || again.status === 201, 'the email is free for a new sign-up: ' + again.status);

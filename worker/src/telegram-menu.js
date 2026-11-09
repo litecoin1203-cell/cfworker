@@ -13,7 +13,7 @@
 // message id it consumed so a message Telegram delivers twice does not move the form two steps.
 import { first, all, run } from './db.js';
 import { nowSec, hashPassword } from './util.js';
-import { tg, runAdminCommand, askConfirm } from './telegram.js';
+import { tg, runAdminCommand, askConfirm, askUnlinkConfirm } from './telegram.js';
 import * as S from './telegram-screens.js';
 import { runAction, undoAction, checkEmail, maskBridge, AUDIENCES, BROADCAST_MAX, ROLE_FA, audienceCount } from './admin-actions.js';
 
@@ -308,7 +308,7 @@ const SCREENS = {
   o: (env, a) => S.order(env, parseInt(a[0], 10)),
   or: (env, a) => S.orders(env, a[0], a[1], a[2]),
   un: (env, a) => S.userNets(env, parseInt(a[0], 10) || 0),
-  upa: (env, a) => S.userPanels(env, parseInt(a[0], 10)),
+  uac: (env, a) => S.userPanels(env, parseInt(a[0], 10)), // not upa: that is the app-update announce button
   pl: (env) => S.plans(env),
   p: (env, a) => S.plan(env, parseInt(a[0], 10)),
   pla: (env) => S.plansArchived(env),
@@ -353,7 +353,7 @@ const ACTION_RISK = {
   ug: 'read', ugp: 'money', pt: 'reversible', cd: 'destructive', sv: 'reversible', undo: 'reversible',
   // one user (stage 2)
   ud: 'reversible', ugb: 'reversible', upz: 'reversible', upn: 'reversible', ulo: 'reversible', ublk: 'reversible', uav: 'reversible',
-  udd: 'reversible', urs: 'money', uend: 'destructive', utg: 'destructive', udel: 'destructive',
+  udd: 'reversible', urs: 'money', uend: 'destructive', utg: 'destructive', udel: 'destructive', uux: 'destructive',
   // sales (stage 3)
   oap: 'money', orf: 'money', orj: 'reversible', ocx: 'reversible', orc: 'read',
   pmv: 'reversible', pcp: 'reversible', pua: 'reversible', pdl: 'destructive',
@@ -411,7 +411,7 @@ async function userQuestion(env, route, id) {
     return ['u_tg', `تلگرام ${u.tg_username ? '@' + u.tg_username : u.tg_id} از حساب ${name} جدا شود؟${tgOnly ? '\n⚠️ این حساب ایمیل و رمز ندارد؛ بعد از جداکردن هیچ راهی برای ورود نمی‌ماند (مگر با «✏️ تغییر ایمیل» و «🔑 تغییر رمز»).' : ' بعد از آن فقط با ایمیل و رمز وارد می‌شود.'}`];
   }
   if (route === 'udel') {
-    return ['u_del', [`کاربر ${name} حذف شود؟ این کار برگشت ندارد:`, `• ${fa(u.pas)} اکانت پنل خاموش و پاک می‌شود`, '• از همه‌ی دستگاه‌ها خارج می‌شود و دیگر نمی‌تواند وارد شود',
+    return ['u_del', [`کاربر ${name} حذف شود؟ این کار برگشت ندارد:`, `• ${fa(u.pas)} اکانت پنلش روی پنل خاموش می‌شود (پاک نمی‌شود) و از این کاربر جدا می‌شود؛ بعداً می‌توانی آن‌ها را به کاربر دیگری وصل کنی`, '• از همه‌ی دستگاه‌ها خارج می‌شود و دیگر نمی‌تواند وارد شود',
       '• ایمیل و تلگرامش آزاد می‌شود (می‌تواند دوباره ثبت‌نام کند)', `• ${fa(u.ords)} سفارش و تاریخچه‌ی کیف پول (موجودی ${fa(u.wallet_balance)} تومان) برای حساب‌رسی می‌ماند`].join('\n')];
   }
   return null;
@@ -655,6 +655,18 @@ export async function onMenu(env, cq) {
     if (!r.ok) { await ack(r.error, true); return showScreen(env, cq, back); }
     await ack(r.text);
     return cardWithUndo(env, cq, back, r);
+  }
+  if (route === 'uux') { // one panel account stops being this user's
+    const a = await first(env, `SELECT a.remote_username, a.panel_id, p.label, u.email, u.tg_username FROM panel_accounts a JOIN panels p ON p.id = a.panel_id
+      JOIN users u ON u.id = a.user_id WHERE a.user_id = ? AND a.panel_id = ?`, int(0), int(1));
+    if (!a) { await ack('این اکانت دیگر وصل نیست', true); return showScreen(env, cq, `uac:${int(0)}`); }
+    const name = a.tg_username ? `${a.email} (@${a.tg_username})` : a.email;
+    await askUnlinkConfirm(env, chatId, { user_id: int(0), panel_id: a.panel_id }, [
+      `اکانت ${a.remote_username} روی پنل #${a.panel_id} (${a.label}) از ${name} جدا شود؟`,
+      '• از این به بعد مصرفش برای این کاربر حساب نمی‌شود و کانفیگ‌هایش در اپ او نمی‌آید',
+      '• مصرفی که تا الان حساب شده در دوره‌ی فعلی می‌ماند',
+      '• بعدش می‌توانی همین اکانت را به کاربر دیگری وصل کنی'].join('\n'));
+    return ack('');
   }
   if (['urs', 'uend', 'utg', 'udel'].includes(route)) {
     const q = await userQuestion(env, route, int(0));

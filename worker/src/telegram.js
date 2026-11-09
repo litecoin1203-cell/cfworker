@@ -305,6 +305,17 @@ async function askLinkConfirm(env, chatId, payload, check) {
   return tg(env, 'sendMessage', { chat_id: chatId, text: `⚠️ مطمئنی؟\n${check.summary}`, reply_markup: { inline_keyboard: rows } });
 }
 
+// The unlink question: unlink and switch it off on the panel, unlink only, or cancel (the lp: digit = off).
+export async function askUnlinkConfirm(env, chatId, payload, question) {
+  const token = [...crypto.getRandomValues(new Uint8Array(9))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  await insert(env, 'bot_confirm', { token, admin_id: String(chatId), action: 'u_unlink', payload_json: JSON.stringify(payload || {}), expires_at: nowSec() + 120 });
+  return tg(env, 'sendMessage', { chat_id: chatId, text: `⚠️ مطمئنی؟\n${question}`, reply_markup: { inline_keyboard: [
+    [{ text: '✂️ جدا کن و روی پنل خاموش کن', callback_data: `lp:${token}:1` }],
+    [{ text: '✂️ فقط جدا کن (روی پنل دست نخورد)', callback_data: `lp:${token}:0` }],
+    [{ text: '❌ انصراف', callback_data: `cx:${token}` }],
+  ] } });
+}
+
 // what a non-owner may confirm: support only approves a receipt; a viewer confirms nothing
 const CONFIRM_ROLES = { support: ['o_approve'], viewer: [] };
 
@@ -321,7 +332,7 @@ async function onConfirm(env, cq, yes, role = null) {
   const payload = JSON.parse(row.payload_json || '{}');
   // every confirmed change goes through the actions layer (same checks, same admin log as everywhere else)
   const ACTION = { drain_panel: 'panel.drain', grant: 'user.grant', link: 'user.link', del_coupon: 'coupon.delete',
-    u_reset: 'user.reset_usage', u_end: 'user.end', u_tg: 'user.unlink_tg', u_del: 'user.delete', u_wallet: 'user.wallet',
+    u_reset: 'user.reset_usage', u_end: 'user.end', u_tg: 'user.unlink_tg', u_del: 'user.delete', u_unlink: 'user.unlink_panel', u_wallet: 'user.wallet',
     o_approve: 'order.approve', o_refund: 'order.refund', del_plan: 'plan.delete', net_reset: 'net.reset', bc_start: 'broadcast.start' };
   const ARGS = {
     drain_panel: () => ({ panelId: payload.panel_id }),
@@ -332,6 +343,7 @@ async function onConfirm(env, cq, yes, role = null) {
     u_end: () => ({ userId: payload.user_id }),
     u_tg: () => ({ userId: payload.user_id }),
     u_del: () => ({ userId: payload.user_id }),
+    u_unlink: () => ({ userId: payload.user_id, panelId: payload.panel_id, off: planStr === '1' }),
     u_wallet: () => ({ userId: payload.userId, amount: payload.amount, note: payload.note }),
     o_approve: () => ({ orderId: payload.order_id }),
     o_refund: () => ({ orderId: payload.order_id }),
@@ -367,10 +379,14 @@ async function onConfirm(env, cq, yes, role = null) {
 // Reads the panel user live and checks it can become this app user's account. {remote, summary} or {error}.
 export async function linkCheck(env, u, panel, username) {
   if (!['active', 'rollout'].includes(panel.state)) return { error: `پنل #${panel.id} فعال نیست. لیست: /panels` };
-  const owner = await first(env, `SELECT a.user_id, u.email FROM panel_accounts a JOIN users u ON u.id = a.user_id
+  const owner = await first(env, `SELECT a.id, a.user_id, u.email FROM panel_accounts a JOIN users u ON u.id = a.user_id
     WHERE a.panel_id = ? AND a.remote_username = ?`, panel.id, username);
   if (owner && owner.user_id === u.id) return { error: `این اکانت از قبل به ${u.email} وصل است.` };
-  if (owner) return { error: `این اکانت پنل به کاربر دیگری وصل است: ${owner.email}` };
+  // a user deleted before deletes freed their accounts still holds the row; it counts as free
+  const stale = owner && /^deleted\+\d+@invalid$/.test(String(owner.email)) ? owner : null;
+  if (owner && !stale) {
+    return { ownerId: owner.user_id, error: `این اکانت پنل به کاربر دیگری وصل است: ${owner.email}\nبرای جابه‌جایی، اول از آن کاربر جدایش کن (دکمه‌ی زیر › «✂️ جداکردن»)، بعد دوباره وصل کن.` };
+  }
   const { adapterFor } = await import('./panels.js');
   const { parseExpire } = await import('./pasarguard.js');
   let remote;
@@ -399,7 +415,7 @@ export async function linkCheck(env, u, panel, username) {
   if (mine) lines.push(`اکانت قبلی‌اش روی این پنل (${mine.remote_username}) خاموش می‌شود (پاک نمی‌شود)${mode === 'merge' ? '؛ مصرفش در حساب می‌ماند' : ''}.`);
   const suggested = mode === 'merge' && sub.plan_id ? { id: sub.plan_id } : await suggestPlan(env, mode === 'merge' ? sub.data_limit_bytes : limit, mode === 'merge' ? sub.expires_at : exp);
   lines.push('', '📦 در اپ روی کدام پلن باشد؟ (حجم و زمان از پنل می‌آید؛ پلن فقط اسم و تمدید را تعیین می‌کند)');
-  return { remote, summary: lines.join('\n'), suggestedPlanId: suggested ? suggested.id : null };
+  return { remote, summary: lines.join('\n'), suggestedPlanId: suggested ? suggested.id : null, ...(stale ? { staleId: stale.id, staleUser: stale.user_id } : {}) };
 }
 
 // ---------------- diagnostics ----------------
@@ -702,6 +718,10 @@ async function onMessage(env, msg, opts = {}) {
     const panel = await getPanel(env, panelStr ? parseInt(panelStr, 10) : 1);
     if (!panel) return say('پنل پیدا نشد. لیست: /panels');
     const check = await linkCheck(env, u, panel, username);
+    if (check.error && check.ownerId) {
+      return tg(env, 'sendMessage', { chat_id: chatId, text: '❌ ' + check.error,
+        reply_markup: { inline_keyboard: [[{ text: '🗂 پنل‌های آن کاربر', callback_data: `m:uac:${check.ownerId}` }], [{ text: '👤 کارت این کاربر', callback_data: `m:u:${u.id}` }]] } });
+    }
     if (check.error) return say('❌ ' + check.error);
     return askLinkConfirm(env, chatId, { user_id: u.id, panel_id: panel.id, username }, check);
   }

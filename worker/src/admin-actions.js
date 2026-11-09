@@ -213,6 +213,8 @@ export const ACTIONS = {
       const { linkCheck } = await import('./telegram.js');
       const check = u && panel ? await linkCheck(env, u, panel, username) : { error: 'کاربر یا پنل پیدا نشد' };
       if (check.error) return fail('❌ ' + check.error);
+      // still held by a user deleted before deletes let go of their accounts: that row is dead, free it
+      if (check.staleId) await run(env, 'DELETE FROM panel_accounts WHERE id = ? AND user_id = ?', check.staleId, check.staleUser);
       const { linkAccount } = await import('./sync.js');
       planId = parseInt(planId, 10) || null;
       const plan = planId ? await first(env, 'SELECT id, name FROM plans WHERE id = ?', planId) : null;
@@ -528,12 +530,57 @@ Object.assign(ACTIONS, {
         st(env, "UPDATE subscriptions SET state = 'stopped', stop_reason = 'admin' WHERE user_id = ?", u.id),
         st(env, "UPDATE sub_periods SET ended_at = ?, end_reason = 'admin' WHERE user_id = ? AND ended_at IS NULL", nowSec(), u.id),
         st(env, "UPDATE panel_accounts SET desired = 'removed', dirty = 1, attempts = 0 WHERE user_id = ? AND desired != 'removed'", u.id),
+        st(env, "UPDATE subscriptions SET pg_username = '', sub_url = '' WHERE user_id = ?", u.id),
         st(env, 'DELETE FROM devices WHERE user_id = ?', u.id),
       ]);
+      // switch every account off on its panel, then let go of all of them: a panel account is never kept by a
+      // deleted user, so the admin can link it to another app account later (switched off, never deleted)
       const { pushPending } = await import('./sync.js');
       await pushPending(env, { userId: u.id });
-      return { targetId: u.id, summary: `حذف ${u.email}${u.tg_username ? ' @' + u.tg_username : ''}`,
-        text: `🗑 کاربر حذف شد. سفارش‌ها و تاریخچه‌ی کیف پولش (موجودی ${fa(u.wallet_balance)} تومان) برای حساب‌رسی می‌ماند.` };
+      const accts = await all(env, 'SELECT panel_id, remote_username, dirty FROM panel_accounts WHERE user_id = ? ORDER BY panel_id', u.id);
+      if (accts.length) await run(env, 'DELETE FROM panel_accounts WHERE user_id = ?', u.id);
+      const stuck = accts.filter((a) => a.dirty);
+      const lines = [`🗑 کاربر حذف شد. سفارش‌ها و تاریخچه‌ی کیف پولش (موجودی ${fa(u.wallet_balance)} تومان) برای حساب‌رسی می‌ماند.`];
+      if (accts.length) lines.push(`🔓 ${fa(accts.length)} اکانت پنلش (${accts.map((a) => `${a.remote_username} روی #${a.panel_id}`).join('، ')}) از این کاربر جدا شد و آزاد است؛ می‌توانی هر کدام را به کاربر دیگری وصل کنی.`);
+      if (stuck.length) lines.push(`⚠️ این‌ها روی پنل خاموش نشدند (پنل جواب نداد)؛ دستی خاموششان کن: ${stuck.map((a) => `${a.remote_username} روی #${a.panel_id}`).join('، ')}`);
+      return { targetId: u.id, summary: `حذف ${u.email}${u.tg_username ? ' @' + u.tg_username : ''}${accts.length ? ` · آزاد: ${accts.map((a) => `#${a.panel_id} ${a.remote_username}`).join(', ')}` : ''}`,
+        text: lines.join('\n') };
+    },
+  },
+  // One panel account stops being this user's: the link row goes, so the same panel account can be linked to
+  // another app user. off = also switch it off on the panel (never deleted there). Usage it already brought into
+  // the current period stays counted.
+  'user.unlink_panel': {
+    risk: 'destructive', target: 'user',
+    async apply(env, { userId, panelId, off }) {
+      const u = await userRow(env, userId);
+      if (!u) return fail('کاربر پیدا نشد.');
+      const pa = await first(env, `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json FROM panel_accounts a
+        JOIN panels p ON p.id = a.panel_id WHERE a.user_id = ? AND a.panel_id = ?`, u.id, parseInt(panelId, 10));
+      if (!pa) return fail('این کاربر روی این پنل اکانت وصل‌شده ندارد.');
+      off = isOn(off);
+      let note = 'روی پنل دست نخورد و همان‌طور که بود ماند.';
+      if (off) {
+        try {
+          const { adapterFor } = await import('./panels.js');
+          const pg = await adapterFor(env, { id: pa.panel_id, kind: pa.kind, state: pa.panel_state, cred_ref: pa.cred_ref, options_json: pa.options_json });
+          await pg.setStatus(pa.remote_username, 'disabled');
+          note = 'روی پنل خاموش شد (پاک نشد).';
+        } catch (e) { note = '⚠️ روی پنل خاموش نشد (پنل جواب نداد)؛ اگر لازم است دستی خاموشش کن.'; }
+      }
+      // removed only if it is still the same account (a link made meanwhile is left alone)
+      const res = await env.DB.batch([
+        st(env, 'DELETE FROM panel_accounts WHERE id = ? AND remote_username = ?', pa.id, pa.remote_username),
+        // the old panel-1 fields would otherwise bring this account back as the user's (billing.provision)
+        st(env, "UPDATE subscriptions SET pg_username = '', sub_url = '' WHERE user_id = ? AND ? = 1 AND pg_username = ?", u.id, pa.panel_id, pa.remote_username),
+      ]);
+      if (!Number((res[0].meta && res[0].meta.changes) || 0)) return fail('این اکانت همین الان عوض شد؛ صفحه را دوباره باز کن.');
+      const sub = await subRow(env, u.id);
+      const live = u.is_active && !isDeleted(u) && sub && sub.state === 'active' && sub.period_id && (!sub.expires_at || sub.expires_at > nowSec());
+      const lines = [`✂️ اکانت ${pa.remote_username} (پنل #${pa.panel_id}) از ${u.email} جدا شد. ${note}`,
+        'حالا می‌توانی همین اکانت را به کاربر دیگری وصل کنی.'];
+      if (live) lines.push('ℹ️ اشتراک این کاربر هنوز فعال است، پس اپ برایش یک اکانت تازه روی پنل‌هایش می‌سازد. اگر نمی‌خواهی، «⏹ پایان اشتراک» را بزن.');
+      return { targetId: u.id, summary: `جداکردن ${pa.remote_username} از پنل #${pa.panel_id}${off ? ' + خاموش' : ''}`, text: lines.join('\n') };
     },
   },
   // the password reaches here already hashed (the form hashes it the moment it is typed)
