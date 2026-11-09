@@ -16,7 +16,14 @@ void main() {
     server.listen((req) async {
       req.headers.forEach((k, v) => seen[k] = v.join(','));
       req.response.headers.contentType = ContentType.json;
-      if (req.uri.path.endsWith('/fa')) {
+      if (req.uri.path.endsWith('/auth/login')) {
+        req.response.statusCode = 401;
+        req.response.write(
+          jsonEncode({
+            'detail': {'code': 'bad_credentials', 'message': 'رمز اشتباه'},
+          }),
+        );
+      } else if (req.uri.path.endsWith('/fa')) {
         req.response.statusCode = 400;
         req.response.write(
           jsonEncode({
@@ -34,6 +41,31 @@ void main() {
   ApiClient client() =>
       ApiClient(MemoryTokens(), bases: 'http://127.0.0.1:${server.port}')
         ..deviceModel = 'Samsung SM-A546E';
+
+  test('a wrong password and a dead line are different errors', () async {
+    try {
+      await client().post('/auth/login', {'login': 'a@b.co', 'password': 'x'});
+      fail('expected an error');
+    } on ApiError catch (e) {
+      expect(e.code, 'bad_credentials');
+      expect(e.offline, isFalse);
+      expect(e.message, 'Login or password is wrong.');
+    }
+    // nothing listens on this port: the Worker is never reached
+    final dead = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+    final port = dead.port;
+    await dead.close();
+    try {
+      await ApiClient(
+        MemoryTokens(),
+        bases: 'http://127.0.0.1:$port',
+      ).post('/auth/login', {'login': 'a@b.co', 'password': 'x'});
+      fail('expected an error');
+    } on ApiError catch (e) {
+      expect(e.offline, isTrue);
+      expect(e.code, isNot('bad_credentials'));
+    }
+  });
 
   test('every call carries the HWID the panel limits phones by', () async {
     await client().get('/plans');

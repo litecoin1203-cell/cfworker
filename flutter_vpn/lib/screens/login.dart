@@ -43,6 +43,27 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _busy = false;
   String? _error;
 
+  /// The Worker was never reached: nothing was checked, so the fields are
+  /// not marked wrong and a connection card shows instead.
+  bool _offline = false;
+
+  /// The Worker said the login or password is wrong: both fields go red.
+  bool _badLogin = false;
+
+  /// The call is taking a while (a slow or filtered line, the bridge).
+  bool _slow = false;
+  Timer? _slowTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    // Find the way to the Worker (or open the bridge) while the person
+    // types, so Sign in doesn't start that wait.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) unawaited(AppScope.read(context).prepareSignIn());
+    });
+  }
+
   @override
   void dispose() {
     for (final c in [
@@ -57,6 +78,7 @@ class _LoginScreenState extends State<LoginScreen> {
     }
     _loginFocus.dispose();
     _emailFocus.dispose();
+    _slowTimer?.cancel();
     super.dispose();
   }
 
@@ -72,6 +94,8 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() {
       _tab = t;
       _error = null;
+      _offline = false;
+      _badLogin = false;
     });
   }
 
@@ -91,13 +115,24 @@ class _LoginScreenState extends State<LoginScreen> {
       problem = 'The two passwords don’t match.';
     }
     if (problem != null) {
-      setState(() => _error = problem);
+      setState(() {
+        _error = problem;
+        _offline = false;
+        _badLogin = false;
+      });
       return;
     }
     FocusScope.of(context).unfocus();
     setState(() {
       _busy = true;
       _error = null;
+      _offline = false;
+      _badLogin = false;
+      _slow = false;
+    });
+    _slowTimer?.cancel();
+    _slowTimer = Timer(const Duration(seconds: 4), () {
+      if (mounted && _busy) setState(() => _slow = true);
     });
     final err = await AppScope.read(context).signIn(
       address,
@@ -105,11 +140,15 @@ class _LoginScreenState extends State<LoginScreen> {
       create: create,
       invite: create ? _invite.text.trim() : '',
     );
+    _slowTimer?.cancel();
     if (!mounted) return;
     if (err != null) {
       setState(() {
         _busy = false;
-        _error = err;
+        _slow = false;
+        _offline = err.offline;
+        _badLogin = err.code == 'bad_credentials';
+        _error = err.offline ? null : err.message;
       });
       return;
     }
@@ -312,7 +351,17 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
-  Widget _errorLine() => _ErrorLine(_error);
+  Widget _errorLine() => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      _ErrorLine(_error),
+      if (_offline)
+        Padding(
+          padding: const EdgeInsets.only(top: 12),
+          child: const ConnectionCard(what: 'password'),
+        ),
+    ],
+  );
 
   Widget _signInForm() => Column(
     key: const ValueKey('signin'),
@@ -325,6 +374,7 @@ class _LoginScreenState extends State<LoginScreen> {
         hint: 'Email, @username or Telegram ID',
         keyboard: TextInputType.emailAddress,
         autofill: const [AutofillHints.username],
+        error: _badLogin,
       ),
       const SizedBox(height: 12),
       AuthField(
@@ -334,6 +384,7 @@ class _LoginScreenState extends State<LoginScreen> {
         secret: true,
         autofill: const [AutofillHints.password],
         onDone: _submit,
+        error: _badLogin,
       ),
       Align(
         alignment: Alignment.centerRight,
@@ -342,7 +393,9 @@ class _LoginScreenState extends State<LoginScreen> {
       _errorLine(),
       const SizedBox(height: 6),
       PillButton(
-        label: _busy ? 'Signing in…' : 'Sign in',
+        label: _busy
+            ? (_slow ? 'Finding a route…' : 'Signing in…')
+            : (_offline ? 'Try again' : 'Sign in'),
         onTap: _busy ? null : _submit,
       ),
       const _OrLine('or sign in with'),
@@ -422,7 +475,9 @@ class _LoginScreenState extends State<LoginScreen> {
       _errorLine(),
       const SizedBox(height: 10),
       PillButton(
-        label: _busy ? 'Creating…' : 'Create account',
+        label: _busy
+            ? (_slow ? 'Finding a route…' : 'Creating…')
+            : (_offline ? 'Try again' : 'Create account'),
         onTap: _busy ? null : _submit,
       ),
     ],
@@ -465,6 +520,9 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen>
   bool _busy = false;
   bool _wrong = false;
   String? _error;
+
+  /// The Worker was never reached: the code was not checked.
+  bool _offline = false;
   String? _clip;
   int _wait = 0;
   Timer? _tick;
@@ -550,22 +608,38 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen>
     setState(() {
       _busy = true;
       _error = null;
+      _offline = false;
     });
     try {
       await job();
     } on ApiError catch (e) {
-      if (mounted) {
-        setState(() {
-          _error = e.message;
-          _wrong = true;
-        });
-      }
+      if (mounted) _show(e);
     } catch (_) {
       if (mounted) {
-        setState(() => _error = 'Can’t reach the server. Try again.');
+        setState(() => _error = 'Something went wrong. Try again.');
       }
     }
     if (mounted) setState(() => _busy = false);
+  }
+
+  /// A line that never reached the Worker is not a wrong code: the boxes
+  /// keep their digits and stay neutral, and the connection card offers a
+  /// retry.
+  void _show(ApiError e) => setState(() {
+    _offline = e.offline;
+    _error = e.offline ? null : e.message;
+    _wrong = e.code == 'bad_code' || e.code == 'too_many_tries';
+  });
+
+  /// Try again after a connection problem: whatever step it stopped on.
+  void _retry() {
+    if (_link == null) {
+      _newLink();
+    } else if (_passwordStep) {
+      _create();
+    } else {
+      _verify();
+    }
   }
 
   Future<void> _newLink() async {
@@ -658,10 +732,7 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen>
         context,
       ).telegramRegister(signup, _password.text, invite: _invite.text.trim());
       if (!mounted) return;
-      if (err != null) {
-        setState(() => _error = err);
-        return;
-      }
+      if (err != null) return _show(err);
       _home();
     });
   }
@@ -817,6 +888,11 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen>
           verified: ok,
         ),
         _ErrorLine(_error, center: true),
+        if (_offline)
+          Padding(
+            padding: const EdgeInsets.only(top: 18),
+            child: ConnectionCard(what: 'code', onRetry: _retry),
+          ),
         SizedBox(height: ok ? 30 : 18),
         if (ok) ...[
           Row(
@@ -880,11 +956,7 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen>
                     ],
                   ),
           ),
-          if (_error != null && _code.text.length == 6 && !_busy) ...[
-            PillButton(label: 'Try again', onTap: _verify),
-            const SizedBox(height: 12),
-          ] else
-            const SizedBox(height: 6),
+          const SizedBox(height: 6),
           PillButton(
             label: _link == null ? 'Getting your link…' : 'Open Telegram',
             onTap: _busy || _link == null ? null : _openBot,
@@ -953,9 +1025,16 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen>
         onDone: _create,
       ),
       _ErrorLine(_error),
+      if (_offline)
+        Padding(
+          padding: const EdgeInsets.only(top: 12),
+          child: const ConnectionCard(what: 'password'),
+        ),
       const SizedBox(height: 16),
       PillButton(
-        label: _busy ? 'Creating…' : 'Create account',
+        label: _busy
+            ? 'Creating…'
+            : (_offline ? 'Try again' : 'Create account'),
         onTap: _busy ? null : _create,
       ),
     ],
@@ -978,7 +1057,11 @@ class AuthField extends StatefulWidget {
     this.keyboard,
     this.autofill,
     this.onDone,
+    this.error = false,
   });
+
+  /// The Worker said this value is wrong: the field turns red.
+  final bool error;
 
   final TextEditingController controller;
   final FocusNode? focusNode;
@@ -1024,7 +1107,11 @@ class _AuthFieldState extends State<AuthField> {
         color: on ? PColors.surface : PColors.field,
         borderRadius: BorderRadius.circular(PRadius.pill),
         border: Border.all(
-          color: on ? PColors.blue : Colors.transparent,
+          color: widget.error
+              ? PColors.alert
+              : on
+              ? PColors.blue
+              : Colors.transparent,
           width: 1.5,
         ),
         boxShadow: on
@@ -1341,6 +1428,51 @@ class _FillChip extends StatelessWidget {
           ),
         ),
         PillButton(label: 'Fill', onTap: onFill, height: 36, expand: false),
+      ],
+    ),
+  );
+}
+
+/// No answer from the Worker. Says plainly that nothing was checked (so
+/// the password or code may be fine) and offers a retry; neutral colours,
+/// because nothing the person typed is known to be wrong.
+class ConnectionCard extends StatelessWidget {
+  const ConnectionCard({super.key, required this.what, this.onRetry});
+
+  /// 'password' or 'code': what was not checked.
+  final String what;
+
+  /// Its own Try again button; null where the screen's main button retries.
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+    decoration: BoxDecoration(
+      color: PColors.field,
+      borderRadius: BorderRadius.circular(22),
+      border: Border.all(color: PColors.mist),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            PIconView(PIcon.wifi, size: 20, color: PColors.accentInk),
+            const SizedBox(width: 10),
+            Expanded(child: Text('No connection to Pleat', style: PType.h3())),
+          ],
+        ),
+        const SizedBox(height: 6),
+        Text(
+          'Your $what wasn’t checked, so it may be fine. The internet may be '
+          'down or filtered; Pleat tries other routes on its own.',
+          style: PType.small(),
+        ),
+        if (onRetry != null) ...[
+          const SizedBox(height: 12),
+          PillButton(label: 'Try again', onTap: onRetry, height: 44),
+        ],
       ],
     ),
   );

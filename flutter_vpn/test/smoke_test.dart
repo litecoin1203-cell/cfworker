@@ -832,6 +832,28 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
   });
 
+  testWidgets('Sign in: no connection is not a wrong password', (tester) async {
+    final (_, api) = await _boot(tester, {'onboarded': true}, signedIn: false);
+    api.loginOffline = true;
+    await tester.enterText(find.byType(TextField).at(0), 'ali@example.com');
+    await tester.enterText(find.byType(TextField).at(1), 'password1');
+    await tester.tap(find.text('SIGN IN'));
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('No connection to Pleat'), findsOneWidget);
+    expect(find.textContaining('wasn’t checked'), findsOneWidget);
+    expect(find.text('Email or password is wrong.'), findsNothing);
+    // the line is back: Try again signs in with what was typed
+    api.loginOffline = false;
+    await tester.tap(find.text('TRY AGAIN'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(Shell), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
+  });
+
   testWidgets('Profile: pick a Pleat character as the avatar', (tester) async {
     final (app, api) = await _boot(tester, {
       'onboarded': true,

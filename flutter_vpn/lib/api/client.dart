@@ -28,6 +28,13 @@ class ApiError implements Exception {
 
   bool get unauthorized => status == 401;
 
+  /// The Worker was never reached (no network, a filtered line, a
+  /// timeout): nothing about the login or the code is known to be wrong.
+  bool get offline => status == 0 && code != 'no_server';
+
+  /// The Worker answered with a server-side failure (5xx).
+  bool get serverSide => status >= 500;
+
   @override
   String toString() => 'ApiError($status, $code)';
 }
@@ -127,6 +134,28 @@ class TokenStore {
   Future<String?> cachedServers() => _s.read(key: 'servers');
   Future<void> cacheServers(String json) =>
       _s.write(key: 'servers', value: json);
+
+  /// A few exits that worked on this phone, kept after sign-out (unlike
+  /// the server list) so that signing in again on a filtered line can
+  /// reach the Worker over the bridge. They only ever carry the app's own
+  /// calls to the Worker's hosts.
+  Future<List<String>> keptBridges() async {
+    try {
+      final v = await _s.read(key: 'keep.bridges');
+      if (v == null) return const [];
+      return [for (final l in jsonDecode(v) as List) '$l'];
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> keepBridges(List<String> links) async {
+    try {
+      await _s.write(key: 'keep.bridges', value: jsonEncode(links));
+    } catch (_) {
+      // Only a help for the next sign-in.
+    }
+  }
 
   bool get signedIn => access != null && refresh != null;
 }
@@ -264,6 +293,19 @@ class ApiClient {
     'x-ver-os': osVersion,
     'x-app-version': appVersion,
   };
+
+  /// Finds a way to the Worker ahead of the first call (the sign-in
+  /// screen calls it as it opens), so the race and, on a filtered line,
+  /// the bridge are done before the person taps Sign in. Never throws.
+  Future<bool> warmUp() async {
+    if (!configured) return false;
+    try {
+      await _pick(_ways(direct: false), direct: false);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
 
   /// [bridge]: false when starting the bridge isn't worth the wait (the
   /// connect button's plan check: the tunnel itself is about to start).
