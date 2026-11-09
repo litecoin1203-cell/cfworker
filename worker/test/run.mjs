@@ -4159,6 +4159,76 @@ section('Mini App admin panel: admin sign-in, roles, reads, actions with confirm
   ok((await A('GET', '/dashboard', vt)).status === 403, 'a removed admin is out with their next request');
 }
 
+section('Mini App admin panel, full control: every screen answers, each role sees only its part, secrets stay hidden');
+{
+  const { createHmac } = await import('node:crypto');
+  const sign = (fields) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(env.TELEGRAM_BOT_TOKEN).digest();
+    return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+  };
+  const initFor = (id) => sign({ user: JSON.stringify({ id, first_name: 'A' }), auth_date: String(Math.floor(Date.now() / 1000)) });
+  const row = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first());
+  const A = (method, path, token, json) => call(method, '/api/v1/admin' + path, { token, json });
+  const tok = async (id) => (await A('POST', '/auth', null, { init_data: initFor(id) })).data.access_token;
+  const T = await tok(12345);
+  await env.DB.prepare("INSERT INTO admins (tg_id, role, added_at) VALUES ('910001', 'support', 1), ('910002', 'viewer', 1)").run();
+  const S = await tok(910001), V = await tok(910002);
+  const u = await row("SELECT id FROM users WHERE email = 'admin-mini-target@example.com'");
+  const pl = await row('SELECT id FROM plans ORDER BY id LIMIT 1');
+  const pn = await row('SELECT id FROM panels ORDER BY id LIMIT 1');
+
+  const support = ['/dashboard', '/inbox', '/orders', '/orders?status=rej&method=card'];
+  const viewer = [`/users`, `/users?filter=act`, `/users/${u.id}`, `/users/${u.id}/wallet`, `/users/${u.id}/orders`, `/users/${u.id}/nets`, '/plans', '/coupons', '/referral',
+    '/payments', '/sms', '/sms?filter=un', '/panels', `/panels/${pn.id}`, '/app', '/net', '/net/users', '/stats?days=1', '/stats?days=30', '/broadcasts', '/health', '/audit',
+    `/audit?type=user&id=${u.id}`];
+  const owner = ['/settings', '/admins', '/sms/setup'];
+  for (const p of [...support, ...viewer, ...owner]) {
+    const r = await A('GET', p, T);
+    ok(r.status === 200, `owner opens ${p}: ${r.status} ${r.status !== 200 ? JSON.stringify(r.data) : ''}`);
+  }
+  for (const p of support) ok((await A('GET', p, S)).status === 200, `support opens ${p}`);
+  for (const p of [...viewer, ...owner]) ok((await A('GET', p, S)).status === 403, `support cannot open ${p}`);
+  for (const p of viewer) ok((await A('GET', p, V)).status === 200, `viewer opens ${p}`);
+  for (const p of owner) ok((await A('GET', p, V)).status === 403, `viewer cannot open ${p}`);
+  ok((await A('GET', '/nope', T)).status === 404, 'an unknown admin path is a 404');
+
+  // what the screens rely on
+  const st = await A('GET', '/stats?days=7', T);
+  ok(st.data.bars.length === 7 && 'signups' in st.data && Array.isArray(st.data.methods), 'stats: one bar per day, sign-ups, methods');
+  const us = await A('GET', '/users', T);
+  ok(us.data.counts && typeof us.data.counts.all === 'number', 'users: counts per filter for the chips');
+  const od = await A('GET', '/orders', T);
+  ok(typeof od.data.count === 'number' && typeof od.data.total === 'number', 'orders: count and total');
+  const o1 = od.data.orders[0];
+  if (o1) { const one = await A('GET', '/orders/' + o1.id, T); ok(one.data.can && 'approve' in one.data.can, 'one order says what can still be done with it'); }
+
+  // secrets: masked for the owner, never shown to a viewer
+  await env.DB.prepare("INSERT INTO settings (key, value) VALUES ('sms_key', 'super-secret-sms-key') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+  const se = await A('GET', '/settings', T);
+  ok(!JSON.stringify(se.data).includes('super-secret-sms-key') && se.data.settings.find((x) => x.key === 'sms_key').secret, 'settings: the SMS key is masked');
+  ok(!JSON.stringify((await A('GET', '/payments', V)).data).includes('super-secret-sms-key'), 'payments for a viewer: no SMS key');
+  const setup = await A('GET', '/sms/setup', T);
+  ok(setup.status === 200 && setup.data.header['X-SMS-Key'] === 'super-secret-sms-key', 'the owner gets the SMS setup');
+
+  // writes only the owner may do
+  ok((await A('POST', '/users', V, { email: 'v-made@example.com', password: 'Passw0rd!x' })).status === 403, 'a viewer cannot create a user');
+  const cu = await A('POST', '/users', T, { email: 'owner-made@example.com', password: 'Passw0rd!x' });
+  const made = await row("SELECT id, password_hash FROM users WHERE email = 'owner-made@example.com'");
+  ok(cu.status === 200 && made && made.password_hash && !made.password_hash.includes('Passw0rd'), 'the owner creates a user; the password is stored hashed: ' + JSON.stringify(cu.data));
+  ok((await A('POST', '/backup', S)).status === 403, 'support cannot send a backup');
+
+  // a broadcast drafted from the app, then the log shows it with undo
+  const bc = await A('POST', '/action', T, { name: 'broadcast.create', args: { audience: 'all', text: 'Hello from the Mini App' } });
+  ok(bc.data.ok && bc.data.target_id, 'broadcast drafted, its id comes back for the detail screen');
+  const one = await A('GET', '/broadcasts/' + bc.data.target_id, T);
+  ok(one.data.status === 'draft' && one.data.audience_now != null, 'the draft shows how many it will reach');
+  const lg = await A('GET', '/audit', T);
+  ok(lg.data.log.some((r) => r.action === 'broadcast.create' && r.can_undo), 'the admin log offers undo on it');
+  ok((await A('POST', '/action', S, { name: 'broadcast.create', args: { audience: 'all', text: 'x' } })).data.ok === false, 'support cannot draft a broadcast');
+  await env.DB.prepare("DELETE FROM admins WHERE tg_id IN ('910001', '910002')").run();
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

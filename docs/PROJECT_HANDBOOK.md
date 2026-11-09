@@ -785,14 +785,25 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - Bot: `/start` from a non-admin shows an "Open Pleat" web_app button; `ensureWebhook` (sig v3) sets the menu button.
 - Screens: Welcome (create account), Home (data left with pleats, days left with dots, wallet), Loading/Error/Empty.
   English, Pleat day/night colours follow Telegram's theme. Stage 2 = plans and payments (needs «برو»).
-- **Admin panel in the Mini App (Ali's priority, 2026-11-08)**: an admin who opens `/app/` lands on a Persian RTL admin
-  panel (`miniapp/src/admin/`). Server: `worker/src/admin-api.js` under `/api/v1/admin/*`. Sign-in `POST /admin/auth`
-  (initData → 15-min token `typ: admin`; role from the bot's `adminRole`, re-read on every request). Reads: dashboard,
-  inbox (+ receipt photo proxied from Telegram), users (search/filters), user card (subscription, start, last
-  connection/online, wallet, orders, devices), live per-panel view. Writes: `POST /admin/action {name, args, confirm}`
-  runs `admin-actions.runAction` (same validation, roles, audit, undo); money/destructive need `confirm: true`;
-  `POST /admin/undo`. Stage A = dashboard, receipts, users; B = orders/plans/coupons/payments; C = panels/servers/app/
-  network; D = broadcast/stats/system.
+- **Admin panel in the Mini App (Ali's priority, 2026-11-08; redesigned in English 2026-11-09)**: an admin who opens
+  `/app/` lands on the admin panel (`miniapp/src/admin/`). **English only, LTR** (Ali: the main language is English).
+  Server: `worker/src/admin-api.js`, a ROUTES table `[method, regex, level, handler]` under `/api/v1/admin/*`.
+  Sign-in `POST /admin/auth` (initData → 15-min token `typ: admin`; role re-read on every request). Levels mirror the
+  bot's `allowedTap`: support = dashboard/inbox/orders/receipt; viewer = every read except settings/admins/sms setup;
+  owner = all. Writes: `POST /admin/action {name, args, confirm}` runs `admin-actions.runAction` (same validation,
+  roles, audit, 10-min undo); money/destructive need `confirm: true`; `POST /admin/undo`. Owner-only extra writes the
+  bot did with text commands: create user, set password, add panel, panel login (+test), panel test, backup.
+  Every bot screen has a Mini App screen: home, receipts/orders, users (+card, wallet, orders, networks, per-panel
+  view), plans, coupons, referral, payments (card, SMS, crypto wallets, dollar price), SMS log, panels (+servers,
+  rollout, drain, groups, login), Pleat app (announcement, domains, bridges, trial, releases), network/carriers,
+  broadcast, stats, system (backup, health, admin log with undo, admins, every setting).
+- **Design = Pleat's own language, not just its colours** (the first version copied only the colours and looked
+  broken): Plus Jakarta Sans shipped with the page (`build.mjs` copies it from `@fontsource`; Google Fonts is filtered
+  in Iran; CSP `font-src 'self'`), Vazirmatn only for Persian names, line icons (`miniapp/src/icons.jsx`), hero
+  numeral with shards, uppercase pill actions, icon list rows, bottom nav with the blue circle, pleats + day dots,
+  day/night direction A. Before sending UI, screenshot each screen next to the matching Pleat screen.
+- The bot's refusals are Persian; `miniapp/src/admin/errors.js` translates them, and `englishSummary` in `fmt.js` the
+  admin log. `miniapp/test/admin.test.js` fails when a new bot refusal, action or setting has no English text.
 
 ### Engineering audit
 15 phases (discovery → architecture → code → security → VPN → DB → API → performance → UX → mobile → testing →

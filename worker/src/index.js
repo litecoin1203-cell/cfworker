@@ -198,18 +198,11 @@ async function route(request, env, p) {
       return adm.adminAuth(env, await body(request));
     }
     const admin = await adm.requireAdmin(env, request);
-    const url = new URL(request.url);
-    if (p === '/admin/dashboard' && m === 'GET') return adm.dashboard(env);
-    if (p === '/admin/inbox' && m === 'GET') return adm.inbox(env);
-    if (p === '/admin/users' && m === 'GET') return adm.users(env, url);
-    if (p === '/admin/plans' && m === 'GET') return adm.plans(env);
-    let mm;
-    if ((mm = p.match(/^\/admin\/users\/(\d{1,12})$/)) && m === 'GET') return adm.user(env, mm[1]);
-    if ((mm = p.match(/^\/admin\/users\/(\d{1,12})\/panels$/)) && m === 'GET') return adm.userPanels(env, mm[1]);
-    if ((mm = p.match(/^\/admin\/orders\/(\d{1,12})\/receipt$/)) && m === 'GET') return adm.receipt(env, mm[1]);
-    if (p === '/admin/action' && m === 'POST') return adm.action(env, admin, await body(request));
-    if (p === '/admin/undo' && m === 'POST') return adm.undo(env, admin, await body(request));
-    return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
+    // panel tests, the dollar price and the backup reach other servers: the same per-IP limit as a sign-in
+    if (m === 'POST' && /^\/admin\/(panels(\/\d+\/(cred|test))?|backup)$/.test(p)) await rateLimit(env, 'RL_LOGIN', 'admin-op:' + admin.tgId);
+    const res = await adm.route(env, request, p, new URL(request.url), admin, () => body(request));
+    if (res) return res;
+    return json({ detail: { code: 'not_found', message: 'Not found.' } }, 404);
   }
 
   // everything below needs a logged-in user
