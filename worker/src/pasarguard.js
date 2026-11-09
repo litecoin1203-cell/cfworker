@@ -213,6 +213,32 @@ export class PasarGuard {
     return (data.groups || []).filter((g) => !g.is_disabled).map((g) => ({ id: g.id, name: g.name }));
   }
 
+  // How to tell which configs come from a group named "Tunnel" (configs routed through Iran): the panel's hosts,
+  // each tied to an inbound, and the inbounds of the tunnel groups. Hosts carry the address/port/remark the
+  // share links are made from. null = this admin may not read groups or hosts (the marks are then left off).
+  // [{a: [address patterns], p: port | null, r: remark template, t: true when the host is in a tunnel group}]
+  async hostRules() {
+    if (this.kind !== 'pasarguard') return null; // Marzban has no groups; a Rebecca user sits in one service
+    let groups, hosts;
+    try { groups = (await this._json('GET', '/api/groups')).groups || []; }
+    catch (e) { if (e instanceof PasarGuardError && [401, 403, 404, 405].includes(e.status)) return null; throw e; }
+    const tunnelTags = new Set();
+    for (const g of groups) {
+      if (g.is_disabled || !/tunn?el|تانل/i.test(String(g.name || ''))) continue;
+      for (const t of g.inbound_tags || []) tunnelTags.add(t);
+    }
+    if (!tunnelTags.size) return [];
+    try { hosts = await this._json('GET', '/api/hosts'); }
+    catch (e) { if (e instanceof PasarGuardError && [401, 403, 404, 405].includes(e.status)) return null; throw e; }
+    if (hosts && !Array.isArray(hosts)) hosts = hosts.hosts || [];
+    return (hosts || []).filter((h) => h && !h.is_disabled && h.inbound_tag).map((h) => ({
+      a: [...(h.address || [])].map((x) => String(x).toLowerCase()).filter(Boolean),
+      p: Number.isInteger(h.port) ? h.port : null,
+      r: String(h.remark || ''),
+      t: tunnelTags.has(h.inbound_tag),
+    })).slice(0, 300);
+  }
+
   async listGroupIds() {
     return (await this.listGroups()).map((g) => g.id);
   }

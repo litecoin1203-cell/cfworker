@@ -4229,6 +4229,78 @@ section('Mini App admin panel, full control: every screen answers, each role see
   await env.DB.prepare("DELETE FROM admins WHERE tg_id IN ('910001', '910002')").run();
 }
 
+section('configs from a panel\'s "Tunnel" group are marked; the panel number is shown to admins only');
+{
+  const { isTunnelLink, unify, refreshHostRules } = await import('../src/panels.js');
+  const acts = await import('../src/admin-actions.js');
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  // matching a link to the host it was made from
+  const rules = [
+    { a: ['de1.x.net'], p: 443, r: '🇩🇪 Germany {USERNAME}', t: true },
+    { a: ['nl1.x.net'], p: 443, r: '🇳🇱 Netherlands', t: false },
+    { a: ['*.cdn.x.net'], p: null, r: 'CDN {DATA_LEFT}', t: true },
+    { a: [], p: 2053, r: 'Plain {USERNAME}', t: false },
+  ];
+  ok(isTunnelLink(rules, 'vless://u@de1.x.net:443?type=ws#%F0%9F%87%A9%F0%9F%87%AA%20Germany%20gold_ali'), 'a link from a tunnel host is a tunnel');
+  ok(!isTunnelLink(rules, 'vless://u@nl1.x.net:443#%F0%9F%87%B3%F0%9F%87%B1%20Netherlands'), 'a link from another host is not');
+  ok(!isTunnelLink(rules, 'vless://u@de1.x.net:8443#Germany'), 'same address on another port is not that host');
+  ok(isTunnelLink(rules, 'trojan://p@a1b2c3.cdn.x.net:2096#CDN%2010%20GB'), 'a wildcard address with a random part matches');
+  ok(!isTunnelLink(rules, 'vless://u@9.9.9.9:2053#Plain%20bob'), 'a host with no address is matched by its remark');
+  ok(!isTunnelLink([], 'vless://u@de1.x.net:443#Germany'), 'no rules: nothing is a tunnel');
+  ok(!isTunnelLink([{ a: ['de1.x.net'], p: 443, r: 'A', t: true }, { a: ['de1.x.net'], p: 443, r: 'B', t: false }], 'vless://u@de1.x.net:443#C'), 'a tie with a plain host is not a tunnel');
+  const kept = [];
+  const merged = unify(['vless://a@h1.x.net:443#x', 'vless://a@h1.x.net:443#y', 'vless://b@h2.x.net:443#z'], {}, kept);
+  ok(merged.length === 2 && kept.join() === '0,2', 'unify says which links it kept: ' + kept.join());
+
+  // end to end: the panel has a Tunnel group holding the inbound of the Germany host
+  const tok = await signup('tunnel@example.com', { device: 'tn' });
+  const u = await row('SELECT * FROM users WHERE email = ?', 'tunnel@example.com');
+  const plan = await row('SELECT id FROM plans WHERE is_active = 1 AND archived = 0 ORDER BY sort, id LIMIT 1');
+  await acts.runAction(env, '12345', 'user.grant', { userId: u.id, planId: plan.id });
+  const saved = Object.values(fakes.panels).map((p) => [p, p.groupList, p.hosts]);
+  for (const p of Object.values(fakes.panels)) {
+    p.groupList = [{ id: 1, name: 'default', inbound_tags: ['vless-in', 'tr-in'] }, { id: 7, name: 'Tunnel', inbound_tags: ['tun-in'] }];
+    p.hosts = [
+      { remark: '🇳🇱 Netherlands', address: [`nl1.${p.host}`], port: 443, inbound_tag: 'vless-in', is_disabled: false },
+      { remark: '🇩🇪 Germany {USERNAME}', address: [`de1.${p.host}`], port: 443, inbound_tag: 'tun-in', is_disabled: false },
+      { remark: '🇺🇸 United States', address: [`us1.${p.host}`], port: 443, inbound_tag: 'tr-in', is_disabled: false },
+    ];
+  }
+  const H = { 'x-device-id': 'tn', 'x-hwid': 'tn' };
+  const before = (await call('GET', '/api/v1/vpn/servers', { token: tok, headers: H })).data;
+  ok(Array.isArray(before) && before.length >= 3 && !before.some((s) => s.tunnel), 'before the hosts are read nothing is marked');
+  ok(!before.some((s) => 'panel' in s), 'a customer never gets the panel number');
+  await counted('refreshHostRules', () => refreshHostRules(env));
+  const stored = await row("SELECT value FROM settings WHERE key = 'panel_hosts_1'");
+  ok(stored && JSON.parse(stored.value).rules.length === 3, 'hosts kept in settings: ' + (stored && stored.value.slice(0, 80)));
+  const after = (await call('GET', '/api/v1/vpn/servers', { token: tok, headers: H })).data;
+  const de = after.filter((s) => s.country_code === 'DE'), other = after.filter((s) => s.country_code !== 'DE');
+  ok(de.length && de.every((s) => s.tunnel === true), 'the Germany config (Tunnel group) is marked tunnel');
+  ok(other.length && other.every((s) => !s.tunnel), 'configs of other groups are not marked');
+  ok(!after.some((s) => 'panel' in s), 'still no panel number for a customer');
+  // the same list for the admin (the owner's Telegram id): every server says which panel it came from
+  await env.DB.prepare('UPDATE users SET tg_id = 12345 WHERE id = ?').bind(u.id).run();
+  const adm = (await call('GET', '/api/v1/vpn/servers', { token: tok, headers: H })).data;
+  ok(adm.every((s) => Number.isInteger(s.panel) && s.panel > 0), 'the admin sees the panel of every server: ' + adm.map((s) => s.panel).join(','));
+  await env.DB.prepare('UPDATE users SET tg_id = NULL WHERE id = ?').bind(u.id).run();
+  // an unchanged panel is not written again; a panel that cannot be read keeps what it had
+  const w0 = (await row("SELECT value FROM settings WHERE key = 'panel_hosts_1'")).value;
+  await refreshHostRules(env);
+  ok((await row("SELECT value FROM settings WHERE key = 'panel_hosts_1'")).value === w0, 'unchanged hosts: no new write');
+  for (const p of Object.values(fakes.panels)) p.down = true;
+  await refreshHostRules(env);
+  for (const p of Object.values(fakes.panels)) p.down = false;
+  ok((await row("SELECT value FROM settings WHERE key = 'panel_hosts_1'")).value === w0, 'an unreachable panel keeps its last hosts');
+  // a panel without a Tunnel group: its hosts are not even read
+  const p1 = fakes.panels[PANEL];
+  p1.groupList = [{ id: 1, name: 'default', inbound_tags: ['vless-in'] }];
+  const reads = p1.hostReads || 0;
+  await refreshHostRules(env);
+  ok((p1.hostReads || 0) === reads && JSON.parse((await row("SELECT value FROM settings WHERE key = 'panel_hosts_1'")).value).rules.length === 0, 'no Tunnel group: no host read, nothing marked');
+  for (const [p, g, h] of saved) { p.groupList = g; p.hosts = h; }
+  await env.DB.prepare("DELETE FROM settings WHERE key LIKE 'panel_hosts_%'").run();
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

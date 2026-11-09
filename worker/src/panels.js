@@ -5,7 +5,7 @@ import { first, all, run, insert } from './db.js';
 import { nowSec, err, seal, openSealed } from './util.js';
 import { PasarGuard, PasarGuardError, decodeSub } from './pasarguard.js';
 import { Marzban, Rebecca, detectKind } from './marzban.js';
-import { serverKey } from './netstats.js';
+import { serverKey, linkEndpoint } from './netstats.js';
 
 // states whose configs users get; draining/disabled panels are already out of the list
 const SERVING = ['active', 'rollout'];
@@ -241,16 +241,19 @@ export function isPlaceholder(link) {
 
 // labels = {serverKey: name} the admin gave a server (server_overrides): used as is, takes no number.
 // Ranking does not move: it is keyed by serverKey (type|host|port), never by the name.
-export function unify(links, labels = {}) {
+// kept (optional array) gets the index in `links` of every link that stays, in the same order as the result.
+export function unify(links, labels = {}, kept = null) {
   const hasLabels = Object.keys(labels).length > 0;
   const seen = new Set();
   const perCc = {};
   const out = [];
-  for (const link of links) {
+  for (let i = 0; i < links.length; i++) {
+    const link = links[i];
     if (isPlaceholder(link)) continue;
     const key = link.split('#')[0];
     if (seen.has(key)) continue;
     seen.add(key);
+    if (kept) kept.push(i);
     const label = hasLabels ? labels[serverKey(link)] : null;
     if (label) { out.push(withRemark(link, label)); continue; }
     const cc = flagToCc(remarkOf(link));
@@ -320,8 +323,9 @@ export async function panelServers(env, panel) {
 // limits devices with them). {links, deviceLimit, missing}: deviceLimit = a panel refused this phone.
 export async function collectLinks(env, userId, fwd = {}) {
   const accounts = (await accountsOf(env, userId)).filter((a) => SERVING.includes(a.panel_state) && a.desired === 'active' && a.sub_path);
-  const links = [], labels = {};
+  const links = [], labels = {}, from = [];
   const ov = await overridesFor(env, accounts.map((a) => a.panel_id));
+  const rules = await hostRulesFor(env, accounts.map((a) => a.panel_id));
   let reached = 0, deviceLimit = false, missing = 0;
   // every panel is asked at the same time; the answers are then read in panel order, so the list stays stable
   const fetchOne = async (a) => {
@@ -355,11 +359,96 @@ export async function collectLinks(env, userId, fwd = {}) {
       const k = serverKey(l);
       if (ov.hidden.has(a.panel_id + ':' + k)) continue; // the admin hid it (server_overrides)
       links.push(l);
+      from.push({ panel: a.panel_id, tunnel: isTunnelLink(rules[a.panel_id], l) });
       const lab = ov.labels[a.panel_id]?.[k];
       if (lab && !labels[k]) labels[k] = lab;
     }
   }
-  return { links: unify(links, labels), reached, deviceLimit, missing, accounts: accounts.length };
+  const kept = [];
+  const merged = unify(links, labels, kept);
+  // meta[i] = where merged link i came from: {panel: panel id, tunnel: it is in that panel's "Tunnel" group}
+  return { links: merged, meta: kept.map((i) => from[i]), reached, deviceLimit, missing, accounts: accounts.length };
+}
+
+// ---------------- which configs are tunnelled through Iran ----------------
+// A panel's group named "Tunnel" holds configs that enter through Iran. Share links do not say which group they
+// came from, so the panel's hosts are read (every 15 minutes, by the cron job) and kept in settings
+// panel_hosts_<id>; a link is matched to the host it was made from by address, port and remark.
+
+export async function hostRulesFor(env, panelIds) {
+  const ids = [...new Set(panelIds.map(Number).filter((n) => n > 0))];
+  const out = {};
+  if (!ids.length) return out;
+  const rows = await all(env, `SELECT key, value FROM settings WHERE key IN (${ids.map(() => '?').join(',')})`, ...ids.map((id) => `panel_hosts_${id}`));
+  for (const r of rows) {
+    try { const j = JSON.parse(r.value); if (Array.isArray(j.rules)) out[Number(r.key.slice(12))] = j.rules; } catch (e) { /* ignore a broken row */ }
+  }
+  return out;
+}
+
+const escRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+// "🇩🇪 {USERNAME} Tunnel" -> a pattern where every {VARIABLE} matches anything
+function remarkPattern(tpl) {
+  const parts = String(tpl || '').split(/\{[^{}]*\}/);
+  try { return new RegExp('^' + parts.map(escRe).join('.*') + '$', 'su'); } catch (e) { return null; }
+}
+// "*.cdn.example" -> the panel puts random letters where the * is
+function addressMatches(pattern, host) {
+  if (!pattern.includes('*')) return pattern === host;
+  try { return new RegExp('^' + pattern.split('*').map(escRe).join('[a-z0-9-]*') + '$').test(host); } catch (e) { return false; }
+}
+
+// true when the host this link best matches is in a tunnel group. A tie with a host outside it is not a tunnel.
+export function isTunnelLink(rules, link) {
+  if (!rules || !rules.length || !rules.some((r) => r.t)) return false;
+  const ep = linkEndpoint(link);
+  if (!ep) return false;
+  const host = ep.host.toLowerCase(), port = parseInt(ep.port, 10);
+  const remark = remarkOf(link).trim();
+  let best = 0, tunnel = false, plain = false;
+  for (const r of rules) {
+    if (r.p != null && r.p !== port) continue;
+    const addr = r.a.length ? r.a.some((a) => addressMatches(a, host)) : null;
+    if (addr === false) continue;
+    const re = remarkPattern(r.r);
+    const rem = !!(re && remark && re.test(remark));
+    if (!addr && !rem) continue; // a host with neither its address nor its name in the link is not this one
+    const score = (addr ? 2 : 0) + (rem ? 3 : 0) + (r.p != null ? 1 : 0);
+    if (score > best) { best = score; tunnel = !!r.t; plain = !r.t; }
+    else if (score === best) { if (r.t) tunnel = true; else plain = true; }
+  }
+  return tunnel && !plain;
+}
+
+// Cron (every 15 minutes): re-read each serving panel's hosts. Settings are written only when they changed, or
+// once a day so the age stays honest. A panel that cannot be reached keeps what was read last time.
+export async function refreshHostRules(env) {
+  const panels = (await listPanels(env)).filter((p) => SERVING.includes(p.state));
+  const stored = await hostRulesStamps(env, panels.map((p) => p.id));
+  const now = nowSec();
+  for (const p of panels) {
+    const old = stored[p.id];
+    let rules;
+    try {
+      const pg = await adapterFor(env, p);
+      if (typeof pg.hostRules !== 'function') continue;
+      rules = await pg.hostRules();
+    } catch (e) { continue; }
+    if (rules === null) rules = [];
+    const body = JSON.stringify(rules);
+    if (old && old.body === body && now - (old.at || 0) < 86400) continue;
+    await run(env, `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+      `panel_hosts_${p.id}`, JSON.stringify({ at: now, rules }));
+  }
+}
+async function hostRulesStamps(env, ids) {
+  const out = {};
+  if (!ids.length) return out;
+  const rows = await all(env, `SELECT key, value FROM settings WHERE key IN (${ids.map(() => '?').join(',')})`, ...ids.map((id) => `panel_hosts_${id}`));
+  for (const r of rows) {
+    try { const j = JSON.parse(r.value); out[Number(r.key.slice(12))] = { at: j.at, body: JSON.stringify(j.rules || []) }; } catch (e) { /* re-read */ }
+  }
+  return out;
 }
 
 // Groups new accounts go into: panel 1 keeps the pg_group_ids setting, other panels use options.group_ids;

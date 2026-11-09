@@ -108,7 +108,9 @@ export function installFakes({ panelBase }) {
       if (pg.kind !== 'pasarguard' && (path === '/api/groups' || path.startsWith('/api/groups/'))) return resText('{"detail":"Not Found"}', 404);
       if (path.startsWith('/api/v2/services')) return pg.kind === 'rebecca' ? resJson({ services: pg.services, total: pg.services.length }) : resText('{"detail":"Not Found"}', 404);
       if (path === '/api/inbounds') return pg.kind === 'pasarguard' ? resJson(['vless-in']) : resJson({ vless: [{ tag: 'vless-in' }], trojan: [{ tag: 'tr-in' }], shadowsocks: [] });
-      if (path === '/api/groups') return pg.groupsSudoOnly ? resText('{"detail":"You\'re not allowed"}', 403) : resJson({ groups: [{ id: 1, name: 'default' }] });
+      if (path === '/api/groups') return pg.groupsSudoOnly ? resText('{"detail":"You\'re not allowed"}', 403) : resJson({ groups: pg.groupList || [{ id: 1, name: 'default' }] });
+      // hosts: what share links are made from (address, port, remark), each tied to an inbound
+      if (path === '/api/hosts') { pg.hostReads = (pg.hostReads || 0) + 1; return pg.hostsSudoOnly ? resText('{"detail":"You\'re not allowed"}', 403) : resJson(pg.hosts || []); }
       if (path.startsWith('/api/groups/simple')) return resJson({ groups: [{ id: 1, name: 'default' }, { id: 2, name: 'reseller' }], total: 2 });
       let mm;
       if (path === '/api/user' && method === 'POST') {

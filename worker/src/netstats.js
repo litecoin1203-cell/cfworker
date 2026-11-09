@@ -47,6 +47,17 @@ const throttle = throttled;
 
 // The server key the apps send: FNV-1a of "type|host|port", identical to Pleat's serverKey and CgVpn.serverKey.
 export function serverKey(link) {
+  const e = linkEndpoint(link);
+  if (!e) return null;
+  let h = 0x811c9dc5;
+  for (const ch of `${e.type}|${e.host}|${e.port}`.toLowerCase()) {
+    for (let n = 0; n < ch.length; n++) { h ^= ch.charCodeAt(n); h = Math.imul(h, 0x01000193) >>> 0; }
+  }
+  return 'k' + h.toString(16).padStart(8, '0');
+}
+
+// {type, host, port} of a share link, read the way v2rayNG reads it; null when it is not one.
+export function linkEndpoint(link) {
   const i = String(link || '').indexOf('://');
   if (i <= 0) return null;
   const scheme = link.slice(0, i).toLowerCase();
@@ -74,11 +85,7 @@ export function serverKey(link) {
       host = c >= 0 ? hostPort.slice(0, c) : hostPort; port = c >= 0 ? hostPort.slice(c + 1) : '';
     }
   }
-  let h = 0x811c9dc5;
-  for (const ch of `${type}|${host}|${port}`.toLowerCase()) {
-    for (let n = 0; n < ch.length; n++) { h ^= ch.charCodeAt(n); h = Math.imul(h, 0x01000193) >>> 0; }
-  }
-  return 'k' + h.toString(16).padStart(8, '0');
+  return { type, host, port };
 }
 
 // remembers which servers this user has (from /vpn/servers), so /net/report counts only those. Written only when
