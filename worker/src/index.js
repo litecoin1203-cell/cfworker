@@ -190,6 +190,21 @@ async function route(request, env, p) {
   // crypto webhook (no auth, signature-checked)
   if (p === '/payments/nowpayments/ipn' && m === 'POST') return orders.nowpaymentsIpn(env, request);
 
+  // the admin panel in the Telegram Mini App (admin-api.js): sign in with initData, then an admin token
+  if (p.startsWith('/admin/')) {
+    const adm = await import('./admin-api.js');
+    if (p === '/admin/auth' && m === 'POST') {
+      await rateLimit(env, 'RL_LOGIN', 'admin:' + ip);
+      return adm.adminAuth(env, await body(request));
+    }
+    const admin = await adm.requireAdmin(env, request);
+    // panel tests, the dollar price and the backup reach other servers: the same per-IP limit as a sign-in
+    if (m === 'POST' && /^\/admin\/(panels(\/\d+\/(cred|test))?|backup)$/.test(p)) await rateLimit(env, 'RL_LOGIN', 'admin-op:' + admin.tgId);
+    const res = await adm.route(env, request, p, new URL(request.url), admin, () => body(request));
+    if (res) return res;
+    return json({ detail: { code: 'not_found', message: 'Not found.' } }, 404);
+  }
+
   // everything below needs a logged-in user
   const authed = [
     '/me', '/trial', '/vpn', '/vpn/sub', '/vpn/servers', '/devices', '/orders', '/wallet', '/referral', '/coupons/check',

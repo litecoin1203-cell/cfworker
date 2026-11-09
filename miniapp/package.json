@@ -6,9 +6,11 @@
   "description": "Pleat inside Telegram: the account, data and days left. Built into worker/public/app/ and served by the Worker.",
   "scripts": {
     "build": "node build.mjs",
-    "test": "node --test test/format.test.js"
+    "test": "node --test test/format.test.js test/admin.test.js"
   },
   "dependencies": {
+    "@fontsource/plus-jakarta-sans": "5.3.0",
+    "@fontsource/vazirmatn": "5.3.0",
     "preact": "10.29.8"
   },
   "devDependencies": {
