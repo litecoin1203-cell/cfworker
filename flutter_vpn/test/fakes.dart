@@ -52,6 +52,9 @@ class FakeApi extends ApiClient {
   bool active = true;
   String? trialError;
 
+  /// Sign-in can't reach the Worker (a filtered or dead line).
+  bool loginOffline = false;
+
   /// No plan until a trial starts.
   bool hasPlan = true;
 
@@ -144,6 +147,9 @@ class FakeApi extends ApiClient {
     }
     switch ('$m $path') {
       case 'POST /auth/login':
+        if (loginOffline) {
+          throw ApiError(0, 'offline', 'Can’t reach the server.');
+        }
         if (body?['password'] != 'password1') {
           throw ApiError(401, 'bad_credentials', 'Email or password is wrong.');
         }

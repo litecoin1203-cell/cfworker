@@ -167,11 +167,22 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// What the bridge tries, best first: this account's own exits that
   /// answer here (they already work on this line), then the store's
   /// bridge links (for a phone with no account yet).
-  List<String> _bridgeLinks() => [
+  List<String> _bridgeLinks() => {
     for (final e in ranked.where((e) => !e.unreachable).take(3)) e.server.link,
+    ..._keptBridges,
     ..._edgeBridges,
     ...splitLinks(buildBridges),
-  ];
+  }.toList();
+
+  /// Exits that worked here before, kept through sign-out (see
+  /// [TokenStore.keepBridges]).
+  List<String> _keptBridges = const [];
+
+  /// Gets the way to the Worker ready while the sign-in screen is open.
+  Future<bool> prepareSignIn() async {
+    if (_keptBridges.isEmpty) _keptBridges = await api.tokens.keptBridges();
+    return api.warmUp();
+  }
 
   /// Takes the Worker's extra addresses and bridge links from app-config,
   /// and keeps them for the next launch.
@@ -673,6 +684,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     });
     // The Worker said no (not just unreachable, which the cache covers).
     if (servers.error != null) servers.value = null;
+    final keep = [
+      for (final e in ranked.where((e) => !e.unreachable).take(3))
+        e.server.link,
+    ];
+    if (keep.isNotEmpty && keep.join('\n') != _keptBridges.join('\n')) {
+      _keptBridges = keep;
+      unawaited(api.tokens.keepBridges(keep));
+    }
   }
 
   /// The ranking for the network the Worker sees now. A new network
@@ -759,8 +778,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   void finishOnboarding() => update((s) => s.onboarded = true);
 
-  /// Sign in or create the account. Returns the error to show, or null.
-  Future<String?> signIn(
+  /// Sign in or create the account. Returns the error, or null. Its
+  /// [ApiError.offline] tells a line that didn't reach the Worker from a
+  /// wrong login or password.
+  Future<ApiError?> signIn(
     String address,
     String password, {
     bool create = false,
@@ -782,7 +803,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       await refreshAccount();
       return null;
     } on ApiError catch (e) {
-      return e.message;
+      return e;
+    } catch (_) {
+      return ApiError(-1, 'client', 'Something went wrong. Try again.');
     }
   }
 
@@ -818,9 +841,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return null;
   }
 
-  /// Telegram step 3 (new accounts): the app password. Returns the error to
-  /// show, or null.
-  Future<String?> telegramRegister(
+  /// Telegram step 3 (new accounts): the app password. Returns the error,
+  /// or null.
+  Future<ApiError?> telegramRegister(
     TelegramSignup s,
     String password, {
     String invite = '',
@@ -836,7 +859,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       await _signedIn(data);
       return null;
     } on ApiError catch (e) {
-      return e.message;
+      return e;
+    } catch (_) {
+      return ApiError(-1, 'client', 'Something went wrong. Try again.');
     }
   }
 
