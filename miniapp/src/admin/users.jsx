@@ -158,8 +158,17 @@ function SubCard({ u }) {
   );
 }
 
-function PanelsLive({ id }) {
+// One panel account stops being this user's, so it can be linked to another user. Asks whether to switch it off too.
+async function unlinkForm(u, a, after) {
+  const v = await openForm({ title: 'Unlink panel account', lead: `${a.username} on ${a.panel || 'panel'} #${a.panel_id} stops being ${u.label}'s account. Its usage is no longer counted for them, and you can link it to another user. Usage counted so far stays.`,
+    submit: 'Unlink',
+    fields: [{ key: 'off', label: 'On the panel', type: 'select', value: '1', options: [{ value: '1', label: 'Switch it off (not deleted)' }, { value: '0', label: 'Leave it as it is' }] }] });
+  if (v) act('user.unlink_panel', { userId: u.id, panelId: a.panel_id, off: v.off === '1' }, { confirm: `Unlink ${a.username} from ${u.label}?`, done: 'Panel account unlinked', after });
+}
+
+function PanelsLive({ id, u, owner, after }) {
   const st = useLoad(() => admin.userPanels(id), [id]);
+  const done = () => { st.reload(); if (after) after(); };
   return (
     <>
       <Section title="On each panel" link="Read again" onLink={st.reload} />
@@ -170,12 +179,13 @@ function PanelsLive({ id }) {
               <Row icon="layers" title={`${a.panel || 'Panel'} #${a.panel_id}`}
                 sub={[a.username, a.used_bytes != null ? `${gb(a.used_bytes)} GB used${a.limit_bytes ? ` of ${gb(a.limit_bytes)}` : ''}` : null,
                   a.expires_at ? `ends ${day(a.expires_at)}` : null, a.online ? 'online now' : a.last_seen ? `seen ${ago(a.last_seen)}` : 'never connected'].filter(Boolean).join(' · ')}
-                end={<Tag tone={a.state === 'active' ? 'ok' : ['no_answer', 'missing'].includes(a.state) ? 'warn' : 'bad'}>{ACCOUNT_STATE[a.state] || a.state}</Tag>} wrap />
+                end={<Tag tone={a.state === 'active' ? 'ok' : ['no_answer', 'missing'].includes(a.state) ? 'warn' : 'bad'}>{ACCOUNT_STATE[a.state] || a.state}</Tag>} wrap
+                onClick={owner && u ? () => unlinkForm(u, a, done) : undefined} />
             ))}
           </List>
         ) : <p class="note">No account on any panel yet.</p>)}
       </Loading>
-      <p class="note" style={{ marginTop: '8px' }}>Each panel's cap = its own usage + what is left of the plan. When the total reaches the plan, every panel switches off together.</p>
+      <p class="note" style={{ marginTop: '8px' }}>Each panel's cap = its own usage + what is left of the plan. When the total reaches the plan, every panel switches off together.{owner ? ' Tap an account to unlink it.' : ''}</p>
     </>
   );
 }
@@ -220,7 +230,7 @@ export function UserCard({ p, nav }) {
                 )}
               </>
             ) : null}
-            {s ? <PanelsLive id={u.id} /> : null}
+            {s ? <PanelsLive id={u.id} u={u} owner={owner} after={after} /> : null}
             <Section title="Account" />
             <List>
               <Row icon="wallet" title="Wallet" sub={`${n(u.wallet)} toman`} onClick={() => nav.push('userWallet', { id: u.id, label: u.label })} chevron />
@@ -252,7 +262,7 @@ export function UserCard({ p, nav }) {
                     onClick={() => act('user.block', { userId: u.id, on: !u.blocked }, { done: u.blocked ? 'Unblocked' : 'Blocked', after })} chevron />
                   {u.telegram ? <Row icon="link" title="Unlink Telegram" sub="Frees this Telegram account" danger onClick={() => act('user.unlink_tg', { userId: u.id }, { confirm: `Unlink Telegram from ${u.label}? They can link it again later.`, done: 'Telegram unlinked', after })} chevron /> : null}
                   {s ? <Row icon="close" title="End subscription" sub="Stops it now on every panel" danger onClick={() => act('user.end', { userId: u.id }, { confirm: `End ${u.label}'s subscription now? Every panel account switches off.`, done: 'Subscription ended', after })} chevron /> : null}
-                  <Row icon="trash" title="Delete user" sub="Blocks and frees the email and Telegram; orders stay" danger onClick={() => act('user.delete', { userId: u.id }, { confirm: `Delete ${u.label}? Orders and wallet history stay for the books. This cannot be undone.`, done: 'User deleted', after })} chevron />
+                  <Row icon="trash" title="Delete user" sub="Frees the email, Telegram and panel accounts; orders stay" danger onClick={() => act('user.delete', { userId: u.id }, { confirm: `Delete ${u.label}? Their panel accounts are switched off (not deleted) and freed, so you can link them to someone else. Orders and wallet history stay for the books. This cannot be undone.`, done: 'User deleted', after })} chevron />
                 </List>
               </>
             ) : null}

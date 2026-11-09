@@ -123,7 +123,7 @@ export const userKb = (uid) => ({ inline_keyboard: [
   [b('📱 دستگاه‌ها', `m:udv:${uid}`), b('🛡 امنیت و حساب', `m:usec:${uid}`)],
   [b('🎁 دادن پلن', `m:ug:${uid}`), b('🔗 وصل اکانت پنل', `m:w:link:${uid}`)],
   [b('🧾 سفارش‌ها', `m:uo:${uid}`), b('📶 تجربه اتصال', `m:un:${uid}`)],
-  [b('🗂 پنل‌های کاربر', `m:upa:${uid}`), b('🔄 زنده از پنل', `m:u:${uid}:live`)],
+  [b('🗂 پنل‌های کاربر', `m:uac:${uid}`), b('🔄 زنده از پنل', `m:u:${uid}:live`)],
   [b('📜 تاریخچه', `m:hist:user:${uid}`)],
   [b('🔙 کاربران', 'm:usr'), HOME],
 ] });
@@ -230,7 +230,9 @@ export async function userPanels(env, id) {
   });
   const text = [...head, '', blocks.length ? blocks.map((l) => l.join('\n')).join('\n\n') : 'روی هیچ پنلی اکانت ندارد.', '',
     'سقف هر پنل = مصرف همان پنل + باقیمانده‌ی کل؛ وقتی جمع به حجم پلن برسد همه‌ی پنل‌ها با هم خاموش می‌شوند.'].join('\n');
-  return { text, kb: [[b('🔄 دوباره بخوان', `m:upa:${id}`)], nav(`u:${id}`)] };
+  // one unlink button per account (its panel number and username), then link another
+  const unlink = accounts.map((a) => [b(`✂️ جداکردن ${a.remote_username} از #${a.panel_id}`.slice(0, 60), `m:uux:${id}:${a.panel_id}`)]);
+  return { text, kb: [...unlink, [b('🔗 وصل اکانت پنل', `m:w:link:${id}`), b('🔄 دوباره بخوان', `m:uac:${id}`)], nav(`u:${id}`)] };
 }
 
 const missing = (title) => ({ text: crumb('👤 کاربران', title) + '\n\nکاربر پیدا نشد.', kb: [nav('usr')] });

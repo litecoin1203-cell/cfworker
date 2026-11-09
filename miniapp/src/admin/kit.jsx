@@ -19,7 +19,7 @@ export function useLoad(fn, deps = []) {
 
 // the bot's money and destructive actions: the server refuses them without confirm, so the page always asks
 export const NEEDS_CONFIRM = new Set(['user.grant', 'user.link', 'user.reset_password', 'user.reset_usage', 'user.wallet', 'order.approve', 'order.refund',
-  'coupon.delete', 'panel.drain', 'user.end', 'user.unlink_tg', 'user.delete', 'plan.delete', 'net.reset', 'broadcast.start']);
+  'coupon.delete', 'panel.drain', 'user.end', 'user.unlink_tg', 'user.unlink_panel', 'user.delete', 'plan.delete', 'net.reset', 'broadcast.start']);
 
 // Runs one admin action the way the bot does. opts.confirm = the question (asked for money / destructive ones),
 // opts.done = the toast, opts.after = what to refresh. Resolves with the server's answer, or null.
