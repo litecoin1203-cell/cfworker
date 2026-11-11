@@ -231,7 +231,7 @@ Key ideas:
 | `POST /api/v1/payments/nowpayments/ipn` | HMAC-SHA512 | `orders.js` → `settle` |
 | everything else under `/api/v1/` | Bearer access JWT (30 min) + `token_version` + `is_active` | account/orders/netstats/auth |
 
-Authed app routes: `/me`, `/me/ip`, `/me/packages`, `/me/photo`, `/me/email`, `/me/avatar`,
+Authed app routes: `/me`, `/me/ip`, `/me/packages`, `/me/email`, `/me/avatar`,
 `/me/telegram/start|verify`, `/trial`, `/vpn`, `/vpn/servers`, `/vpn/sub` (old-app format), `/net/report`,
 `/net/rank`, `/net/google`, `/coupons/check`, `/devices`, `/devices/:id`, `/wallet`, `/referral`, `/orders`
 (GET/POST), `/orders/:id/...` (receipt, paid, cancel), `/app/apk` (APK proxy), `/auth/change-password`,
@@ -248,7 +248,7 @@ breaks import cycles).
 | `util.js` | JSON/errors, PBKDF2 + pepper, JWT HS256, HMAC, AES-GCM `seal`, rate limit (fail-open on purpose), JSON logs that strip URLs |
 | `db.js` | D1 helpers (`first`, `all`, `run`, `insert`), the `settings` key/value store with `SETTING_DEFAULTS`, `touchDevice` |
 | `auth.js` | email sign-up/login, Telegram 6-digit code login/sign-up, refresh, change password, link Telegram, backup email, avatar (`AVATARS`) |
-| `account.js` | app-config, plans, `/me`, subscription status, server list (`vpnServers`), devices, trial (`startTrial`), Telegram photo |
+| `account.js` | app-config, plans, `/me`, subscription status, server list (`vpnServers`), devices, trial (`startTrial`) |
 | `orders.js` | create order (wallet/card/coin/gateway), coupons, receipts, "I paid", IPN, wallet, referral; open-order cap (`too_many_open_orders`) |
 | `billing.js` | `settle` (atomic claim), `deliver`, `provision` on all of the user's panels, `walletApply` (atomic), coupons, commission |
 | `panels.js` | panel registry, encrypted credentials, `adapterFor`, rollout buckets, `unify` (merge + rename configs, drop placeholders), `testPanel`, drain |
@@ -423,7 +423,7 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
   line (`planBig`/`planUnit` in `screens/store_kit.dart`). Bot lists also lead with GB.
 - Profile: mandatory verified Telegram username + optional backup Gmail; one line "Data and days · X GB left · N
   days left" that opens a bottom sheet with pleats (data), day dots and package history; long emails always fit
-  one line (`FitLine`). 14 "Folk" avatars (SVG) override the Telegram photo, stored server-side.
+  one line (`FitLine`). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
 - Home "Now" shows country + city + exit IP (from `/me/ip`, through the tunnel) instead of a timer.
 - Notification "Pleat card" (`TunnelNote.kt`): flag tile, Protected dot, place · timer (system Chronometer),
   Disconnect + Change location. Colours follow the phone's night mode.

@@ -2288,10 +2288,7 @@ section('profile: verify Telegram on an email account, backup email, package his
   const v = await call('POST', '/api/v1/me/telegram/verify', { token: tok, json: { nonce: s2.nonce, code } });
   ok(v.status === 200 && v.data.telegram_verified && v.data.telegram.username === 'prof_user' && v.data.login === '@prof_user', 'Telegram verified: ' + JSON.stringify(v.data));
   ok((await call('POST', '/api/v1/me/telegram/start', { token: tok })).status === 409, 'cannot verify twice');
-  const ph = await call('GET', '/api/v1/me/photo', { token: tok });
-  ok(ph.status === 200 && ph.data.photo === btoa(String.fromCharCode(0xff, 0xd8, 0xff, 1, 2, 3)), 'Telegram photo comes through the Worker');
-  ok(fakes.tg.calls.some((c) => c.method === 'getFile' && c.body.file_id === 's'), 'the small photo size is used');
-  ok((await call('GET', '/api/v1/me/photo', { token: other })).data.photo === null, 'no Telegram, no photo');
+  ok((await call('GET', '/api/v1/me/photo', { token: tok })).status === 404 && !fakes.tg.calls.some((c) => c.method === 'getUserProfilePhotos'), 'the Telegram profile photo is not served and never fetched');
   ok((await call('POST', '/api/v1/auth/login', { json: { login: '@prof_user', password: 'password123' } })).status === 200, 'logs in with the Telegram username now');
   ok((await call('POST', '/api/v1/auth/login', { json: { login: 'profile@example.com', password: 'password123' } })).status === 200, 'email still logs in');
   const sl = (await call('POST', '/api/v1/auth/tg/start')).data;
@@ -2328,7 +2325,9 @@ section('profile: verify Telegram on an email account, backup email, package his
   ok((await call('GET', '/api/v1/me', { token: tok })).data.avatar === 'luna', 'avatar kept on /me');
   ok((await call('POST', '/api/v1/me/avatar', { token: tok, json: { avatar: '../x.svg' } })).status === 422, 'unknown avatar rejected');
   ok((await call('GET', '/api/v1/me', { token: other })).data.avatar === null, 'only my avatar changed');
-  ok((await call('POST', '/api/v1/me/avatar', { token: tok, json: { avatar: '' } })).data.avatar === null, 'avatar cleared');
+  ok((await call('POST', '/api/v1/me/avatar', { token: tok, json: { avatar: '' } })).status === 422, 'empty pick refused: the avatar is mandatory');
+  ok((await call('GET', '/api/v1/me/photo', { token: tok })).status === 404, 'no Telegram-photo route any more');
+  ok((await call('GET', '/api/v1/me', { token: tok })).data.avatar === 'luna', 'avatar stays after a refused clear');
   ok((await call('POST', '/api/v1/me/avatar', { json: { avatar: 'kai' } })).status === 401, 'avatar needs a login');
 
   // package history: a trial, then a purchase that stacks on it, and a gift from the admin

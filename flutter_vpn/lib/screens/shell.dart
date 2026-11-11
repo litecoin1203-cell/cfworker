@@ -8,6 +8,7 @@ import '../design/tokens.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
 import 'activity.dart';
+import 'avatar_gate.dart';
 import 'home.dart';
 import 'locations.dart';
 import 'protect.dart';
@@ -91,6 +92,8 @@ class _ShellState extends State<Shell> {
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
+    // First sign-in: a character has to be picked before Home.
+    if (app.needsAvatar) return const AvatarGate();
     final reduced = PMotion.reduced(context);
     const pages = [
       HomeScreen(),

@@ -173,33 +173,6 @@ export async function packages(env, user) {
   return json(out);
 }
 
-// GET /me/photo: the person's Telegram profile picture (small size), fetched by the Worker so the app shows it
-// even where Telegram is blocked. { photo: base64 | null }. Telegram only shows it to the bot when the person's
-// privacy settings allow; otherwise the app keeps the initial.
-export async function photo(env, user) {
-  const none = json({ photo: null });
-  if (!user.tg_id || !env.TELEGRAM_BOT_TOKEN) return none;
-  const { tg } = await import('./telegram.js');
-  const r = await tg(env, 'getUserProfilePhotos', { user_id: user.tg_id, limit: 1 });
-  const sizes = r && r.ok && r.result && r.result.photos && r.result.photos[0];
-  if (!Array.isArray(sizes) || !sizes.length) return none;
-  const pick = [...sizes].sort((a, b) => (a.width || 0) - (b.width || 0)).find((x) => (x.width || 0) >= 160) || sizes[sizes.length - 1];
-  const f = await tg(env, 'getFile', { file_id: pick.file_id });
-  const path = f && f.ok && f.result && f.result.file_path;
-  if (!path || (f.result.file_size || 0) > 200000) return none;
-  try {
-    const res = await fetch(`https://api.telegram.org/file/bot${env.TELEGRAM_BOT_TOKEN}/${path}`, { signal: deadline(8000) });
-    if (!res.ok) return none;
-    const bytes = new Uint8Array(await res.arrayBuffer());
-    if (bytes.length > 200000) return none;
-    let bin = '';
-    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-    return new Response(JSON.stringify({ photo: btoa(bin) }), {
-      headers: { 'content-type': 'application/json', 'cache-control': 'private, max-age=86400' },
-    });
-  } catch (e) { return none; }
-}
-
 export function myIp(env, request) {
   return json({ ip: request.headers.get('cf-connecting-ip') || '' });
 }
