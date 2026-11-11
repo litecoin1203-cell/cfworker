@@ -15,13 +15,13 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
+import 'avatar_gate.dart';
 import 'check.dart';
 import 'login.dart';
 import 'plans.dart';
 import 'store_kit.dart';
 import 'wallet.dart';
 import 'states.dart';
-import 'update_variants.dart';
 
 /// Profile, opened from the avatar or the name on Home. From the top: who
 /// the person is (Telegram first, required; Gmail second, optional), what
@@ -42,7 +42,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
       if (!mounted) return;
       final app = AppScope.read(context);
       app.loadPackages();
-      if (app.photo == null) app.loadPhoto();
     });
   }
 
@@ -63,11 +62,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         child: SafeArea(
           child: RefreshIndicator(
             color: PColors.accentInk,
-            onRefresh: () => Future.wait([
-              app.loadMe(),
-              app.loadPackages(),
-              app.loadPhoto(),
-            ]),
+            onRefresh: () => Future.wait([app.loadMe(), app.loadPackages()]),
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
               children: [
@@ -79,12 +74,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       label: 'Back',
                     ),
                     const Spacer(),
-                    if (Knobs.version == 'tag')
-                      VersionTag(app: app)
-                    else ...[
-                      const PleatMark(size: 30),
-                      const SizedBox(width: 12),
-                    ],
+                    const PleatMark(size: 30),
+                    const SizedBox(width: 12),
                   ],
                 ),
                 const SizedBox(height: 16),
@@ -152,17 +143,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ],
                 ),
                 const SizedBox(height: 22),
-                if (Knobs.night == 'hero') ...[
-                  NightHero(app: app),
-                  const SizedBox(height: 14),
-                ],
-                if (Knobs.night == 'tiles') ...[
-                  NightTiles(app: app),
-                  const SizedBox(height: 14),
-                ],
                 _Identity(app: app),
                 const SizedBox(height: 14),
-                if (Knobs.version == 'now' || app.appUpdate != null) ...[
                 SurfaceCard(
                   padding: const EdgeInsets.fromLTRB(20, 8, 10, 8),
                   child: _Row(
@@ -181,7 +163,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 ),
                 const SizedBox(height: 14),
-                ],
                 _UsageCard(app: app),
                 const SizedBox(height: 14),
                 SurfaceCard(
@@ -242,7 +223,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                         ),
                       ),
-                      if (Knobs.night == 'now') _Appearance(app: app),
+                      _Appearance(app: app),
                       _Row(
                         icon: PIcon.pulse,
                         title: 'Reduce motion',
@@ -310,10 +291,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                 ),
-                if (Knobs.version == 'about') ...[
-                  const SizedBox(height: 14),
-                  VersionAbout(app: app),
-                ],
                 const SizedBox(height: 22),
                 PillButton(
                   label: 'Sign out',
@@ -330,10 +307,6 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   },
                 ),
                 const SizedBox(height: 16),
-                if (Knobs.version == 'footer') ...[
-                  const SizedBox(height: 10),
-                  VersionFooter(app: app),
-                ] else if (Knobs.version == 'now')
                 Center(
                   child: Text(
                     [
@@ -725,8 +698,8 @@ String _day(DateTime d, {bool year = true}) {
   return '${_months[l.month - 1]} ${l.day}${year ? ', ${l.year}' : ''}';
 }
 
-/// The person's picture: the Pleat character they picked, else their
-/// Telegram photo through the Worker, else the initial. [nudge] puts a blue dot on it while Telegram isn't
+/// The person's picture: the Pleat character they picked (the Telegram
+/// photo is never used), else the initial. [nudge] puts a blue dot on it while Telegram isn't
 /// verified yet (Home shows it, so the step isn't missed).
 class Avatar extends StatelessWidget {
   const Avatar({
@@ -742,7 +715,6 @@ class Avatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final photo = app.photo;
     final art = avatarById(app.avatarId);
     final verified = app.me.value?.telegramVerified ?? true;
     return SizedBox(
@@ -762,18 +734,7 @@ class Avatar extends StatelessWidget {
             ),
             clipBehavior: Clip.antiAlias,
             alignment: Alignment.center,
-            child: art != null
-                ? AvatarArt(art, size: size)
-                : photo != null
-                ? Image.memory(
-                    photo,
-                    width: size,
-                    height: size,
-                    fit: BoxFit.cover,
-                    gaplessPlayback: true,
-                    errorBuilder: (_, _, _) => _initial(),
-                  )
-                : _initial(),
+            child: art != null ? AvatarArt(art, size: size) : _initial(),
           ),
           if (nudge && !verified)
             Positioned(
@@ -1017,15 +978,15 @@ Future<void> _emailSheet(
   }
 }
 
-/// Pick one of the Pleat characters, or go back to the Telegram photo or
-/// the initial. Saved on the account, so every phone shows the same one.
+/// Change the Pleat character. Saved on the account, so every phone shows
+/// the same one. (The first pick is the required [AvatarGate].)
 Future<void> _avatarSheet(BuildContext context) async {
   final app = AppScope.read(context);
   final current = app.avatarId;
   var chosen = current.isEmpty ? pleatAvatars.first.id : current;
   String? error;
   var busy = false;
-  final saved = await showModalBottomSheet<String>(
+  final saved = await showModalBottomSheet<bool>(
     context: context,
     backgroundColor: Colors.transparent,
     barrierColor: PColors.scrim,
@@ -1040,7 +1001,7 @@ Future<void> _avatarSheet(BuildContext context) async {
           final err = await app.setAvatar(id);
           if (!context.mounted) return;
           if (err == null) {
-            Navigator.of(context).pop(id.isEmpty ? 'cleared' : 'saved');
+            Navigator.of(context).pop(true);
           } else {
             setSheet(() {
               busy = false;
@@ -1071,48 +1032,9 @@ Future<void> _avatarSheet(BuildContext context) async {
               const SizedBox(height: 6),
               Text('Shown on Home and in your profile.', style: PType.small()),
               const SizedBox(height: 18),
-              LayoutBuilder(
-                builder: (context, box) {
-                  const cols = 4;
-                  const gap = 14.0;
-                  final cell = (box.maxWidth - gap * (cols - 1)) / cols;
-                  final art = cell.clamp(40.0, 72.0) - 10;
-                  return Wrap(
-                    spacing: gap,
-                    runSpacing: gap,
-                    children: [
-                      for (final a in pleatAvatars)
-                        Pressable(
-                          selected: a.id == chosen,
-                          onTap: busy
-                              ? null
-                              : () => setSheet(() => chosen = a.id),
-                          label: '${a.name}, ${a.kind}',
-                          radius: PRadius.pill,
-                          child: SizedBox(
-                            width: cell,
-                            height: art + 10,
-                            child: Center(
-                              child: AnimatedContainer(
-                                duration: PMotion.quick,
-                                padding: const EdgeInsets.all(3),
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  border: Border.all(
-                                    color: a.id == chosen
-                                        ? PColors.blue
-                                        : Colors.transparent,
-                                    width: 3,
-                                  ),
-                                ),
-                                child: AvatarArt(a, size: art - 2),
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  );
-                },
+              AvatarGrid(
+                chosen: chosen,
+                onPick: busy ? null : (id) => setSheet(() => chosen = id),
               ),
               const SizedBox(height: 20),
               if (error != null)
@@ -1124,26 +1046,13 @@ Future<void> _avatarSheet(BuildContext context) async {
                 label: busy ? 'Saving…' : 'Use ${pick.name}',
                 onTap: busy || chosen == current ? null : () => save(chosen),
               ),
-              if (current.isNotEmpty) ...[
-                const SizedBox(height: 10),
-                PillButton(
-                  label: app.photo != null
-                      ? 'Use my Telegram photo'
-                      : 'Use my initial',
-                  color: PColors.field,
-                  textColor: PColors.accentInk,
-                  onTap: busy ? null : () => save(''),
-                ),
-              ],
             ],
           ),
         );
       },
     ),
   );
-  if (saved != null && context.mounted) {
-    showNote(context, saved == 'cleared' ? 'Avatar removed.' : 'Avatar saved.');
-  }
+  if (saved == true && context.mounted) showNote(context, 'Avatar saved.');
 }
 
 /// 3. The plan, in one compact card: its name and state, and one line

@@ -5,7 +5,6 @@ import '../design/tokens.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
 import '../state/updater.dart';
-import 'update_variants.dart';
 
 /// MB with one decimal, as the sheet shows sizes.
 String _mb(int bytes) => (bytes / (1024 * 1024)).toStringAsFixed(1);
@@ -40,8 +39,6 @@ class UpdateSheet extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final variant = updateSheetVariant(context);
-    if (variant != null) return variant;
     final app = AppScope.of(context);
     final up = app.updater;
     final u = app.appUpdate;
