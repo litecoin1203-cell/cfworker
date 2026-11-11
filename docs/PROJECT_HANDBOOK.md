@@ -340,7 +340,7 @@ Every way of paying ends in `billing.settle(order)`:
 |---|---|
 | **Wallet** | immediate; `walletApply` debits atomically (D1 batch + one-time nonce + non-negative trigger) |
 | **Card-to-card** | the order gets a **unique amount** (base + 1…99 toman). The bank's deposit SMS, forwarded from the admin's phone to `/sms`, is parsed by `sms.js` and matched by amount → `settle`. Or the user uploads a **receipt photo** and the admin approves it with a bot button. `card_auto`: auto / detect (ask admin) / off. |
-| **Crypto to the admin's own wallets** | unique amount (+ memo where the chain needs one). `chainwatch.scanAll` (every minute) reads XLM, XRP, TRX, TON, ALGO explorers, `claimTxid` binds one txid to one order. Other coins (13 listed in settings) are confirmed by the admin. Inexact amounts go to admin review. |
+| **Crypto to the admin's own wallets** | priced from the USD/toman rate (`usdrate.js`: Nobitex, Wallex, Tabdeal, Exir, median) and coin prices (`coins.js`: CoinGecko, KuCoin, Coinbase); unique amount (+ memo where the chain needs one). `chainwatch.scanAll` (every minute) reads XLM, XRP, TRX, TON, ALGO explorers, `claimTxid` binds one txid to one order. Other coins (13 listed in settings) are confirmed by the admin. Inexact amounts go to admin review. |
 | **NOWPayments** (optional) | signed IPN → `settle` |
 
 `settle` claims the order atomically (status `settling`, 120 s lease) so two confirmations can never deliver
@@ -677,6 +677,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | C5 crash between `provision` and `provisioned_at` → double renewal | same batch — #41 |
 | **S1** (proven) 99 open card orders by one account broke card buying for everyone for 36 h | 3 open orders per method, auto-close stale — #45 |
 | S2 40 open coin orders starved cron auto-confirm; S3 expired quote auto-paid | same cap; stale quote → admin — #45 |
+| **Crypto orders failed with `price_unavailable`** (proven 2026-11-11 from a non-Iran server): the coin-price fallback CryptoCompare answers 401 "API key required", so any CoinGecko rate-limit left no price; of the 5 USD/toman exchanges only Wallex still answered abroad (`api.nobitex.ir` no DNS, Tabdeal ticker 404, Bitpin/Ramzinex 403) | coin prices merged per coin from CoinGecko → KuCoin → Coinbase (+ saved copy per coin); USD rate from Nobitex `apiv2`, Wallex depth, Tabdeal depth, Exir (single-market endpoints, small JSON for the 10 ms CPU limit); bot "💵 قیمت دلار" also shows the coin price sources |
 
 ### Backend robustness
 | Problem | Fix |

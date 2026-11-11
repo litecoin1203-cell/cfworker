@@ -817,6 +817,23 @@ section('Cloud Gold Pay: low-fee crypto straight to the admin wallet');
   const down = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'coin', coin: 'xlm' } });
   ok(down.status === 503 && down.data.detail.code === 'price_unavailable', 'no price -> clean error');
   globalThis.__fakePriceDown = false;
+  // CoinGecko alone down (it rate-limits shared server addresses; CryptoCompare, the old fallback, wants a key
+  // since 2026): the order is still priced, from KuCoin / Coinbase
+  globalThis.__cgPrices = null; globalThis.__fakeGecko = 'down';
+  env.DB.exec("DELETE FROM settings WHERE key = 'coin_prices_cache'");
+  const noGecko = await call('POST', '/api/v1/orders', { token: tok, json: { topup_toman: 200000, method: 'coin', coin: 'xlm' } });
+  ok(noGecko.status === 201 && noGecko.data.coin.symbol === 'XLM' && noGecko.data.coin.price_usd === 0.41, 'CoinGecko down -> priced from KuCoin: ' + noGecko.status + ' ' + JSON.stringify(noGecko.data.detail || noGecko.data.coin && noGecko.data.coin.price_usd));
+  await call('POST', `/api/v1/orders/${noGecko.data.id}/cancel`, { token: tok });
+  // KuCoin has no TON: Coinbase fills it (1 / 0.2 = 5 USD)
+  const { fetchPrices } = await import('../src/coins.js');
+  const fp = await fetchPrices();
+  ok(fp.p.ton === 5 && fp.p.trx === 0.26 && Object.keys(fp.p).length === 11, 'every coin covered without CoinGecko: ' + JSON.stringify(fp.sources));
+  // a coin no source has right now keeps its recent saved price
+  globalThis.__cgPrices = null; globalThis.__fakeKucoin = 'down';
+  const { prices: livePrices } = await import('../src/coins.js');
+  const lp = await livePrices(env);
+  ok(lp && lp.trx === 0.26 && lp.ton === 5, 'TRX from the saved copy while only Coinbase (no TRX) answers');
+  globalThis.__fakeGecko = null; globalThis.__fakeKucoin = null; globalThis.__cgPrices = null;
   const b3 = fakes.tg.messages.length;
   await tgWebhook({ message: { chat: { id: 12345 }, text: '/wallets' } });
   ok(fakes.tg.messages.slice(b3).some((m) => m.text.includes('✅ XLM') && m.text.includes('⚪️ XRP') && m.text.includes('Memo: 84021733')), '/wallets overview');
@@ -827,7 +844,7 @@ section('live dollar rate from Iranian exchanges');
 {
   const live = await fetchUsdRate();
   ok(live.rate === 100000, 'median of exchanges = 100,000 toman: ' + live.rate);
-  ok(!live.used.includes('tabdeal') && live.used.length === 4, 'outlier exchange ignored: ' + live.used.join(','));
+  ok(!live.used.includes('tabdeal') && live.used.length === 3, 'outlier exchange ignored: ' + live.used.join(','));
   globalThis.__cgUsd = null;
   const info = await usdRateInfo(env, { force: true });
   ok(info.from === 'live' && info.rate === 100000, 'live rate used');
@@ -848,6 +865,7 @@ section('live dollar rate from Iranian exchanges');
   await tgWebhook({ message: { chat: { id: 12345 }, text: '/rate' } });
   const msg = fakes.tg.messages.slice(b).map((m) => m.text).join('\n');
   ok(msg.includes('✅ نوبیتکس') && msg.includes('⚠️ تبدیل') && msg.includes('زنده از صرافی‌ها'), '/rate shows each exchange:\n' + msg);
+  ok(msg.includes('✅ CoinGecko') && msg.includes('همه‌ی ارزها قیمت دارند'), '/rate shows the coin price sources too');
 }
 
 
