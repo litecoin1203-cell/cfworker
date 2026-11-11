@@ -841,6 +841,13 @@ async function onMessage(env, msg, opts = {}) {
     for (const x of ri.sources || []) lines.push(`${x.rate ? ((ri.used || []).includes(x.id) ? '✅' : '⚠️') : '❌'} ${x.name}: ${x.rate ? fa(x.rate) + ' تومان' : 'جواب نداد' + (x.error ? ` (${x.error})` : '')}`);
     lines.push('', ri.rate ? `قیمت استفاده‌شده: ${fa(ri.rate)} تومان · ${RATE_FROM[ri.from]}` : '❌ قیمتی در دسترس نیست. موقتاً می‌توانی دستی بگذاری: /set usd_rate_toman 100000');
     lines.push('میانه‌ی قیمت صرافی‌ها استفاده می‌شود؛ قیمت‌های خیلی دور از بقیه (⚠️) کنار گذاشته می‌شوند.');
+    // the coin prices (USD) every crypto order also needs
+    const { fetchPrices, COINS } = await import('./coins.js');
+    const fp = await fetchPrices();
+    lines.push('', '💎 قیمت دلاری ارزها');
+    for (const x of fp.sources) lines.push(`${x.coins ? '✅' : '❌'} ${x.name}: ${x.coins ? fa(x.coins) + ' ارز' : 'جواب نداد' + (x.error ? ` (${x.error})` : '')}`);
+    const miss = COINS.filter((c) => !fp.p[c.id]).map((c) => c.symbol);
+    lines.push(miss.length ? `⚠️ بی‌قیمت: ${miss.join('، ')} (سفارش با این ارزها فعلاً ساخته نمی‌شود)` : '✅ همه‌ی ارزها قیمت دارند');
     return say(lines.join('\n'));
   }
   if (cmd === '/set') {

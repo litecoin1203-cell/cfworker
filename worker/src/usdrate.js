@@ -26,13 +26,16 @@ async function getJson(url, init) {
 // mid of best buy/sell when both exist, else the last trade
 const mid = (buy, sell, last) => (num(buy) && num(sell) ? (num(buy) + num(sell)) / 2 : num(last) || num(sell) || num(buy));
 
+// Checked 2026-11-11 from a server outside Iran (the Worker runs outside Iran too): api.nobitex.ir no longer
+// resolves there (apiv2 does), Tabdeal's ticker path is gone (404, its depth works), Bitpin and Ramzinex answer
+// 403 to foreign addresses, Wallex and Exir answer. Single-market endpoints only: Wallex's all-markets list is
+// ~440 KB of JSON, too much parsing for the Free plan's 10 ms of CPU.
+const best = (rows, pick) => num(rows && rows[0] && pick(rows[0]));
 export const SOURCES = [
   {
     id: 'nobitex', name: 'نوبیتکس',
     async read() {
-      const j = await getJson('https://api.nobitex.ir/market/stats', {
-        method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ srcCurrency: 'usdt', dstCurrency: 'rls' }),
-      });
+      const j = await getJson('https://apiv2.nobitex.ir/market/stats?srcCurrency=usdt&dstCurrency=rls');
       const st = (j.stats || {})['usdt-rls'] || {};
       return sane(mid(st.bestBuy, st.bestSell, st.latest) / 10); // rial -> toman
     },
@@ -40,48 +43,24 @@ export const SOURCES = [
   {
     id: 'wallex', name: 'والکس',
     async read() {
-      const j = await getJson('https://api.wallex.ir/v1/markets');
-      const m = ((j.result || {}).symbols || {}).USDTTMN || {};
-      const st = m.stats || {};
-      return sane(mid(st.bidPrice, st.askPrice, st.lastPrice));
-    },
-  },
-  {
-    id: 'bitpin', name: 'بیت‌پین',
-    async read() {
-      // current API first, then the older one
-      try {
-        const j = await getJson('https://api.bitpin.org/api/v1/mkt/tickers/');
-        const list = Array.isArray(j) ? j : j.results || j.data || [];
-        const t = list.find((x) => String(x.symbol || x.code || '').toUpperCase() === 'USDT_IRT');
-        const v = t && sane(num(t.price || t.last_price || t.close));
-        if (v) return v;
-      } catch (e) { /* fall back */ }
-      const j = await getJson('https://api.bitpin.ir/v1/mkt/markets/');
-      const t = (j.results || []).find((x) => String(x.code || '').toUpperCase() === 'USDT_IRT');
-      return t ? sane(num(t.price)) : 0;
-    },
-  },
-  {
-    id: 'ramzinex', name: 'رمزینکس',
-    async read() {
-      const j = await getJson('https://publicapi.ramzinex.com/exchange/api/v1.0/exchange/pairs');
-      const list = j.data || [];
-      const sym = (v) => String((v && (v.en || v)) || '').toLowerCase();
-      const p = list.find((x) => sym(x.base_currency_symbol) === 'usdt' && ['irr', 'rls', 'irt'].includes(sym(x.quote_currency_symbol)));
-      if (!p) return 0;
-      const v = mid(p.buy, p.sell, p.price || p.last_price);
-      const quote = sym(p.quote_currency_symbol);
-      return sane(quote === 'irt' ? v : v / 10);
+      const r = (await getJson('https://api.wallex.ir/v1/depth?symbol=USDTTMN')).result || {};
+      return sane(mid(best(r.bid, (x) => x.price), best(r.ask, (x) => x.price), 0));
     },
   },
   {
     id: 'tabdeal', name: 'تبدیل',
     async read() {
-      const j = await getJson('https://api1.tabdeal.org/r/api/v1/ticker/price?symbol=USDTIRT');
-      const v = num((Array.isArray(j) ? j[0] : j).price);
+      const j = await getJson('https://api1.tabdeal.org/r/api/v1/depth?symbol=USDTIRT&limit=5');
+      const v = mid(best(j.bids, (x) => x[0]), best(j.asks, (x) => x[0]), 0);
       // Tabdeal quotes in toman; guard in case it is ever rials
       return sane(v > MAX_TOMAN ? v / 10 : v);
+    },
+  },
+  {
+    id: 'exir', name: 'اکسیر',
+    async read() {
+      const j = await getJson('https://api.exir.io/v2/ticker?symbol=usdt-irt');
+      return sane(num(j.last || j.close));
     },
   },
 ];

@@ -168,12 +168,21 @@ export function installFakes({ panelBase }) {
     }
 
     if (url.includes('api.coingecko.com')) {
-      if (globalThis.__fakePriceDown) return resText('down', 503);
+      if (globalThis.__fakePriceDown || globalThis.__fakeGecko === 'down') return resText('down', 503);
       return resJson({ stellar: { usd: 0.4 }, ripple: { usd: 2.5 }, tron: { usd: 0.25 }, solana: { usd: 200 },
         'the-open-network': { usd: 5 }, litecoin: { usd: 100 }, dogecoin: { usd: 0.2 }, 'bitcoin-cash': { usd: 500 },
         binancecoin: { usd: 700 }, 'polygon-ecosystem-token': { usd: 0.25 }, algorand: { usd: 0.2 } });
     }
-    if (url.includes('min-api.cryptocompare.com')) return resText('down', 503);
+    if (url.includes('min-api.cryptocompare.com')) return resText('{"Err":{"message":"API key required"}}', 401); // as the real one answers since 2026
+    // second and third coin price sources; __fakeKucoin / __fakeCoinbase = 'down' takes one away
+    if (url.includes('api.kucoin.com/api/v1/prices')) {
+      if (globalThis.__fakePriceDown || globalThis.__fakeKucoin === 'down') return resText('down', 503);
+      return resJson({ code: '200000', data: { XLM: '0.41', XRP: '2.4', TRX: '0.26', SOL: '199', LTC: '101', DOGE: '0.21', BCH: '499', BNB: '701', POL: '0.26', ALGO: '0.21' } }); // no TON, like the real one
+    }
+    if (url.includes('api.coinbase.com/v2/exchange-rates')) {
+      if (globalThis.__fakePriceDown || globalThis.__fakeCoinbase === 'down') return resText('down', 503);
+      return resJson({ data: { currency: 'USD', rates: { XLM: '2.5', XRP: '0.4', SOL: '0.005', TON: '0.2', LTC: '0.01', DOGE: '5', BCH: '0.002', BNB: '0.0014285714', POL: '4', ALGO: '5' } } }); // no TRX, like the real one
+    }
     // public blockchain APIs; tests push records into globalThis.__chain
     const ch = (globalThis.__chain = globalThis.__chain || { xlm: [], xrp: [], trx: [], ton: [], algo: [] });
     if (url.startsWith('https://horizon.stellar.org/')) return resJson({ _embedded: { records: ch.xlm } });
@@ -182,12 +191,11 @@ export function installFakes({ panelBase }) {
     if (url.startsWith('https://toncenter.com/')) return resJson({ ok: true, result: ch.ton });
     if (url.startsWith('https://mainnet-idx.algonode.cloud/')) return resJson({ transactions: ch.algo });
     // Iranian exchanges (USDT/toman = free-market dollar). tabdeal is a deliberate outlier.
-    if (/nobitex|wallex|bitpin|ramzinex|tabdeal/.test(url) && globalThis.__fakeRateDown) return resText('down', 503);
-    if (url.includes('api.nobitex.ir/market/stats')) return resJson({ status: 'ok', stats: { 'usdt-rls': { bestBuy: '999000', bestSell: '1001000', latest: '1000000' } } });
-    if (url.includes('api.wallex.ir/v1/markets')) return resJson({ result: { symbols: { USDTTMN: { stats: { bidPrice: '99900', askPrice: '100100', lastPrice: '100000' } } } } });
-    if (url.includes('api.bitpin.org')) return resJson([{ symbol: 'USDT_IRT', price: '100000' }]);
-    if (url.includes('publicapi.ramzinex.com')) return resJson({ data: [{ base_currency_symbol: { en: 'usdt' }, quote_currency_symbol: { en: 'irr' }, buy: 999000, sell: 1001000 }] });
-    if (url.includes('api1.tabdeal.org')) return resJson({ symbol: 'USDTIRT', price: '150000' });
+    if (/nobitex|wallex|tabdeal|exir/.test(url) && globalThis.__fakeRateDown) return resText('down', 503);
+    if (url.includes('apiv2.nobitex.ir/market/stats')) return resJson({ status: 'ok', stats: { 'usdt-rls': { bestBuy: '999000', bestSell: '1001000', latest: '1000000' } } });
+    if (url.includes('api.wallex.ir/v1/depth')) return resJson({ result: { ask: [{ price: 100100 }], bid: [{ price: 99900 }] } });
+    if (url.includes('api.exir.io/v2/ticker')) return resJson({ symbol: 'usdt-irt', last: 100000, close: 100000 });
+    if (url.includes('api1.tabdeal.org/r/api/v1/depth')) return resJson({ asks: [['150100.00', '1']], bids: [['149900.00', '2']] });
     if (url.includes('api.nowpayments.io')) {
       const b = JSON.parse(body);
       const inv = { id: 5000 + np.invoices.length, invoice_url: 'https://nowpayments.io/pay/' + b.order_id };
