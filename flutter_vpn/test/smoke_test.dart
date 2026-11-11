@@ -86,6 +86,23 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
   });
 
+  testWidgets('Recommended exits sit under Now only, not Route or Stats', (
+    tester,
+  ) async {
+    await _boot(tester, {'onboarded': true});
+    expect(find.text('Recommended exits'), findsOneWidget);
+    await tester.tap(find.text('Route'));
+    await tester.pump(const Duration(milliseconds: 800));
+    expect(find.text('Recommended exits'), findsNothing);
+    await tester.tap(find.text('Stats'));
+    await tester.pump(const Duration(milliseconds: 800));
+    expect(find.text('Recommended exits'), findsNothing);
+    await tester.tap(find.text('Now'));
+    await tester.pump(const Duration(milliseconds: 800));
+    expect(find.text('Recommended exits'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
   testWidgets('Locations: one entry per country, CONNECT goes Home', (
     tester,
   ) async {
