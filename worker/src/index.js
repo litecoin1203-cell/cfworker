@@ -214,7 +214,7 @@ async function route(request, env, p, ctx) {
   // everything below needs a logged-in user
   const authed = [
     '/me', '/trial', '/vpn', '/vpn/sub', '/vpn/servers', '/devices', '/orders', '/wallet', '/referral', '/coupons/check',
-    '/app/apk', '/auth/change-password', '/auth/logout-all', '/me/packages', '/me/photo', '/me/email', '/me/avatar', '/me/telegram/start', '/me/telegram/verify', '/me/ip', '/net/report', '/net/rank', '/net/google',
+    '/app/apk', '/auth/change-password', '/auth/logout-all', '/me/packages', '/me/email', '/me/avatar', '/me/telegram/start', '/me/telegram/verify', '/me/ip', '/net/report', '/net/rank', '/net/google',
   ];
   const needsAuth = authed.includes(p) || p.startsWith('/devices/') || p.startsWith('/orders/');
   if (!needsAuth) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
@@ -239,7 +239,6 @@ async function route(request, env, p, ctx) {
     return apkDownload(env, request);
   }
   if (p === '/me/packages' && m === 'GET') return account.packages(env, user);
-  if (p === '/me/photo' && m === 'GET') return account.photo(env, user);
   if (p === '/me/email' && m === 'POST') {
     await rateLimit(env, 'RL_LOGIN', 'email:' + user.id); // it checks the password
     return auth.setEmail(env, user, await body(request));

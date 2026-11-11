@@ -267,16 +267,20 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   final devices = Remote<List<Device>>();
   final packages = Remote<List<Package>>();
 
-  /// The Telegram profile picture, through the Worker; null shows the
-  /// initial.
-  Uint8List? photo;
-
   /// Set right after a pick, so the new character shows before /me is
   /// read again. '' means the pick was cleared.
   String? _pickedAvatar;
 
   /// The Pleat character to show for this person, or '' for none.
   String get avatarId => _pickedAvatar ?? me.value?.avatar ?? '';
+
+  /// True once /me has been read from the server in this run (not only from
+  /// the copy kept on the phone).
+  bool meFresh = false;
+
+  /// Signed in, account read from the server, and no character picked yet:
+  /// the app asks for one before Home.
+  bool get needsAvatar => signedIn && meFresh && avatarId.isEmpty;
   AppConfig config = const AppConfig.empty();
   Map<String, Rank> _ranks = const {};
 
@@ -587,6 +591,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final data = await api.get('/me');
     final value = _meFrom(data);
     api.tokens.cache('me', data);
+    meFresh = true;
     return value;
   });
 
@@ -597,29 +602,6 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         Package.fromJson((p as Map).cast<String, dynamic>()),
     ];
   });
-
-  /// The picture only changes when the person changes it on Telegram, so
-  /// it's fetched once per run and kept for the next one.
-  Future<void> loadPhoto() async {
-    if (!(me.value?.telegramVerified ?? false)) return;
-    try {
-      final raw = await api.tokens.cached('photo');
-      final cached = raw == null ? null : jsonDecode(raw);
-      if (photo == null && cached is String && cached.isNotEmpty) {
-        photo = base64Decode(cached);
-        notifyListeners();
-      }
-      final data = await api.get('/me/photo');
-      final b64 = data is Map ? data['photo'] as String? : null;
-      api.tokens.cache('photo', b64 ?? '');
-      photo = b64 == null || b64.isEmpty ? null : base64Decode(b64);
-      notifyListeners();
-    } on ApiError {
-      // The initial stays.
-    } on FormatException {
-      photo = null;
-    }
-  }
 
   /// Verify Telegram on an email account: the same bot and 6-digit code as
   /// a Telegram sign-in, attached to this account.
@@ -636,13 +618,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> telegramLinkVerify(String nonce, String code) async {
     await api.post('/me/telegram/verify', {'nonce': nonce, 'code': code});
     await loadMe();
-    unawaited(loadPhoto());
   }
 
   /// Adds, changes or (with '') removes the backup email. Returns the error
   /// to show, or null.
-  /// Pick a Pleat character as the profile picture; '' goes back to the
-  /// Telegram photo or the initial. Returns an error to show, or null.
+  /// Pick a Pleat character as the profile picture. The characters are the
+  /// only picture (the Telegram photo is not used). Returns an error to
+  /// show, or null.
   Future<String?> setAvatar(String id) async {
     try {
       final data = await api.post('/me/avatar', {'avatar': id});
@@ -770,7 +752,6 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> refreshAccount() async {
     // In parallel: the Worker may take a while on each, waiting on panels.
     await Future.wait([loadPublic(), loadMe(), loadDevices(), loadServers()]);
-    unawaited(loadPhoto());
     unawaited(measureIfDue());
   }
 
@@ -910,8 +891,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     servers.value = null;
     devices.value = null;
     packages.value = null;
-    photo = null;
     _pickedAvatar = null;
+    meFresh = false;
     phase = Phase.idle;
     connectedAt = null;
     notifyListeners();

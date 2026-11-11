@@ -493,7 +493,7 @@ Object.assign(ACTIONS, {
       if (!u) return fail('کاربر پیدا نشد.');
       if (!u.avatar) return fail('این کاربر آواتار انتخاب نکرده است.');
       await run(env, 'UPDATE users SET avatar = NULL WHERE id = ?', u.id);
-      return { targetId: u.id, summary: `آواتار ${u.avatar} → پیش‌فرض`, undo: { userId: u.id, avatar: u.avatar }, text: '🖼 آواتار برگردانده شد.' };
+      return { targetId: u.id, summary: `آواتار ${u.avatar} → پاک شد (کاربر باید دوباره انتخاب کند)`, undo: { userId: u.id, avatar: u.avatar }, text: '🖼 آواتار برگردانده شد.' };
     },
     async undo(env, u) {
       await run(env, 'UPDATE users SET avatar = ? WHERE id = ? AND avatar IS NULL', u.avatar, u.userId);

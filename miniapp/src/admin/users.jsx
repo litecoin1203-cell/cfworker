@@ -257,7 +257,7 @@ export function UserCard({ p, nav }) {
                   {u.login !== 'telegram' ? <Row icon="key" title="Change password" sub="Signs their other phones out" onClick={() => passwordForm(u)} chevron /> : null}
                   <Row icon="logout" title="Sign out everywhere" sub="Every phone signs in again" onClick={() => act('user.logout_all', { userId: u.id }, { done: 'Signed out everywhere', after })} chevron />
                   <Row icon="mail" title="Change email" onClick={() => emailForm(u, after)} chevron />
-                  {u.avatar ? <Row icon="user" title="Reset avatar" sub="Back to the default or Telegram photo" onClick={() => act('user.avatar_reset', { userId: u.id }, { done: 'Avatar reset', after })} chevron /> : null}
+                  {u.avatar ? <Row icon="user" title="Reset avatar" sub="The user must pick a new one in the app" onClick={() => act('user.avatar_reset', { userId: u.id }, { done: 'Avatar reset', after })} chevron /> : null}
                   <Row icon="lock" title={u.blocked ? 'Unblock' : 'Block'} sub={u.blocked ? 'They can sign in again' : 'No sign-in, and every panel switches off'}
                     onClick={() => act('user.block', { userId: u.id, on: !u.blocked }, { done: u.blocked ? 'Unblocked' : 'Blocked', after })} chevron />
                   {u.telegram ? <Row icon="link" title="Unlink Telegram" sub="Frees this Telegram account" danger onClick={() => act('user.unlink_tg', { userId: u.id }, { confirm: `Unlink Telegram from ${u.label}? They can link it again later.`, done: 'Telegram unlinked', after })} chevron /> : null}

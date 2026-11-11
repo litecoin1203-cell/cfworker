@@ -61,7 +61,9 @@ class FakeApi extends ApiClient {
   /// Telegram verified on this account (Profile shows VERIFY until it is).
   bool tgVerified = false;
   String email = 'ali@example.com';
-  String? avatar;
+
+  /// A character already picked, so most tests start past the avatar gate.
+  String? avatar = 'vesper';
 
   /// The trial is built, but its answer is lost on the way back.
   bool loseTrialAnswer = false;
@@ -243,11 +245,12 @@ class FakeApi extends ApiClient {
             'data_limit_bytes': 5368709120,
           },
         ];
-      case 'GET /me/photo':
-        return {'photo': null};
       case 'POST /me/avatar':
         final id = (body?['avatar'] as String?) ?? '';
-        avatar = id.isEmpty ? null : id;
+        if (id.isEmpty) {
+          throw ApiError(422, 'invalid_input', 'Choose one of the avatars.');
+        }
+        avatar = id;
         return {'avatar': avatar};
       case 'POST /me/email':
         if (body?['password'] != 'password1') {
