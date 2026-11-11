@@ -6,6 +6,9 @@ import { nowSec, err, seal, openSealed } from './util.js';
 import { PasarGuard, PasarGuardError, decodeSub } from './pasarguard.js';
 import { Marzban, Rebecca, detectKind } from './marzban.js';
 import { serverKey, linkEndpoint } from './netstats.js';
+import { flagToCc, countryFromRemark, countryFromHost } from './countries.js';
+
+export { flagToCc };
 
 // states whose configs users get; draining/disabled panels are already out of the list
 const SERVING = ['active', 'rollout'];
@@ -167,12 +170,6 @@ export async function recordHealth(env, panelId, okNow) {
 }
 
 // ---------------- unified list ----------------
-const FLAG_RE = /[\u{1F1E6}-\u{1F1FF}]{2}/u;
-export function flagToCc(text) {
-  const m = (text || '').match(FLAG_RE);
-  if (!m) return '';
-  return Array.from(m[0]).map((ch) => String.fromCharCode(ch.codePointAt(0) - 0x1f1e6 + 65)).join('');
-}
 const ccToFlag = (cc) => (/^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65)) : '');
 
 function remarkOf(link) {
@@ -186,6 +183,14 @@ function remarkOf(link) {
   }
   const frag = link.split('#')[1] || '';
   try { return decodeURIComponent(frag); } catch (e) { return frag; }
+}
+
+// The country of one config: its panel remark first (flag, name or code), then a host label like "de1.".
+// Before this, only a flag emoji counted, so a remark such as "Germany Tunnel" or "آلمان" showed as an unknown country.
+export function countryOfLink(link) {
+  const cc = countryFromRemark(remarkOf(link));
+  if (cc) return cc;
+  try { return countryFromHost(linkEndpoint(link)?.host || ''); } catch (e) { return ''; }
 }
 
 function withRemark(link, name) {
@@ -269,7 +274,7 @@ export function unify(links, labels = {}, kept = null) {
     if (kept) kept.push(i);
     const label = hasLabels ? labels[serverKey(link)] : null;
     if (label) { out.push(withRemark(link, label)); continue; }
-    const cc = flagToCc(remarkOf(link));
+    const cc = countryOfLink(link);
     const n = (perCc[cc || '?'] = (perCc[cc || '?'] || 0) + 1);
     out.push(withRemark(link, cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`));
   }
@@ -325,10 +330,11 @@ export async function panelServers(env, panel) {
     const key = serverKey(link);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    const cc = flagToCc(remarkOf(link));
+    const cc = countryOfLink(link);
     const n = (perCc[cc || '?'] = (perCc[cc || '?'] || 0) + 1);
     const type = Object.keys(linkKinds([link]).counts)[0] || '?';
-    servers.push({ key, name: cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`, type, cc, tunnel: isTunnelLink(rules, link) });
+    // remark: what the panel calls it, shown to the admin only when no country was found (never an address)
+    servers.push({ key, name: cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`, type, cc, tunnel: isTunnelLink(rules, link), remark: cc ? '' : [...remarkOf(link).trim()].slice(0, 60).join('') });
   }
   return { servers: servers.slice(0, 60), source: 'account' };
 }

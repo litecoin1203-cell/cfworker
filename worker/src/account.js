@@ -3,7 +3,8 @@ import { first, all, run, getSettings, getSettingInt } from './db.js';
 import { json, err, nowSec, deadline } from './util.js';
 import { PasarGuard, PasarGuardError } from './pasarguard.js';
 import { provision } from './billing.js';
-import { collectLinks, flagToCc } from './panels.js';
+import { collectLinks } from './panels.js';
+import { countryFromRemark } from './countries.js';
 import { refreshUser, usedBytes, ensureMissingFor } from './sync.js';
 import { cryptoEnabled } from './nowpayments.js';
 import { enabledCoins, coinOut } from './coins.js';
@@ -191,7 +192,7 @@ function parseLink(index, link) {
     const frag = link.split('#')[1] || '';
     try { name = decodeURIComponent(frag); } catch (e) { name = frag; }
   }
-  const cc = flagToCc(name);
+  const cc = countryFromRemark(name);
   const clean = name.replace(/[\u{1F1E6}-\u{1F1FF}]{2}/u, '').replace(/^[\s\-|·]+|[\s\-|·]+$/g, '');
   return { index, name: clean || `Server ${index + 1}`, country_code: cc, protocol: scheme, link };
 }
