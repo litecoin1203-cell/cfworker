@@ -18,7 +18,8 @@ jobs:
     env:
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-      WRANGLER: npx --yes wrangler@4
+      # an exact version: this job holds the Cloudflare token, so a new wrangler release is taken on purpose, not by chance
+      WRANGLER: npx --yes wrangler@4.158.0
     steps:
       - uses: actions/checkout@v4
 
@@ -64,6 +65,11 @@ jobs:
           if [ -z "$DB_ID" ] || [ "$DB_ID" = "null" ]; then echo "::error::Could not create or find the D1 database"; exit 1; fi
           echo "Database id: $DB_ID"
           sed -i "s/PLACEHOLDER_FILLED_BY_DEPLOY/$DB_ID/" wrangler.jsonc
+
+      # D1 Time Travel can put the database back to any minute of the last days; this bookmark (printed in the
+      # log) is the state just before the migrations: wrangler d1 time-travel restore cloudgold --bookmark=<it>
+      - name: Note the database restore point
+        run: $WRANGLER d1 time-travel info cloudgold || echo "::warning::Could not read the Time Travel bookmark"
 
       - name: Apply database migrations
         run: $WRANGLER d1 migrations apply cloudgold --remote

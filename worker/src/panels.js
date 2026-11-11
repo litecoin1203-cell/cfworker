@@ -141,7 +141,17 @@ export const USER_PATH_MS = 5000;
 // a panel the sync job has seen failing 3 times in a row gets a short chance only: its configs still come when
 // it answers fast, but it no longer holds every user's server list for seconds while it is down
 export const KNOWN_DOWN_MS = 1500;
-export const userPathMs = (a) => ((a.fail_streak || 0) >= 3 ? KNOWN_DOWN_MS : USER_PATH_MS);
+// A panel that just failed a user-path call is remembered by this isolate for SLOW_FOR seconds (memory only, no
+// D1 write), so the next requests served here do not each wait the full deadline before the sync job notices.
+const SLOW_FOR = 60;
+const slowSeen = () => (globalThis.__cgSlowPanels ||= new Map());
+export function noteUserPathFail(panelId) {
+  const m = slowSeen();
+  if (m.size > 100) m.clear();
+  m.set(panelId, Date.now() + SLOW_FOR * 1000);
+}
+export function noteUserPathOk(panelId) { slowSeen().delete(panelId); }
+export const userPathMs = (a) => ((a.fail_streak || 0) >= 3 || (slowSeen().get(a.panel_id) || 0) > Date.now() ? KNOWN_DOWN_MS : USER_PATH_MS);
 
 export async function accountsOf(env, userId) {
   return all(env, `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json, p.fail_streak FROM panel_accounts a
@@ -336,8 +346,8 @@ export async function collectLinks(env, userId, fwd = {}) {
     const pg = await adapterFor(env, panelOfAccount(a), { timeoutMs: userPathMs(a) }).catch(() => null);
     if (!pg) return null;
     let raw;
-    try { raw = await pg.subscriptionRaw(a.sub_path, fwd); }
-    catch (e) { return null; } // an unreachable panel only removes its own configs
+    try { raw = await pg.subscriptionRaw(a.sub_path, fwd); noteUserPathOk(a.panel_id); }
+    catch (e) { noteUserPathFail(a.panel_id); return null; } // an unreachable panel only removes its own configs
     let found = raw.status >= 200 && raw.status < 300 ? decodeSub(raw.text) : [];
     // A panel whose rules answer the v2rayNG agent with Xray JSON (or refuse it, 406) gives no share links
     // here; its explicit /links format does, with the same device check.
