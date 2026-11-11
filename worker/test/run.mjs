@@ -362,9 +362,11 @@ section('crypto invoice + IPN');
   ok(badSig.status === 401, 'bad IPN signature rejected');
   // NOWPayments repeats an IPN until it gets 200: the repeat must not extend the plan again
   const exp1 = (await env.DB.prepare('SELECT s.expires_at e FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE u.email = ?').bind('crypto@example.com').first()).e;
+  const toldBefore = fakes.tg.messages.length;
   const again = await call('POST', '/api/v1/payments/nowpayments/ipn', { json: payload, headers: { 'x-nowpayments-sig': sig } });
   const exp2 = (await env.DB.prepare('SELECT s.expires_at e FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE u.email = ?').bind('crypto@example.com').first()).e;
   ok(again.status === 200 && exp1 === exp2, 'a repeated IPN changes nothing: ' + [exp1, exp2]);
+  ok(fakes.tg.messages.length === toldBefore, 'and does not tell the admin again');
   // a signed IPN for another invoice of the same order id is ignored; a failed payment expires the open order
   const o2 = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'crypto' } });
   const inv2 = fakes.np.invoices.slice(-1)[0].id;
@@ -4157,6 +4159,36 @@ section('early renewal: days and unused data both carry over (Ali, 2026-11-11)')
   await q("UPDATE subscriptions SET expires_at = ? WHERE id = ?", Math.floor(Date.now() / 1000) - 60, s2.id).run();
   await admin(`/grant carry@example.com ${tenGb.id}`);
   ok((await sub()).data_limit_bytes === 10 * GB, 'after expiry the new package is just its own 10 GB');
+}
+
+section('phase 14: the cron run shares 50 subrequests; a wallet order delivered then failing is not refunded');
+{
+  const q = (sql, ...a) => env.DB.prepare(sql).bind(...a);
+  // the chain scan spent most of the run: the sync job pushes and creates only what is left
+  await q("UPDATE panel_accounts SET dirty = 1 WHERE id IN (SELECT id FROM panel_accounts LIMIT 20)").run();
+  const before = fakes.pg.puts;
+  const tight = await runSyncRaw(env, { spent: 40 });
+  ok(tight.pushed <= 2 && tight.created === 0, 'with 40 subrequests spent, at most 2 pushes and no creates: ' + JSON.stringify(tight));
+  const roomy = await runSyncRaw(env);
+  ok(roomy.pushed > tight.pushed, 'with the whole budget the rest is pushed: ' + roomy.pushed);
+  await q('UPDATE panel_accounts SET dirty = 0').run();
+  void before;
+
+  // a wallet purchase whose plan reached the panels, then a later step failed: paid, not refunded
+  const tw = await signup('walletedge@example.com', { device: 'we1' });
+  const plan = (await call('GET', '/api/v1/plans')).data.find((p) => p.price_toman > 0);
+  await q("UPDATE users SET wallet_balance = ? WHERE email = 'walletedge@example.com'", plan.price_toman * 2).run();
+  const prep = env.DB.prepare;
+  let broke = false;
+  env.DB.prepare = (sql) => {
+    if (!broke && /SET status = 'paid', paid_at = \?, settling_at = NULL WHERE id = \?$/.test(sql.trim())) { broke = true; throw new Error('D1 hiccup'); }
+    return prep.call(env.DB, sql);
+  };
+  const r = await call('POST', '/api/v1/orders', { token: tw, json: { plan_id: plan.id, method: 'wallet' } });
+  env.DB.prepare = prep;
+  const o = await q("SELECT o.status, o.provisioned_at, u.wallet_balance FROM orders o JOIN users u ON u.id = o.user_id WHERE u.email = 'walletedge@example.com' ORDER BY o.id DESC LIMIT 1").first();
+  ok(broke && o.provisioned_at && o.status === 'paid' && o.wallet_balance === plan.price_toman,
+    `delivered wallet order stays paid and charged once (${r.status}): ` + JSON.stringify(o));
 }
 
 section('Mini App stage 0: initData check, probe page, report to the admin, bot buttons');

@@ -56,8 +56,10 @@ export default {
     }
     if (event && event.cron && event.cron !== '30 20 * * *') {
       ctx.waitUntil((async () => {
-        try { const { scanAll } = await import('./chainwatch.js'); await scanAll(env); } catch (e) { logError('chain scan failed', e); }
-        try { const { runSync } = await import('./sync.js'); await runSync(env); } catch (e) { logError('panel sync failed', e); }
+        // both share this run's 50 subrequests: the sync job gets what the chain scan left
+        let spent = 0;
+        try { const { scanAll } = await import('./chainwatch.js'); spent = (await scanAll(env)).spent || 0; } catch (e) { spent = 8; logError('chain scan failed', e); }
+        try { const { runSync } = await import('./sync.js'); await runSync(env, { spent }); } catch (e) { logError('panel sync failed', e); }
         try { const { ensureWebhook } = await import('./telegram.js'); await ensureWebhook(env); } catch (e) { logError('webhook check failed', e); }
         // which configs come from a panel's "Tunnel" group (the app marks them), read every 15 minutes
         if (new Date().getUTCMinutes() % 15 === 7) {
