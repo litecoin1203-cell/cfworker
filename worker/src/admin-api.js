@@ -230,12 +230,12 @@ export async function users(env, url) {
     FROM (SELECT * FROM users WHERE ${where.join(' AND ')} ORDER BY id DESC LIMIT ${PAGE + 1}) u
     LEFT JOIN subscriptions s ON s.user_id = u.id ORDER BY u.id DESC`, ...args);
   const pg = pageOut(rows);
-  const { ONLINE_SEC } = await import('./telegram-screens.js');
+  const { STORED_ONLINE_SEC } = await import('./telegram-screens.js');
   return json({
     filter, counts, more: pg.more, next: pg.next,
     users: pg.rows.map((u) => ({
       id: u.id, label: userLabel(u), name: u.tg_name || '', email: realEmail(u), blocked: !u.is_active && !isDeleted(u), deleted: isDeleted(u),
-      wallet: u.wallet_balance, created_at: u.created_at, online: !!(u.seen && now - u.seen < ONLINE_SEC), last_seen: u.seen || null,
+      wallet: u.wallet_balance, created_at: u.created_at, online: !!(u.seen && now - u.seen < STORED_ONLINE_SEC), last_seen: u.seen || null,
       sub: u.period_id ? {
         state: u.state, expires_at: u.expires_at, active: u.state === 'active' && (!u.expires_at || u.expires_at > now),
         limit_bytes: u.data_limit_bytes || 0, used_bytes: u.used_bytes || 0, days_left: u.expires_at ? Math.max(0, Math.ceil((u.expires_at - now) / 86400)) : null,
@@ -260,7 +260,7 @@ export async function user(env, id) {
         (SELECT COUNT(*) FROM orders WHERE user_id = s.user_id) ords
       FROM subscriptions s LEFT JOIN sub_periods p ON p.id = s.period_id WHERE s.user_id = ?`, uid),
   ]);
-  const { ONLINE_SEC } = await import('./telegram-screens.js');
+  const { STORED_ONLINE_SEC } = await import('./telegram-screens.js');
   const now = nowSec();
   const seen = row && row.seen ? row.seen : null;
   const tgOnly = /@telegram\.local$/.test(String(u.email || ''));
@@ -276,7 +276,7 @@ export async function user(env, id) {
       expires_at: row.expires_at, limit_bytes: row.data_limit_bytes || 0, used_bytes: row.used_bytes || 0,
       active: row.state === 'active' && (!row.expires_at || row.expires_at > now),
     } : null,
-    last_seen: seen, online: !!(seen && now - seen < ONLINE_SEC),
+    last_seen: seen, online: !!(seen && now - seen < STORED_ONLINE_SEC),
     devices: devices.map((d) => ({ id: d.id, device: String(d.device_id || '').slice(0, 64), model: d.model || '', last_seen: d.last_seen })),
     orders: orders.map(orderOut), order_count: row ? row.ords : orders.length,
     wallet_tx: tx,
@@ -718,7 +718,7 @@ export async function userPanels(env, id) {
   const uid = parseInt(id, 10);
   const { accountsOf, adapterFor, userPathMs } = await import('./panels.js');
   const { parseExpire } = await import('./pasarguard.js');
-  const { ONLINE_SEC } = await import('./telegram-screens.js');
+  const { ONLINE_SEC, STORED_ONLINE_SEC } = await import('./telegram-screens.js');
   const sub = await first(env, 'SELECT period_id FROM subscriptions WHERE user_id = ?', uid);
   const accounts = await accountsOf(env, uid);
   const counted = new Map(sub && sub.period_id
@@ -734,7 +734,7 @@ export async function userPanels(env, id) {
       const pg = await adapterFor(env, { id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref, options_json: a.options_json }, { timeoutMs: userPathMs(a) });
       r = await pg.getUser(a.remote_username);
     } catch (e) {
-      return { ...base, state: 'no_answer', last_seen: (c && c.online_at) || null, online: !!(c && c.online_at && now - c.online_at < ONLINE_SEC) };
+      return { ...base, state: 'no_answer', last_seen: (c && c.online_at) || null, online: !!(c && c.online_at && now - c.online_at < STORED_ONLINE_SEC) };
     }
     if (!r) return { ...base, state: 'missing' };
     const seen = parseExpire(r.online_at);

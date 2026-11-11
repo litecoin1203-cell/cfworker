@@ -541,7 +541,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | **10 ms CPU** per invocation | no heavy crypto (PBKDF2 stays at 5,000), no big JSON loops |
 | **50 subrequests** per invocation | panel calls, Telegram, explorers all count; budget the cron |
 | **50 D1 queries per invocation** (a batch = 1) | the 51st fails. Batch reads and writes. Test suite enforces it. |
-| **~100k D1 writes/day** | the old cron wrote 2 rows per user per minute even when idle → cap hit at ~35 users (fixed in PR #41: writes only on change) |
+| **~100k D1 writes/day** | the old cron wrote 2 rows per user per minute even when idle → cap hit at ~35 users (PR #41: writes only on change). A phone that keeps the VPN on still changes its counter every minute, so the cap was still ~33 always-on users; the engineering-audit phase 6 PR spreads those writes (`LEDGER_EVERY` = 10 min in `sync.js`, never for big changes, near-quota, panel resets or a user coming online): 100 always-on users went from 295k to 33k rows/day (measured). Stored "online now" therefore means seen in the last 13 min (`STORED_ONLINE_SEC`); the bot's live card is exact. |
 | Rate limiting is per Cloudflare location and fail-open | do not rely on it as a security boundary |
 
 ---

@@ -62,16 +62,25 @@ export async function plans(env) {
 // Subscription as the app shows it. The control plane decides; with live = true every panel of the user is read
 // first (so the numbers are fresh and a stop on quota happens right away). Nothing here names a panel.
 // withSubUrl: only app versions before 1.9.0 still get the panel link (they download from it themselves).
-export async function subscriptionOut(env, user, live = true, { withSubUrl = false } = {}) {
+// ctx (a request's): the live reading gets LIVE_BUDGET_MS; a panel that is slower (down, or far away) does not hold
+// the answer: the stored numbers are sent (the sync job keeps them a few minutes fresh) and the reading finishes
+// after the answer, so the next call has it.
+export const LIVE_BUDGET_MS = 1500;
+export async function subscriptionOut(env, user, live = true, { withSubUrl = false, ctx = null } = {}) {
   let sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
   if (!sub) return null;
   let liveOk = false, missing = false;
   if (live) {
-    try {
-      const r = await refreshUser(env, user.id);
+    const reading = refreshUser(env, user.id).catch(() => null); // stale numbers are still right numbers
+    let timer;
+    const late = ctx ? new Promise((resolve) => { timer = setTimeout(() => resolve('late'), LIVE_BUDGET_MS); }) : null;
+    const r = late ? await Promise.race([reading, late]) : await reading;
+    clearTimeout(timer);
+    if (r === 'late') ctx.waitUntil(reading);
+    else if (r) {
       liveOk = r.reached > 0;
       missing = r.accounts > 0 && r.missing === r.accounts;
-    } catch (e) { /* stale numbers are still right numbers */ }
+    }
     sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
   }
   const plan = sub.plan_id ? await first(env, 'SELECT * FROM plans WHERE id = ?', sub.plan_id) : null;
@@ -116,14 +125,14 @@ async function trialAvailable(env, user) {
   return !has;
 }
 
-export async function me(env, user, request) {
+export async function me(env, user, request, ctx = null) {
   return json({
     ...profileOut(user),
     wallet_balance: user.wallet_balance, referral_code: user.referral_code,
     created_at: new Date(user.created_at * 1000).toISOString(),
     trial_available: await trialAvailable(env, user),
     // the Mini App never gets the panel subscription address (only the old app did)
-    subscription: await subscriptionOut(env, user, true, { withSubUrl: !user._mini && !centralApp(request) }),
+    subscription: await subscriptionOut(env, user, true, { withSubUrl: !user._mini && !centralApp(request), ctx }),
   });
 }
 
@@ -232,10 +241,10 @@ async function checkDevice(env, user, sub, deviceId, model) {
     ON CONFLICT(user_id, device_id) DO UPDATE SET last_seen = excluded.last_seen`, user.id, deviceId, model || '', nowSec());
 }
 
-export async function vpn(env, user, request) {
+export async function vpn(env, user, request, ctx = null) {
   const sub = await activeSub(env, user);
   await checkDevice(env, user, sub, request.headers.get('x-device-id'), request.headers.get('x-device-model'));
-  const out = await subscriptionOut(env, user, true, { withSubUrl: !centralApp(request) });
+  const out = await subscriptionOut(env, user, true, { withSubUrl: !centralApp(request), ctx });
   if (out.status === 'missing') throw err(410, 'sub_missing', 'اکانت شما روی سرور پیدا نشد. با پشتیبانی تماس بگیر.');
   return json({ subscription: out, remarks: 'Cloud Gold' });
 }

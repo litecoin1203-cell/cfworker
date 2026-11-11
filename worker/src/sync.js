@@ -23,6 +23,14 @@ const SUBREQ_BUDGET = 44;           // of the 50 a Free-plan run may make; a cre
 const ERR_NOTIFY_EVERY = 6 * 3600;  // the admin hears about one panel refusing new accounts at most this often
 const QUIET_AFTER_ERROR = 600;      // after a refused create, the app does not wait on that panel for 10 minutes
 const MB = 1024 * 1024;
+// The cron's usage writes for an account that keeps moving (the phone keeps the VPN on all day, so a few KB of
+// background traffic change the panel's counter every minute) are spread out: such an account is written when
+// its last write is LEDGER_EVERY old, when LEDGER_BIG bytes piled up, when it comes close to the end of its data,
+// or when it comes online after a break. Each panel still stops the account at its own data_limit, so a skipped
+// minute is only counted a few minutes later, never lost: the next write adds everything since the stored reading.
+export const LEDGER_EVERY = 600;
+const LEDGER_BIG = 256 * MB;
+const ONLINE_FRESH = 120;           // the panel's online_at this recent = the account is online now
 
 // how far a panel's own data_limit may drift from the ideal before it is rewritten (fewer panel writes)
 export const tolerance = (limit) => Math.max(Math.floor(limit / 20), 64 * MB);
@@ -33,13 +41,16 @@ export const tolerance = (limit) => Math.max(Math.floor(limit / 20), 64 * MB);
 // (an idle user costs no write at all, which also keeps the daily write allowance for real work).
 const st = (env, sql, ...args) => env.DB.prepare(sql).bind(...args);
 const LEDGER_SQL = `SELECT a.id, a.user_id, a.panel_id, a.remote_username, s.id AS sub_id, s.period_id, s.baselined,
-    c.period_id AS c_period, c.last_remote_bytes, c.baseline_pending, c.stale
+    s.data_limit_bytes AS s_limit, s.used_bytes AS s_used,
+    c.period_id AS c_period, c.last_remote_bytes, c.baseline_pending, c.stale, c.last_seen_at AS c_seen, c.online_at AS c_online
   FROM panel_accounts a JOIN subscriptions s ON s.user_id = a.user_id AND s.period_id IS NOT NULL
   LEFT JOIN usage_counters c ON c.period_id = s.period_id AND c.panel_id = a.panel_id`;
 
 // The writes for readings of accounts (rows from LEDGER_SQL). readingOf(row) = {used, expire, data_limit}, null
 // when the panel did not answer, or undefined to leave the row alone. Returns the statements to batch.
-function ledgerWrites(env, rows, readingOf, now) {
+// spread = the cron's sweep: small changes of an account that was written recently wait (see LEDGER_EVERY).
+// The app and the bot's live card read with spread off, so what they show is exact.
+function ledgerWrites(env, rows, readingOf, now, { spread = false } = {}) {
   const out = [];
   for (const r of rows) {
     const remote = readingOf(r);
@@ -64,6 +75,8 @@ function ledgerWrites(env, rows, readingOf, now) {
       // below the last reading = the panel's counter was reset; what it shows now is all new. The update is
       // relative to the stored reading, so a reading another invocation already counted is not counted twice.
       const delta = used >= r.last_remote_bytes ? used - r.last_remote_bytes : used;
+      // (a panel-side reset is always written at once: it is detected against the stored reading)
+      if (spread && !r.stale && used >= r.last_remote_bytes && canWait(r, delta, online, now)) continue;
       out.push(st(env, `UPDATE usage_counters SET accounted_bytes = accounted_bytes + ?, last_remote_bytes = ?, stale = 0, last_seen_at = ?, online_at = COALESCE(?, online_at)
         WHERE period_id = ? AND panel_id = ? AND last_remote_bytes = ? AND baseline_pending = 0`, delta, used, now, online, r.period_id, r.panel_id, r.last_remote_bytes));
     }
@@ -77,6 +90,18 @@ function ledgerWrites(env, rows, readingOf, now) {
     }
   }
   return out;
+}
+
+// May this small change wait for a later sweep? Not when the account was last written LEDGER_EVERY ago, not for
+// LEDGER_BIG bytes, not near the end of the plan's data (a stop must not wait), and not when the account has just
+// come online after a break (the admin's "online now" follows the stored online_at).
+function canWait(r, delta, online, now) {
+  if (now - (r.c_seen || 0) >= LEDGER_EVERY) return false;
+  if (delta >= LEDGER_BIG) return false;
+  if (r.s_limit > 0 && r.s_limit - ((r.s_used || 0) + delta) < 2 * tolerance(r.s_limit)) return false;
+  const onlineNow = online && now - online < ONLINE_FRESH;
+  if (onlineNow && (!r.c_online || now - r.c_online > LEDGER_EVERY)) return false;
+  return true;
 }
 
 async function batch(env, stmts) {
@@ -464,7 +489,7 @@ async function syncPage(env, allPanels, adapter) {
     if (byName.size) {
       const rows = await all(env, `${LEDGER_SQL} WHERE a.panel_id = ? AND a.remote_username IN (SELECT value FROM json_each(?))`,
         panel.id, JSON.stringify([...byName.keys()]));
-      stmts.push(...ledgerWrites(env, rows, (r) => byName.get(r.remote_username), now));
+      stmts.push(...ledgerWrites(env, rows, (r) => byName.get(r.remote_username), now, { spread: true }));
       users = rows.map((r) => r.user_id);
     }
     stmts.push(healthWrite(env, panel.id, true, now));

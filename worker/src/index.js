@@ -120,7 +120,7 @@ export default {
 
       if (path.startsWith('/api/v1/')) {
         await ensureSeed(env);
-        const res = await route(request, env, path.slice('/api/v1'.length));
+        const res = await route(request, env, path.slice('/api/v1'.length), ctx);
         for (const [k, v] of Object.entries(CORS)) res.headers.set(k, v);
         return res;
       }
@@ -137,7 +137,7 @@ async function body(request) {
   try { return await request.json(); } catch (e) { return {}; }
 }
 
-async function route(request, env, p) {
+async function route(request, env, p, ctx) {
   const m = request.method;
   const H = request.headers;
 
@@ -222,7 +222,7 @@ async function route(request, env, p) {
 
   if (p === '/auth/change-password' && m === 'POST') return auth.changePassword(env, user, await body(request));
   if (p === '/auth/logout-all' && m === 'POST') return auth.logoutAll(env, user);
-  if (p === '/me' && m === 'GET') return account.me(env, user, request);
+  if (p === '/me' && m === 'GET') return account.me(env, user, request, ctx);
   // the address this request came from and where Cloudflare places it: through the VPN, the exit's public IP,
   // country and city (Pleat's Home shows them while connected); nothing is stored
   if (p === '/me/ip' && m === 'GET') {
@@ -256,7 +256,7 @@ async function route(request, env, p) {
     await rateLimit(env, 'RL_IP', 'trial:' + ip);
     return account.startTrial(env, user, await body(request), request);
   }
-  if (p === '/vpn' && m === 'GET') return account.vpn(env, user, request);
+  if (p === '/vpn' && m === 'GET') return account.vpn(env, user, request, ctx);
   if (p === '/vpn/servers' && m === 'GET') return account.vpnServers(env, user, request);
   if (p === '/vpn/sub' && m === 'GET') return account.vpnSub(env, user, request);
   if (p === '/net/report' && m === 'POST') { const ns = await import('./netstats.js'); return ns.report(env, user, request, await body(request)); }

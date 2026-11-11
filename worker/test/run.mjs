@@ -3884,7 +3884,8 @@ section('the Free plan\'s 50 D1 queries: a long order list, cron with 200 users'
     const per = (await q('INSERT INTO sub_periods (user_id, plan_id, started_at, expires_at, limit_bytes) VALUES (?, ?, ?, ?, ?)', id, plan.id, now, exp, 50 * GB).run()).meta.last_row_id;
     await q("INSERT INTO subscriptions (user_id, pg_username, plan_id, expires_at, data_limit_bytes, device_limit, period_id, state, baselined) VALUES (?, ?, ?, ?, ?, 2, ?, 'active', 1)", id, name, plan.id, exp, 50 * GB, per).run();
     await q('INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, created_at, desired_limit_bytes, applied_limit_bytes) VALUES (?, 1, ?, ?, ?, ?, ?)', id, name, PANEL + '/sub/cap' + id + '/', now, 50 * GB, 50 * GB).run();
-    await q('INSERT INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at) VALUES (?, 1, 0, 0, ?)', per, now).run();
+    // last written 10 minutes ago, so the sweep writes the new reading now (sooner, small changes wait: LEDGER_EVERY)
+    await q('INSERT INTO usage_counters (period_id, panel_id, last_remote_bytes, accounted_bytes, last_seen_at) VALUES (?, 1, 0, 0, ?)', per, now - 600).run();
     fakes.pg.users[name] = { id: 900000 + i, username: name, status: 'active', expire: exp, data_limit: 50 * GB, used_traffic: 5 * 1024 * 1024, token: 'cap' + id };
     seeded.push({ id, name, per });
   }
@@ -3907,6 +3908,33 @@ section('the Free plan\'s 50 D1 queries: a long order list, cron with 200 users'
   writes = 0;
   for (let i = 0; i < pages; i++) { await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain(); }
   ok(writes <= 4 * pages + 2, `an idle pass writes almost nothing (was about 2 rows per user): ${writes} statements for ${pages} page(s)`);
+
+  // VPN on all day: a few KB of background traffic move every counter every minute. The sweep spreads those
+  // writes out (LEDGER_EVERY), but never for a big change, near the end of the data, a panel reset, a user who
+  // just came online, or an account last written 10 minutes ago, and nothing is lost: the late write adds it all.
+  const pass = async () => { await q("DELETE FROM sync_cursor WHERE job = 'usage'").run(); writes = 0; for (let i = 0; i < pages; i++) { await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain(); } return writes; };
+  const acc = async (x) => (await q('SELECT accounted_bytes a FROM usage_counters WHERE period_id = ? AND panel_id = 1', x.per).first()).a;
+  const KB = 1024, MB5 = 5 * 1024 * 1024;
+  for (const x of seeded) fakes.pg.users[x.name].used_traffic += 20 * KB;
+  ok((await pass()) <= 4 * pages + 2 && (await acc(seeded[50])) === MB5, `background traffic of 200 connected users is not written every minute: ${writes} statements`);
+  const [big, near, old, back, reset] = seeded;
+  fakes.pg.users[big.name].used_traffic += 300 * 1024 * 1024;
+  await q('UPDATE subscriptions SET data_limit_bytes = ? WHERE user_id = ?', 100 * 1024 * 1024, near.id).run();
+  await q('UPDATE usage_counters SET last_seen_at = last_seen_at - 600 WHERE period_id = ?', old.per).run();
+  fakes.pg.users[back.name].online_at = new Date().toISOString();
+  fakes.pg.users[reset.name].used_traffic = 1 * KB;
+  for (const x of seeded) fakes.pg.users[x.name].used_traffic += 20 * KB;
+  await pass();
+  ok((await acc(big)) === MB5 + 40 * KB + 300 * 1024 * 1024, 'a big change is written at once, with the waiting KB: ' + (await acc(big)));
+  ok((await acc(near)) === MB5 + 40 * KB, 'close to the end of the data every change is written: ' + (await acc(near)));
+  ok((await acc(old)) === MB5 + 40 * KB, 'an account last written 10 minutes ago is written, nothing lost: ' + (await acc(old)));
+  const backRow = await q('SELECT accounted_bytes a, online_at o FROM usage_counters WHERE period_id = ? AND panel_id = 1', back.per).first();
+  ok(backRow.a === MB5 + 40 * KB && backRow.o > now - 120, 'a user coming online is written at once (the admin sees "online now")');
+  ok((await acc(reset)) === MB5 + 21 * KB, 'a panel-side reset is written at once and counted on top: ' + (await acc(reset)));
+  ok((await acc(seeded[50])) === MB5, 'the others still wait');
+  await q('UPDATE usage_counters SET last_seen_at = last_seen_at - 600 WHERE period_id IN (SELECT value FROM json_each(?))', JSON.stringify(seeded.map((x) => x.per))).run();
+  await pass();
+  ok((await acc(seeded[50])) === MB5 + 40 * KB, 'ten minutes later the waiting traffic is all counted: ' + (await acc(seeded[50])));
   env.DB.batch = realBatch;
   for (const p of panelsBefore) await q('UPDATE panels SET state = ? WHERE id = ?', p.state, p.id).run();
   for (const x of seeded) delete fakes.pg.users[x.name];
@@ -4037,10 +4065,24 @@ section('phases 1-5 fixes: open-order cap, stale quote, bad token, cancel race, 
   t0 = Date.now();
   const me = await call('GET', '/api/v1/me', { token: tp });
   const meMs = Date.now() - t0;
+  await drain(); // the live reading that missed the answer finishes after it (waitUntil)
   fakes.pg.hang = false;
-  clearInterval(keep);
   ok(svMs < 7000 && [200, 503].includes(sv.status), `server list with a hung panel answers in ${svMs} ms (${sv.status})`);
-  ok(meMs < 12000 && me.status === 200, `/me with a hung panel answers in ${meMs} ms (${me.status})`);
+  ok(meMs < 2500 && me.status === 200 && me.data.subscription && me.data.subscription.live === false,
+    `/me with a hung panel answers from the stored numbers within the live budget: ${meMs} ms (${me.status})`);
+  // the sync job has seen the panel fail 3 times: its configs get only a short chance on the user path
+  await q('UPDATE panels SET fail_streak = 3 WHERE id = 1').run();
+  fakes.pg.hang = true;
+  t0 = Date.now();
+  await call('GET', '/api/v1/vpn/servers', { token: tp, headers: { 'x-device-id': 'slow1' } });
+  const knownMs = Date.now() - t0;
+  await drain();
+  fakes.pg.hang = false;
+  await q('UPDATE panels SET fail_streak = 0 WHERE id = 1').run();
+  clearInterval(keep);
+  ok(knownMs < 2500, `a panel known to be down holds the server list for ${knownMs} ms only`);
+  const meOk = await call('GET', '/api/v1/me', { token: tp });
+  ok(meOk.data.subscription.live === true, 'with the panel back, /me reads it live again');
 }
 
 section('Mini App stage 0: initData check, probe page, report to the admin, bot buttons');
