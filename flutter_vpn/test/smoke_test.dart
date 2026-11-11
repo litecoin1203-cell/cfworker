@@ -69,6 +69,23 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
   });
 
+  testWidgets('Home Route: a goal card sets how smart connect picks', (
+    tester,
+  ) async {
+    final (app, _) = await _boot(tester, {'onboarded': true});
+    await tester.tap(find.text('Route'));
+    await tester.pump(const Duration(milliseconds: 800));
+    expect(find.text('How do you want to connect?'), findsOneWidget);
+    // the plain fake exits are all Classic; no Stealth or Speed card
+    expect(find.text('Stealth'), findsNothing);
+    await tester.tap(find.text('Classic').last);
+    await tester.pump(const Duration(milliseconds: 800));
+    expect(app.routeMode.name, 'classic');
+    expect(app.pinned, isFalse);
+    expect(find.text('Classic mode, best location'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
   testWidgets('Locations: one entry per country, CONNECT goes Home', (
     tester,
   ) async {

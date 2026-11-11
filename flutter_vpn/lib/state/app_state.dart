@@ -14,6 +14,7 @@ import 'bridge.dart';
 import 'diagnose.dart';
 import 'exits.dart';
 import 'net_cache.dart';
+import 'route_mode.dart';
 import 'tunnel.dart';
 import 'updater.dart';
 import 'xray_config.dart';
@@ -292,6 +293,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// instead of the smart choice.
   bool pinned = false;
   String? exitId;
+
+  /// Home's Route choice: the goal (Stealth, Speed, Classic or Auto) and
+  /// the country ('' = the best anywhere). Smart connect and its failover
+  /// only use exits that match both; see [routePool].
+  RouteMode routeMode = RouteMode.auto;
+  String routeCountry = '';
   Set<String> saved = {};
   List<Session> sessions = [];
   String noticesSeen = '';
@@ -456,6 +463,94 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return ranked.where((e) => e.id != current).take(recommendCount).toList();
   }
 
+  /// The goals this plan can serve: a mode shows only when at least one
+  /// exit belongs to it; Auto always.
+  List<RouteMode> get routeModes => [
+    for (final m in RouteMode.values)
+      if (m == RouteMode.auto || exits.any((e) => e.family == m)) m,
+  ];
+
+  /// Exits of [mode], best first.
+  List<Exit> exitsOf(RouteMode mode) => [
+    for (final e in ranked)
+      if (mode.matches(e)) e,
+  ];
+
+  /// The protocols behind [mode] on this plan, e.g. "WireGuard · Hysteria2".
+  String protocolsOf(RouteMode mode) {
+    if (mode == RouteMode.auto) return 'Any protocol';
+    // Stealth is told apart by its wrapping (REALITY, XHTTP), the others
+    // by protocol (WireGuard, Hysteria2, Shadowsocks…).
+    final names = <String>{
+      for (final e in exitsOf(mode))
+        mode == RouteMode.stealth
+            ? wrappingOf(e).replaceFirst('${e.protocol} ', '')
+            : e.protocol,
+    };
+    return names.isEmpty ? 'Not on your plan' : names.take(3).join(' · ');
+  }
+
+  /// Countries [mode] reaches on this plan, best first, each with its best
+  /// exit: (country code or title, best exit, count).
+  List<(String, Exit, int)> countriesOf(RouteMode mode) {
+    final by = <String, List<Exit>>{};
+    for (final e in exitsOf(mode)) {
+      by.putIfAbsent(e.code.isEmpty ? e.title : e.code, () => []).add(e);
+    }
+    return [
+      for (final kv in by.entries) (kv.key, kv.value.first, kv.value.length),
+    ];
+  }
+
+  bool _inRoute(Exit e, RouteMode m, String country) =>
+      m.matches(e) &&
+      (country.isEmpty || (e.code.isEmpty ? e.title : e.code) == country);
+
+  /// The exits smart connect may use: those of [routeMode] in
+  /// [routeCountry]. When the plan no longer has any (the list changed),
+  /// every exit, so the button never has nothing to connect.
+  List<Exit> get routePool {
+    final pool = [
+      for (final e in exits)
+        if (_inRoute(e, routeMode, routeCountry)) e,
+    ];
+    return pool.isEmpty ? exits : pool;
+  }
+
+  /// The chosen route has exits on this plan (false shows "not on your
+  /// plan" instead of quietly using another protocol).
+  bool get routeAvailable =>
+      exits.any((e) => _inRoute(e, routeMode, routeCountry));
+
+  /// Picks a goal and a country on Home. The hand-picked exit is let go, the
+  /// best matching exit becomes the current one, and a running session
+  /// moves to it when the one in use doesn't match.
+  void setRoute(RouteMode mode, {String? country}) {
+    var c = country ?? routeCountry;
+    // a country the new goal doesn't reach falls back to the best anywhere
+    if (c.isNotEmpty && !exits.any((e) => _inRoute(e, mode, c))) c = '';
+    routeMode = mode;
+    routeCountry = c;
+    pinned = false;
+    final cur = exit;
+    final fits = cur != null && _inRoute(cur, mode, c);
+    final best = [
+      for (final e in ranked)
+        if (_inRoute(e, mode, c)) e,
+    ];
+    var next = cur;
+    if (!fits && best.isNotEmpty) {
+      next = best.firstWhere((e) => !e.unreachable, orElse: () => best.first);
+    }
+    final moved = next != null && next.id != exitId;
+    if (next != null) exitId = next.id;
+    _save();
+    notifyListeners();
+    if (moved && phase == Phase.protected) {
+      unawaited(_connect(next.id, failover: false, pin: false));
+    }
+  }
+
   /// Protocols present in the server list, in first-seen order.
   List<String> get protocols => {for (final e in exits) e.protocol}.toList();
 
@@ -488,6 +583,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     smartConnect = p.getBool('smartConnect') ?? true;
     localDirect = p.getBool('localDirect') ?? true;
     pinned = p.getBool('pinned') ?? false;
+    routeMode = RouteMode.parse(p.getString('routeMode'));
+    routeCountry = p.getString('routeCountry') ?? '';
     exitId = p.getString('exit');
     saved = (p.getStringList('saved') ?? const []).toSet();
     noticesSeen = p.getString('noticesSeen') ?? '';
@@ -505,6 +602,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     p.setBool('smartConnect', smartConnect);
     p.setBool('localDirect', localDirect);
     p.setBool('pinned', pinned);
+    p.setString('routeMode', routeMode.name);
+    p.setString('routeCountry', routeCountry);
     exitId == null ? p.remove('exit') : p.setString('exit', exitId!);
     p.setStringList('saved', saved.toList());
     p.setString('noticesSeen', noticesSeen);
@@ -1712,7 +1811,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<Exit?> _best() async {
     if (_tried.isEmpty) {
       final strong =
-          exits
+          routePool
               .where(
                 (e) =>
                     (e.rank?.reports ?? 0) >= 8 && (e.rank?.score ?? 0) >= 0.8,
@@ -1723,7 +1822,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (!_pingsFresh) await testAll(enough: 3);
     final ok =
-        exits
+        routePool
             .where((e) => (e.measured ?? 0) > 0 && !_tried.contains(e.id))
             .toList()
           ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
@@ -1736,8 +1835,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// one is used. Protected is shown only once the tunnel reports up.
   Future<void> connect([String? id]) => _connect(id, failover: false);
 
-  Future<void> _connect(String? id, {required bool failover}) async {
-    if (id != null && !failover) pinned = true;
+  Future<void> _connect(
+    String? id, {
+    required bool failover,
+    bool pin = true,
+  }) async {
+    if (id != null && !failover && pin) pinned = true;
     if (id != null && id != exitId) {
       // Another exit while connected: the running tunnel is kept and the
       // new exit takes it over (the service swaps them without closing the
@@ -1795,7 +1898,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           'Plan and exit checked. The tunnel engine isn’t in this build, so Pleat can’t protect traffic yet.',
         );
       }
-      if (id == null && smartConnect && !pinned && exits.length > 1) {
+      // A current exit outside the Route choice (the list changed, or it
+      // was picked by hand before) gives way to the choice's best.
+      if (id == null && !pinned && routeAvailable) {
+        final cur = exit;
+        if (cur == null || !_inRoute(cur, routeMode, routeCountry)) {
+          exitId = routePool.first.id;
+        }
+      }
+      if (id == null && smartConnect && !pinned && routePool.length > 1) {
         progressNote = _pingsFresh ? null : 'Testing exits for the fastest.';
         notifyListeners();
         final best = await _best();
@@ -1804,8 +1915,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         if (best != null) {
           exitId = best.id;
           _save();
-        } else if (exits.every((e) => e.unreachable)) {
-          return _fail('No exit answered. Check the connection and try again.');
+        } else if (routePool.every((e) => e.unreachable)) {
+          return _fail(_noneAnswered);
         }
       }
       final target = exit;
@@ -1864,7 +1975,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   List<String> _backupsFor(Exit target) {
     if (!smartConnect || pinned) return const [];
     final next =
-        exits
+        routePool
             .where(
               (e) =>
                   e.id != target.id && !e.unreachable && !_tried.contains(e.id),
@@ -1887,7 +1998,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (!smartConnect) return false;
     if (_tried.length < 3) {
       final next =
-          exits.where((e) => !_tried.contains(e.id) && !e.unreachable).toList()
+          routePool
+              .where((e) => !_tried.contains(e.id) && !e.unreachable)
+              .toList()
             ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
       if (next.isNotEmpty) {
         tunnelMessage = null;
@@ -1905,6 +2018,22 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       return true;
     }
     return false;
+  }
+
+  /// Nothing in the chosen route answered. Says which route, so the person
+  /// knows another goal or country may work; Pleat doesn't switch it alone.
+  String get _noneAnswered {
+    if (!routeAvailable ||
+        (routeMode == RouteMode.auto && routeCountry.isEmpty)) {
+      return 'No exit answered. Check the connection and try again.';
+    }
+    final where = routeCountry.isEmpty
+        ? ''
+        : ' in ${countryName(routeCountry)}';
+    final what = routeMode == RouteMode.auto
+        ? 'exit'
+        : '${routeMode.title} exit';
+    return 'No $what$where answered. Try Auto or another country on Home.';
   }
 
   /// A tunnel was started and not stopped since: a failed or abandoned try

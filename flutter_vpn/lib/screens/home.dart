@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../api/countries.dart';
+
 import '../design/city_art.dart';
 import '../design/connect_control.dart';
 import '../design/geometry.dart';
@@ -10,9 +12,9 @@ import '../design/update_track.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
 import '../state/updater.dart';
-import '../state/exits.dart';
 import 'location_detail.dart';
 import 'profile.dart';
+import 'route_chooser.dart';
 import 'shell.dart';
 import 'states.dart';
 
@@ -80,19 +82,22 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
             ),
-            if (_tab != _HomeTab.now)
+            if (_tab == _HomeTab.route)
+              Transform.translate(
+                offset: const Offset(0, -30),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 18),
+                  child: RouteChooser(app: app),
+                ),
+              ),
+            if (_tab == _HomeTab.stats)
               Transform.translate(
                 offset: const Offset(0, -34),
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 20),
                   child: SurfaceCard(
                     padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
-                    child: _tab == _HomeTab.route
-                        ? _RouteLine(
-                            exit: app.exit,
-                            live: app.phase == Phase.protected,
-                          )
-                        : _Usage(app: app),
+                    child: _Usage(app: app),
                   ),
                 ),
               ),
@@ -447,10 +452,15 @@ class _Instrument extends StatelessWidget {
         'exits',
         app.me.loading ? 'Loading your plan' : 'No plan yet. Open Plans.',
       ),
-      _HomeTab.route when e != null => (
-        e.protocol,
+      _HomeTab.route when e != null && app.pinned => (
+        e.code.isEmpty ? e.protocol : e.code,
         '',
-        'Protocol to ${e.title}, ${e.label}',
+        'Picked by hand: ${e.label}, ${e.protocol}',
+      ),
+      _HomeTab.route when e != null => (
+        app.routeMode.title,
+        '',
+        '${app.routeMode.title} mode, ${app.routeCountry.isEmpty ? 'best location' : countryName(app.routeCountry)}',
       ),
       _HomeTab.route => ('0', 'exits', 'No exit to route through yet'),
       _HomeTab.stats => (
@@ -650,47 +660,6 @@ class _StageLine extends StatelessWidget {
           ],
         ),
       ),
-    );
-  }
-}
-
-class _RouteLine extends StatelessWidget {
-  const _RouteLine({required this.exit, required this.live});
-  final Exit? exit;
-  final bool live;
-
-  @override
-  Widget build(BuildContext context) {
-    Widget node(String label, Color c) => Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 12,
-          height: 12,
-          decoration: BoxDecoration(color: c, shape: BoxShape.circle),
-        ),
-        const SizedBox(height: 6),
-        Text(label, style: PType.meta(color: PColors.ink)),
-      ],
-    );
-    Widget link() => Expanded(
-      child: Container(
-        height: 2,
-        margin: const EdgeInsets.only(bottom: 20, left: 6, right: 6),
-        color: live ? PColors.blue : PColors.ice,
-      ),
-    );
-    return Row(
-      children: [
-        node('Phone', PColors.navy),
-        link(),
-        node(exit?.protocol ?? '—', PColors.blue),
-        link(),
-        node(
-          exit == null || exit!.code.isEmpty ? 'Exit' : exit!.code,
-          live ? PColors.safe : PColors.ice,
-        ),
-      ],
     );
   }
 }
