@@ -162,7 +162,7 @@ export async function userCard(env, id, mode) {
     `💰 کیف پول: ${fa(u.wallet_balance)} تومان`,
     `📱 دستگاه: ${fa(u.devs)} · 🧾 سفارش: ${fa(u.ords)}`,
     `🗂 پنل‌ها: ${pas.map((a) => `${a.label}${a.desired === 'active' ? '' : ' (خاموش)'}`).join('، ') || '—'}`,
-    ...(u.period_id ? [`🕒 آخرین اتصال: ${seenFa(u.online_at)}`] : []),
+    ...(u.period_id ? [`🕒 آخرین اتصال: ${seenFa(u.online_at, nowSec(), mode === 'live' ? ONLINE_SEC : STORED_ONLINE_SEC)}`] : []),
     `📶 اپراتورها: ${nets || 'هنوز گزارشی نیامده'}`,
     ...(mode === 'live' ? [] : ['', 'عددها از آخرین خواندن پنل‌هاست؛ برای عدد همین لحظه «🔄 زنده از پنل» را بزن.'])];
   return { text: lines.join('\n'), kb: userKb(u.id).inline_keyboard };
@@ -171,10 +171,13 @@ export async function userCard(env, id, mode) {
 // When the panel last saw the user's traffic (online_at). "Online now" = seen in the last ONLINE_SEC: the panels
 // update online_at while traffic flows, Rebecca also says is_online itself.
 export const ONLINE_SEC = 120;
-export function seenFa(t, now = nowSec()) {
+// The stored online_at of an account that stays online is rewritten by the sync job every LEDGER_EVERY (10
+// minutes, sync.js), so a stored value counts as "online now" for that long plus a margin.
+export const STORED_ONLINE_SEC = 600 + 180;
+export function seenFa(t, now = nowSec(), within = ONLINE_SEC) {
   if (!t) return 'هنوز وصل نشده';
   const d = Math.max(0, now - t);
-  if (d < ONLINE_SEC) return '🟢 الان آنلاین';
+  if (d < within) return '🟢 الان آنلاین';
   if (d < 3600) return `${fa(Math.round(d / 60))} دقیقه پیش`;
   if (d < 2 * 86400) return `${fa(Math.round(d / 3600))} ساعت پیش`;
   return `${fa(Math.floor(d / 86400))} روز پیش (${ymd(t)})`;
@@ -214,7 +217,7 @@ export async function userPanels(env, id) {
     if (x.off) return [top, 'پنل خارج شده؛ اکانت خاموش است.'];
     if (x.gone) return [top, '⚠️ این اکانت روی پنل پیدا نشد.'];
     const stored = c ? `حساب‌شده در این دوره: ${gb(c.accounted_bytes || 0)} گیگ` : '';
-    if (x.err) return [top, `⚠️ پنل جواب نداد. ${stored ? stored + ' (آخرین خواندن)' : ''}`.trim(), `🕒 آخرین اتصال: ${seenFa(c && c.online_at, now)}`];
+    if (x.err) return [top, `⚠️ پنل جواب نداد. ${stored ? stored + ' (آخرین خواندن)' : ''}`.trim(), `🕒 آخرین اتصال: ${seenFa(c && c.online_at, now, STORED_ONLINE_SEC)}`];
     const r = x.r;
     const status = String(r.status || '');
     const on = status === 'active';

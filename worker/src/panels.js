@@ -135,10 +135,13 @@ export function pickPanels(allPanels, userId) {
   return picked.length ? picked : panels;
 }
 
-// While the app waits, a panel gets 5 seconds, and one that failed its last checks gets 2.5 (the cron, which has
+// While the app waits, a panel gets 5 seconds, and one that failed its last checks gets 1.5 (the cron, which has
 // time, keeps 15). One dead panel used to hold /me and the server list for 15 seconds per panel, one after another.
 export const USER_PATH_MS = 5000;
-export const userPathMs = (a) => ((a.fail_streak || 0) >= 3 ? USER_PATH_MS / 2 : USER_PATH_MS);
+// a panel the sync job has seen failing 3 times in a row gets a short chance only: its configs still come when
+// it answers fast, but it no longer holds every user's server list for seconds while it is down
+export const KNOWN_DOWN_MS = 1500;
+export const userPathMs = (a) => ((a.fail_streak || 0) >= 3 ? KNOWN_DOWN_MS : USER_PATH_MS);
 
 export async function accountsOf(env, userId) {
   return all(env, `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json, p.fail_streak FROM panel_accounts a
