@@ -254,6 +254,49 @@ class Tunnel {
     }
   }
 
+  /// The apps a person can open on this phone (Pleat left out), for
+  /// Route > Split route; empty off Android.
+  Future<List<PhoneApp>> apps() async {
+    try {
+      final list = await _method.invokeMethod<List<Object?>>('apps') ?? [];
+      return [
+        for (final a in list)
+          if (a is Map)
+            PhoneApp(
+              '${a['id'] ?? ''}',
+              '${a['name'] ?? ''}',
+              a['icon'] is Uint8List ? a['icon'] as Uint8List : null,
+            ),
+      ]..removeWhere((a) => a.id.isEmpty);
+    } on MissingPluginException {
+      return const [];
+    } on PlatformException {
+      return const [];
+    }
+  }
+
+  /// A question shown as a notification while Pleat isn't on screen;
+  /// tapping it opens Home's Route. English only.
+  Future<void> alert(String title, String text) async {
+    try {
+      await _method.invokeMethod<void>('alert', {'title': title, 'text': text});
+    } on MissingPluginException {
+      // no native side (tests)
+    } on PlatformException {
+      // an older native side: the popup still waits in the app
+    }
+  }
+
+  Future<void> alertClear() async {
+    try {
+      await _method.invokeMethod<void>('alertClear');
+    } on MissingPluginException {
+      // no native side
+    } on PlatformException {
+      // an older native side
+    }
+  }
+
   /// Android's always-on and "block connections without VPN" flags for
   /// Pleat. Android reports them only while the tunnel runs (Android 10+);
   /// null when unknown.
@@ -363,4 +406,11 @@ class Tunnel {
   };
 
   void dispose() => _sub?.cancel();
+}
+
+/// An app on the phone: its package, its name and a small PNG icon.
+class PhoneApp {
+  const PhoneApp(this.id, this.name, this.icon);
+  final String id, name;
+  final Uint8List? icon;
 }

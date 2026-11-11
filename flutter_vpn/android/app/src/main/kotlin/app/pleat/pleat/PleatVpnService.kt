@@ -203,6 +203,9 @@ class PleatVpnService : VpnService() {
     }
 
     private fun start(config: String) {
+        // Apps the person sends past the VPN (Route > Split route): kept out
+        // of the tun entirely, so they use the phone's own network and IP.
+        val bypass = bypassOf(config)
         val iface = Builder()
             .setSession("Pleat")
             .setMtu(1500)
@@ -217,6 +220,13 @@ class PleatVpnService : VpnService() {
             .addDnsServer("1.1.1.1")
             .addDnsServer("1.0.0.1")
             .addDisallowedApplication(packageName)
+            .apply {
+                for (p in bypass) {
+                    if (p == packageName) continue
+                    // an app uninstalled since it was picked: nothing to keep out
+                    try { addDisallowedApplication(p) } catch (e: Exception) {}
+                }
+            }
             .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) setMetered(false) }
             .establish() ?: error("VPN permission revoked")
         tun = iface
@@ -304,10 +314,22 @@ class PleatVpnService : VpnService() {
         return String(CharArray(n) { abc[rnd.nextInt(abc.length)] })
     }
 
-    /** The config with [user]/[pass] as the only login of its "socks" inbound. */
+    /** Packages under the config's "pleat" key: the apps that skip the VPN. */
+    private fun bypassOf(config: String): List<String> = try {
+        val list = JSONObject(config).optJSONObject("pleat")?.optJSONArray("bypass")
+        if (list == null) emptyList() else List(list.length()) { list.optString(it) }.filter { it.isNotBlank() }
+    } catch (e: Exception) {
+        emptyList()
+    }
+
+    /**
+     * The config with [user]/[pass] as the only login of its "socks" inbound,
+     * and without Pleat's own "pleat" key, which is not the core's.
+     */
     private fun lockSocks(config: String, user: String, pass: String): String {
         val json = JSONObject(config)
-        val inbounds = json.optJSONArray("inbounds") ?: return config
+        json.remove("pleat")
+        val inbounds = json.optJSONArray("inbounds") ?: return json.toString()
         for (i in 0 until inbounds.length()) {
             val ib = inbounds.optJSONObject(i) ?: continue
             if (ib.optString("tag") != "socks") continue

@@ -12,6 +12,7 @@ import 'avatar_gate.dart';
 import 'home.dart';
 import 'locations.dart';
 import 'protect.dart';
+import 'route_extras.dart';
 import 'update.dart';
 
 /// Scroll position of the visible tab, for shard parallax.
@@ -71,7 +72,10 @@ class _ShellState extends State<Shell> {
     final app = AppScope.read(context);
     if (app == _app) return;
     _app?.updateSheet.removeListener(_showUpdate);
-    _app = app..updateSheet.addListener(_showUpdate);
+    _app?.lockAskSheet.removeListener(_showLockAsk);
+    _app = app
+      ..updateSheet.addListener(_showUpdate)
+      ..lockAskSheet.addListener(_showLockAsk);
     // a must-update announced before this screen was built
     if (app.mustUpdate) {
       WidgetsBinding.instance.addPostFrameCallback((_) => _showUpdate());
@@ -82,9 +86,18 @@ class _ShellState extends State<Shell> {
     if (mounted) showUpdateSheet(context);
   }
 
+  /// Stay in one country: nothing in it answered; one popup at a time.
+  bool _asking = false;
+  void _showLockAsk() {
+    if (!mounted || _asking || _app?.lockAsk == null) return;
+    _asking = true;
+    showLockAsk(context).whenComplete(() => _asking = false);
+  }
+
   @override
   void dispose() {
     _app?.updateSheet.removeListener(_showUpdate);
+    _app?.lockAskSheet.removeListener(_showLockAsk);
     _scroll.dispose();
     super.dispose();
   }

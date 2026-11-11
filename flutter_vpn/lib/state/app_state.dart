@@ -16,6 +16,8 @@ import 'exits.dart';
 import 'health.dart';
 import 'net_cache.dart';
 import 'route_mode.dart';
+import 'route_rules.dart';
+import 'stats_log.dart';
 import 'tunnel.dart';
 import 'updater.dart';
 import 'xray_config.dart';
@@ -187,6 +189,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   /// The core's reason for a failed exit, read once from the service.
   void _noteFail(Exit e, String type) {
+    if (type == 'connect_fail' || type == 'silent') {
+      connectLog.add(_net, Try(DateTime.now(), false, e.family));
+    }
     final started = _attemptAt;
     final proto = protoOf(e.server.link);
     final kind = network?.kind ?? '';
@@ -214,6 +219,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// Nothing in the chosen route came up: the person is left without the
   /// VPN.
   void _noteNoExit() {
+    final n = network;
+    if (n != null && !pinned) {
+      netRoutes.note(_net, n.label, routeMode, ok: false);
+      _save();
+    }
     health.record(
       'no_exit',
       c: routeMode.name,
@@ -233,6 +243,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   void _noteUp() {
     final e = exit;
     if (e == null) return;
+    final n = network;
+    if (n != null && !pinned) {
+      netRoutes.note(_net, n.label, routeMode, ok: true);
+    }
+    connectLog.add(_net, Try(DateTime.now(), true, e.family));
+    _save();
     final proto = protoOf(e.server.link);
     health.count(proto: proto, ok: true);
     final at = _attemptAt;
@@ -526,6 +542,42 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// only use exits that match both; see [routePool].
   RouteMode routeMode = RouteMode.auto;
   String routeCountry = '';
+
+  /// Route > Stay in one country: only exits in [routeCountry], the same
+  /// exit (so the same IP) while it answers, and another country only
+  /// after the person says yes (see [lockAsk]).
+  bool stayInCountry = false;
+
+  /// The country offered in that popup; '' lets Pleat suggest the best.
+  String backupCountry = '';
+
+  /// The person's yes in the popup, for an hour (see [LockConsent]).
+  LockConsent? _consent;
+
+  /// Waiting for the person: nothing in the locked country answered.
+  LockAsk? lockAsk;
+
+  /// Bumped to show [lockAsk] as a popup (Shell listens).
+  final lockAskSheet = ValueNotifier<int>(0);
+
+  /// Home's tab (0 Now, 1 Route, 2 Stats), so a notification can open Route.
+  final homeTab = ValueNotifier<int>(0);
+
+  /// Route > Split route: the person's own sites that never use the VPN,
+  /// and Android apps kept out of it entirely.
+  List<String> directSites = [];
+  List<String> bypassApps = [];
+
+  /// Route > Your networks: switch the goal to the one used on each network.
+  bool routeByNetwork = true;
+  NetRoutes netRoutes = NetRoutes();
+
+  /// Said once on Route after the goal followed a network change.
+  String? netRouteNote;
+
+  /// Stats: the plan's used data per day, and connect attempts per network.
+  UsageLog usageLog = UsageLog();
+  ConnectLog connectLog = ConnectLog();
   Set<String> saved = {};
   List<Session> sessions = [];
   String noticesSeen = '';
@@ -736,17 +788,40 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   bool _inRoute(Exit e, RouteMode m, String country) =>
-      m.matches(e) &&
-      (country.isEmpty || (e.code.isEmpty ? e.title : e.code) == country);
+      m.matches(e) && (country.isEmpty || countryOf(e) == country);
+
+  /// The key Route uses for an exit's country: its code, or its title when
+  /// the exit has none.
+  static String countryOf(Exit e) => e.code.isEmpty ? e.title : e.code;
+
+  /// Stay in one country is in force: switched on, a country chosen, and
+  /// no exit picked by hand (a hand pick always wins).
+  bool get lockActive => stayInCountry && routeCountry.isNotEmpty && !pinned;
+
+  /// The person's yes to another country or protocol, while it lasts.
+  LockOption? get consent {
+    final c = _consent;
+    if (c == null || !lockActive) return null;
+    return c.live ? c.option : null;
+  }
+
+  /// When the person's yes to another country runs out.
+  DateTime? get consentUntil => consent == null ? null : _consent?.until;
+
+  String get _poolCountry => consent?.country ?? routeCountry;
+  RouteMode get _poolMode => consent?.mode ?? routeMode;
 
   /// The exits smart connect may use: those of [routeMode] in
-  /// [routeCountry]. When the plan no longer has any (the list changed),
-  /// every exit, so the button never has nothing to connect.
+  /// [routeCountry] (or what the person agreed to instead). When the plan
+  /// no longer has any (the list changed), every exit, so the button never
+  /// has nothing to connect; but never with Stay in one country on, which
+  /// asks first instead.
   List<Exit> get routePool {
     final pool = [
       for (final e in exits)
-        if (_inRoute(e, routeMode, routeCountry)) e,
+        if (_inRoute(e, _poolMode, _poolCountry)) e,
     ];
+    if (pool.isEmpty && lockActive) return const [];
     return pool.isEmpty ? exits : pool;
   }
 
@@ -760,11 +835,23 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// moves to it when the one in use doesn't match.
   void setRoute(RouteMode mode, {String? country}) {
     var c = country ?? routeCountry;
-    // a country the new goal doesn't reach falls back to the best anywhere
-    if (c.isNotEmpty && !exits.any((e) => _inRoute(e, mode, c))) c = '';
+    // "Best location" picked by hand: no single country to stay in
+    if (country == '' && stayInCountry) stayInCountry = false;
+    // a country the new goal doesn't reach falls back to the best anywhere,
+    // unless the person locked it (connect then asks, it never leaves alone)
+    if (c.isNotEmpty &&
+        !stayInCountry &&
+        !exits.any((e) => _inRoute(e, mode, c))) {
+      c = '';
+    }
     routeMode = mode;
     routeCountry = c;
     pinned = false;
+    _consent = null;
+    // Your networks: the goal chosen here is the one for this network
+    final n = network;
+    if (n != null) netRoutes.pick(_net, n.label, mode);
+    netRouteNote = null;
     final cur = exit;
     final fits = cur != null && _inRoute(cur, mode, c);
     final best = [
@@ -782,6 +869,326 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (moved && phase == Phase.protected) {
       unawaited(_connect(next.id, failover: false, pin: false));
     }
+  }
+
+  // ---- Route > Stay in one country ----------------------------------
+
+  /// Turns Stay in one country on or off. On with no country chosen takes
+  /// the country of the exit in use (or the best one). A running session
+  /// is restarted on the same exit so the core stops hopping between
+  /// exits (on) — the IP the sites see stays the one it is now.
+  void setStayInCountry(bool on) {
+    _consent = null;
+    if (on && routeCountry.isEmpty) {
+      final e = (exit != null && !pinned)
+          ? exit
+          : (ranked.isEmpty ? exit : ranked.first);
+      if (e == null) return;
+      stayInCountry = true;
+      setRoute(routeMode, country: countryOf(e));
+    } else {
+      stayInCountry = on;
+      if (on) pinned = false;
+      _save();
+      notifyListeners();
+    }
+    if (on && phase == Phase.protected) {
+      final cur = exit;
+      if (cur != null && countryOf(cur) == routeCountry) {
+        unawaited(_reapply());
+      } else {
+        unawaited(_connect(null, failover: false, pin: false));
+      }
+    }
+  }
+
+  /// The country the popup offers when the first one fails; '' = Pleat
+  /// suggests the best other one.
+  void setBackupCountry(String c) => update((s) {
+    s.backupCountry = c == routeCountry ? '' : c;
+  });
+
+  /// Countries on the plan, best first, each with its best exit and how
+  /// many exits it has (any goal).
+  List<(String, Exit, int)> get allCountries => countriesOf(RouteMode.auto);
+
+  /// The other country the popup would offer: the person's backup if it
+  /// has exits, else the best-ranked other country. Prefers [mode].
+  (String, RouteMode)? _nextCountry(Set<String> skip, RouteMode mode) {
+    bool has(String c, RouteMode m) =>
+        exits.any((e) => _inRoute(e, m, c) && !e.unreachable);
+    final b = backupCountry;
+    if (b.isNotEmpty && !skip.contains(b)) {
+      if (has(b, mode)) return (b, mode);
+      if (has(b, RouteMode.auto)) return (b, RouteMode.auto);
+    }
+    for (final m in {mode, RouteMode.auto}) {
+      for (final e in ranked) {
+        final c = countryOf(e);
+        if (skip.contains(c) || !m.matches(e) || e.unreachable) continue;
+        return (c, m);
+      }
+    }
+    return null;
+  }
+
+  /// Nothing in the locked country answered: stop, and ask. The person
+  /// picks the same country with any protocol, another country, or stays.
+  void _askLock() {
+    final country = _poolCountry;
+    final mode = _poolMode;
+    final place = countryName(country);
+    final options = <LockOption>[];
+    if (mode != RouteMode.auto &&
+        exits.any(
+          (e) =>
+              _inRoute(e, RouteMode.auto, country) &&
+              !mode.matches(e) &&
+              !e.unreachable,
+        )) {
+      options.add(
+        LockOption(
+          country: country,
+          mode: RouteMode.auto,
+          title: '$place, any protocol',
+          detail: 'Same country, another protocol. The IP changes, the country doesn’t.',
+        ),
+      );
+    }
+    final next = _nextCountry({routeCountry, country}, mode);
+    if (next != null) {
+      final (c, m) = next;
+      options.add(
+        LockOption(
+          country: c,
+          mode: m,
+          title: countryName(c),
+          detail: m == RouteMode.auto || m == mode
+              ? 'Your location becomes ${countryName(c)} for the next hour.'
+              : 'Your location becomes ${countryName(c)} (any protocol) for the next hour.',
+        ),
+      );
+    }
+    final what = mode == RouteMode.auto ? '' : ' ${mode.title}';
+    final message = 'No $place$what exit answered.';
+    if (options.isEmpty) return _fail('$message Try again later.');
+    lockAsk = LockAsk(country: country, mode: mode, options: options);
+    _fail('$message Pleat waits for your answer.');
+    lockAskSheet.value++;
+    if (!_foreground) {
+      unawaited(
+        tunnel.alert(
+          'No $place exit answered',
+          'Pleat stopped instead of changing your location. Open to choose.',
+        ),
+      );
+    }
+  }
+
+  /// The person's yes in the popup: [o] for the next hour, then connect.
+  Future<void> acceptLock(LockOption o) async {
+    lockAsk = null;
+    unawaited(tunnel.alertClear());
+    _consent = LockConsent(o, DateTime.now().add(LockConsent.lasts));
+    exitId = null;
+    notifyListeners();
+    await connect();
+  }
+
+  /// The person stays: not connected, nothing moved.
+  void declineLock() {
+    final c = lockAsk?.country ?? routeCountry;
+    lockAsk = null;
+    unawaited(tunnel.alertClear());
+    tunnelMessage = 'Stayed with ${countryName(c)}. Not connected.';
+    notifyListeners();
+  }
+
+  /// Back to the first country now (ends the hour of [consent]).
+  void endConsent() {
+    if (_consent == null) return;
+    _consent = null;
+    notifyListeners();
+    if (phase == Phase.protected) {
+      unawaited(_connect(null, failover: false, pin: false));
+    }
+  }
+
+  // ---- Route > Split route ---------------------------------------------
+
+  /// Adds one of the person's own sites; false when [input] is no site.
+  bool addDirectSite(String input) {
+    final s = siteOf(input);
+    if (s == null) return false;
+    if (!directSites.contains(s)) {
+      directSites = [...directSites, s]..sort();
+      _save();
+      notifyListeners();
+      unawaited(_reapply());
+    }
+    return true;
+  }
+
+  void removeDirectSite(String site) {
+    directSites = [...directSites]..remove(site);
+    _save();
+    notifyListeners();
+    unawaited(_reapply());
+  }
+
+  /// The apps kept out of the tunnel (Android packages).
+  void setBypassApps(Iterable<String> ids) {
+    final next = ids.toSet().toList()..sort();
+    if (next.join(',') == bypassApps.join(',')) return;
+    bypassApps = next;
+    _save();
+    notifyListeners();
+    unawaited(_reapply());
+  }
+
+  /// The phone's apps, for the picker (empty off Android). Read once per
+  /// run; [fresh] reads them again (an app installed meanwhile).
+  Future<List<PhoneApp>> phoneApps({bool fresh = false}) {
+    if (fresh || _phoneApps == null) _phoneApps = tunnel.apps();
+    return _phoneApps!;
+  }
+
+  Future<List<PhoneApp>>? _phoneApps;
+
+  /// Android blocks every app outside the VPN while "Block connections
+  /// without VPN" is on, so apps sent past it would have no internet.
+  bool get bypassBlocked => bypassApps.isNotEmpty && guard?.lockdown == true;
+
+  /// A running session picks up a routing change on the same exit; the
+  /// service swaps cores in place, so traffic never leaves bare.
+  Future<void> _reapply() async {
+    if (phase != Phase.protected || exitId == null) return;
+    _logSession();
+    final wasPinned = pinned;
+    await _connect(exitId, failover: false, pin: false);
+    pinned = wasPinned;
+    _save();
+  }
+
+  // ---- Route > Your networks -------------------------------------------
+
+  void setRouteByNetwork(bool on) => update((s) {
+    s.routeByNetwork = on;
+    s.netRouteNote = null;
+  });
+
+  /// The goal for a network in the list. For the network the phone is on,
+  /// the same as picking it on Home.
+  void setNetGoal(String key, RouteMode mode) {
+    if (key == _net) return setRoute(mode);
+    final r = netRoutes[key];
+    if (r == null) return;
+    netRoutes.pick(key, r.name, mode);
+    _save();
+    notifyListeners();
+  }
+
+  void forgetNet(String key) => update((s) => s.netRoutes.forget(key));
+
+  /// Key of the network the phone is on now ('0' when unknown).
+  String get netKey => _net;
+
+  /// The phone moved to another network: the goal used there becomes the
+  /// goal. It never changes the country (Stay in one country keeps it) and
+  /// never moves a session that works: the next connect, or the moment
+  /// this exit stops, uses it.
+  void _applyNetRoute() {
+    if (!routeByNetwork || pinned) return;
+    final n = network;
+    final r = netRoutes[_net];
+    if (n == null || r == null || r.mode == routeMode) return;
+    if (!routeModes.contains(r.mode)) return;
+    if (routeCountry.isNotEmpty &&
+        !exits.any((e) => _inRoute(e, r.mode, routeCountry))) {
+      // the chosen country has no such exit: keep the goal as it is
+      return;
+    }
+    routeMode = r.mode;
+    _consent = null;
+    netRouteNote = 'On ${n.label}: ${r.mode.title}, as last time';
+    _save();
+  }
+
+  // ---- Stats -------------------------------------------------------------
+
+  /// Data used on each of the last [days] days (null: not known).
+  List<(DateTime, int?)> usageDays([int days = 14]) => usageLog.daily(days);
+
+  /// The plan's data at today's pace: (bytes per day, the day it runs
+  /// out, bytes per day that last until the plan ends). Null until two
+  /// days are known, or for a plan with no data cap.
+  ({int pace, DateTime? runsOut, int? perDayToLast})? get dataPace {
+    final s = subscription;
+    if (s == null || s.unlimitedData || s.dataLimitBytes <= 0) return null;
+    final pace = usageLog.pace();
+    if (pace == null) return null;
+    final left = (s.dataLimitBytes - s.usedBytes).clamp(0, s.dataLimitBytes);
+    final now = DateTime.now();
+    final runsOut = pace <= 0
+        ? null
+        : now.add(Duration(hours: (left / pace * 24).round()));
+    final days = s.daysLeft;
+    return (
+      pace: pace,
+      runsOut: runsOut,
+      perDayToLast: days == null || days <= 0 ? null : left ~/ days,
+    );
+  }
+
+  /// Failed share of connects by weekday and hour on this network.
+  List<List<double?>> get hardness => connectLog.hardness(_net);
+
+  /// The hardest hours on this network and the goal that still got through
+  /// most then.
+  ({int from, int to, double share, RouteMode? best, int ok, int n})?
+  get hardest {
+    final w = connectLog.hardestWindow(_net);
+    if (w == null) return null;
+    final b = connectLog.bestIn(_net, w.$1, w.$2);
+    return (
+      from: w.$1,
+      to: w.$2,
+      share: w.$3,
+      best: b?.$1,
+      ok: b?.$2 ?? 0,
+      n: b?.$3 ?? 0,
+    );
+  }
+
+  /// Share of connects that worked per goal on this network over the last
+  /// week, on this phone: (worked, tried).
+  Map<RouteMode, (int, int)> get familyMine => connectLog.byFamily(_net);
+
+  /// The same from everyone on this operator, from the ranking the app
+  /// already gets: (share 0..1, median ms, reports) per goal, weighted by
+  /// how many reports each exit has.
+  Map<RouteMode, (double, int, int)> get familyAll {
+    final sum = <RouteMode, (double, int, int, int)>{};
+    for (final e in exits) {
+      final r = e.rank;
+      if (r == null || r.reports <= 0) continue;
+      final f = e.family;
+      final (w, ms, msN, n) = sum[f] ?? (0.0, 0, 0, 0);
+      sum[f] = (
+        w + r.score * r.reports,
+        ms + (r.ms > 0 ? r.ms * r.reports : 0),
+        msN + (r.ms > 0 ? r.reports : 0),
+        n + r.reports,
+      );
+    }
+    return {
+      for (final e in sum.entries)
+        e.key: (
+          e.value.$1 / e.value.$4,
+          e.value.$3 == 0 ? 0 : e.value.$2 ~/ e.value.$3,
+          e.value.$4,
+        ),
+    };
   }
 
   /// Protocols present in the server list, in first-seen order.
@@ -818,6 +1225,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     pinned = p.getBool('pinned') ?? false;
     routeMode = RouteMode.parse(p.getString('routeMode'));
     routeCountry = p.getString('routeCountry') ?? '';
+    stayInCountry = p.getBool('stayInCountry') ?? false;
+    backupCountry = p.getString('backupCountry') ?? '';
+    directSites = p.getStringList('directSites') ?? [];
+    bypassApps = p.getStringList('bypassApps') ?? [];
+    routeByNetwork = p.getBool('routeByNetwork') ?? true;
+    netRoutes = NetRoutes.decode(p.getString('netRoutes'));
+    usageLog = UsageLog.decode(p.getString('usageLog'));
+    connectLog = ConnectLog.decode(p.getString('connectLog'));
     exitId = p.getString('exit');
     saved = (p.getStringList('saved') ?? const []).toSet();
     noticesSeen = p.getString('noticesSeen') ?? '';
@@ -837,6 +1252,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     p.setBool('pinned', pinned);
     p.setString('routeMode', routeMode.name);
     p.setString('routeCountry', routeCountry);
+    p.setBool('stayInCountry', stayInCountry);
+    p.setString('backupCountry', backupCountry);
+    p.setStringList('directSites', directSites);
+    p.setStringList('bypassApps', bypassApps);
+    p.setBool('routeByNetwork', routeByNetwork);
+    p.setString('netRoutes', netRoutes.encode());
+    p.setString('usageLog', usageLog.encode());
+    p.setString('connectLog', connectLog.encode());
     exitId == null ? p.remove('exit') : p.setString('exit', exitId!);
     p.setStringList('saved', saved.toList());
     p.setString('noticesSeen', noticesSeen);
@@ -960,6 +1383,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final value = _meFrom(data);
     api.tokens.cache('me', data);
     meFresh = true;
+    final used = value.subscription?.usedBytes;
+    if (used != null) {
+      usageLog.note(used);
+      _prefs.setString('usageLog', usageLog.encode());
+    }
     return value;
   });
 
@@ -1064,6 +1492,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       }
       if (_net != before) {
         testedAt = _cache.testedAt(_net);
+        _applyNetRoute();
         return true;
       }
       testedAt ??= _cache.testedAt(_net);
@@ -2135,11 +2564,17 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       }
       // A current exit outside the Route choice (the list changed, or it
       // was picked by hand before) gives way to the choice's best.
-      if (id == null && !pinned && routeAvailable) {
+      if (id == null && !pinned && routePool.isNotEmpty) {
         final cur = exit;
-        if (cur == null || !_inRoute(cur, routeMode, routeCountry)) {
+        if (cur == null || !_inRoute(cur, _poolMode, _poolCountry)) {
           exitId = routePool.first.id;
         }
+      }
+      // Stay in one country with nothing there for this goal: ask, never
+      // fall back to another country alone.
+      if (id == null && lockActive && routePool.isEmpty) {
+        _noteNoExit();
+        return _askLock();
       }
       if (id == null && smartConnect && !pinned && routePool.length > 1) {
         progressNote = _pingsFresh ? null : 'Testing exits for the fastest.';
@@ -2152,6 +2587,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           _save();
         } else if (routePool.every((e) => e.unreachable)) {
           _noteNoExit();
+          if (lockActive) return _askLock();
           return _fail(_noneAnswered);
         }
       }
@@ -2168,6 +2604,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           localDirect: localDirect && geoAvailable,
           api: _detours?.login,
           backups: _backupsFor(target),
+          directSites: directSites,
+          bypassApps: bypassApps,
         );
       } on FormatException catch (x) {
         health.record(
@@ -2177,6 +2615,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           d: {'proto': protoOf(target.server.link), 'what': x.message},
         );
         if (smartConnect && _failover(as: '')) return;
+        if (lockActive) return _askLock();
         return _fail(
           'This exit’s protocol (${target.protocol}) can’t run in Pleat yet. Pick another exit.',
         );
@@ -2193,6 +2632,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         unawaited(_stopTunnel());
         _noteFail(target, 'connect_fail');
         _noteNoExit();
+        if (lockActive) return _askLock();
         _fail('The exit didn’t answer. Try another one.');
       });
       _pushNote(target);
@@ -2217,7 +2657,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// the core with the picked one, and the core moves to whichever answers
   /// while the app can't watch (screen off, app asleep).
   List<String> _backupsFor(Exit target) {
-    if (!smartConnect || pinned) return const [];
+    // Stay in one country keeps one exit, so one IP: the core's own
+    // balancer would hop between exits (each its own IP) every few
+    // minutes. The app's live pings move on only when this exit stops.
+    if (!smartConnect || pinned || lockActive) return const [];
     final next =
         routePool
             .where(
@@ -2373,6 +2816,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         phase == Phase.handshaking) {
       if (_failover()) return;
       _noteNoExit();
+      if (lockActive) return _askLock();
       final why = exit?.failure;
       _fail(
         why == null
@@ -2491,6 +2935,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     notifyListeners();
     if (!_failover(as: 'silent')) {
       _noteNoExit();
+      if (lockActive) return _askLock();
       await _stopTunnel();
       phase = Phase.dropped;
       tunnelMessage = '${e.title} stopped answering.';
@@ -2560,6 +3005,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(
       tunnel.watchOpen((screen) {
         if (screen == 'locations') setTab(2);
+        if (screen == 'route') {
+          setTab(0);
+          homeTab.value = 1;
+          if (lockAsk != null) lockAskSheet.value++;
+        }
         if (screen == 'update') openUpdate();
         if (screen == 'update_go') {
           openUpdate();

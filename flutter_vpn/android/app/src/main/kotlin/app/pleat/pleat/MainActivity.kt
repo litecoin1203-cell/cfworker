@@ -283,6 +283,21 @@ class MainActivity : FlutterActivity() {
                             PICK_IMAGE
                         )
                     }
+                    // Route > Split route: the apps a person can keep out of the tunnel
+                    "apps" -> background(result, emptyList<Map<String, Any>>()) { Apps.list(this) }
+                    // Route > Stay in one country: a question while Pleat isn't on screen
+                    "alert" -> {
+                        try {
+                            Alert.show(this, call.argument<String>("title").orEmpty(), call.argument<String>("text").orEmpty())
+                        } catch (e: Exception) {
+                            // no notification: the popup still waits in the app
+                        }
+                        result.success(null)
+                    }
+                    "alertClear" -> {
+                        Alert.clear(this)
+                        result.success(null)
+                    }
                     "systemSettings" -> {
                         startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
                         result.success(null)
