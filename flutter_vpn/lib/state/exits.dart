@@ -2,6 +2,7 @@ import 'dart:math';
 
 import '../api/countries.dart';
 import '../api/models.dart';
+import 'route_mode.dart';
 
 /// Locations filters. Every one is computed from server data or from what
 /// this phone did; none is a made-up tag.
@@ -105,6 +106,9 @@ class Exit {
   String get code => server.cc;
   String get flag => server.flag;
   String get protocol => server.protocolLabel;
+
+  /// Stealth, Speed or Classic, read once from the link (Home's Route).
+  late final RouteMode family = familyOf(server.protocol, server.link);
 
   /// This phone's own measurement first, then the median other people on
   /// this network reported.
