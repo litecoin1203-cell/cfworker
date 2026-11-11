@@ -1,14 +1,18 @@
-# Runs the Worker tests on every push and pull request, so a break shows up before anyone deploys.
+# Runs the Worker tests on every pull request, so a break shows up before anyone deploys (the deploy runs them
+# again). Once per change: a push to a branch with a pull request no longer runs them a second time.
 name: Test Cloud Gold server
 
 on:
-  push:
-    paths: ['worker/**', 'miniapp/**', '.github/workflows/test-worker.yml']
   pull_request:
     paths: ['worker/**', 'miniapp/**', '.github/workflows/test-worker.yml']
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: worker-tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
