@@ -438,6 +438,10 @@ export async function refreshHostRules(env, onlyId = 0, force = false) {
       if (typeof pg.hostRules !== 'function') continue;
       rules = await pg.hostRules();
     } catch (e) { continue; }
+    if (rules === null && p.kind === 'pasarguard') {
+      // this admin cannot read groups or hosts (403): ask the panel's own subscription instead
+      try { rules = await tunnelRulesViaProbe(env, p, await adapterFor(env, p)); } catch (e) { rules = null; }
+    }
     if (rules === null) rules = [];
     const body = JSON.stringify(rules);
     if (!force && old && old.body === body && now - (old.at || 0) < 86400) continue;
@@ -445,6 +449,46 @@ export async function refreshHostRules(env, onlyId = 0, force = false) {
       `panel_hosts_${p.id}`, JSON.stringify({ at: now, rules }));
   }
 }
+// A reseller-level panel admin may create users with any group it can list, but may not read the groups' inbounds
+// or the hosts. So the Worker keeps one probe user on the panel, only in the Tunnel group(s): whatever its
+// subscription contains is exactly the tunnel configs. Rules = that user's host:port pairs, all marked tunnel.
+// null = no Tunnel group (or the panel refused): nothing is marked and the bot's diagnostic says why.
+const TUNNEL_GROUP_RE = /tunn?el|تانل/i;
+export const probeKey = (id) => `tunnel_probe_${id}`;
+async function setProbe(env, id, v) {
+  await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', probeKey(id), JSON.stringify(v));
+}
+export async function tunnelRulesViaProbe(env, panel, pg) {
+  const raw = (await first(env, 'SELECT value FROM settings WHERE key = ?', probeKey(panel.id)))?.value;
+  let probe = null;
+  try { probe = raw ? JSON.parse(raw) : null; } catch (e) { probe = null; }
+  const toRules = (links) => {
+    const out = [], seen = new Set();
+    for (const l of links) {
+      const ep = linkEndpoint(l);
+      if (!ep) continue;
+      const k = `${ep.host.toLowerCase()}:${ep.port}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      out.push({ a: [ep.host.toLowerCase()], p: parseInt(ep.port, 10) || null, r: '', t: true });
+    }
+    return out.slice(0, 300);
+  };
+  if (probe && probe.sub) {
+    try { return toRules(await pg.subscriptionLinks(probe.sub)); }
+    catch (e) { if (!(e instanceof PasarGuardError) || ![404, 410].includes(e.status)) throw e; /* user gone: make a new one */ }
+  }
+  const groups = (await pg.listGroups()).filter((g) => TUNNEL_GROUP_RE.test(String(g.name || '')));
+  if (!groups.length) { await setProbe(env, panel.id, { error: 'no_group', at: nowSec() }); return null; }
+  const name = `cgtunnel_${Math.floor(Math.random() * 1e6)}`;
+  let u;
+  try { u = await pg.createUser(name, { expire: 0, dataLimit: 0, groupIds: groups.map((g) => g.id), note: 'Cloud Gold: finds the Tunnel configs. Do not delete.' }); }
+  catch (e) { await setProbe(env, panel.id, { error: `create_${e.status || 0}`, at: nowSec() }); throw e; }
+  if (!u || !u.subscription_url) { await setProbe(env, panel.id, { error: 'no_sub', at: nowSec() }); return null; }
+  await setProbe(env, panel.id, { user: name, sub: u.subscription_url, at: nowSec() });
+  return toRules(await pg.subscriptionLinks(u.subscription_url));
+}
+
 async function hostRulesStamps(env, ids) {
   const out = {};
   if (!ids.length) return out;
