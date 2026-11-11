@@ -628,8 +628,10 @@ export async function panelProgress(env, panel) {
 
 // One cron slice. Returns what it did (for tests and logs). Each part runs even when an earlier one failed, so
 // a broken panel or one bad row never stops expiry, pushes or new accounts.
-export async function runSync(env) {
+// spent = subrequests this cron run already made elsewhere (the chain scan); the pushes and creates shrink to fit.
+export async function runSync(env, { spent = 0 } = {}) {
   const out = { page: null, expired: 0, pushed: 0, created: 0 };
+  const budget = Math.max(8, SUBREQ_BUDGET - spent);
   const panels = await listPanels(env);
   const adapter = adapterCache(env);
   const part = async (name, fn) => { try { await fn(); } catch (e) { logError(`sync ${name} failed`, e); } };
@@ -642,14 +644,14 @@ export async function runSync(env) {
     out.expired = due.length;
   });
   let tried = 0;
-  await part('push', async () => { const push = await pushPending(env, { adapter }); out.pushed = push.done; tried = push.tried; });
+  await part('push', async () => { const push = await pushPending(env, { adapter, limit: Math.max(2, Math.min(PUSH_PER_RUN, budget - 8)) }); out.pushed = push.done; tried = push.tried; });
   await part('create', async () => {
     // Looking for missing accounts reads every running subscription once per panel (D1 bills rows read; the Free
     // plan allows 5 million a day). When a look finds nothing, this isolate skips the next ones for a while: the
     // app makes a missing account itself when it opens (ensureMissingFor), so this is only the backstop.
     const quiet = globalThis.__cgNoMissingUntil || 0;
     if (Date.now() < quiet) { out.createSkipped = true; return; }
-    out.created = await createMissing(env, panels, adapter, Math.max(2, Math.min(CREATE_PER_RUN, Math.floor((SUBREQ_BUDGET - tried) / 4))));
+    out.created = await createMissing(env, panels, adapter, Math.max(0, Math.min(CREATE_PER_RUN, Math.floor((budget - tried) / 4))));
     globalThis.__cgNoMissingUntil = out.created ? 0 : Date.now() + CREATE_QUIET_MS;
   });
   return out;

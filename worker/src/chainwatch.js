@@ -229,9 +229,16 @@ export async function scanAll(env) {
   if (mode === 'off') return [];
   const orders = await candidates(env);
   if (!orders.length) return [];
-  return matchAndConfirm(env, orders, await fetchFor(orders), mode, CRON_MAX);
+  const txs = await fetchFor(orders);
+  const done = await matchAndConfirm(env, orders, txs, mode, CRON_MAX);
+  // subrequests this used (one per wallet read, and a delivery reaches every panel and Telegram), so the sync job
+  // that shares the cron run's 50 keeps within what is left
+  const wallets = new Set(orders.map((o) => o.coin + '|' + o.coin_address)).size;
+  done.spent = wallets + done.reduce((n, d) => n + (d.result === 'paid' ? DELIVERY_COST : 2), 0);
+  return done;
 }
 const CRON_MAX = 1;
+const DELIVERY_COST = 12; // a delivery: about 3 calls on each of up to 3 panels, plus the Telegram messages
 
 // While the user watches the payment screen: check this order now (at most every 12 seconds).
 export async function checkOrder(env, order) {

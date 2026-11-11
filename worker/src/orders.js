@@ -362,6 +362,7 @@ export async function nowpaymentsIpn(env, request) {
   if (!order) return json({ ok: true, ignored: 'unknown order' });
   if (String(payload.invoice_id || order.crypto_invoice_id) !== String(order.crypto_invoice_id)) return json({ ok: true, ignored: 'invoice mismatch' });
   const state = String(payload.payment_status || '').toLowerCase();
+  if (PAID_STATES.has(state) && order.status === 'paid') return json({ ok: true }); // a repeat: already delivered and told
   if (PAID_STATES.has(state)) {
     try { await settle(env, order); }
     catch (e) { throw err(500, e.code || 'settle_failed', e.message || 'settle failed'); } // NOWPayments retries

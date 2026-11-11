@@ -1,7 +1,7 @@
 // Provisioning on the panels (through the control plane) and all money movements.
 import { first, all, run, insert, getSettingInt, getSetting } from './db.js';
 import { PasarGuardError, pgOrThrow, parseExpire } from './pasarguard.js';
-import { nowSec } from './util.js';
+import { nowSec, logError } from './util.js';
 import { notifyAdmin, untrusted } from './telegram.js';
 import { listPanels, pickPanels, adapterFor } from './panels.js';
 import { ensureAccount, refreshUser, usedBytes } from './sync.js';
@@ -303,6 +303,15 @@ export async function payWithWallet(env, user, order) {
   try {
     await settle(env, order);
   } catch (e) {
+    // The plan may already be on the panels (provisioned_at is written with the new period) and only a later step
+    // failed: then the money stays spent and the order is paid, never a plan delivered and refunded too.
+    const o = await first(env, 'SELECT provisioned_at FROM orders WHERE id = ?', order.id).catch(() => null);
+    if (o && o.provisioned_at) {
+      await run(env, "UPDATE orders SET status = 'paid', paid_at = COALESCE(paid_at, ?), settling_at = NULL WHERE id = ?", nowSec(), order.id);
+      order.status = 'paid';
+      logError('wallet order delivered but settle failed after delivery', e, { order: order.id });
+      return;
+    }
     // refund what we just deducted, keeping idempotency via a distinct reason
     await walletApply(env, user, order.amount_toman, 'refund', order.id, `بازگشت وجه سفارش #${order.id}`);
     await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ? AND status NOT IN ('paid', 'settling')", order.id);
