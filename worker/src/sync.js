@@ -14,13 +14,14 @@
 import { first, all, run } from './db.js';
 import { nowSec, logError } from './util.js';
 import { PasarGuardError, parseExpire } from './pasarguard.js';
-import { adapterFor, listPanels, panelsFor, pickPanels, recordHealth, accountsOf, groupIdsFor, USER_PATH_MS, userPathMs } from './panels.js';
+import { adapterFor, listPanels, panelsFor, pickPanels, recordHealth, accountsOf, groupIdsFor, USER_PATH_MS, userPathMs, noteUserPathFail, noteUserPathOk } from './panels.js';
 
 export const PAGE = 200;            // users read per panel request
 const PUSH_PER_RUN = 15;            // pending panel writes per cron run
 const CREATE_PER_RUN = 8;           // missing panel accounts created per cron run (fewer when pushes used the budget)
 const SUBREQ_BUDGET = 44;           // of the 50 a Free-plan run may make; a create costs up to about 4
 const ERR_NOTIFY_EVERY = 6 * 3600;  // the admin hears about one panel refusing new accounts at most this often
+const CREATE_QUIET_MS = 10 * 60 * 1000; // after a look that found no missing account, the next one is 10 minutes away
 const QUIET_AFTER_ERROR = 600;      // after a refused create, the app does not wait on that panel for 10 minutes
 const MB = 1024 * 1024;
 // The cron's usage writes for an account that keeps moving (the phone keeps the VPN on all day, so a few KB of
@@ -233,10 +234,12 @@ export async function refreshUser(env, userId) {
       const pg = await adapter({ id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref, options_json: a.options_json });
       pg.timeoutMs = userPathMs(a);
       const u = await pg.getUser(a.remote_username);
+      noteUserPathOk(a.panel_id);
       if (!u) { missing++; return; }
       reached++;
       readings.set(a.id, { used: parseInt(u.used_traffic || 0, 10) || 0, expire: parseExpire(u.expire), data_limit: parseInt(u.data_limit || 0, 10) || 0, online: parseExpire(u.online_at) });
     } catch (e) {
+      if (!(e instanceof PasarGuardError) || !e.status) noteUserPathFail(a.panel_id); // no answer, not a refusal
       readings.set(a.id, null);
     }
   }));
@@ -641,7 +644,13 @@ export async function runSync(env) {
   let tried = 0;
   await part('push', async () => { const push = await pushPending(env, { adapter }); out.pushed = push.done; tried = push.tried; });
   await part('create', async () => {
+    // Looking for missing accounts reads every running subscription once per panel (D1 bills rows read; the Free
+    // plan allows 5 million a day). When a look finds nothing, this isolate skips the next ones for a while: the
+    // app makes a missing account itself when it opens (ensureMissingFor), so this is only the backstop.
+    const quiet = globalThis.__cgNoMissingUntil || 0;
+    if (Date.now() < quiet) { out.createSkipped = true; return; }
     out.created = await createMissing(env, panels, adapter, Math.max(2, Math.min(CREATE_PER_RUN, Math.floor((SUBREQ_BUDGET - tried) / 4))));
+    globalThis.__cgNoMissingUntil = out.created ? 0 : Date.now() + CREATE_QUIET_MS;
   });
   return out;
 }

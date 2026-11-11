@@ -18,7 +18,8 @@ const allInv = []; // every invocation's {label, q}, for tests that check one pa
 const counted = (label, fn) => { const st0 = { label, q: 0 }; allInv.push(st0); return invocation.run(st0, fn); };
 const worker = {
   fetch: (req, e, c) => counted(`${req.method} ${new URL(req.url).pathname}`, () => realWorker.fetch(req, e, c)),
-  scheduled: (ev, e, c) => counted(`cron ${ev.cron || ''}`, () => realWorker.scheduled(ev, e, c)),
+  // each cron run as on a fresh isolate (the "nothing missing, skip for 10 minutes" memory is tested on its own)
+  scheduled: (ev, e, c) => { if (!globalThis.__keepIsolate) globalThis.__cgNoMissingUntil = 0; return counted(`cron ${ev.cron || ''}`, () => realWorker.scheduled(ev, e, c)); },
 };
 
 const env = {
@@ -1169,7 +1170,7 @@ section('backup never contains password hashes');
 
 // ================= Phase 1: control plane over several panels =================
 const { runSync: runSyncRaw } = await import('../src/sync.js');
-const runSync = (e) => counted('runSync', () => runSyncRaw(e));
+const runSync = (e) => { if (!globalThis.__keepIsolate) globalThis.__cgNoMissingUntil = 0; return counted('runSync', () => runSyncRaw(e)); };
 const GB = 1024 ** 3;
 const P2 = 'http://panel2.test', P3 = 'http://panel3.test';
 const pg2 = fakes.addPanel(P2, 'n2.example.net');
@@ -4066,6 +4067,12 @@ section('phases 1-5 fixes: open-order cap, stale quote, bad token, cancel race, 
   const me = await call('GET', '/api/v1/me', { token: tp });
   const meMs = Date.now() - t0;
   await drain(); // the live reading that missed the answer finishes after it (waitUntil)
+  // this isolate saw the panel fail a moment ago: the next server list waits the short deadline only
+  t0 = Date.now();
+  await call('GET', '/api/v1/vpn/servers', { token: tp, headers: { 'x-device-id': 'slow1' } });
+  const againMs = Date.now() - t0;
+  await drain();
+  ok(againMs < 2500, `right after a failure the same panel holds the next server list for ${againMs} ms only`);
   fakes.pg.hang = false;
   ok(svMs < 7000 && [200, 503].includes(sv.status), `server list with a hung panel answers in ${svMs} ms (${sv.status})`);
   ok(meMs < 2500 && me.status === 200 && me.data.subscription && me.data.subscription.live === false,
@@ -4083,6 +4090,16 @@ section('phases 1-5 fixes: open-order cap, stale quote, bad token, cancel race, 
   ok(knownMs < 2500, `a panel known to be down holds the server list for ${knownMs} ms only`);
   const meOk = await call('GET', '/api/v1/me', { token: tp });
   ok(meOk.data.subscription.live === true, 'with the panel back, /me reads it live again');
+  ok(!(globalThis.__cgSlowPanels && globalThis.__cgSlowPanels.get(1)), 'an answer clears the slow mark');
+
+  // the cron's expiry check uses an index, not a scan of every subscription (D1 bills rows read)
+  const expPlan = (await q("EXPLAIN QUERY PLAN SELECT user_id FROM subscriptions WHERE state = 'active' AND expires_at IS NOT NULL AND expires_at <= ? LIMIT 50", 1).all()).results.map((r) => r.detail).join(' ');
+  ok(/idx_subscriptions_expiry/.test(expPlan), 'expiry check uses idx_subscriptions_expiry: ' + expPlan);
+  // a look for missing panel accounts that finds none is not repeated by the same isolate for 10 minutes
+  globalThis.__keepIsolate = true; globalThis.__cgNoMissingUntil = 0;
+  const r1 = await runSyncRaw(env), r2 = await runSyncRaw(env);
+  globalThis.__keepIsolate = false; globalThis.__cgNoMissingUntil = 0;
+  ok(!r1.createSkipped && r1.created === 0 && r2.createSkipped === true, 'an empty look for missing accounts is skipped for a while: ' + JSON.stringify([r1, r2]));
 }
 
 section('Mini App stage 0: initData check, probe page, report to the admin, bot buttons');
