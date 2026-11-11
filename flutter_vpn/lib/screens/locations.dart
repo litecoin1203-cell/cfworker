@@ -606,7 +606,7 @@ class _ExitRow extends StatelessWidget {
   }
 }
 
-/// Which panel a config came from, "P1". Only admins get the number.
+/// Which panel a config came from, "P1".
 class PanelTag extends StatelessWidget {
   const PanelTag(this.panel, {super.key});
   final int panel;

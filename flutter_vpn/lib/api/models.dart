@@ -226,8 +226,7 @@ class Server {
   /// Anonymous stable key, the same `k` the Cloud Gold app reports.
   final String key;
 
-  /// The panel this config came from (1, 2, ...). The Worker sends it to
-  /// admins only; 0 for everyone else, and then no tag is drawn.
+  /// The panel this config came from (1, 2, ...); 0 = unknown, no tag drawn.
   final int panel;
 
   /// The config enters through Iran (a panel's "Tunnel" group).

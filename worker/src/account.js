@@ -276,24 +276,16 @@ async function unifiedLinks(env, user, fwd) {
   return r;
 }
 
-async function isAppAdmin(env, user) {
-  if (!user.tg_id || !/^\d{1,20}$/.test(String(user.tg_id))) return false;
-  if (env.TELEGRAM_CHAT_ID && String(user.tg_id) === String(env.TELEGRAM_CHAT_ID)) return true;
-  const r = await first(env, 'SELECT role FROM admins WHERE tg_id = ?', String(user.tg_id)).catch(() => null);
-  return !!(r && (r.role === 'support' || r.role === 'viewer'));
-}
-
 export async function vpnServers(env, user, request) {
   await activeSub(env, user);
   const r = await unifiedLinks(env, user, request ? fwdHeaders(request.headers) : {});
-  // tunnel = the config enters through Iran (a panel's "Tunnel" group), shown to everyone. panel = which panel
-  // it came from, only for an admin: it means nothing to a customer.
-  const admin = await isAppAdmin(env, user);
+  // tunnel = the config enters through Iran (a panel's "Tunnel" group). panel = which panel it came from.
+  // Both are shown to every user (Ali, 2026-11-11).
   const list = r.links.map((link, i) => {
     const s = parseLink(i, link);
     const m = r.meta?.[i];
     if (m?.tunnel) s.tunnel = true;
-    if (admin && m?.panel) s.panel = m.panel;
+    if (m?.panel) s.panel = m.panel;
     return s;
   });
   try { const { rememberKeys } = await import('./netstats.js'); await rememberKeys(env, user, list); } catch (e) { /* stats only */ }

@@ -1361,7 +1361,7 @@ section('acceptance: the user sees one list with no trace of the panels');
     ok(r.status === 200, p + ' -> ' + r.status);
     bodies.push(await r.res.text());
   }
-  const all = bodies.join('\n');
+  const all = bodies.join("\n").replace(/"panel":\d+/g, "");  // the panel number (P1, P2) is shown to every user; no name or address
   ok(!/panel|\.test|MyPanel|sub_url|پنل/i.test(all), 'no panel name, address, label or link anywhere');
   const servers = JSON.parse(bodies[2]);
   ok(servers.length === 6 && servers.every((x) => /^(NL|DE|US) \d$/.test(x.name)), 'one merged list of 6, renamed by country: ' + servers.map((x) => x.name).join(', '));
@@ -4415,7 +4415,7 @@ section('configs from a panel\'s "Tunnel" group are marked; the panel number is 
   const H = { 'x-device-id': 'tn', 'x-hwid': 'tn' };
   const before = (await call('GET', '/api/v1/vpn/servers', { token: tok, headers: H })).data;
   ok(Array.isArray(before) && before.length >= 3 && !before.some((s) => s.tunnel), 'before the hosts are read nothing is marked');
-  ok(!before.some((s) => 'panel' in s), 'a customer never gets the panel number');
+  ok(before.every((s) => s.panel > 0), 'every user gets the panel number');
   await counted('refreshHostRules', () => refreshHostRules(env));
   const stored = await row("SELECT value FROM settings WHERE key = 'panel_hosts_1'");
   ok(stored && JSON.parse(stored.value).rules.length === 3, 'hosts kept in settings: ' + (stored && stored.value.slice(0, 80)));
@@ -4423,12 +4423,7 @@ section('configs from a panel\'s "Tunnel" group are marked; the panel number is 
   const de = after.filter((s) => s.country_code === 'DE'), other = after.filter((s) => s.country_code !== 'DE');
   ok(de.length && de.every((s) => s.tunnel === true), 'the Germany config (Tunnel group) is marked tunnel');
   ok(other.length && other.every((s) => !s.tunnel), 'configs of other groups are not marked');
-  ok(!after.some((s) => 'panel' in s), 'still no panel number for a customer');
-  // the same list for the admin (the owner's Telegram id): every server says which panel it came from
-  await env.DB.prepare('UPDATE users SET tg_id = 12345 WHERE id = ?').bind(u.id).run();
-  const adm = (await call('GET', '/api/v1/vpn/servers', { token: tok, headers: H })).data;
-  ok(adm.every((s) => Number.isInteger(s.panel) && s.panel > 0), 'the admin sees the panel of every server: ' + adm.map((s) => s.panel).join(','));
-  await env.DB.prepare('UPDATE users SET tg_id = NULL WHERE id = ?').bind(u.id).run();
+  ok(after.every((s) => Number.isInteger(s.panel) && s.panel > 0), 'every user sees the panel of every server: ' + after.map((s) => s.panel).join(','));
   // an unchanged panel is not written again; a panel that cannot be read keeps what it had
   const w0 = (await row("SELECT value FROM settings WHERE key = 'panel_hosts_1'")).value;
   await refreshHostRules(env);
