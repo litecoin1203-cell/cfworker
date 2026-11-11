@@ -65,6 +65,7 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
+        Health.install(this)
         EventChannel(engine.dartExecutor.binaryMessenger, "pleat/tunnel/state")
             .setStreamHandler(TunnelHub.stream)
         pendingOpen = pendingOpen ?: intent?.getStringExtra(TunnelNote.EXTRA_OPEN)
@@ -112,6 +113,9 @@ class MainActivity : FlutterActivity() {
                 when (call.method) {
                     "available" -> result.success(engineLoads())
                     "engineError" -> result.success(engineError())
+                    // the health reports: crashes, kills and battery since the last read; a start's failure
+                    "health" -> background(result, mapOf<String, Any>()) { Health.collect(this) }
+                    "startError" -> result.success(Health.takeStartError())
                     "state" -> result.success(TunnelHub.state)
                     "note" -> {
                         TunnelNote.info = TunnelNote.Info(

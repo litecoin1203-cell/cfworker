@@ -72,9 +72,12 @@ export default {
       if (!env.TELEGRAM_CHAT_ID) return;
       let rate = '';
       try { const { usdRateInfo } = await import('./usdrate.js'); const ri = await usdRateInfo(env, { force: true }); rate = ri.rate ? `\n💵 دلار: ${ri.rate.toLocaleString('en-US')} تومان (${ri.from === 'live' ? 'زنده' : ri.from === 'saved' ? 'ذخیره‌شده' : 'دستی'})` : '\n⚠️ قیمت دلار از صرافی‌ها دریافت نشد → /rate'; } catch (e) { logError('daily usd rate failed', e); }
-      try { await notifyAdmin(env, '🌙 گزارش روزانه\n' + (await statsText(env)) + rate); } catch (e) { logError('daily report failed', e); }
+      let health = '';
+      try { const { dailyLine } = await import('./health.js'); health = '\n' + (await dailyLine(env)); } catch (e) { logError('daily health line failed', e); }
+      try { await notifyAdmin(env, '🌙 گزارش روزانه\n' + (await statsText(env)) + rate + health); } catch (e) { logError('daily report failed', e); }
       try { await sendBackup(env); } catch (e) { logError('daily backup failed', e); }
       try { const { prune } = await import('./netstats.js'); await prune(env); } catch (e) { logError('net stats prune failed', e); }
+      try { const { prune } = await import('./health.js'); await prune(env); } catch (e) { logError('health prune failed', e); }
     })());
   },
 
@@ -214,7 +217,7 @@ async function route(request, env, p, ctx) {
   // everything below needs a logged-in user
   const authed = [
     '/me', '/trial', '/vpn', '/vpn/sub', '/vpn/servers', '/devices', '/orders', '/wallet', '/referral', '/coupons/check',
-    '/app/apk', '/auth/change-password', '/auth/logout-all', '/me/packages', '/me/email', '/me/avatar', '/me/telegram/start', '/me/telegram/verify', '/me/ip', '/net/report', '/net/rank', '/net/google',
+    '/app/apk', '/auth/change-password', '/auth/logout-all', '/me/packages', '/me/email', '/me/avatar', '/me/telegram/start', '/me/telegram/verify', '/me/ip', '/me/health', '/net/report', '/net/rank', '/net/google',
   ];
   const needsAuth = authed.includes(p) || p.startsWith('/devices/') || p.startsWith('/orders/');
   if (!needsAuth) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
@@ -233,7 +236,12 @@ async function route(request, env, p, ctx) {
     const k = new URL(request.url).searchParams.get('k');
     if (k && /^[A-Z]{2}$/.test(cf.country || '')) {
       const { learnExitCountry } = await import('./panels.js');
-      const job = learnExitCountry(env, k, cf.country).catch(() => {});
+      // &h=0: the person turned Pleat's diagnostics off, so no location report (the country is still learned)
+      const report = new URL(request.url).searchParams.get('h') !== '0';
+      const job = (async () => {
+        await learnExitCountry(env, k, cf.country).catch(() => {});
+        if (report) { const { checkExitCountry } = await import('./health.js'); await checkExitCountry(env, user, request, k, cf.country).catch(() => {}); }
+      })();
       if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
     }
     return json({ ip: String(request.headers.get('cf-connecting-ip') || '').slice(0, 45), cc: /^[A-Z]{2}$/.test(cf.country || '') ? cf.country : '',
@@ -267,6 +275,12 @@ async function route(request, env, p, ctx) {
   if (p === '/vpn' && m === 'GET') return account.vpn(env, user, request, ctx);
   if (p === '/vpn/servers' && m === 'GET') return account.vpnServers(env, user, request);
   if (p === '/vpn/sub' && m === 'GET') return account.vpnSub(env, user, request);
+  // Pleat's automatic health reports (health.js): batched, capped per user per day
+  if (p === '/me/health' && m === 'POST') {
+    await rateLimit(env, 'RL_IP', 'health:' + user.id);
+    const { report } = await import('./health.js');
+    return report(env, user, request, await body(request), ctx);
+  }
   if (p === '/net/report' && m === 'POST') { const ns = await import('./netstats.js'); return ns.report(env, user, request, await body(request)); }
   if (p === '/net/rank' && m === 'GET') { const ns = await import('./netstats.js'); return ns.rank(env, request, new URL(request.url).searchParams.get('kind')); }
   if (p === '/net/google' && m === 'POST') { const ns = await import('./netstats.js'); return ns.googleReport(env, user, await body(request)); }

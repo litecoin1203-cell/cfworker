@@ -29,6 +29,7 @@ Nothing. Pleat was a seeded demo with no network code.
 | Server list | `GET /vpn/servers` | `index, name, country_code, protocol, link` (link kept in memory only, never shown) | Locations, Home recommended, Location detail, Protect protocol |
 | Server quality | `GET /net/rank` | `asn`, `isp_en`, `mobile`, `servers{k: score, ms, kbps, n, users}` keyed by FNV-1a of `type|host|port` (same key as `CgVpn.serverKey`) | "On Irancell" line, Strong/Weak on the operator (3+ people), others' speed until this phone measured, Best category, recommended order |
 | Results shared | `POST /net/report` | `{results:[{k, ok, ms}]}` after pings, `{results:[{k, kbps}]}` after speed tests, 9 s apart | Per-operator ranking for everyone |
+| Health reports | `POST /me/health` | `{app, os, model, net, events:[{t, k?, c?, n, at, last, d?}]}`, batched (critical ≤ 1 min, high ≤ 10 min, rest 6 h); scrubbed, no link or address; off with Profile › Send diagnostics | Bot › 🩺 سلامت اپ, instant Telegram alert for critical |
 | Connect pre-check | `GET /vpn` | `subscription{status, active}`, registers this device (403 `device_limit`, 402 `no_subscription`, 410 `sub_missing`) | Home connect control, Location detail Connect here |
 | Session watch | `GET /me` every 60 s while a session is up | `subscription.active/status` | Home + Activity: drop to red when the plan stops |
 | Notices | `GET /app-config` | `announcement, support_url` + warnings derived from `/me` (80/95/100 % usage, ≤3 days left, expired/limited/disabled) | Bell sheet |

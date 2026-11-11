@@ -347,6 +347,13 @@ const SCREENS = {
   hist: (env, a) => S.history(env, a[0], a[1], a[2]),
   bc: (env, a) => S.broadcasts(env, a[0]),
   bcv: (env, a) => S.broadcast(env, parseInt(a[0], 10)),
+  // Pleat's automatic health reports (health.js)
+  hl: async (env) => (await import('./health.js')).screenHome(env),
+  hlp: async (env, a) => (await import('./health.js')).screenPrio(env, parseInt(a[0], 10)),
+  hlk: async (env, a) => (await import('./health.js')).screenServers(env, a[0] || ''),
+  hlu: async (env, a) => (await import('./health.js')).screenUsers(env, parseInt(a[0], 10) || 0),
+  hlv: async (env) => (await import('./health.js')).screenVersions(env),
+  he: async (env, a) => (await import('./health.js')).screenEvent(env, a[0]),
 };
 // action routes and how risky they are (see the top of this file)
 const ACTION_RISK = {
@@ -364,6 +371,8 @@ const ACTION_RISK = {
   upa: 'reversible', upf: 'reversible', upx: 'reversible',
   // broadcast, admins (stage 5)
   bcs: 'reversible', bcgo: 'destructive', adr: 'reversible',
+  // Pleat health reports
+  her: 'reversible', hem: 'reversible', hlm: 'reversible',
 };
 // reversible user buttons: route -> [action, args from the button, the screen the card comes back on]
 const USER_TAPS = {
@@ -396,6 +405,10 @@ const USER_TAPS = {
   // broadcast, admins (stage 5)
   bcs: (a) => ['broadcast.stop', { id: a[0] }, `bcv:${a[0]}`],
   adr: (a) => ['admin.remove', { tgId: a[0] }, 'sys.adm'],
+  // Pleat health reports
+  her: (a) => ['health.resolve', { fp: a[0] }, `he:${a[0]}`],
+  hem: (a) => ['health.mute', { fp: a[0], on: a[1] === '1' }, `he:${a[0]}`],
+  hlm: (a) => ['health.mode', { mode: a[0] }, 'hl'],
 };
 const GiB = 1024 ** 3;
 // money / destructive user buttons: the "are you sure?" question, with what it affects
@@ -517,7 +530,7 @@ async function cardWithUndo(env, cq, data, r) {
   return show(env, cq, { text: scr.text, kb: [...undoRows(r), ...scr.kb] });
 }
 const UNDO_BACK = { user: (id) => `u:${id}`, plan: (id) => `p:${id}`, panel: (id) => `pp:${id}`, setting: (id) => `sk:${id}`, coupon: () => 'cp', order: (id) => `o:${id}`,
-  server: (id) => `srv:${String(id).replace('.', ':')}`, broadcast: (id) => `bcv:${id}`, admin: () => 'sys.adm' };
+  server: (id) => `srv:${String(id).replace('.', ':')}`, health: (id) => (id === 'mode' ? 'hl' : `he:${id}`), broadcast: (id) => `bcv:${id}`, admin: () => 'sys.adm' };
 // one extra app domain: GET <base>/health within 5 s; ok only when it answers like this worker ({"ok":true})
 export async function checkHealth(base) {
   const t0 = Date.now();

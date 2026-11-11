@@ -13,6 +13,17 @@ Future<void> main() async {
   final tokens = TokenStore();
   await tokens.load();
   final state = AppState(prefs, ApiClient(tokens));
+  // An error the app survives still goes to the health reports (type and
+  // the first frames, scrubbed); Flutter's own handling stays as it was.
+  final shown = FlutterError.onError;
+  FlutterError.onError = (d) {
+    state.noteAppError(d.exception, d.stack);
+    shown?.call(d);
+  };
+  WidgetsBinding.instance.platformDispatcher.onError = (e, st) {
+    state.noteAppError(e, st);
+    return false;
+  };
   await state.loadDevice();
   // Last launch's values show at once; fresh ones load behind them.
   await state.warmStart();
