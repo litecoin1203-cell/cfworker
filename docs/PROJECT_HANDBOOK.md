@@ -382,7 +382,9 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
   The country comes from `worker/src/countries.js` (`countryOfLink`): flag emoji, English/Persian country or
   city name, a two-letter code token, then a host label like `de1.`. Before that only a flag counted, so remarks
   without a flag showed as "Unknown country". No country → `Server N`; the bot's server card shows the panel's
-  remark and the admin can give a label with a flag.
+  remark and the admin can give a label with a flag. Since Pleat 1.2.34 the app sends `/me/ip?k=<serverKey>` while
+  connected; the Worker stores the exit's Cloudflare country in settings `server_exit_cc` (never IR; a change needs
+  two reports in a row) and uses it when the remark names no country (remark > learned exit > host label).
 - PasarGuard may serve Xray JSON to a v2rayNG user agent; `collectLinks` falls back to `<sub>/links` (PR #9).
 - Panel 1 is still special in a few places (always in provision, HWID only for panel 1, device removal only on
   panel 1, buying needs `PASARGUARD_URL`). Audit items AD3/P17, not yet fixed.

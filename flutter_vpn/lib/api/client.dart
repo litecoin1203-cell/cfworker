@@ -545,7 +545,8 @@ class ApiClient {
   /// `/me/ip` shows where the tunnel comes out: asked on the open line it
   /// would show the phone's own address under "Through", so it only ever
   /// crosses the tunnel, and fails when the tunnel can't carry it.
-  static bool _tunnelOnly(String path) => path == '/me/ip';
+  static bool _tunnelOnly(String path) =>
+      path == '/me/ip' || path.startsWith('/me/ip?');
 
   Future<(int, dynamic)> _roundTrip(
     String method,

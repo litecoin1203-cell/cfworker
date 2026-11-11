@@ -155,7 +155,13 @@ void main() {
       c.get('/me/ip'),
       throwsA(isA<ApiError>().having((e) => e.status, 'status', 0)),
     );
+    // with the exit's key on it, too
+    await expectLater(
+      c.get('/me/ip?k=k1a2b3c4d'),
+      throwsA(isA<ApiError>().having((e) => e.status, 'status', 0)),
+    );
     expect(a.hits, isNot(contains('/api/v1/me/ip')));
+    expect(a.hits, isNot(contains('/api/v1/me/ip?k=k1a2b3c4d')));
     expect(d.opened, 0);
   });
 
