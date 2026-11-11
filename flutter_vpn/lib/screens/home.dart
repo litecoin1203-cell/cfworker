@@ -14,6 +14,7 @@ import 'location_detail.dart';
 import 'profile.dart';
 import 'shell.dart';
 import 'states.dart';
+import 'update_variants.dart';
 
 enum _HomeTab { now, route, stats }
 
@@ -44,10 +45,10 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.fromLTRB(20, 12, 12, 0),
               child: _Header(app: app),
             ),
-            if (app.appUpdate != null)
+            if (app.appUpdate != null && Knobs.update != 'orbit')
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
-                child: _UpdateBanner(app: app),
+                child: homeUpdateEntry(app) ?? _UpdateBanner(app: app),
               ),
             const SizedBox(height: 14),
             Padding(
@@ -210,6 +211,14 @@ class _Header extends StatelessWidget {
             ],
           ),
         ),
+        if (Knobs.update == 'orbit' && app.appUpdate != null) ...[
+          OrbitChip(app: app),
+          const SizedBox(width: 4),
+        ],
+        if (Knobs.night == 'home') ...[
+          NightSwitch(app: app),
+          const SizedBox(width: 2),
+        ],
         RoundIcon(
           PIcon.bell,
           onTap: () => showNotices(context),

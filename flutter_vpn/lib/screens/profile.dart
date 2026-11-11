@@ -21,6 +21,7 @@ import 'plans.dart';
 import 'store_kit.dart';
 import 'wallet.dart';
 import 'states.dart';
+import 'update_variants.dart';
 
 /// Profile, opened from the avatar or the name on Home. From the top: who
 /// the person is (Telegram first, required; Gmail second, optional), what
@@ -78,8 +79,12 @@ class _ProfileScreenState extends State<ProfileScreen> {
                       label: 'Back',
                     ),
                     const Spacer(),
-                    const PleatMark(size: 30),
-                    const SizedBox(width: 12),
+                    if (Knobs.version == 'tag')
+                      VersionTag(app: app)
+                    else ...[
+                      const PleatMark(size: 30),
+                      const SizedBox(width: 12),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 16),
@@ -147,8 +152,17 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ],
                 ),
                 const SizedBox(height: 22),
+                if (Knobs.night == 'hero') ...[
+                  NightHero(app: app),
+                  const SizedBox(height: 14),
+                ],
+                if (Knobs.night == 'tiles') ...[
+                  NightTiles(app: app),
+                  const SizedBox(height: 14),
+                ],
                 _Identity(app: app),
                 const SizedBox(height: 14),
+                if (Knobs.version == 'now' || app.appUpdate != null) ...[
                 SurfaceCard(
                   padding: const EdgeInsets.fromLTRB(20, 8, 10, 8),
                   child: _Row(
@@ -167,6 +181,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                 ),
                 const SizedBox(height: 14),
+                ],
                 _UsageCard(app: app),
                 const SizedBox(height: 14),
                 SurfaceCard(
@@ -227,7 +242,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                           ),
                         ),
                       ),
-                      _Appearance(app: app),
+                      if (Knobs.night == 'now') _Appearance(app: app),
                       _Row(
                         icon: PIcon.pulse,
                         title: 'Reduce motion',
@@ -295,6 +310,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                 ),
+                if (Knobs.version == 'about') ...[
+                  const SizedBox(height: 14),
+                  VersionAbout(app: app),
+                ],
                 const SizedBox(height: 22),
                 PillButton(
                   label: 'Sign out',
@@ -311,6 +330,10 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   },
                 ),
                 const SizedBox(height: 16),
+                if (Knobs.version == 'footer') ...[
+                  const SizedBox(height: 10),
+                  VersionFooter(app: app),
+                ] else if (Knobs.version == 'now')
                 Center(
                   child: Text(
                     [
