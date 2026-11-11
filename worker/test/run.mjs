@@ -4135,6 +4135,30 @@ section('phases 1-5 fixes: open-order cap, stale quote, bad token, cancel race, 
   ok(!r1.createSkipped && r1.created === 0 && r2.createSkipped === true, 'an empty look for missing accounts is skipped for a while: ' + JSON.stringify([r1, r2]));
 }
 
+section('early renewal: days and unused data both carry over (Ali, 2026-11-11)');
+{
+  const q = (sql, ...a) => env.DB.prepare(sql).bind(...a);
+  await signup('carry@example.com', { device: 'carry1' });
+  await admin(`/grant carry@example.com ${tenGb.id}`);
+  const sub = async () => q("SELECT s.* FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE u.email = 'carry@example.com'").first();
+  const s1 = await sub();
+  ok(s1.data_limit_bytes === 10 * GB, 'first package: 10 GB');
+  // 3 GB used, spread over the user's panels, not yet seen by the sync job
+  const accts = [fakes.pg, pg2, pg3].map((pg) => panelUser(pg, 'carry@example.com')).filter(Boolean);
+  for (const a of accts) a.used_traffic = Math.round((3 * GB) / accts.length);
+  await admin(`/grant carry@example.com ${tenGb.id}`);
+  const s2 = await sub();
+  const left = 10 * GB - accts.length * Math.round((3 * GB) / accts.length);
+  ok(s2.data_limit_bytes === 10 * GB + left, `renewal adds the 7 GB left to the new 10 GB: ${(s2.data_limit_bytes / GB).toFixed(2)} GB`);
+  ok(s2.expires_at === s1.expires_at + tenGb.duration_days * 86400, 'and the days left carry over too');
+  const p2 = await q('SELECT limit_bytes FROM sub_periods WHERE id = ?', s2.period_id).first();
+  ok(p2.limit_bytes === s2.data_limit_bytes, 'the new package shows the summed data');
+  // a package that already ran out of days starts fresh: nothing to carry
+  await q("UPDATE subscriptions SET expires_at = ? WHERE id = ?", Math.floor(Date.now() / 1000) - 60, s2.id).run();
+  await admin(`/grant carry@example.com ${tenGb.id}`);
+  ok((await sub()).data_limit_bytes === 10 * GB, 'after expiry the new package is just its own 10 GB');
+}
+
 section('Mini App stage 0: initData check, probe page, report to the admin, bot buttons');
 {
   const { verifyInitData } = await import('../src/auth.js');

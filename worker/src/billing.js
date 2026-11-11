@@ -4,7 +4,7 @@ import { PasarGuardError, pgOrThrow, parseExpire } from './pasarguard.js';
 import { nowSec } from './util.js';
 import { notifyAdmin, untrusted } from './telegram.js';
 import { listPanels, pickPanels, adapterFor } from './panels.js';
-import { ensureAccount } from './sync.js';
+import { ensureAccount, refreshUser, usedBytes } from './sync.js';
 
 const GB = 1024 ** 3;
 const DAY = 86400;
@@ -33,13 +33,22 @@ export async function provision(env, user, plan, opts = {}) {
   const days = opts.days || plan.duration_days;
   const gb = opts.dataGb != null ? opts.dataGb : plan.data_limit_gb;
   const now = nowSec();
-  const dataLimit = gb ? gb * GB : 0;
   const sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
 
   // time left on a running plan carries over; an expired plan starts fresh from today
   const current = sub && sub.expires_at;
-  const base = current && current > now && sub.stop_reason !== 'expired' ? current : now;
+  const running = !!(current && current > now && sub.stop_reason !== 'expired');
+  const base = running ? current : now;
   const newExpire = base + days * DAY;
+  // so does the data left on it (Ali, 2026-11-11): an early renewal adds the new plan's data to what is left.
+  // Only when both plans have a data cap (an unlimited side has nothing to add up); a plan stopped on quota has 0 left.
+  // What is left is read live from the panels first (the sync job may write small usage up to 10 minutes late).
+  let carried = 0;
+  if (running && gb && sub.data_limit_bytes > 0 && sub.period_id) {
+    try { await refreshUser(env, user.id); } catch (e) { /* the stored numbers are at most a few minutes old */ }
+    carried = Math.max(0, sub.data_limit_bytes - await usedBytes(env, sub.period_id));
+  }
+  const dataLimit = gb ? gb * GB + carried : 0;
 
   const panels = await listPanels(env);
   const targets = pickPanels(panels, user.id);

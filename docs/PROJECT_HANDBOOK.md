@@ -345,7 +345,7 @@ Every way of paying ends in `billing.settle(order)`:
 
 `settle` claims the order atomically (status `settling`, 120 s lease) so two confirmations can never deliver
 twice; `deliver` then `provision`s the plan on **all** of the user's panels and records `provisioned_at` in the
-same batch as the new period (C5 fix). Remaining time carries over on renewal; data does not.
+same batch as the new period (C5 fix). Remaining time and unused data both carry over on an early renewal (Ali, 2026-11-11): the new limit = new plan GB + what was left (read live from the panels first); an expired package starts fresh.
 
 Guards added after audits: max **3 open orders per method** per account (idle card orders > 30 min and stale
 quotes auto-closed; otherwise `429 too_many_open_orders`); an expired crypto quote goes to admin review
