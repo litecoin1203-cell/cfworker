@@ -101,49 +101,53 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
-              child: SectionLabel(
-                'Recommended exits',
-                trailing: 'See all',
-                onTrailing: () => app.setTab(2),
-              ),
-            ),
-            if (recommended.isEmpty)
+            // Recommended exits stay under Now only: Route and Stats keep
+            // to their own job (Ali, 2026-11-11).
+            if (_tab == _HomeTab.now) ...[
               Padding(
-                padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
-                child: ServersState(app: app),
-              )
-            else
-              SizedBox(
-                height: 168,
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
-                  itemCount: recommended.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: 14),
-                  itemBuilder: (context, i) {
-                    final e = recommended[i];
-                    return StaggerIn(
-                      index: i,
-                      child: SizedBox(
-                        width: 210,
-                        child: MediaCard(
-                          exit: e,
-                          height: 150,
-                          onOpen: () => Navigator.of(context).push(
-                            TunnelRoute(
-                              builder: (_) => LocationDetail(exitId: e.id),
-                            ),
-                          ),
-                          tabLabel: 'Go',
-                          onTab: () => app.connect(e.id),
-                        ),
-                      ),
-                    );
-                  },
+                padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+                child: SectionLabel(
+                  'Recommended exits',
+                  trailing: 'See all',
+                  onTrailing: () => app.setTab(2),
                 ),
               ),
+              if (recommended.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+                  child: ServersState(app: app),
+                )
+              else
+                SizedBox(
+                  height: 168,
+                  child: ListView.separated(
+                    scrollDirection: Axis.horizontal,
+                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+                    itemCount: recommended.length,
+                    separatorBuilder: (_, _) => const SizedBox(width: 14),
+                    itemBuilder: (context, i) {
+                      final e = recommended[i];
+                      return StaggerIn(
+                        index: i,
+                        child: SizedBox(
+                          width: 210,
+                          child: MediaCard(
+                            exit: e,
+                            height: 150,
+                            onOpen: () => Navigator.of(context).push(
+                              TunnelRoute(
+                                builder: (_) => LocationDetail(exitId: e.id),
+                              ),
+                            ),
+                            tabLabel: 'Go',
+                            onTab: () => app.connect(e.id),
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+            ],
           ],
         ),
       ),
