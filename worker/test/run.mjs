@@ -1921,6 +1921,32 @@ section('/me/ip: the exit address and place the app shows while connected');
   ok(no.status === 401, '/me/ip needs a signed-in user');
 }
 
+section('the exit\'s real country is learned from /me/ip?k= and fills servers whose remark names none');
+{
+  const { exitCountries, unify, countryOfLink } = await import('../src/panels.js');
+  const { serverKey } = await import('../src/netstats.js');
+  await env.DB.prepare("DELETE FROM settings WHERE key = 'server_exit_cc'").run();
+  const tok = await signup('exitcc@example.com', { device: 'ecd' });
+  const link = 'vless://00000000-0000-4000-8000-000000000000@t1.example.org:2083?security=tls&type=ws#Tunnel%20%5B%20Stable%20%5D';
+  const k = serverKey(link);
+  const ask = async (cc, key = k) => { await call('GET', '/api/v1/me/ip?k=' + key, { token: tok, cf: { country: cc } }); await Promise.all(_pending.splice(0)); };
+  ok(countryOfLink(link, {}) === '', 'no flag, no name, no host hint: unknown before');
+  await ask('IR');
+  ok(!(await exitCountries(env))[k], 'Iran is never learned (the request did not go through an exit)');
+  await ask('DE');
+  ok((await exitCountries(env))[k]?.cc === 'DE', 'learned DE: ' + JSON.stringify((await exitCountries(env))[k]));
+  const names = unify([link], {}, null, await exitCountries(env)).map((l) => decodeURIComponent(l.split('#')[1]));
+  ok(names[0] === '🇩🇪 DE 1', 'the server is named by its learned country: ' + names[0]);
+  await ask('NL');
+  ok((await exitCountries(env))[k].cc === 'DE', 'one different answer does not move it');
+  await ask('NL');
+  ok((await exitCountries(env))[k].cc === 'NL', 'two in a row do');
+  await ask('FR', 'BAD KEY');
+  ok(Object.keys(await exitCountries(env)).length === 1, 'a malformed key is ignored');
+  ok(countryOfLink('vless://u@x.example.org:443#%F0%9F%87%AB%F0%9F%87%AE%20Fast', { [serverKey('vless://u@x.example.org:443#a')]: { cc: 'DE' } }) === 'FI', 'a remark that names a country still wins');
+  await env.DB.prepare("DELETE FROM settings WHERE key = 'server_exit_cc'").run();
+}
+
 section('any panel type: Rebecca, Marzban and PasarGuard are detected on /paneltest and each gets its own create call');
 {
   const { getPanel, adapterFor, collectLinks, testPanel } = await import('../src/panels.js');

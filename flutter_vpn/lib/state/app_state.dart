@@ -339,12 +339,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// Asks the Worker where this phone's calls come from. Through the
   /// tunnel that is the exit: its public IP, country and city as
   /// Cloudflare places it. Tried twice, as the line may still be settling.
+  /// The exit's anonymous key goes along, so the Worker learns which
+  /// country each exit really comes out in (a panel remark may not say).
   Future<void> loadExitAddress() async {
     final at = connectedAt;
+    final key = exit?.server.key ?? '';
+    final path = RegExp(r'^[a-z0-9]{6,16}$').hasMatch(key)
+        ? '/me/ip?k=$key'
+        : '/me/ip';
     for (var i = 0; i < 2; i++) {
       if (phase != Phase.protected || connectedAt != at) return;
       try {
-        final r = await api.get('/me/ip', bridge: false);
+        final r = await api.get(path, bridge: false);
         if (phase != Phase.protected || connectedAt != at) return;
         final a = ExitAddress.from(r);
         if (a != null) {

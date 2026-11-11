@@ -187,10 +187,42 @@ function remarkOf(link) {
 
 // The country of one config: its panel remark first (flag, name or code), then a host label like "de1.".
 // Before this, only a flag emoji counted, so a remark such as "Germany Tunnel" or "آلمان" showed as an unknown country.
-export function countryOfLink(link) {
+// exits = {serverKey: cc} learned from Pleat (exitCountries): where the exit really comes out, by its IP.
+export function countryOfLink(link, exits = null) {
   const cc = countryFromRemark(remarkOf(link));
   if (cc) return cc;
+  const seen = exits && exits[serverKey(link)];
+  if (seen && seen.cc) return seen.cc;
   try { return countryFromHost(linkEndpoint(link)?.host || ''); } catch (e) { return ''; }
+}
+
+// ---------------- the exit's real country, learned from the app ----------------
+// While connected, Pleat asks /me/ip?k=<serverKey> through the tunnel; Cloudflare places that request at the
+// exit's public IP, so its country is where that server really comes out, whatever its panel remark says.
+// Kept in settings server_exit_cc as {key: {cc, n}}. A different country replaces a known one only after it is
+// seen twice in a row, so one odd request (a phone off the tunnel) cannot rename a server. Iran is never taken:
+// the app only asks through the tunnel, so IR means the request did not go through an exit.
+const EXIT_CC_KEY = 'server_exit_cc';
+export async function exitCountries(env) {
+  try { const j = JSON.parse((await first(env, 'SELECT value FROM settings WHERE key = ?', EXIT_CC_KEY))?.value || '{}'); return j && typeof j === 'object' ? j : {}; }
+  catch (e) { return {}; }
+}
+export async function learnExitCountry(env, key, cc) {
+  if (!/^[a-z0-9]{6,16}$/.test(String(key || '')) || !/^[A-Z]{2}$/.test(String(cc || '')) || cc === 'IR' || cc === 'XX' || cc === 'T1') return false;
+  const map = await exitCountries(env);
+  const old = map[key];
+  let next;
+  if (!old || !old.cc) next = { cc, n: 1 };
+  else if (old.cc === cc) {
+    if (!old.pending && (old.n || 0) >= 3) return false; // nothing new: no write
+    next = { cc, n: Math.min(3, (old.n || 0) + 1) };
+  } else if (old.pending === cc) next = { cc, n: 1 };
+  else next = { cc: old.cc, n: old.n || 1, pending: cc };
+  map[key] = next;
+  const keys = Object.keys(map);
+  if (keys.length > 800) for (const k of keys.slice(0, keys.length - 800)) delete map[k];
+  await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', EXIT_CC_KEY, JSON.stringify(map));
+  return true;
 }
 
 function withRemark(link, name) {
@@ -260,7 +292,7 @@ export function isPlaceholder(link) {
 // labels = {serverKey: name} the admin gave a server (server_overrides): used as is, takes no number.
 // Ranking does not move: it is keyed by serverKey (type|host|port), never by the name.
 // kept (optional array) gets the index in `links` of every link that stays, in the same order as the result.
-export function unify(links, labels = {}, kept = null) {
+export function unify(links, labels = {}, kept = null, exits = null) {
   const hasLabels = Object.keys(labels).length > 0;
   const seen = new Set();
   const perCc = {};
@@ -274,7 +306,7 @@ export function unify(links, labels = {}, kept = null) {
     if (kept) kept.push(i);
     const label = hasLabels ? labels[serverKey(link)] : null;
     if (label) { out.push(withRemark(link, label)); continue; }
-    const cc = countryOfLink(link);
+    const cc = countryOfLink(link, exits);
     const n = (perCc[cc || '?'] = (perCc[cc || '?'] || 0) + 1);
     out.push(withRemark(link, cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`));
   }
@@ -325,12 +357,13 @@ export async function panelServers(env, panel) {
   } catch (e) { return { servers: [], source: 'error' }; }
   const seen = new Set(), perCc = {}, servers = [];
   const rules = (await hostRulesFor(env, [panel.id]))[panel.id];
+  const exits = await exitCountries(env);
   for (const link of found) {
     if (isPlaceholder(link)) continue;
     const key = serverKey(link);
     if (!key || seen.has(key)) continue;
     seen.add(key);
-    const cc = countryOfLink(link);
+    const cc = countryOfLink(link, exits);
     const n = (perCc[cc || '?'] = (perCc[cc || '?'] || 0) + 1);
     const type = Object.keys(linkKinds([link]).counts)[0] || '?';
     // remark: what the panel calls it, shown to the admin only when no country was found (never an address)
@@ -385,7 +418,7 @@ export async function collectLinks(env, userId, fwd = {}) {
     }
   }
   const kept = [];
-  const merged = unify(links, labels, kept);
+  const merged = unify(links, labels, kept, await exitCountries(env));
   // meta[i] = where merged link i came from: {panel: panel id, tunnel: it is in that panel's "Tunnel" group}
   return { links: merged, meta: kept.map((i) => from[i]), reached, deviceLimit, missing, accounts: accounts.length };
 }

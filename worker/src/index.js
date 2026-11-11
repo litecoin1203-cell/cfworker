@@ -229,6 +229,13 @@ async function route(request, env, p, ctx) {
   // country and city (Pleat's Home shows them while connected); nothing is stored
   if (p === '/me/ip' && m === 'GET') {
     const cf = request.cf || {};
+    // ?k=<serverKey>: the exit this phone is on, so its real country is learned (panels.learnExitCountry)
+    const k = new URL(request.url).searchParams.get('k');
+    if (k && /^[A-Z]{2}$/.test(cf.country || '')) {
+      const { learnExitCountry } = await import('./panels.js');
+      const job = learnExitCountry(env, k, cf.country).catch(() => {});
+      if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
+    }
     return json({ ip: String(request.headers.get('cf-connecting-ip') || '').slice(0, 45), cc: /^[A-Z]{2}$/.test(cf.country || '') ? cf.country : '',
       city: String(cf.city || '').slice(0, 60), region: String(cf.region || '').slice(0, 60) });
   }
