@@ -2365,6 +2365,22 @@ section('panel info rows dressed as configs are not servers');
   ok(out.length === 1 && decodeURIComponent(out[0].split('#')[1]).includes('AM 1'), 'only the real exit is listed: ' + out.map((l) => l.split('#')[1]).join(','));
 }
 
+section('a server whose remark has no flag still gets its country');
+{
+  const { unify, countryOfLink } = await import('../src/panels.js');
+  const { countryFromRemark, countryFromHost } = await import('../src/countries.js');
+  const L = (remark, host = 'n.example.com') => `vless://00000000-0000-4000-8000-000000000000@${host}:443?security=tls&type=ws#${encodeURIComponent(remark)}`;
+  const cases = [['🇩🇪 Fast', 'DE'], ['Germany Tunnel', 'DE'], ['Tunnel [ Stable ] Frankfurt', 'DE'], ['آلمان ۱', 'DE'], ['سرور هلند', 'NL'],
+    ['ترکیه - تانل', 'TR'], ['NL-2', 'NL'], ['[US] fast', 'US'], ['United States of America', 'US'], ['انگليس', 'GB']];
+  for (const [r, cc] of cases) ok(countryFromRemark(r) === cc, `remark "${r}" -> ${cc}: ${countryFromRemark(r)}`);
+  for (const r of ['Tunnel [ Stable ]', 'Server', 'تانل', 'VLESS ws', 'gold_ali', 'هندزفری']) ok(countryFromRemark(r) === '', `remark "${r}" names no country: ${countryFromRemark(r)}`);
+  ok(countryFromHost('de1.example.com') === 'DE' && countryFromHost('cdn.example.com') === '' && countryFromHost('1.2.3.4') === '', 'host label hint');
+  ok(countryOfLink(L('Tunnel 1', 'fi2.example.com')) === 'FI', 'no country in the remark: the host label decides');
+  const out = unify([L('Germany Tunnel', 'a.example.com'), L('آلمان', 'b.example.com'), L('Tunnel [ Stable ]', 'c.example.com')]);
+  const names = out.map((l) => decodeURIComponent(l.split('#')[1]));
+  ok(names[0] === '🇩🇪 DE 1' && names[1] === '🇩🇪 DE 2' && names[2] === 'Server 1', 'unify names them by country: ' + names.join(' | '));
+}
+
 const STAGE2_ACTIONS = ['user.add_days', 'user.add_gb', 'user.reset_usage', 'user.pause', 'user.end', 'user.plan_name', 'user.wallet', 'user.device_remove',
   'user.logout_all', 'user.block', 'user.unlink_tg', 'user.unlink_panel', 'user.avatar_reset', 'user.email', 'user.delete', 'user.create'];
 const STAGE3_ACTIONS = ['order.approve', 'order.reject', 'order.cancel', 'order.refund', 'plan.move', 'plan.copy', 'plan.delete', 'plan.unarchive',

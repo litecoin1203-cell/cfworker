@@ -379,6 +379,10 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
 - **Server list** (`/vpn/servers`): subscriptions of all panels are fetched (in parallel, 5 s deadline per
   panel on the user path since PR #45), placeholders dropped (Rebecca emits a `0 B / ∞` row at `127.0.0.1:1`),
   duplicates merged, names unified to `🇩🇪 DE 2`, `server_overrides` applied.
+  The country comes from `worker/src/countries.js` (`countryOfLink`): flag emoji, English/Persian country or
+  city name, a two-letter code token, then a host label like `de1.`. Before that only a flag counted, so remarks
+  without a flag showed as "Unknown country". No country → `Server N`; the bot's server card shows the panel's
+  remark and the admin can give a label with a flag.
 - PasarGuard may serve Xray JSON to a v2rayNG user agent; `collectLinks` falls back to `<sub>/links` (PR #9).
 - Panel 1 is still special in a few places (always in provision, HWID only for panel 1, device removal only on
   panel 1, buying needs `PASARGUARD_URL`). Audit items AD3/P17, not yet fixed.
