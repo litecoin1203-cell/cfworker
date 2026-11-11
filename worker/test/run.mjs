@@ -817,6 +817,23 @@ section('Cloud Gold Pay: low-fee crypto straight to the admin wallet');
   const down = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'coin', coin: 'xlm' } });
   ok(down.status === 503 && down.data.detail.code === 'price_unavailable', 'no price -> clean error');
   globalThis.__fakePriceDown = false;
+  // CoinGecko alone down (it rate-limits shared server addresses; CryptoCompare, the old fallback, wants a key
+  // since 2026): the order is still priced, from KuCoin / Coinbase
+  globalThis.__cgPrices = null; globalThis.__fakeGecko = 'down';
+  env.DB.exec("DELETE FROM settings WHERE key = 'coin_prices_cache'");
+  const noGecko = await call('POST', '/api/v1/orders', { token: tok, json: { topup_toman: 200000, method: 'coin', coin: 'xlm' } });
+  ok(noGecko.status === 201 && noGecko.data.coin.symbol === 'XLM' && noGecko.data.coin.price_usd === 0.41, 'CoinGecko down -> priced from KuCoin: ' + noGecko.status + ' ' + JSON.stringify(noGecko.data.detail || noGecko.data.coin && noGecko.data.coin.price_usd));
+  await call('POST', `/api/v1/orders/${noGecko.data.id}/cancel`, { token: tok });
+  // KuCoin has no TON: Coinbase fills it (1 / 0.2 = 5 USD)
+  const { fetchPrices } = await import('../src/coins.js');
+  const fp = await fetchPrices();
+  ok(fp.p.ton === 5 && fp.p.trx === 0.26 && Object.keys(fp.p).length === 11, 'every coin covered without CoinGecko: ' + JSON.stringify(fp.sources));
+  // a coin no source has right now keeps its recent saved price
+  globalThis.__cgPrices = null; globalThis.__fakeKucoin = 'down';
+  const { prices: livePrices } = await import('../src/coins.js');
+  const lp = await livePrices(env);
+  ok(lp && lp.trx === 0.26 && lp.ton === 5, 'TRX from the saved copy while only Coinbase (no TRX) answers');
+  globalThis.__fakeGecko = null; globalThis.__fakeKucoin = null; globalThis.__cgPrices = null;
   const b3 = fakes.tg.messages.length;
   await tgWebhook({ message: { chat: { id: 12345 }, text: '/wallets' } });
   ok(fakes.tg.messages.slice(b3).some((m) => m.text.includes('✅ XLM') && m.text.includes('⚪️ XRP') && m.text.includes('Memo: 84021733')), '/wallets overview');
@@ -827,7 +844,7 @@ section('live dollar rate from Iranian exchanges');
 {
   const live = await fetchUsdRate();
   ok(live.rate === 100000, 'median of exchanges = 100,000 toman: ' + live.rate);
-  ok(!live.used.includes('tabdeal') && live.used.length === 4, 'outlier exchange ignored: ' + live.used.join(','));
+  ok(!live.used.includes('tabdeal') && live.used.length === 3, 'outlier exchange ignored: ' + live.used.join(','));
   globalThis.__cgUsd = null;
   const info = await usdRateInfo(env, { force: true });
   ok(info.from === 'live' && info.rate === 100000, 'live rate used');
@@ -848,6 +865,7 @@ section('live dollar rate from Iranian exchanges');
   await tgWebhook({ message: { chat: { id: 12345 }, text: '/rate' } });
   const msg = fakes.tg.messages.slice(b).map((m) => m.text).join('\n');
   ok(msg.includes('✅ نوبیتکس') && msg.includes('⚠️ تبدیل') && msg.includes('زنده از صرافی‌ها'), '/rate shows each exchange:\n' + msg);
+  ok(msg.includes('✅ CoinGecko') && msg.includes('همه‌ی ارزها قیمت دارند'), '/rate shows the coin price sources too');
 }
 
 
@@ -2288,10 +2306,7 @@ section('profile: verify Telegram on an email account, backup email, package his
   const v = await call('POST', '/api/v1/me/telegram/verify', { token: tok, json: { nonce: s2.nonce, code } });
   ok(v.status === 200 && v.data.telegram_verified && v.data.telegram.username === 'prof_user' && v.data.login === '@prof_user', 'Telegram verified: ' + JSON.stringify(v.data));
   ok((await call('POST', '/api/v1/me/telegram/start', { token: tok })).status === 409, 'cannot verify twice');
-  const ph = await call('GET', '/api/v1/me/photo', { token: tok });
-  ok(ph.status === 200 && ph.data.photo === btoa(String.fromCharCode(0xff, 0xd8, 0xff, 1, 2, 3)), 'Telegram photo comes through the Worker');
-  ok(fakes.tg.calls.some((c) => c.method === 'getFile' && c.body.file_id === 's'), 'the small photo size is used');
-  ok((await call('GET', '/api/v1/me/photo', { token: other })).data.photo === null, 'no Telegram, no photo');
+  ok((await call('GET', '/api/v1/me/photo', { token: tok })).status === 404 && !fakes.tg.calls.some((c) => c.method === 'getUserProfilePhotos'), 'the Telegram profile photo is not served and never fetched');
   ok((await call('POST', '/api/v1/auth/login', { json: { login: '@prof_user', password: 'password123' } })).status === 200, 'logs in with the Telegram username now');
   ok((await call('POST', '/api/v1/auth/login', { json: { login: 'profile@example.com', password: 'password123' } })).status === 200, 'email still logs in');
   const sl = (await call('POST', '/api/v1/auth/tg/start')).data;
@@ -2328,7 +2343,9 @@ section('profile: verify Telegram on an email account, backup email, package his
   ok((await call('GET', '/api/v1/me', { token: tok })).data.avatar === 'luna', 'avatar kept on /me');
   ok((await call('POST', '/api/v1/me/avatar', { token: tok, json: { avatar: '../x.svg' } })).status === 422, 'unknown avatar rejected');
   ok((await call('GET', '/api/v1/me', { token: other })).data.avatar === null, 'only my avatar changed');
-  ok((await call('POST', '/api/v1/me/avatar', { token: tok, json: { avatar: '' } })).data.avatar === null, 'avatar cleared');
+  ok((await call('POST', '/api/v1/me/avatar', { token: tok, json: { avatar: '' } })).status === 422, 'empty pick refused: the avatar is mandatory');
+  ok((await call('GET', '/api/v1/me/photo', { token: tok })).status === 404, 'no Telegram-photo route any more');
+  ok((await call('GET', '/api/v1/me', { token: tok })).data.avatar === 'luna', 'avatar stays after a refused clear');
   ok((await call('POST', '/api/v1/me/avatar', { json: { avatar: 'kai' } })).status === 401, 'avatar needs a login');
 
   // package history: a trial, then a purchase that stacks on it, and a gift from the admin
@@ -2363,6 +2380,22 @@ section('panel info rows dressed as configs are not servers');
   ok(!isPlaceholder(real) && !isPlaceholder('wireguard://k@5.6.7.8:965?publickey=p#x') && !isPlaceholder('ss://YWVzOnB3@1.2.3.4:8388#x'), 'real exits are kept');
   const out = unify([info, vmInfo, real]);
   ok(out.length === 1 && decodeURIComponent(out[0].split('#')[1]).includes('AM 1'), 'only the real exit is listed: ' + out.map((l) => l.split('#')[1]).join(','));
+}
+
+section('a server whose remark has no flag still gets its country');
+{
+  const { unify, countryOfLink } = await import('../src/panels.js');
+  const { countryFromRemark, countryFromHost } = await import('../src/countries.js');
+  const L = (remark, host = 'n.example.com') => `vless://00000000-0000-4000-8000-000000000000@${host}:443?security=tls&type=ws#${encodeURIComponent(remark)}`;
+  const cases = [['🇩🇪 Fast', 'DE'], ['Germany Tunnel', 'DE'], ['Tunnel [ Stable ] Frankfurt', 'DE'], ['آلمان ۱', 'DE'], ['سرور هلند', 'NL'],
+    ['ترکیه - تانل', 'TR'], ['NL-2', 'NL'], ['[US] fast', 'US'], ['United States of America', 'US'], ['انگليس', 'GB']];
+  for (const [r, cc] of cases) ok(countryFromRemark(r) === cc, `remark "${r}" -> ${cc}: ${countryFromRemark(r)}`);
+  for (const r of ['Tunnel [ Stable ]', 'Server', 'تانل', 'VLESS ws', 'gold_ali', 'هندزفری']) ok(countryFromRemark(r) === '', `remark "${r}" names no country: ${countryFromRemark(r)}`);
+  ok(countryFromHost('de1.example.com') === 'DE' && countryFromHost('cdn.example.com') === '' && countryFromHost('1.2.3.4') === '', 'host label hint');
+  ok(countryOfLink(L('Tunnel 1', 'fi2.example.com')) === 'FI', 'no country in the remark: the host label decides');
+  const out = unify([L('Germany Tunnel', 'a.example.com'), L('آلمان', 'b.example.com'), L('Tunnel [ Stable ]', 'c.example.com')]);
+  const names = out.map((l) => decodeURIComponent(l.split('#')[1]));
+  ok(names[0] === '🇩🇪 DE 1' && names[1] === '🇩🇪 DE 2' && names[2] === 'Server 1', 'unify names them by country: ' + names.join(' | '));
 }
 
 const STAGE2_ACTIONS = ['user.add_days', 'user.add_gb', 'user.reset_usage', 'user.pause', 'user.end', 'user.plan_name', 'user.wallet', 'user.device_remove',

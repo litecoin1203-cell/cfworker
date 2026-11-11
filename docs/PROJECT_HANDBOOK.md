@@ -231,7 +231,7 @@ Key ideas:
 | `POST /api/v1/payments/nowpayments/ipn` | HMAC-SHA512 | `orders.js` → `settle` |
 | everything else under `/api/v1/` | Bearer access JWT (30 min) + `token_version` + `is_active` | account/orders/netstats/auth |
 
-Authed app routes: `/me`, `/me/ip`, `/me/packages`, `/me/photo`, `/me/email`, `/me/avatar`,
+Authed app routes: `/me`, `/me/ip`, `/me/packages`, `/me/email`, `/me/avatar`,
 `/me/telegram/start|verify`, `/trial`, `/vpn`, `/vpn/servers`, `/vpn/sub` (old-app format), `/net/report`,
 `/net/rank`, `/net/google`, `/coupons/check`, `/devices`, `/devices/:id`, `/wallet`, `/referral`, `/orders`
 (GET/POST), `/orders/:id/...` (receipt, paid, cancel), `/app/apk` (APK proxy), `/auth/change-password`,
@@ -248,7 +248,7 @@ breaks import cycles).
 | `util.js` | JSON/errors, PBKDF2 + pepper, JWT HS256, HMAC, AES-GCM `seal`, rate limit (fail-open on purpose), JSON logs that strip URLs |
 | `db.js` | D1 helpers (`first`, `all`, `run`, `insert`), the `settings` key/value store with `SETTING_DEFAULTS`, `touchDevice` |
 | `auth.js` | email sign-up/login, Telegram 6-digit code login/sign-up, refresh, change password, link Telegram, backup email, avatar (`AVATARS`) |
-| `account.js` | app-config, plans, `/me`, subscription status, server list (`vpnServers`), devices, trial (`startTrial`), Telegram photo |
+| `account.js` | app-config, plans, `/me`, subscription status, server list (`vpnServers`), devices, trial (`startTrial`) |
 | `orders.js` | create order (wallet/card/coin/gateway), coupons, receipts, "I paid", IPN, wallet, referral; open-order cap (`too_many_open_orders`) |
 | `billing.js` | `settle` (atomic claim), `deliver`, `provision` on all of the user's panels, `walletApply` (atomic), coupons, commission |
 | `panels.js` | panel registry, encrypted credentials, `adapterFor`, rollout buckets, `unify` (merge + rename configs, drop placeholders), `testPanel`, drain |
@@ -340,7 +340,7 @@ Every way of paying ends in `billing.settle(order)`:
 |---|---|
 | **Wallet** | immediate; `walletApply` debits atomically (D1 batch + one-time nonce + non-negative trigger) |
 | **Card-to-card** | the order gets a **unique amount** (base + 1…99 toman). The bank's deposit SMS, forwarded from the admin's phone to `/sms`, is parsed by `sms.js` and matched by amount → `settle`. Or the user uploads a **receipt photo** and the admin approves it with a bot button. `card_auto`: auto / detect (ask admin) / off. |
-| **Crypto to the admin's own wallets** | unique amount (+ memo where the chain needs one). `chainwatch.scanAll` (every minute) reads XLM, XRP, TRX, TON, ALGO explorers, `claimTxid` binds one txid to one order. Other coins (13 listed in settings) are confirmed by the admin. Inexact amounts go to admin review. |
+| **Crypto to the admin's own wallets** | priced from the USD/toman rate (`usdrate.js`: Nobitex, Wallex, Tabdeal, Exir, median) and coin prices (`coins.js`: CoinGecko, KuCoin, Coinbase); unique amount (+ memo where the chain needs one). `chainwatch.scanAll` (every minute) reads XLM, XRP, TRX, TON, ALGO explorers, `claimTxid` binds one txid to one order. Other coins (13 listed in settings) are confirmed by the admin. Inexact amounts go to admin review. |
 | **NOWPayments** (optional) | signed IPN → `settle` |
 
 `settle` claims the order atomically (status `settling`, 120 s lease) so two confirmations can never deliver
@@ -379,6 +379,10 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
 - **Server list** (`/vpn/servers`): subscriptions of all panels are fetched (in parallel, 5 s deadline per
   panel on the user path since PR #45), placeholders dropped (Rebecca emits a `0 B / ∞` row at `127.0.0.1:1`),
   duplicates merged, names unified to `🇩🇪 DE 2`, `server_overrides` applied.
+  The country comes from `worker/src/countries.js` (`countryOfLink`): flag emoji, English/Persian country or
+  city name, a two-letter code token, then a host label like `de1.`. Before that only a flag counted, so remarks
+  without a flag showed as "Unknown country". No country → `Server N`; the bot's server card shows the panel's
+  remark and the admin can give a label with a flag.
 - PasarGuard may serve Xray JSON to a v2rayNG user agent; `collectLinks` falls back to `<sub>/links` (PR #9).
 - Panel 1 is still special in a few places (always in provision, HWID only for panel 1, device removal only on
   panel 1, buying needs `PASARGUARD_URL`). Audit items AD3/P17, not yet fixed.
@@ -423,7 +427,7 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
   line (`planBig`/`planUnit` in `screens/store_kit.dart`). Bot lists also lead with GB.
 - Profile: mandatory verified Telegram username + optional backup Gmail; one line "Data and days · X GB left · N
   days left" that opens a bottom sheet with pleats (data), day dots and package history; long emails always fit
-  one line (`FitLine`). 14 "Folk" avatars (SVG) override the Telegram photo, stored server-side.
+  one line (`FitLine`). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
 - Home "Now" shows country + city + exit IP (from `/me/ip`, through the tunnel) instead of a timer.
 - Notification "Pleat card" (`TunnelNote.kt`): flag tile, Protected dot, place · timer (system Chronometer),
   Disconnect + Change location. Colours follow the phone's night mode.
@@ -673,6 +677,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | C5 crash between `provision` and `provisioned_at` → double renewal | same batch — #41 |
 | **S1** (proven) 99 open card orders by one account broke card buying for everyone for 36 h | 3 open orders per method, auto-close stale — #45 |
 | S2 40 open coin orders starved cron auto-confirm; S3 expired quote auto-paid | same cap; stale quote → admin — #45 |
+| **Crypto orders failed with `price_unavailable`** (proven 2026-11-11 from a non-Iran server): the coin-price fallback CryptoCompare answers 401 "API key required", so any CoinGecko rate-limit left no price; of the 5 USD/toman exchanges only Wallex still answered abroad (`api.nobitex.ir` no DNS, Tabdeal ticker 404, Bitpin/Ramzinex 403) | coin prices merged per coin from CoinGecko → KuCoin → Coinbase (+ saved copy per coin); USD rate from Nobitex `apiv2`, Wallex depth, Tabdeal depth, Exir (single-market endpoints, small JSON for the 10 ms CPU limit); bot "💵 قیمت دلار" also shows the coin price sources |
 
 ### Backend robustness
 | Problem | Fix |

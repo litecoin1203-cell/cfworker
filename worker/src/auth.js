@@ -369,11 +369,12 @@ export function profileOut(u) {
 // The characters drawn in the app (flutter_vpn/assets/avatars). The server only keeps which one was picked.
 export const AVATARS = ['vesper', 'kite', 'miso', 'hoot', 'bruno', 'relay', 'orbit', 'drift', 'hop', 'nimbus', 'rex', 'luna', 'mina', 'kai'];
 
-// Pick a character as the profile picture; "" (or null) goes back to the Telegram photo / initial.
+// Pick a character as the profile picture. The characters are the only source of a picture (no Telegram photo),
+// so an empty pick is refused; only an admin reset clears it, and the app then asks the person to choose again.
 export async function setAvatar(env, user, body) {
   const raw = body.avatar == null ? '' : String(body.avatar).trim().toLowerCase();
-  if (raw && !AVATARS.includes(raw)) throw err(422, 'invalid_input', 'Unknown avatar.', 'avatar');
-  await run(env, 'UPDATE users SET avatar = ? WHERE id = ?', raw || null, user.id);
+  if (!AVATARS.includes(raw)) throw err(422, 'invalid_input', 'Choose one of the avatars.', 'avatar');
+  await run(env, 'UPDATE users SET avatar = ? WHERE id = ?', raw, user.id);
   const fresh = await first(env, 'SELECT * FROM users WHERE id = ?', user.id);
   return json(profileOut(fresh));
 }

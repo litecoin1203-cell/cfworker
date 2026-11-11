@@ -5,7 +5,9 @@ import 'package:pleat/design/connect_control.dart';
 import 'package:pleat/design/tokens.dart';
 import 'package:pleat/design/widgets.dart';
 import 'package:pleat/main.dart';
+import 'package:pleat/screens/avatar_gate.dart';
 import 'package:pleat/screens/checkout.dart';
+import 'package:pleat/screens/home.dart';
 import 'package:pleat/screens/login.dart';
 import 'package:pleat/screens/onboarding.dart';
 import 'package:pleat/screens/profile.dart';
@@ -22,13 +24,14 @@ Future<(AppState, FakeApi)> _boot(
   Map<String, Object> prefs, {
   bool signedIn = true,
   Tunnel? tunnel,
+  String? avatar = 'vesper',
 }) async {
   PType.familyOverride = 'PleatTest';
   tester.view.physicalSize = const Size(1080, 2340);
   tester.view.devicePixelRatio = 2.75;
   addTearDown(tester.view.reset);
   SharedPreferences.setMockInitialValues(prefs);
-  final api = FakeApi(MemoryTokens(signedIn: signedIn));
+  final api = FakeApi(MemoryTokens(signedIn: signedIn))..avatar = avatar;
   final state = AppState(
     await SharedPreferences.getInstance(),
     api,
@@ -893,7 +896,7 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
   });
 
-  testWidgets('Profile: pick a Pleat character as the avatar', (tester) async {
+  testWidgets('Profile: change the Pleat character', (tester) async {
     final (app, api) = await _boot(tester, {
       'onboarded': true,
     }, tunnel: FakeTunnel());
@@ -901,7 +904,6 @@ void main() {
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
-    expect(find.byType(AvatarArt), findsNothing);
     await tester.tap(
       find.descendant(
         of: find.byType(ProfileScreen),
@@ -911,9 +913,21 @@ void main() {
     for (var i = 0; i < 10; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
-    expect(find.byType(AvatarArt), findsNWidgets(pleatAvatars.length));
+    final inGrid = find.descendant(
+      of: find.byType(AvatarGrid),
+      matching: find.byType(AvatarArt),
+    );
+    expect(inGrid, findsNWidgets(pleatAvatars.length));
+    // no way back to a Telegram photo or the initial
+    expect(find.text('USE MY TELEGRAM PHOTO'), findsNothing);
+    expect(find.text('USE MY INITIAL'), findsNothing);
     await tester.tap(
-      find.byWidgetPredicate((w) => w is AvatarArt && w.avatar.id == 'luna'),
+      find.descendant(
+        of: find.byType(AvatarGrid),
+        matching: find.byWidgetPredicate(
+          (w) => w is AvatarArt && w.avatar.id == 'luna',
+        ),
+      ),
     );
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.text('USE LUNA'));
@@ -923,25 +937,33 @@ void main() {
     expect(api.calls, contains('POST /me/avatar'));
     expect(app.avatarId, 'luna');
     expect(find.text('Avatar saved.'), findsOneWidget);
-    // the header now shows the character instead of the initial
-    expect(find.byType(AvatarArt), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
+  });
 
-    // and it can go back to the initial
+  testWidgets('first sign-in: an avatar must be picked before Home', (
+    tester,
+  ) async {
+    final (app, api) = await _boot(tester, {'onboarded': true}, avatar: null);
+    // the gate stands in for the app: no tabs, no way past it
+    expect(find.byType(AvatarGate), findsOneWidget);
+    expect(find.byType(HomeScreen), findsNothing);
+    expect(find.text('CHOOSE AN AVATAR'), findsOneWidget);
+    expect(find.text('Pick your avatar'), findsOneWidget);
+    await tester.tap(find.text('CHOOSE AN AVATAR'));
+    await tester.pump(const Duration(milliseconds: 200));
+    expect(api.calls, isNot(contains('POST /me/avatar')));
     await tester.tap(
-      find.descendant(
-        of: find.byType(ProfileScreen),
-        matching: find.byType(Avatar),
-      ),
+      find.byWidgetPredicate((w) => w is AvatarArt && w.avatar.id == 'kai'),
     );
-    for (var i = 0; i < 10; i++) {
-      await tester.pump(const Duration(milliseconds: 100));
-    }
-    await tester.tap(find.text('USE MY INITIAL'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('CONTINUE AS KAI'));
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
-    expect(app.avatarId, '');
-    expect(find.byType(AvatarArt), findsNothing);
+    expect(api.calls, contains('POST /me/avatar'));
+    expect(app.avatarId, 'kai');
+    expect(find.byType(AvatarGate), findsNothing);
+    expect(find.byType(HomeScreen), findsOneWidget);
     await tester.pump(const Duration(seconds: 3));
   });
 

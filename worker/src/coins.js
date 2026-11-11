@@ -57,46 +57,84 @@ export async function enabledCoins(env) {
 
 export const coinOut = (c) => ({ id: c.id, symbol: c.symbol, name: c.name, fa: c.fa, network: c.network, color: c.color, fee: c.fee, memo: c.memo || null });
 
-// ---------------- live prices (USD), two free sources + a saved copy as a last resort ----------------
+// ---------------- live prices (USD): several free sources merged coin by coin, a saved copy as a last resort ----
+// CryptoCompare used to be the second source; since 2026 it answers 401 "API key required" to every keyless call,
+// so a CoinGecko hiccup (it rate-limits shared server addresses) left no price at all and every crypto order
+// failed with price_unavailable. Now each coin takes the first source that knows it, and the others fill gaps.
 const PRICE_TTL_MS = 60 * 1000;
 const STALE_OK_SEC = 6 * 3600;
 
-async function fromCoinGecko() {
-  const ids = COINS.map((c) => c.gecko).join(',');
-  const r = await fetch(`https://api.coingecko.com/api/v3/simple/price?ids=${ids}&vs_currencies=usd`, { headers: { accept: 'application/json' }, signal: deadline(8000) });
-  if (!r.ok) throw new Error('coingecko ' + r.status);
-  const j = await r.json();
-  const out = {};
-  for (const c of COINS) { const v = j[c.gecko] && j[c.gecko].usd; if (v > 0) out[c.id] = v; }
-  return out;
+async function getJson(url) {
+  const r = await fetch(url, { headers: { accept: 'application/json', 'user-agent': 'CloudGold/1.0' }, signal: deadline(8000) });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
 }
-async function fromCryptoCompare() {
-  const syms = COINS.map((c) => c.symbol).join(',');
-  const r = await fetch(`https://min-api.cryptocompare.com/data/pricemulti?fsyms=${syms}&tsyms=USD`, { headers: { accept: 'application/json' }, signal: deadline(8000) });
-  if (!r.ok) throw new Error('cryptocompare ' + r.status);
-  const j = await r.json();
-  const out = {};
-  for (const c of COINS) { const v = j[c.symbol] && j[c.symbol].USD; if (v > 0) out[c.id] = v; }
-  return out;
+const pos = (v) => { const n = parseFloat(v); return Number.isFinite(n) && n > 0 ? n : 0; };
+
+export const PRICE_SOURCES = [
+  {
+    id: 'coingecko', name: 'CoinGecko',
+    async read() {
+      const j = await getJson(`https://api.coingecko.com/api/v3/simple/price?ids=${COINS.map((c) => c.gecko).join(',')}&vs_currencies=usd`);
+      const out = {};
+      for (const c of COINS) { const v = pos(j[c.gecko] && j[c.gecko].usd); if (v) out[c.id] = v; }
+      return out;
+    },
+  },
+  {
+    // KuCoin: no key, one call for every coin (it has no TON; Coinbase has)
+    id: 'kucoin', name: 'KuCoin',
+    async read() {
+      const j = await getJson(`https://api.kucoin.com/api/v1/prices?base=USD&currencies=${COINS.map((c) => c.symbol).join(',')}`);
+      const d = j.data || {};
+      const out = {};
+      for (const c of COINS) { const v = pos(d[c.symbol]); if (v) out[c.id] = v; }
+      return out;
+    },
+  },
+  {
+    // Coinbase: how much of each coin one dollar buys (no TRX; KuCoin has)
+    id: 'coinbase', name: 'Coinbase',
+    async read() {
+      const j = await getJson('https://api.coinbase.com/v2/exchange-rates?currency=USD');
+      const d = (j.data && j.data.rates) || {};
+      const out = {};
+      for (const c of COINS) { const per = pos(d[c.symbol]); if (per) out[c.id] = 1 / per; }
+      return out;
+    },
+  },
+];
+
+// Every coin from the first source that has it. Returns { p, sources: [{id, name, coins, error?}] }
+export async function fetchPrices() {
+  const p = {};
+  const sources = [];
+  for (const s of PRICE_SOURCES) {
+    if (COINS.every((c) => p[c.id])) break; // nothing left to fill
+    try {
+      const got = await s.read();
+      for (const [k, v] of Object.entries(got)) if (!p[k]) p[k] = v;
+      sources.push({ id: s.id, name: s.name, coins: Object.keys(got).length });
+    } catch (e) { sources.push({ id: s.id, name: s.name, coins: 0, error: String(e.message || e).slice(0, 60) }); }
+  }
+  return { p, sources };
 }
 
 export async function prices(env) {
   const hit = globalThis.__cgPrices;
   if (hit && Date.now() - hit.at < PRICE_TTL_MS) return hit.p;
-  for (const src of [fromCoinGecko, fromCryptoCompare]) {
-    try {
-      const p = await src();
-      if (Object.keys(p).length >= COINS.length - 2) {
-        globalThis.__cgPrices = { at: Date.now(), p };
-        try { await setSetting(env, 'coin_prices_cache', JSON.stringify({ at: Math.floor(Date.now() / 1000), p })); } catch (e) {}
-        return p;
-      }
-    } catch (e) { /* try the next source */ }
+  let saved = {};
+  try { saved = JSON.parse(await getSetting(env, 'coin_prices_cache') || '{}'); } catch (e) {}
+  const { p } = await fetchPrices();
+  if (Object.keys(p).length) {
+    // a coin no source answered for this time keeps its saved price while that is recent enough
+    const old = saved.p && Date.now() / 1000 - saved.at < STALE_OK_SEC ? saved.p : {};
+    const merged = { ...old, ...p };
+    globalThis.__cgPrices = { at: Date.now(), p: merged };
+    try { await setSetting(env, 'coin_prices_cache', JSON.stringify({ at: Math.floor(Date.now() / 1000), p })); } catch (e) {}
+    return merged;
   }
-  try {
-    const saved = JSON.parse(await getSetting(env, 'coin_prices_cache') || '{}');
-    if (saved.p && Date.now() / 1000 - saved.at < STALE_OK_SEC) return saved.p;
-  } catch (e) {}
+  if (saved.p && Date.now() / 1000 - saved.at < STALE_OK_SEC) return saved.p;
   return null;
 }
 
