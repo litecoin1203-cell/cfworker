@@ -309,6 +309,7 @@ export async function panelServers(env, panel) {
     }
   } catch (e) { return { servers: [], source: 'error' }; }
   const seen = new Set(), perCc = {}, servers = [];
+  const rules = (await hostRulesFor(env, [panel.id]))[panel.id];
   for (const link of found) {
     if (isPlaceholder(link)) continue;
     const key = serverKey(link);
@@ -317,7 +318,7 @@ export async function panelServers(env, panel) {
     const cc = flagToCc(remarkOf(link));
     const n = (perCc[cc || '?'] = (perCc[cc || '?'] || 0) + 1);
     const type = Object.keys(linkKinds([link]).counts)[0] || '?';
-    servers.push({ key, name: cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`, type, cc });
+    servers.push({ key, name: cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`, type, cc, tunnel: isTunnelLink(rules, link) });
   }
   return { servers: servers.slice(0, 60), source: 'account' };
 }
@@ -425,8 +426,8 @@ export function isTunnelLink(rules, link) {
 
 // Cron (every 15 minutes): re-read each serving panel's hosts. Settings are written only when they changed, or
 // once a day so the age stays honest. A panel that cannot be reached keeps what was read last time.
-export async function refreshHostRules(env) {
-  const panels = (await listPanels(env)).filter((p) => SERVING.includes(p.state));
+export async function refreshHostRules(env, onlyId = 0, force = false) {
+  const panels = (await listPanels(env)).filter((p) => SERVING.includes(p.state) && (!onlyId || p.id === onlyId));
   const stored = await hostRulesStamps(env, panels.map((p) => p.id));
   const now = nowSec();
   for (const p of panels) {
@@ -439,7 +440,7 @@ export async function refreshHostRules(env) {
     } catch (e) { continue; }
     if (rules === null) rules = [];
     const body = JSON.stringify(rules);
-    if (old && old.body === body && now - (old.at || 0) < 86400) continue;
+    if (!force && old && old.body === body && now - (old.at || 0) < 86400) continue;
     await run(env, `INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
       `panel_hosts_${p.id}`, JSON.stringify({ at: now, rules }));
   }

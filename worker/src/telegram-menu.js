@@ -329,6 +329,7 @@ const SCREENS = {
   app: (env) => S.app(env),
   net: () => S.net(),
   srvs: (env, a) => S.panelServerList(env, parseInt(a[0], 10)),
+  ptn: (env, a) => S.panelTunnelDiag(env, parseInt(a[0], 10), a[1] === '1'),
   srv: (env, a) => S.panelServer(env, parseInt(a[0], 10), a[1]),
   appl: (env, a) => S.appList(env, a[0]),
   upd: (env) => S.appUpdate(env),
