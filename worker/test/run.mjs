@@ -360,6 +360,22 @@ section('crypto invoice + IPN');
   ok(me.data.subscription && me.data.subscription.active, 'crypto order activated subscription');
   const badSig = await call('POST', '/api/v1/payments/nowpayments/ipn', { json: payload, headers: { 'x-nowpayments-sig': 'deadbeef' } });
   ok(badSig.status === 401, 'bad IPN signature rejected');
+  // NOWPayments repeats an IPN until it gets 200: the repeat must not extend the plan again
+  const exp1 = (await env.DB.prepare('SELECT s.expires_at e FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE u.email = ?').bind('crypto@example.com').first()).e;
+  const again = await call('POST', '/api/v1/payments/nowpayments/ipn', { json: payload, headers: { 'x-nowpayments-sig': sig } });
+  const exp2 = (await env.DB.prepare('SELECT s.expires_at e FROM subscriptions s JOIN users u ON u.id = s.user_id WHERE u.email = ?').bind('crypto@example.com').first()).e;
+  ok(again.status === 200 && exp1 === exp2, 'a repeated IPN changes nothing: ' + [exp1, exp2]);
+  // a signed IPN for another invoice of the same order id is ignored; a failed payment expires the open order
+  const o2 = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'crypto' } });
+  const inv2 = fakes.np.invoices.slice(-1)[0].id;
+  const signed = async (p) => call('POST', '/api/v1/payments/nowpayments/ipn', { json: p, headers: { 'x-nowpayments-sig': await hmacSha512Hex('np-secret', sortedStringify(p)) } });
+  const mism = await signed({ order_id: String(o2.data.id), invoice_id: 'other-invoice', payment_status: 'finished' });
+  const st2 = async () => (await env.DB.prepare('SELECT status FROM orders WHERE id = ?').bind(o2.data.id).first()).status;
+  ok(mism.data.ignored === 'invoice mismatch' && (await st2()) === 'pending', 'an IPN for another invoice does not pay the order');
+  await signed({ order_id: String(o2.data.id), invoice_id: inv2, payment_status: 'failed' });
+  ok((await st2()) === 'expired', 'a failed crypto payment expires the open order');
+  const unknown = await signed({ order_id: '999999', invoice_id: 'x', payment_status: 'finished' });
+  ok(unknown.status === 200 && unknown.data.ignored === 'unknown order', 'an IPN for an unknown order is acknowledged and ignored');
 }
 
 section('free trial once per account and phone');
@@ -705,6 +721,23 @@ section('pay the difference by card, plan activates from wallet automatically');
   ok(w.data.balance === 0, 'wallet used up exactly');
   const me = await call('GET', '/api/v1/me', { token: tok });
   ok(me.data.subscription && me.data.subscription.active, 'subscription active');
+  // the money landed but the wallet no longer holds the plan's price (spent meanwhile): nothing is bought, the
+  // top-up stays in the wallet and the admin is told
+  const top2 = await call('POST', '/api/v1/orders', { token: tok, json: { topup_toman: 50000, method: 'card' } });
+  const f3 = new FormData(); f3.set('file', new Blob([new Uint8Array([0xff, 0xd8, 0xff, 6])], { type: 'image/jpeg' }), 'r.jpg');
+  await call('POST', `/api/v1/orders/${top2.data.id}/receipt`, { token: tok, form: f3 });
+  await tgWebhook({ callback_query: { id: 'd3', data: `ap:${top2.data.id}`, message: { chat: { id: 12345 }, message_id: 14 } } });
+  const o3 = await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: monthly.id, method: 'card', use_wallet: true } });
+  ok(o3.data.kind === 'topup' && o3.data.amount_toman === monthly.price_toman - 50000, 'second difference order: ' + o3.data.amount_toman);
+  await env.DB.prepare("UPDATE users SET wallet_balance = 0 WHERE email = 'diff@example.com'").run(); // spent elsewhere
+  const f4 = new FormData(); f4.set('file', new Blob([new Uint8Array([0xff, 0xd8, 0xff, 7])], { type: 'image/jpeg' }), 'r.jpg');
+  await call('POST', `/api/v1/orders/${o3.data.id}/receipt`, { token: tok, form: f4 });
+  const told = fakes.tg.messages.length;
+  await tgWebhook({ callback_query: { id: 'd4', data: `ap:${o3.data.id}`, message: { chat: { id: 12345 }, message_id: 15 } } });
+  const done3 = await call('GET', `/api/v1/orders/${o3.data.id}`, { token: tok });
+  const w3 = await call('GET', '/api/v1/wallet', { token: tok });
+  ok(done3.data.status === 'paid' && !done3.data.plan_activated && w3.data.balance === monthly.price_toman - 50000, 'short wallet: top-up kept, no plan bought: ' + w3.data.balance);
+  ok(fakes.tg.messages.slice(told).some((m) => m.text.includes('کافی نبود')), 'and the admin is told');
 }
 
 section('bot: /panel diagnostic, /find, /plan, /backup');

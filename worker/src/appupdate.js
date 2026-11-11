@@ -10,7 +10,7 @@
 //
 // Free plan: reading the release is one subrequest; a download is two (the asset, then GitHub's signed file
 // address it redirects to), and the body is streamed through untouched, so it costs almost no CPU.
-import { err, nowSec } from './util.js';
+import { err, nowSec, deadline } from './util.js';
 import { getSetting, setSetting } from './db.js';
 
 export const ABIS = ['arm64-v8a', 'armeabi-v7a', 'x86_64'];
@@ -72,7 +72,7 @@ export function releaseFromGitHub(r) {
 export async function latestBuild(env) {
   if (!env.PLEAT_DL_TOKEN) return null;
   try {
-    const res = await fetch(`https://api.github.com/repos/${repoOf(env)}/releases/tags/${RELEASE_TAG}`, { headers: ghHeaders(env, 'application/vnd.github+json') });
+    const res = await fetch(`https://api.github.com/repos/${repoOf(env)}/releases/tags/${RELEASE_TAG}`, { headers: ghHeaders(env, 'application/vnd.github+json'), signal: deadline(10000) });
     if (!res.ok) return null;
     return releaseFromGitHub(await res.json());
   } catch (e) { return null; }
@@ -105,7 +105,9 @@ export async function apkDownload(env, request) {
   if (!env.PLEAT_DL_TOKEN) throw err(503, 'update_unavailable', 'فایل آپدیت در دسترس نیست.');
   const range = /^bytes=\d{1,10}-$/.test(request.headers.get('range') || '') ? request.headers.get('range') : '';
   // the asset answers with a redirect to a signed address that must not get the token, so it is followed by hand
-  const meta = await fetch(`https://api.github.com/repos/${repoOf(env)}/releases/assets/${a.id}`, { headers: ghHeaders(env, 'application/octet-stream'), redirect: 'manual' });
+  let meta;
+  try { meta = await fetch(`https://api.github.com/repos/${repoOf(env)}/releases/assets/${a.id}`, { headers: ghHeaders(env, 'application/octet-stream'), redirect: 'manual', signal: deadline(10000) }); }
+  catch (e) { throw err(503, 'update_unavailable', 'فایل آپدیت در دسترس نیست.'); } // GitHub did not answer in time
   let res = meta;
   const to = meta.headers.get('location');
   if (meta.status >= 300 && meta.status < 400 && to && /^https:\/\//.test(to)) {
