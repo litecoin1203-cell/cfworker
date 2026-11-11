@@ -74,6 +74,7 @@ const ACTION = {
   'setting.set': 'Setting changed', 'coupon.create': 'Code created', 'coupon.delete': 'Code deleted', 'coupon.set': 'Code edited', 'coupon.toggle': 'Code on/off',
   'panel.rollout': 'Panel share', 'panel.groups': 'Panel groups', 'panel.drain': 'Panel removed', 'panel.rename': 'Panel renamed', 'panel.enable': 'Panel enabled',
   'panel.add': 'Panel added', 'panel.cred': 'Panel login changed', 'panel.test': 'Panel tested',
+  'health.resolve': 'App problem resolved / reopened', 'health.mute': 'App problem muted', 'health.mode': 'App health reports mode',
   'user.grant': 'Plan given', 'user.link': 'Panel account linked', 'user.reset_password': 'Password changed', 'user.add_days': 'Days added', 'user.add_gb': 'Data added',
   'user.reset_usage': 'Usage reset', 'user.pause': 'Pause / resume', 'user.end': 'Subscription ended', 'user.plan_name': 'Plan name changed', 'user.wallet': 'Wallet changed',
   'user.device_remove': 'Device removed', 'user.logout_all': 'Signed out everywhere', 'user.block': 'Block / unblock', 'user.unlink_tg': 'Telegram unlinked', 'user.unlink_panel': 'Panel account unlinked',
