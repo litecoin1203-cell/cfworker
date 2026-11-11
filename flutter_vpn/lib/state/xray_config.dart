@@ -30,6 +30,10 @@ const bridgePort = 10810;
 /// The user and password of the local API proxy (see [tunnelApiPort]).
 typedef ProxyLogin = ({String user, String pass});
 
+/// Top-level key for Pleat's own settings in a tunnel config (the apps
+/// that skip the VPN). The VPN service reads and removes it.
+const pleatKey = 'pleat';
+
 Map<String, Object?> _apiInbound(int port, ProxyLogin login) => {
   'tag': 'api',
   'listen': '127.0.0.1',
@@ -69,12 +73,21 @@ const _privateCidrs = [
 /// of them and carries traffic through the one that answers fastest, so a
 /// dead exit is left behind even while the app sleeps (screen off), when
 /// its own checks can't run. Backups that can't be built are left out.
+///
+/// [directSites]: the person's own sites (host names), always direct with
+/// the phone's own IP, whether or not the geo files are there.
+///
+/// [bypassApps]: Android packages kept out of the tunnel entirely. Not an
+/// Xray setting: it rides along under [pleatKey], and the VPN service
+/// takes it out before the core sees the config.
 String xrayConfig(
   String link, {
   bool localDirect = false,
   bool forTest = false,
   ProxyLogin? api,
   List<String> backups = const [],
+  List<String> directSites = const [],
+  List<String> bypassApps = const [],
 }) {
   final proxy = outboundOf(link);
   final spares = <Map<String, Object?>>[];
@@ -103,6 +116,7 @@ String xrayConfig(
       localDirect ||
       [proxy, ...spares].any((o) => !udpNative.contains(o['protocol']));
   return jsonEncode({
+    if (!forTest && bypassApps.isNotEmpty) pleatKey: {'bypass': bypassApps},
     'log': {'loglevel': 'warning'},
     'dns': {
       'servers': [
@@ -187,6 +201,14 @@ String xrayConfig(
             'network': 'udp',
             'port': '443',
             'outboundTag': 'block',
+          },
+        // The person's own sites: matched by name (the sniffed one), so they
+        // leave with the phone's own IP. Before everything below.
+        if (directSites.isNotEmpty)
+          {
+            'type': 'field',
+            'domain': [for (final d in directSites) 'domain:$d'],
+            'outboundTag': 'direct',
           },
         if (localDirect) ...[
           {

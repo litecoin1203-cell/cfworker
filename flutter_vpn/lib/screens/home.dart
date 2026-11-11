@@ -15,8 +15,10 @@ import '../state/updater.dart';
 import 'location_detail.dart';
 import 'profile.dart';
 import 'route_chooser.dart';
+import 'route_extras.dart';
 import 'shell.dart';
 import 'states.dart';
+import 'stats_view.dart';
 
 enum _HomeTab { now, route, stats }
 
@@ -30,11 +32,17 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  _HomeTab _tab = _HomeTab.now;
-
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
+    // in AppState, so a notification can open Route
+    return ValueListenableBuilder<int>(
+      valueListenable: app.homeTab,
+      builder: (context, i, _) => _page(app, _HomeTab.values[i]),
+    );
+  }
+
+  Widget _page(AppState app, _HomeTab tab) {
     final recommended = app.recommended;
 
     return SafeArea(
@@ -56,12 +64,12 @@ class _HomeScreenState extends State<HomeScreen> {
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12),
               child: _Tabs(
-                value: _tab,
-                onChanged: (t) => setState(() => _tab = t),
+                value: tab,
+                onChanged: (t) => app.homeTab.value = t.index,
               ),
             ),
             const SizedBox(height: 18),
-            _Instrument(app: app, tab: _tab),
+            _Instrument(app: app, tab: tab),
             // The control stands in the shard field and overlaps the crop.
             Transform.translate(
               offset: const Offset(0, -40),
@@ -82,15 +90,21 @@ class _HomeScreenState extends State<HomeScreen> {
                 ],
               ),
             ),
-            if (_tab == _HomeTab.route)
+            if (tab == _HomeTab.route)
               Transform.translate(
                 offset: const Offset(0, -30),
                 child: Padding(
                   padding: const EdgeInsets.only(bottom: 18),
-                  child: RouteChooser(app: app),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      RouteChooser(app: app),
+                      RouteExtras(app: app),
+                    ],
+                  ),
                 ),
               ),
-            if (_tab == _HomeTab.stats)
+            if (tab == _HomeTab.stats)
               Transform.translate(
                 offset: const Offset(0, -34),
                 child: Padding(
@@ -101,9 +115,17 @@ class _HomeScreenState extends State<HomeScreen> {
                   ),
                 ),
               ),
+            if (tab == _HomeTab.stats)
+              Transform.translate(
+                offset: const Offset(0, -34),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 18),
+                  child: StatsPanel(app: app),
+                ),
+              ),
             // Recommended exits stay under Now only: Route and Stats keep
             // to their own job (Ali, 2026-11-11).
-            if (_tab == _HomeTab.now) ...[
+            if (tab == _HomeTab.now) ...[
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
                 child: SectionLabel(
