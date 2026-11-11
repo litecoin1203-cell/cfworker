@@ -4,11 +4,12 @@
 # the same one the Cloud Gold Android build uses.
 name: Pleat Flutter app
 
+# Actions minutes are limited on this private repo: a pull request runs only the checks (format, analyze, tests,
+# the client against the local Worker, the configs through the real Xray core), once per change and never twice
+# (no separate push run). The APK (NDK, core, Gradle: most of the minutes) is built only by the manual run.
 on:
-  push:
-    paths: ['flutter_vpn/**', 'worker/**', '.github/workflows/flutter-vpn.yml']
   pull_request:
-    paths: ['flutter_vpn/**', 'worker/**', '.github/workflows/flutter-vpn.yml']
+    paths: ['flutter_vpn/**', '.github/workflows/flutter-vpn.yml']
   workflow_dispatch:
     inputs:
       api_base:
@@ -17,6 +18,11 @@ on:
 
 permissions:
   contents: read
+
+# a newer push to the same pull request stops the run that is still going
+concurrency:
+  group: pleat-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   # The same core and tun the Cloud Gold app ships (android.yml).
@@ -119,17 +125,19 @@ jobs:
             /tmp/xray/xray run -test -c "$f"
           done
       - name: Install NDK
+        if: github.event_name == 'workflow_dispatch'
         run: |
           echo "y" | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --install "ndk;$NDK_VERSION" > /dev/null
           echo "NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> $GITHUB_ENV
       - name: Restore libhev-socks5-tunnel
+        if: github.event_name == 'workflow_dispatch'
         id: hev-cache
         uses: actions/cache@v4
         with:
           path: flutter_vpn/android/app/libs
           key: pleat-hev-${{ env.HEV_COMMIT }}-${{ env.NDK_VERSION }}-${{ hashFiles('flutter_vpn/android/compile-hevtun.sh') }}
       - name: Build libhev-socks5-tunnel
-        if: steps.hev-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'workflow_dispatch' && steps.hev-cache.outputs.cache-hit != 'true'
         working-directory: flutter_vpn/android
         run: |
           git clone https://github.com/heiher/hev-socks5-tunnel hev-socks5-tunnel
@@ -137,6 +145,7 @@ jobs:
           git -C hev-socks5-tunnel submodule update --init --recursive
           bash compile-hevtun.sh
       - name: Download Xray core (libv2ray.aar)
+        if: github.event_name == 'workflow_dispatch'
         id: aar
         continue-on-error: true # a GitHub 504 falls back to the cached copy below
         uses: robinraju/release-downloader@v1.11
@@ -146,6 +155,7 @@ jobs:
           fileName: libv2ray.aar
           out-file-path: flutter_vpn/android/app/libs/
       - name: Keep or use the cached libv2ray.aar
+        if: github.event_name == 'workflow_dispatch'
         run: |
           dl=~/.cache/pleat-dl
           aar=android/app/libs/libv2ray.aar
@@ -163,6 +173,7 @@ jobs:
       # built here from the version the library itself records, and every config is checked with it too,
       # so a field the app's core doesn't know fails here instead of on the phone.
       - name: Restore Go modules for the app's core
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/cache@v4
         with:
           path: |
@@ -170,6 +181,7 @@ jobs:
             ~/.cache/go-build
           key: pleat-xray-app-${{ env.XRAY_LIB_TAG }}
       - name: Check generated configs with the app's own core version
+        if: github.event_name == 'workflow_dispatch'
         run: |
           unzip -p android/app/libs/libv2ray.aar jni/x86_64/libgojni.so > /tmp/gojni.so
           info=$(go version -m /tmp/gojni.so)
@@ -189,6 +201,7 @@ jobs:
             /tmp/xray-app/xray run -test -c "$f"
           done
       - name: Signing key
+        if: github.event_name == 'workflow_dispatch'
         env:
           KEYSTORE_B64: ${{ secrets.APP_KEYSTORE_BASE64 }}
         run: |
@@ -200,6 +213,7 @@ jobs:
           fi
       # Gradle itself is downloaded from GitHub releases too (services.gradle.org redirects there): keep it
       - name: Restore Gradle
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/cache@v4
         with:
           path: ~/.gradle/wrapper/dists
@@ -209,6 +223,7 @@ jobs:
       # mirror of Maven Central serves the files itself: an init script puts it first in every build (the app,
       # its plugins and Flutter's own Gradle plugin); google() and the others stay behind it.
       - name: Maven Central through Google's mirror
+        if: github.event_name == 'workflow_dispatch'
         run: |
           mkdir -p ~/.gradle/init.d
           cat > ~/.gradle/init.d/central-mirror.gradle <<'GRADLE'
@@ -240,6 +255,7 @@ jobs:
       # The Gradle wrapper tries its download once and stops on a 504; fetch the same file with retries
       # into the place the wrapper looks first (dists/<name>/<base36 md5 of the URL>/), so it only unzips it.
       - name: Fetch Gradle with retries
+        if: github.event_name == 'workflow_dispatch'
         run: |
           url=$(grep '^distributionUrl=' android/gradle/wrapper/gradle-wrapper.properties | cut -d= -f2- | sed 's/\\:/:/g')
           name=$(basename "$url" .zip)
@@ -263,6 +279,7 @@ jobs:
           fi
           echo "Gradle $name ready in $dir"
       - name: Build APK
+        if: github.event_name == 'workflow_dispatch'
         env:
           API_INPUT: ${{ github.event.inputs.api_base }}
           API_VAR: ${{ vars.CG_API_BASE }}
@@ -279,6 +296,7 @@ jobs:
           # Flutter adds 1000 x the type's number to the version code (arm64 2xxx), so they install over the old one.
           flutter build apk --release --split-per-abi --dart-define=PLEAT_API="$API" --dart-define=PLEAT_BRIDGE="$PLEAT_BRIDGE"
       - name: Check APKs
+        if: github.event_name == 'workflow_dispatch'
         run: |
           aapt=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 | sort -V | tail -1)
           for abi in arm64-v8a armeabi-v7a x86_64; do
