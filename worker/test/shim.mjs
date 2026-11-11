@@ -46,6 +46,11 @@ export function makeDB(schemaPath, { upto } = {}) {
       db.exec('BEGIN');
       try {
         const out = stmts.map((s) => {
+          // a statement that returns rows (SELECT, ... RETURNING) gives them back in results, as D1 does
+          if (/^\s*SELECT\b|\bRETURNING\b/i.test(s.sql)) {
+            const rows = db.prepare(s.sql).all(...s.args).map(fixRow);
+            return { success: true, results: rows, meta: { changes: rows.length, last_row_id: 0 } };
+          }
           const r = db.prepare(s.sql).run(...s.args);
           return { success: true, meta: { changes: toNum(r.changes), last_row_id: toNum(r.lastInsertRowid) } };
         });

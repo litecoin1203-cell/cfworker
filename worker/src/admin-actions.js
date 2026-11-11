@@ -888,6 +888,40 @@ Object.assign(ACTIONS, {
       return !!r.meta.changes;
     },
   },
+  // ---------------- Pleat health reports (health.js) ----------------
+  'health.resolve': {
+    risk: 'reversible', target: 'health',
+    async apply(env, { fp }) {
+      const H = await import('./health.js');
+      if (!H.FP_RE.test(String(fp))) return fail('این مورد پیدا نشد.');
+      const ids = (await all(env, "SELECT id FROM health_events WHERE fp = ? AND state = 'open'", fp)).map((r) => r.id);
+      await H.resolve(env, fp);
+      return { targetId: fp, summary: `resolved ${ids.length} rows`, undo: { fp, ids: ids.slice(0, 200) },
+        text: '✅ رسیدگی‌شده علامت خورد. اگر دوباره رخ بدهد، باز می‌شود.' };
+    },
+    async undo(env, u) { const H = await import('./health.js'); return H.reopen(env, u.fp, u.ids); },
+  },
+  'health.mute': {
+    risk: 'reversible', target: 'health',
+    async apply(env, { fp, on }) {
+      const H = await import('./health.js');
+      const r = await H.setMute(env, fp, !!on);
+      if (!r) return fail('این مورد پیدا نشد.');
+      return { targetId: fp, summary: `mute: ${r.before ? 1 : 0} → ${on ? 1 : 0}`, undo: { fp, on: !!r.before },
+        text: on ? '🔇 تا ۷ روز این مشکل در فهرست و هشدارها نمی‌آید.' : '🔔 این مشکل دوباره نشان داده می‌شود.' };
+    },
+    async undo(env, u) { const H = await import('./health.js'); return !!(await H.setMute(env, u.fp, !!u.on)); },
+  },
+  'health.mode': {
+    risk: 'reversible', target: 'health',
+    async apply(env, { mode }) {
+      const H = await import('./health.js');
+      const r = await H.setMode(env, mode);
+      if (!r) return fail('این حالت درست نیست.');
+      return { targetId: 'mode', summary: `mode: ${r.before} → ${mode}`, undo: { mode: r.before }, text: `⚙️ ارسال گزارش از اپ: ${H.MODE_FA[mode]}` };
+    },
+    async undo(env, u) { const H = await import('./health.js'); return !!(await H.setMode(env, u.mode)); },
+  },
   'server.hide': {
     risk: 'reversible', target: 'server',
     async apply(env, { panelId, key, on }) {

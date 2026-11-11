@@ -2429,7 +2429,9 @@ const STAGE2_ACTIONS = ['user.add_days', 'user.add_gb', 'user.reset_usage', 'use
 const STAGE3_ACTIONS = ['order.approve', 'order.reject', 'order.cancel', 'order.refund', 'plan.move', 'plan.copy', 'plan.delete', 'plan.unarchive',
   'coupon.set', 'coupon.toggle'];
 const STAGE4_ACTIONS = ['panel.rename', 'panel.enable', 'server.hide', 'server.rename', 'app.list', 'net.reset', 'app.release'];
-const STAGE5_ACTIONS = ['broadcast.create', 'broadcast.start', 'broadcast.stop', 'admin.add', 'admin.remove'];
+// Pleat health reports: exercised in their own section near the end
+const HEALTH_ACTIONS = ['health.resolve', 'health.mute', 'health.mode'];
+const STAGE5_ACTIONS = ['broadcast.create', 'broadcast.start', 'broadcast.stop', 'admin.add', 'admin.remove', ...HEALTH_ACTIONS];
 section('admin panel stage 1: routes, screens, undo, forms, audit, query budget');
 {
   const menu = await import('../src/telegram-menu.js');
@@ -3942,7 +3944,7 @@ section('admin panel stage 5: broadcast, stats, system, roles, security');
 
   // every stage 5 action has written an audit row
   const logged = new Set((await rows('SELECT DISTINCT action FROM admin_audit')).map((r) => r.action));
-  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !HEALTH_ACTIONS.includes(x));
   ok(!missing.length, 'every admin action, stage 5 included, has written an audit row: missing ' + missing.join(','));
   await exec("DELETE FROM settings WHERE key IN ('sms_key', 'app_bridges', 'panel_cred_9')");
 }
@@ -4626,6 +4628,149 @@ section('configs from a panel\'s "Tunnel" group are marked; the panel number is 
   ok((p1.hostReads || 0) === reads && JSON.parse((await row("SELECT value FROM settings WHERE key = 'panel_hosts_1'")).value).rules.length === 0, 'no Tunnel group: no host read, nothing marked');
   for (const [p, g, h] of saved) { p.groupList = g; p.hosts = h; }
   await env.DB.prepare("DELETE FROM settings WHERE key LIKE 'panel_hosts_%'").run();
+}
+
+section('Pleat health reports: priorities, one row per problem, caps, scrubbing, P1 alert, location mismatch, bot screens');
+{
+  const H = await import('../src/health.js');
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const q = (sql, ...a) => env.DB.prepare(sql).bind(...a).all().then((r) => r.results);
+  const one = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const fresh = () => { globalThis.__cgHealth = new Map(); globalThis.__cgHealthP1 = new Map(); };
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  ok((await call('POST', '/api/v1/me/health', { json: { events: [] } })).status === 401, '/me/health needs a signed-in user');
+  const tok = await signup('health@example.com', { device: 'hd' });
+  const uid = (await one("SELECT id FROM users WHERE email = 'health@example.com'")).id;
+  await env.DB.prepare("UPDATE users SET tg_username = 'healthy' WHERE id = ?").bind(uid).run();
+  const kDE = 'k1a2b3c4d', kNL = 'k99887766';
+  await env.DB.prepare('INSERT INTO user_skeys (user_id, keys, at) VALUES (?, ?, ?) ON CONFLICT(user_id) DO UPDATE SET keys = excluded.keys')
+    .bind(uid, JSON.stringify({ [kDE]: '🇩🇪 DE1', [kNL]: '🇳🇱 NL2' }), Math.floor(Date.now() / 1000)).run();
+  const SECRET_UUID = '3f2a9c1e-5b7d-4e8a-9c21-7d4e5f6a8b90';
+  const err = `dial tcp 203.0.113.9:443: i/o timeout via de1.secret-host.example.net uuid ${SECRET_UUID} vless://${SECRET_UUID}@de1.secret-host.example.net:443?pbk=AbCdEfGhIjKlMnOpQrStUvWxYz0123456789abcd#DE ip [2001:db8::1] mail a@b.co`;
+  const meta = { app: '1.2.35', os: 'Android 13 (33)', model: 'Xiaomi 2201117TG', net: 'cell' };
+  const send = (events, extra = {}) => call('POST', '/api/v1/me/health', { token: tok, json: { ...meta, ...extra, events }, cf: { asn: 44244, asOrganization: 'Irancell' } });
+  let n0 = fakes.tg.calls.length;
+  fresh();
+  const r1 = await send([
+    { t: 'connect_fail', k: kDE, c: 'timeout', d: { proto: 'vless/reality/tcp', ms: 8000, err } },
+    { t: 'connect_fail', k: kDE, c: 'timeout', d: { proto: 'vless/reality/tcp', ms: 9000, err } },
+    { t: 'connect_fail', k: kDE, c: 'timeout', n: 2, d: { proto: 'vless/reality/tcp', ms: 7000, err } },
+    { t: 'crash', k: kNL, c: 'native', d: { tunnel: true, trace: 'signal 6 (SIGABRT) libgojni.so app.pleat.pleat.PleatVpnService.begin (PleatVpnService.kt:120) at de1.secret-host.example.net' } },
+    { t: 'battery', c: 'high', d: { rate: 9.5, min: 64, off: 88, opt: true } },
+    { t: 'daily', d: { sessions: 4, minutes: 180 } },
+    { t: 'loc_mismatch', k: kDE, c: 'de>nl' },
+    { t: 'made_up' },
+    { t: 'connect_fail', k: 'NOT A KEY', c: 'refused' },
+  ]);
+  await drain();
+  ok(r1.status === 200 && r1.data.ok && r1.data.stored === 5 && r1.data.mode === 'all', 'a batch: three repeats fold into one, server-only and unknown types are dropped: ' + JSON.stringify(r1.data));
+  const rows1 = await q('SELECT * FROM health_events WHERE user_id = ? ORDER BY prio, type', uid);
+  const cf1 = rows1.find((r) => r.type === 'connect_fail' && r.exit_key === kDE);
+  ok(rows1.length === 5 && cf1 && cf1.count === 4 && cf1.prio === 2 && cf1.exit_name === '🇩🇪 DE1' && cf1.cause === 'timeout', 'one row per problem with its count, priority and server name: ' + JSON.stringify(cf1 && { c: cf1.count, p: cf1.prio, n: cf1.exit_name }));
+  ok(rows1.find((r) => r.type === 'crash').prio === 1 && rows1.find((r) => r.type === 'battery').prio === 3 && rows1.find((r) => r.type === 'daily').prio === 4, 'priorities come from the Worker, by type');
+  ok(rows1.some((r) => r.type === 'connect_fail' && r.exit_key === '' && r.cause === 'refused'), 'a malformed server key is kept out, the problem stays');
+  ok(rows1.every((r) => r.app_ver === '1.2.35' && r.model === 'Xiaomi 2201117TG' && r.net === 'cell' && r.asn === 44244 && r.isp === 'Irancell'), 'phone, version and operator are kept');
+  const all1 = JSON.stringify(rows1);
+  ok(!all1.includes(SECRET_UUID) && !all1.includes('secret-host') && !all1.includes('203.0.113.9') && !all1.includes('2001:db8') && !all1.includes('vless:') && !all1.includes('AbCdEfGhIjKlMnOp') && !all1.includes('a@b.co'),
+    'no address, UUID, link, key or e-mail is stored: ' + cf1.detail);
+  ok(/i∕?\/?o timeout|i\/o timeout/.test(cf1.detail) && cf1.detail.includes('<host>') && cf1.detail.includes('<ip>'), 'the error keeps its words: ' + cf1.detail);
+  const crash = rows1.find((r) => r.type === 'crash');
+  ok(crash.detail.includes('app.pleat.pleat.PleatVpnService.begin') && crash.detail.includes('PleatVpnService.kt') && crash.detail.includes('libgojni.so') && !crash.detail.includes('secret-host'), 'a trace keeps code names, not hosts: ' + crash.detail);
+  ok(rows1.every((r) => Buffer.byteLength(r.detail) <= 600), 'details are at most 600 bytes');
+  // P1: one Telegram alert, with a button to the details
+  const alerts = fakes.tg.calls.slice(n0).filter((c) => c.method === 'sendMessage' && String(c.body.text).includes('🚨'));
+  ok(alerts.length === 1 && alerts[0].body.text.includes('@healthy') && alerts[0].body.text.includes('1.2.35') && alerts[0].body.text.includes('NL2'), 'a crash alerts the admin at once: ' + (alerts[0] && alerts[0].body.text));
+  ok(alerts.length && flat(alerts[0].body.reply_markup.inline_keyboard).includes('m:he:' + crash.fp) && !/secret-host|203\.0\.113/.test(alerts[0].body.text), 'the alert has a details button and no address');
+  ok(crash.alerted_at > 0, 'the alert time is kept');
+  // throttled: the phone keeps its queue
+  const r2 = await send([{ t: 'battery', c: 'high' }]);
+  ok(r2.status === 200 && r2.data.ok === false && r2.data.retry > 0, 'a second batch within 10 minutes is refused with a retry time: ' + JSON.stringify(r2.data));
+  // again later: counts rise, no new rows, no second alert for the same crash
+  fresh(); n0 = fakes.tg.calls.length;
+  const r3 = await send([{ t: 'connect_fail', k: kDE, c: 'timeout', n: 3 }, { t: 'crash', k: kNL, c: 'native' }]);
+  await drain();
+  ok(r3.data.stored === 2 && (await one('SELECT count FROM health_events WHERE id = ?', cf1.id)).count === 7 && (await q('SELECT id FROM health_events WHERE user_id = ?', uid)).length === 5, 'a repeat adds to the count, not a row');
+  ok(!fakes.tg.calls.slice(n0).some((c) => String(c.body && c.body.text).includes('🚨')), 'the same critical problem is told once per 6 hours');
+  // daily caps: at most 25 new non-critical rows a user a day
+  for (let i = 0; i < 2; i++) { fresh(); await send(Array.from({ length: 20 }, (_, j) => ({ t: 'app_error', c: `e${i}x${j}` }))); }
+  const nonP1 = (await one('SELECT COUNT(*) c FROM health_events WHERE user_id = ? AND prio > 1', uid)).c;
+  ok(nonP1 === 25, 'new rows a day are capped at 25 per user: ' + nonP1);
+  fresh();
+  const r4 = await send([{ t: 'no_exit', c: 'all', d: { route: 'stealth', tried: [{ k: kDE, c: 'timeout' }, { k: kNL, c: 'reset' }] } }]);
+  await drain();
+  ok(r4.data.stored === 1, 'critical reports still get through above the cap');
+  // query budget of one report
+  const hInv = allInv.filter((s) => s.label === 'POST /api/v1/me/health');
+  const topQ = Math.max(...hInv.map((s) => s.q));
+  console.log(`    most D1 queries in one /me/health: ${topQ}`);
+  ok(topQ <= 12, 'a health report costs at most 12 D1 queries: ' + topQ);
+  // the Worker's own: location mismatch and an exit in Iran, from /me/ip?k=
+  const ip = async (k, cc, h = '') => { await call('GET', `/api/v1/me/ip?k=${k}${h}`, { token: tok, cf: { country: cc, asn: 44244 } }); await drain(); };
+  await ip(kDE, 'NL');
+  const lm = await one("SELECT * FROM health_events WHERE user_id = ? AND type = 'loc_mismatch'", uid);
+  ok(lm && lm.prio === 2 && lm.exit_key === kDE && lm.cause === 'de>nl' && JSON.parse(lm.detail).actual === 'NL', 'DE1 coming out in NL is a location mismatch: ' + JSON.stringify(lm));
+  await ip(kDE, 'NL');
+  ok((await one("SELECT count FROM health_events WHERE id = ?", lm.id)).count === 2, 'the same mismatch again only counts');
+  await ip(kNL, 'NL');
+  ok(!(await one("SELECT 1 x FROM health_events WHERE user_id = ? AND type = 'loc_mismatch' AND exit_key = ?", uid, kNL)), 'an exit where its name says is no report');
+  await ip(kNL, 'IR', '&h=0');
+  ok(!(await one("SELECT 1 x FROM health_events WHERE user_id = ? AND type = 'exit_iran'", uid)), 'diagnostics off on the phone: no location report');
+  await ip(kNL, 'IR');
+  ok((await one("SELECT prio FROM health_events WHERE user_id = ? AND type = 'exit_iran'", uid))?.prio === 2, 'an exit coming out in Iran is reported');
+  // bot: every health screen answers with breadcrumbs, back + home, and shows no address
+  const screens = ['hl', 'hlp:1', 'hlp:2', 'hlp:3', 'hlp:4', 'hlk', `hlk:${kDE}`, 'hlu', `hlu:${uid}`, 'hlv', `he:${cf1.fp}`, `he:${crash.fp}`, 'he:nope', 'hlk:BAD'];
+  let badScr = [];
+  for (const d of screens) {
+    const sc = await menu.renderScreen(env, d);
+    const last = flat([sc.kb[sc.kb.length - 1]]);
+    if (!String(sc.text).startsWith('🏠 منو') || !last.includes('m:home') || /secret-host|203\.0\.113|vless:/.test(sc.text) || /(^|\n)\s*\//.test(sc.text) || flat(sc.kb).some((x) => !menu.routeOf(x))) badScr.push(d);
+  }
+  ok(!badScr.length, 'health screens: crumbs, back + home, routes resolve, no address, no typed command: ' + badScr.join(','));
+  const home = await menu.renderScreen(env, 'hl');
+  ok(/🔴 2 /.test(home.text) && flat(home.kb).includes('m:hlp:1') && flat(home.kb).includes('m:hlm:p2'), 'the health home counts critical problems and offers the mode switch: ' + home.text);
+  ok(flat((await menu.renderScreen(env, 'home')).kb).includes('m:hl'), 'the bot home has the health button');
+  ok(flat((await import('../src/telegram-screens.js')).userKb(uid).inline_keyboard).includes(`m:hlu:${uid}`), 'the user card has the health button');
+  const ev = await menu.renderScreen(env, `he:${cf1.fp}`);
+  ok(ev.text.includes('🇩🇪 DE1') && ev.text.includes('Irancell') && ev.text.includes('1.2.35') && ev.text.includes('@healthy') && flat(ev.kb).includes(`m:her:${cf1.fp}`), 'one problem: server, operator, version, user and a resolve button: ' + ev.text.slice(0, 300));
+  // actions: resolve (and undo), mute, mode, each with an audit row
+  const rs = await acts.runAction(env, '12345', 'health.resolve', { fp: cf1.fp });
+  ok(rs.ok && rs.undoable && (await one('SELECT state FROM health_events WHERE id = ?', cf1.id)).state === 'resolved', 'resolve marks the problem');
+  ok(!(await menu.renderScreen(env, 'hlp:2')).kb.flat().some((x) => x.callback_data === `m:he:${cf1.fp}`), 'a resolved problem leaves the list');
+  ok((await acts.undoAction(env, '12345', rs.auditId)).ok && (await one('SELECT state FROM health_events WHERE id = ?', cf1.id)).state === 'open', 'resolve can be undone');
+  await acts.runAction(env, '12345', 'health.resolve', { fp: cf1.fp });
+  fresh(); await send([{ t: 'connect_fail', k: kDE, c: 'timeout' }]);
+  ok((await one('SELECT state FROM health_events WHERE id = ?', cf1.id)).state === 'open', 'a resolved problem that happens again opens again');
+  const mu = await acts.runAction(env, '12345', 'health.mute', { fp: crash.fp, on: true });
+  ok(mu.ok && (await one('SELECT state FROM health_events WHERE id = ?', crash.id)).state === 'muted', 'mute hides the problem');
+  await env.DB.prepare('UPDATE health_events SET alerted_at = 0 WHERE id = ?').bind(crash.id).run();
+  fresh(); n0 = fakes.tg.calls.length;
+  await send([{ t: 'crash', k: kNL, c: 'native' }]); await drain();
+  ok(!fakes.tg.calls.slice(n0).some((c) => String(c.body && c.body.text).includes('🚨')) && (await one('SELECT state FROM health_events WHERE id = ?', crash.id)).state === 'muted', 'a muted problem sends no alert');
+  n0 = fakes.tg.calls.length;
+  await tgWebhook({ callback_query: { id: 'hem0', data: `m:hem:${crash.fp}:0`, message: { chat: { id: 12345 }, message_id: 9, text: 'x' } } });
+  ok((await one('SELECT state FROM health_events WHERE id = ?', crash.id)).state === 'open', 'the bot button unmutes it');
+  await tgWebhook({ callback_query: { id: 'hlm', data: 'm:hlm:p2', message: { chat: { id: 12345 }, message_id: 9, text: 'x' } } });
+  fresh();
+  const r5 = await send([{ t: 'battery', c: 'p2test' }, { t: 'connect_fail', k: kDE, c: 'timeout' }]); // the user is at the new-row cap: an existing problem
+  ok(r5.data.mode === 'p2' && r5.data.stored === 1 && !(await one("SELECT 1 x FROM health_events WHERE cause = 'p2test'")), 'mode "critical and high only" drops battery reports and tells the phone');
+  await acts.runAction(env, '12345', 'health.mode', { mode: 'off' });
+  fresh();
+  ok((await send([{ t: 'crash', c: 'java' }])).data.stored === 0, 'mode off stores nothing');
+  await acts.runAction(env, '12345', 'health.mode', { mode: 'all' });
+  const logged = new Set((await q('SELECT DISTINCT action FROM admin_audit')).map((r) => r.action));
+  ok(HEALTH_ACTIONS.every((a) => logged.has(a)), 'every health action wrote an audit row');
+  // daily report line and pruning
+  n0 = fakes.tg.calls.length;
+  await worker.scheduled({ cron: '30 20 * * *' }, env, ctx); await drain();
+  ok(fakes.tg.calls.slice(n0).some((c) => c.method === 'sendMessage' && /🩺 سلامت اپ \(۲۴ ساعت\): 🔴 \d+ · 🟠 \d+ · 🟡 \d+/.test(String(c.body.text))), 'the daily report has a health line');
+  await env.DB.prepare('UPDATE health_events SET day = day - 20 WHERE id = ?').bind(cf1.id).run();
+  await H.prune(env);
+  ok(!(await one('SELECT 1 x FROM health_events WHERE id = ?', cf1.id)) && (await one('SELECT 1 x FROM health_events WHERE id = ?', crash.id)), 'rows older than 14 days are pruned, recent ones stay');
+  // scrub on its own
+  ok(H.scrub('lookup de1.example.com on 8.8.8.8:53: no such host') === 'lookup <host> on <ip>:53: no such host', 'scrub: ' + H.scrub('lookup de1.example.com on 8.8.8.8:53: no such host'));
+  ok(H.scrub('at 12:30:45 io.flutter.Foo xray_config.dart') === 'at 12:30:45 io.flutter.Foo xray_config.dart', 'scrub keeps times, code and file names');
+  await env.DB.prepare("DELETE FROM settings WHERE key IN ('health_mode', 'health_mute')").run();
 }
 
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
