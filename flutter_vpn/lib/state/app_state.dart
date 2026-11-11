@@ -170,6 +170,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// When app-config was read last; read again on return after a while, so
   /// an announcement reaches an app that stays open for days.
   DateTime? _configAt;
+
+  /// When the store was last asked for a new Pleat (Profile's footer).
+  DateTime? get updateCheckedAt => _configAt;
   static const configEvery = Duration(hours: 3);
 
   /// One system notification per announced build, and the sheet at once

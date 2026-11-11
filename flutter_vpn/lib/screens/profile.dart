@@ -145,24 +145,21 @@ class _ProfileScreenState extends State<ProfileScreen> {
                 const SizedBox(height: 22),
                 _Identity(app: app),
                 const SizedBox(height: 14),
-                SurfaceCard(
-                  padding: const EdgeInsets.fromLTRB(20, 8, 10, 8),
-                  child: _Row(
-                    icon: PIcon.refresh,
-                    title: app.appUpdate != null
-                        ? 'Pleat ${app.appUpdate!.version} is ready'
-                        : 'App version',
-                    body: app.appUpdate != null
-                        ? 'You have ${app.updater.version}. Update in a minute.'
-                        : (app.updater.version.isEmpty
-                              ? 'Pleat'
-                              : 'Pleat ${app.updater.version} · up to date'),
-                    trailing: app.appUpdate != null
-                        ? _RowAction('UPDATE', onTap: app.openUpdate)
-                        : const SizedBox.shrink(),
+                // The version lives in the footer; this card shows only
+                // while a new Pleat is waiting.
+                if (app.appUpdate != null) ...[
+                  SurfaceCard(
+                    padding: const EdgeInsets.fromLTRB(20, 8, 10, 8),
+                    child: _Row(
+                      icon: PIcon.download,
+                      title: 'Pleat ${app.appUpdate!.version} is ready',
+                      body:
+                          'You have ${app.updater.version}. Update in a minute.',
+                      trailing: _RowAction('UPDATE', onTap: app.openUpdate),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 14),
+                  const SizedBox(height: 14),
+                ],
                 _UsageCard(app: app),
                 const SizedBox(height: 14),
                 SurfaceCard(
@@ -306,23 +303,98 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     );
                   },
                 ),
-                const SizedBox(height: 16),
-                Center(
-                  child: Text(
-                    [
-                      'Pleat 1.2',
-                      app.tunnelAvailable == true
-                          ? 'tunnel engine on'
-                          : 'no tunnel engine in this build',
-                    ].join('  ·  '),
-                    style: PType.meta(),
-                  ),
-                ),
+                const SizedBox(height: 28),
+                _VersionFooter(app: app),
               ],
             ),
           ),
         ),
       ),
+    );
+  }
+}
+
+/// The signature at the end of Profile: the mark, which Pleat this is,
+/// whether it is up to date, and a button that asks the store again.
+class _VersionFooter extends StatefulWidget {
+  const _VersionFooter({required this.app});
+  final AppState app;
+
+  @override
+  State<_VersionFooter> createState() => _VersionFooterState();
+}
+
+class _VersionFooterState extends State<_VersionFooter> {
+  bool _checking = false;
+
+  Future<void> _check() async {
+    final app = widget.app;
+    if (app.appUpdate != null) return app.openUpdate();
+    setState(() => _checking = true);
+    await app.loadConfig();
+    if (!mounted) return;
+    setState(() => _checking = false);
+    if (app.appUpdate != null) {
+      app.openUpdate();
+    } else {
+      showNote(context, 'You have the latest Pleat.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final app = widget.app;
+    final v = app.updater.version;
+    final has = app.appUpdate != null;
+    final at = app.updateCheckedAt;
+    final when = at == null
+        ? ''
+        : '  ·  checked ${TimeOfDay.fromDateTime(at).format(context)}';
+    return Column(
+      children: [
+        const PleatMark(size: 34),
+        const SizedBox(height: 10),
+        Text(v.isEmpty ? 'Pleat' : 'Pleat $v', style: PType.h3()),
+        const SizedBox(height: 6),
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 8,
+              height: 8,
+              decoration: BoxDecoration(
+                color: has ? PColors.blue : PColors.safe,
+                shape: BoxShape.circle,
+              ),
+            ),
+            const SizedBox(width: 8),
+            Flexible(
+              child: Text(
+                has
+                    ? '${app.appUpdate!.version} is ready'
+                    : (_checking ? 'Checking…' : 'Up to date$when'),
+                style: PType.meta(),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        Pressable(
+          onTap: _checking ? null : _check,
+          label: has ? 'Update' : 'Check for updates',
+          radius: PRadius.pill,
+          color: PColors.mist,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+            child: Text(
+              has ? 'UPDATE' : 'CHECK FOR UPDATES',
+              style: PType.button(color: PColors.accentInk),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

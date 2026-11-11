@@ -762,6 +762,28 @@ void main() {
     await tester.pump(const Duration(seconds: 10));
   });
 
+  testWidgets('Profile: the version is a footer, not a card at the top', (
+    tester,
+  ) async {
+    await _boot(tester, {'onboarded': true}, tunnel: FakeTunnel());
+    await tester.tap(find.textContaining(', Ali'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('App version'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.text('CHECK FOR UPDATES'),
+      300,
+      scrollable: find
+          .descendant(
+            of: find.byType(ProfileScreen),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    expect(find.text('CHECK FOR UPDATES'), findsOneWidget);
+  });
+
   testWidgets('Profile: the name opens it; Telegram, Gmail, rings, packages', (
     tester,
   ) async {
