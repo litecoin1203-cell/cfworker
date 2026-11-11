@@ -26,6 +26,107 @@ enum UpdateStep {
   failed,
 }
 
+/// MB with one decimal, as every update surface shows sizes.
+String updateMb(int bytes) => (bytes / (1024 * 1024)).toStringAsFixed(1);
+
+/// The words for where an update is, shared by the Home card and the system
+/// notification so both always say the same thing.
+class UpdateCopy {
+  UpdateCopy._(
+    this.title,
+    this.text,
+    this.side,
+    this.action, {
+    String? short,
+    String? shortText,
+    String? button,
+  }) : short = short ?? title,
+       shortText = shortText ?? text,
+       button = button ?? action;
+  final String title, text;
+
+  /// The same, short enough for the Home card beside its button.
+  final String short, shortText, button;
+
+  /// A short note at the right of the title: time left, or the size.
+  final String side;
+
+  /// The main button, or '' when there is nothing to press.
+  final String action;
+
+  factory UpdateCopy.of(Updater up, AppUpdate u) {
+    final size = updateMb(u.files[up.abi]?.size ?? up.total);
+    final eta = up.etaSeconds;
+    final left = eta == null
+        ? ''
+        : (eta < 60 ? '$eta s left' : '${(eta / 60).ceil()} min left');
+    return switch (up.step) {
+      UpdateStep.downloading => UpdateCopy._(
+        'Updating to ${u.version}',
+        '${updateMb(up.received)} of ${updateMb(up.total)} MB',
+        left,
+        'Stop',
+      ),
+      UpdateStep.checking => UpdateCopy._(
+        'Checking ${u.version}',
+        'Making sure the file is Pleat’s own, byte for byte',
+        '',
+        '',
+      ),
+      UpdateStep.ready || UpdateStep.installing => UpdateCopy._(
+        'Checked. Tap to install ${u.version}',
+        'Your account, plan and settings stay',
+        '',
+        'Install',
+        short: '${u.version} is checked',
+        shortText: 'Your account and plan stay',
+      ),
+      UpdateStep.needsPermission => UpdateCopy._(
+        'One step before ${u.version}',
+        'Allow installs from Pleat, then come back',
+        '',
+        'Allow',
+        short: 'One step left',
+        shortText: 'Allow installs from Pleat',
+      ),
+      UpdateStep.failed => UpdateCopy._(
+        'The update didn’t finish',
+        up.error ?? 'Try again; it goes on from where it stopped.',
+        '',
+        'Try again',
+        short: 'Update didn’t finish',
+        button: 'Retry',
+      ),
+      UpdateStep.idle => UpdateCopy._(
+        'Pleat ${u.version} is ready for you',
+        '$size MB · your account and settings stay',
+        u.force ? 'Needed' : '',
+        up.received > 0 ? 'Go on' : 'Update now',
+        short: 'Pleat ${u.version} is ready',
+        shortText: '$size MB · settings stay',
+        button: up.received > 0 ? 'Go on' : 'Update',
+      ),
+    };
+  }
+}
+
+/// Where the three-part line stands: 0 download, 1 check, 2 install, and
+/// how far the download is.
+({int stage, double frac}) updateTrack(Updater up) => switch (up.step) {
+  UpdateStep.downloading => (
+    stage: 0,
+    frac: up.total > 0 ? (up.received / up.total).clamp(0.0, 1.0) : 0.0,
+  ),
+  UpdateStep.checking => (stage: 1, frac: 1.0),
+  UpdateStep.ready ||
+  UpdateStep.installing ||
+  UpdateStep.needsPermission => (stage: 2, frac: 1.0),
+  _ => (
+    stage: 0,
+    frac: up.total > 0 ? (up.received / up.total).clamp(0.0, 1.0) : 0.0,
+  ),
+};
+
 /// Pleat's in-app update. The store announces a build in app-config
 /// (`update`); this downloads the APK for this phone's type through the
 /// Worker (the open line, the tunnel or the bridge, whichever answers),
@@ -58,6 +159,26 @@ class Updater {
 
   bool _stop = false;
   String? _apk;
+
+  /// The build the notification is about, once it has been shown.
+  AppUpdate? _noted;
+  String _noteKey = '';
+  DateTime _noteAt = DateTime(0);
+
+  /// Download speed, from when this download (or its resume) began.
+  DateTime? _t0;
+  int _b0 = 0;
+
+  /// Seconds left at the speed so far; null until it has run a moment.
+  int? get etaSeconds {
+    final t0 = _t0;
+    if (step != UpdateStep.downloading || t0 == null || total <= 0) return null;
+    final ms = DateTime.now().difference(t0).inMilliseconds;
+    final got = received - _b0;
+    if (ms < 2000 || got <= 0) return null;
+    return ((total - received) * ms / got / 1000).ceil();
+  }
+
   String? _tag;
   DateTime _shown = DateTime(0);
 
@@ -72,6 +193,11 @@ class Updater {
       build = (m['build'] as num?)?.toInt() ?? 0;
       abi = '${m['abi'] ?? ''}';
       known = build > 0 && abi.isNotEmpty;
+      // Stop on the notification reaches the download here.
+      _ch.setMethodCallHandler((call) async {
+        if (call.method == 'action' && call.arguments == 'stop') stop();
+        return null;
+      });
     } on MissingPluginException {
       // No native side (tests, desktop).
     } on PlatformException {
@@ -94,6 +220,60 @@ class Updater {
     }
     _shown = t;
     onChange?.call();
+    _pushNote();
+  }
+
+  /// Keeps the system notification in step with the download: on each
+  /// stage change, and every 2% or so while it runs (Android drops
+  /// notification updates that come faster than a few a second).
+  void _pushNote() {
+    final u = _noted;
+    if (u == null) return;
+    final pct = total > 0 ? (100 * received / total).floor() : 0;
+    final key = '${step.name}:${pct ~/ 2}';
+    final t = DateTime.now();
+    final sameStage = _noteKey.startsWith('${step.name}:');
+    if (key == _noteKey) return;
+    if (sameStage &&
+        t.difference(_noteAt) < const Duration(milliseconds: 700)) {
+      return;
+    }
+    _noteKey = key;
+    _noteAt = t;
+    unawaited(_note(u, alert: false));
+  }
+
+  Future<void> _note(AppUpdate u, {required bool alert}) async {
+    final c = UpdateCopy.of(this, u);
+    final tr = updateTrack(this);
+    final stage = switch (step) {
+      UpdateStep.downloading => 'download',
+      UpdateStep.checking => 'check',
+      UpdateStep.ready => 'ready',
+      UpdateStep.needsPermission => 'permission',
+      UpdateStep.failed => 'failed',
+      UpdateStep.installing => 'cancel',
+      UpdateStep.idle => 'offer',
+    };
+    try {
+      await _ch.invokeMethod<void>('note', {
+        'stage': stage,
+        'alert': alert,
+        'title': c.title,
+        'text': c.text,
+        'side': c.side,
+        'action': c.action,
+        'from': version,
+        'to': u.version,
+        'pct': (100 * tr.frac).floor(),
+        'track': tr.stage,
+        'force': u.force,
+      });
+    } on PlatformException {
+      // The card on Home still shows it.
+    } on MissingPluginException {
+      // No native side.
+    }
   }
 
   /// Downloads (or goes on downloading) [u], checks it and opens the
@@ -106,6 +286,7 @@ class Updater {
     if (_tag != u.tag) _apk = null;
     _tag = u.tag;
     if (_apk != null && step != UpdateStep.failed) return install();
+    follow(u);
     _stop = false;
     error = null;
     total = f.size;
@@ -130,6 +311,8 @@ class Updater {
         final part = File('$dir/$name.part');
         if (part.existsSync() && part.lengthSync() > f.size) part.deleteSync();
         received = part.existsSync() ? part.lengthSync() : 0;
+        _t0 = DateTime.now();
+        _b0 = received;
         _changed();
         for (var tries = 0; ; tries++) {
           try {
@@ -261,17 +444,20 @@ class Updater {
 
   void stop() => _stop = true;
 
-  /// One system notification about [u].
+  /// The system notification about [u], the first time it is announced;
+  /// from then on it follows the download.
   Future<void> notify(AppUpdate u) async {
-    try {
-      await _ch.invokeMethod<void>('notify', {
-        'title': 'Pleat ${u.version} is ready',
-        'text': 'Tap to update. Your account and settings stay as they are.',
-      });
-    } on PlatformException {
-      // The badge in the app still shows it.
-    } on MissingPluginException {
-      // No native side.
-    }
+    _noted = u;
+    _noteKey = '${step.name}:0';
+    _noteAt = DateTime.now();
+    await _note(u, alert: true);
+  }
+
+  /// A download started in the app gets the notification too, so it can be
+  /// followed from the shade.
+  void follow(AppUpdate u) {
+    if (_noted?.tag == u.tag) return;
+    _noted = u;
+    _noteKey = '';
   }
 }

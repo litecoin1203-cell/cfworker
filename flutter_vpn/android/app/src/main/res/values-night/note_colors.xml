@@ -13,4 +13,7 @@
     <color name="note_mist">#FF0F2038</color>
     <color name="note_safe">#FF3DBE74</color>
     <color name="note_wait">#FFF2C14E</color>
+    <!-- Text buttons and the new version: 4.5:1 on the shade card. -->
+    <color name="note_link">#FF8AB8FA</color>
+    <color name="note_track">#FF2E3A4E</color>
 </resources>

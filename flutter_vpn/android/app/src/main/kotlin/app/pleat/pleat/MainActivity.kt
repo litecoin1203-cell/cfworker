@@ -68,7 +68,9 @@ class MainActivity : FlutterActivity() {
         EventChannel(engine.dartExecutor.binaryMessenger, "pleat/tunnel/state")
             .setStreamHandler(TunnelHub.stream)
         pendingOpen = pendingOpen ?: intent?.getStringExtra(TunnelNote.EXTRA_OPEN)
-        MethodChannel(engine.dartExecutor.binaryMessenger, "pleat/update").setMethodCallHandler { call, result ->
+        val updates = MethodChannel(engine.dartExecutor.binaryMessenger, "pleat/update")
+        Updates.onAction = { what -> main.post { updates.invokeMethod("action", what) } }
+        updates.setMethodCallHandler { call, result ->
             when (call.method) {
                 "info" -> result.success(Updates.info(this))
                 "dir" -> result.success(Updates.dir(this).absolutePath)
@@ -90,8 +92,14 @@ class MainActivity : FlutterActivity() {
                     }
                     result.success(ok)
                 }
-                "notify" -> {
-                    Updates.notify(this, call.argument<String>("title").orEmpty(), call.argument<String>("text").orEmpty())
+                "note" -> {
+                    @Suppress("UNCHECKED_CAST")
+                    val args = (call.arguments as? Map<String, Any?>).orEmpty()
+                    try {
+                        Updates.note(this, args)
+                    } catch (e: Exception) {
+                        // a notification that can't be drawn: the Home card still shows it
+                    }
                     result.success(null)
                 }
                 else -> result.notImplemented()

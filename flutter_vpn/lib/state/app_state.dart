@@ -135,6 +135,38 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   final updateSheet = ValueNotifier<int>(0);
   void openUpdate() => updateSheet.value++;
 
+  /// "Later" on the Home card: hidden until Pleat opens again. A needed
+  /// update can't be put off.
+  bool updateLater = false;
+  bool _goPending = false;
+  void putOffUpdate() {
+    if (mustUpdate) return;
+    updateLater = true;
+    notifyListeners();
+  }
+
+  /// The main button of the Home card and the notification: download,
+  /// go on, install, or ask for installs, whichever is next.
+  Future<void> goUpdate() async {
+    final u = appUpdate;
+    if (u == null) {
+      // tapped before app-config was read: go once it is
+      _goPending = true;
+      return;
+    }
+    _goPending = false;
+    switch (updater.step) {
+      case UpdateStep.ready || UpdateStep.installing:
+        await updater.install();
+      case UpdateStep.needsPermission:
+        await updater.allowInstalls();
+      case UpdateStep.downloading || UpdateStep.checking:
+        updater.stop();
+      case UpdateStep.idle || UpdateStep.failed:
+        await updater.start(u);
+    }
+  }
+
   /// When app-config was read last; read again on return after a while, so
   /// an announcement reaches an app that stays open for days.
   DateTime? _configAt;
@@ -150,6 +182,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(updater.notify(u));
     }
     if (u.force) openUpdate();
+    if (_goPending) unawaited(goUpdate());
     notifyListeners();
   }
 
@@ -2131,6 +2164,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       tunnel.watchOpen((screen) {
         if (screen == 'locations') setTab(2);
         if (screen == 'update') openUpdate();
+        if (screen == 'update_go') {
+          openUpdate();
+          unawaited(goUpdate());
+        }
       }),
     );
     tunnelAvailable = await tunnel.available();

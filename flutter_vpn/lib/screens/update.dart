@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../design/icons.dart';
 import '../design/tokens.dart';
+import '../design/update_track.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
 import '../state/updater.dart';
@@ -45,7 +46,6 @@ class UpdateSheet extends StatelessWidget {
     final file = u?.files[up.abi];
     final must = app.mustUpdate;
     final step = up.step;
-    final pct = up.total > 0 ? (100 * up.received / up.total).floor() : 0;
 
     final String status = switch (step) {
       UpdateStep.idle =>
@@ -144,10 +144,14 @@ class UpdateSheet extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 20),
-          if (step == UpdateStep.downloading ||
-              step == UpdateStep.checking) ...[
-            UsageBar(percent: pct, height: 8),
-            const SizedBox(height: 10),
+          if (u != null) ...[
+            UpdateTrack(
+              stage: updateTrack(up).stage,
+              frac: updateTrack(up).frac,
+              from: up.version,
+              to: u.version,
+            ),
+            const SizedBox(height: 12),
           ],
           if (status.isNotEmpty)
             Text(

@@ -51,6 +51,7 @@ enum PIcon {
   sun,
   moon,
   tunnel,
+  download,
 }
 
 class PIconView extends StatelessWidget {
@@ -160,6 +161,18 @@ class _IconPainter extends CustomPainter {
             radius: const Radius.circular(7.2),
             clockwise: false,
           );
+      case PIcon.download:
+        // an arrow into an open tray
+        path
+          ..moveTo(12, 4)
+          ..lineTo(12, 14.5)
+          ..moveTo(7.5, 10.5)
+          ..lineTo(12, 15)
+          ..lineTo(16.5, 10.5)
+          ..moveTo(4.5, 15.5)
+          ..lineTo(4.5, 19.5)
+          ..lineTo(19.5, 19.5)
+          ..lineTo(19.5, 15.5);
       case PIcon.tunnel:
         // an arch with a smaller arch inside: a tunnel mouth
         path
