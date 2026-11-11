@@ -13,6 +13,7 @@ import '../api/models.dart';
 import 'bridge.dart';
 import 'diagnose.dart';
 import 'exits.dart';
+import 'health.dart';
 import 'net_cache.dart';
 import 'route_mode.dart';
 import 'tunnel.dart';
@@ -94,6 +95,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   AppState(this._prefs, this.api, {Tunnel? tunnel})
     : tunnel = tunnel ?? Tunnel() {
     _load();
+    health = HealthLog(_prefs)..onQueued = _healthQueued;
+    api.timing = _apiTiming;
     _loadReceipts();
     _armReceipts();
     api.onSignedOut = _forgetAccount;
@@ -107,11 +110,235 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
     updater = Updater(api)
-      ..onChange = notifyListeners
+      ..onChange = _updaterChanged
       ..onGone = () => unawaited(loadConfig());
     unawaited(updater.load().then((_) => _offerUpdate()));
     WidgetsBinding.instance.addObserver(this);
   }
+
+  // ---- health reports (health.dart) --------------------------------------
+
+  /// Problems on this phone, queued for the Worker: crashes, failed exits,
+  /// drops, heavy battery use. Sent in batches; never a link or address.
+  late final HealthLog health;
+
+  /// When the current connect began (the first try, failovers included).
+  DateTime? _attemptAt;
+  DateTime? _apiDownSince;
+  bool _updateFailNoted = false;
+  DateTime? _appErrorAt;
+
+  /// Profile's "Send diagnostics".
+  bool get sendDiagnostics => health.enabled;
+  void setSendDiagnostics(bool on) {
+    health.setEnabled(on);
+    notifyListeners();
+  }
+
+  void _healthQueued() => unawaited(flushHealth());
+
+  /// Sends the waiting reports when a batch is due ([force]: now). Never
+  /// throws; a batch that didn't go stays for the next try.
+  Future<bool> flushHealth({bool force = false}) async {
+    if (!signedIn || !health.enabled) return false;
+    health.meta
+      ..['app'] = updater.known ? updater.version : ''
+      ..['os'] = api.osVersion.isEmpty ? '' : 'Android ${api.osVersion}'
+      ..['model'] = api.deviceModel
+      ..['net'] = network?.kind ?? '';
+    return health.flush((body) async {
+      try {
+        final r = await api.post('/me/health', body);
+        return r is Map ? r.cast<String, dynamic>() : null;
+      } on ApiError {
+        return null;
+      }
+    }, force: force);
+  }
+
+  /// An error the app survived: its type and first frames.
+  void noteAppError(Object error, StackTrace? stack) {
+    // the same error every frame is one report, not a disk write per frame
+    final now = DateTime.now();
+    final last = _appErrorAt;
+    if (last != null && now.difference(last) < const Duration(seconds: 10)) {
+      return;
+    }
+    _appErrorAt = now;
+    final frames = (stack?.toString() ?? '')
+        .split('\n')
+        .where((l) => l.trim().isNotEmpty)
+        .take(5)
+        .map((l) => l.replaceAll(RegExp(r'^#\d+\s+'), '').trim())
+        .join(' | ');
+    health.record(
+      'app_error',
+      c: error.runtimeType.toString(),
+      d: {'what': '$error', 'trace': frames},
+    );
+  }
+
+  /// A report the person asks for (a long press on the version in
+  /// Profile), to see that reports reach support.
+  Future<bool> sendTestReport() async {
+    health.record('app_error', c: 'test', d: {'what': 'test report'});
+    return flushHealth(force: true);
+  }
+
+  /// The core's reason for a failed exit, read once from the service.
+  void _noteFail(Exit e, String type) {
+    final started = _attemptAt;
+    final proto = protoOf(e.server.link);
+    final kind = network?.kind ?? '';
+    unawaited(() async {
+      final why = type == 'connect_fail'
+          ? (await tunnel.startError()) ?? e.failure
+          : e.failure;
+      health.record(
+        type,
+        k: e.id,
+        c: type == 'silent' ? '' : diagnose(why).cause.name,
+        d: {
+          'proto': proto,
+          'err': ?why,
+          if (started != null)
+            's': DateTime.now().difference(started).inSeconds,
+          'net': kind,
+          'smart': smartConnect,
+        },
+      );
+      if (type == 'connect_fail') health.count(proto: proto, ok: false);
+    }());
+  }
+
+  /// Nothing in the chosen route came up: the person is left without the
+  /// VPN.
+  void _noteNoExit() {
+    health.record(
+      'no_exit',
+      c: routeMode.name,
+      d: {
+        'route': routeMode.name,
+        'country': routeCountry,
+        'tried': [
+          for (final id in _tried.take(6)) {'k': id},
+        ],
+        'exits': routePool.length,
+        'net': network?.kind ?? '',
+        'smart': smartConnect,
+      },
+    );
+  }
+
+  void _noteUp() {
+    final e = exit;
+    if (e == null) return;
+    final proto = protoOf(e.server.link);
+    health.count(proto: proto, ok: true);
+    final at = _attemptAt;
+    _attemptAt = null;
+    if (at != null) {
+      final s = DateTime.now().difference(at).inSeconds;
+      if (s > 15) {
+        health.record(
+          'slow_connect',
+          k: e.id,
+          d: {'s': s, 'proto': proto, 'tries': _tried.length},
+        );
+      }
+    }
+    unawaited(flushHealth());
+  }
+
+  /// Every exchange with the Worker: a stretch of five minutes or more
+  /// with no way through is reported once the line is back.
+  void _apiTiming(String method, String path, int status, Duration took) {
+    final now = DateTime.now();
+    if (status == 0) {
+      _apiDownSince ??= now;
+      return;
+    }
+    final since = _apiDownSince;
+    _apiDownSince = null;
+    if (since == null) return;
+    final min = now.difference(since).inMinutes;
+    if (min >= 5) {
+      health.record(
+        'api_down',
+        c: 'unreachable',
+        d: {'min': min, 'vpn': phase == Phase.protected},
+      );
+    }
+  }
+
+  void _updaterChanged() {
+    if (updater.step == UpdateStep.failed) {
+      if (!_updateFailNoted) {
+        _updateFailNoted = true;
+        final err = updater.error ?? '';
+        health.record(
+          'update_fail',
+          c: err.contains('damaged')
+              ? 'verify'
+              : err.contains('room')
+              ? 'storage'
+              : err.contains('installer')
+              ? 'install'
+              : 'download',
+          d: {'err': err, 'to': config.update?.version ?? ''},
+        );
+      }
+    } else {
+      _updateFailNoted = false;
+    }
+    notifyListeners();
+  }
+
+  /// What Android noted since the last launch: a crash, the VPN killed,
+  /// battery over long sessions.
+  Future<void> _readNativeHealth() async {
+    final h = await tunnel.health();
+    // all of it first, then one batch
+    health.onQueued = null;
+    try {
+      _recordNative(h);
+    } finally {
+      health.onQueued = _healthQueued;
+    }
+    if (h.isNotEmpty) unawaited(flushHealth());
+  }
+
+  void _recordNative(Map<String, dynamic> h) {
+    final exits = h['exits'];
+    if (exits is List) {
+      for (final x in exits) {
+        if (x is! Map) continue;
+        final d = x['d'] is Map
+            ? (x['d'] as Map).cast<String, Object?>()
+            : <String, Object?>{};
+        health.record(
+          '${x['t']}',
+          k: d['tunnel'] == true ? (exitId ?? '') : '',
+          c: '${x['c'] ?? ''}',
+          d: d,
+        );
+      }
+    }
+    final battery = h['battery'];
+    if (battery is List) {
+      for (final b in battery) {
+        if (b is! Map) continue;
+        final rate = (b['rate'] as num?)?.toDouble() ?? 0;
+        health.count(drain: rate);
+        if (rate >= batteryHigh) {
+          health.record('battery', c: 'high', d: b.cast<String, Object?>());
+        }
+      }
+    }
+  }
+
+  /// % an hour over a long session on battery that counts as heavy.
+  static const batteryHigh = 6.0;
 
   // ---- in-app update ----------------------------------------------------
 
@@ -345,7 +572,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final at = connectedAt;
     final key = exit?.server.key ?? '';
     final path = RegExp(r'^[a-z0-9]{6,16}$').hasMatch(key)
-        ? '/me/ip?k=$key'
+        ? '/me/ip?k=$key${health.enabled ? '' : '&h=0'}'
         : '/me/ip';
     for (var i = 0; i < 2; i++) {
       if (phase != Phase.protected || connectedAt != at) return;
@@ -894,6 +1121,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     // In parallel: the Worker may take a while on each, waiting on panels.
     await Future.wait([loadPublic(), loadMe(), loadDevices(), loadServers()]);
     unawaited(measureIfDue());
+    unawaited(flushHealth());
   }
 
   // ---- account --------------------------------------------------------
@@ -1862,6 +2090,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (!failover) {
       _tried.clear();
       _resynced = false;
+      _attemptAt = DateTime.now();
     }
     final attempt = ++_attempt;
     phase = Phase.checking;
@@ -1922,6 +2151,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           exitId = best.id;
           _save();
         } else if (routePool.every((e) => e.unreachable)) {
+          _noteNoExit();
           return _fail(_noneAnswered);
         }
       }
@@ -1939,8 +2169,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           api: _detours?.login,
           backups: _backupsFor(target),
         );
-      } on FormatException {
-        if (smartConnect && _failover()) return;
+      } on FormatException catch (x) {
+        health.record(
+          'unsupported',
+          k: target.id,
+          c: target.protocol,
+          d: {'proto': protoOf(target.server.link), 'what': x.message},
+        );
+        if (smartConnect && _failover(as: '')) return;
         return _fail(
           'This exit’s protocol (${target.protocol}) can’t run in Pleat yet. Pick another exit.',
         );
@@ -1955,6 +2191,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _handshake = Timer(const Duration(seconds: 45), () {
         if (stale() || phase != Phase.handshaking) return;
         unawaited(_stopTunnel());
+        _noteFail(target, 'connect_fail');
+        _noteNoExit();
         _fail('The exit didn’t answer. Try another one.');
       });
       _pushNote(target);
@@ -1993,10 +2231,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Smart connect: the exit that failed is reported, the next best is
   /// tried (three in all), then the list is fetched again once.
-  bool _failover() {
+  /// [as]: what the health report calls it ('connect_fail', 'silent' for
+  /// a live exit that went quiet, '' for nothing).
+  bool _failover({String as = 'connect_fail'}) {
     final cur = exit;
     if (cur != null) {
       cur.measured = -1;
+      if (as.isNotEmpty) _noteFail(cur, as);
       _report([
         {'k': cur.id, 'ok': false, 'ms': 0},
       ]);
@@ -2087,6 +2328,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       exitAddress = null;
       _pushNote();
       unawaited(loadExitAddress());
+      _noteUp();
       _misses = 0;
       _reported = false;
       _okStreak = 0;
@@ -2111,6 +2353,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
     } else if (s == TunnelState.down && phase == Phase.protected) {
       _tunnelHeld = false;
+      final e = exit;
+      if (e != null) {
+        health.record(
+          'drop',
+          k: e.id,
+          c: 'tunnel',
+          d: {'min': elapsed.inMinutes, 'proto': protoOf(e.server.link)},
+        );
+      }
       _logSession();
       _stopTimers();
       phase = Phase.dropped;
@@ -2121,6 +2372,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     } else if ((s == TunnelState.down || s == TunnelState.failed) &&
         phase == Phase.handshaking) {
       if (_failover()) return;
+      _noteNoExit();
       final why = exit?.failure;
       _fail(
         why == null
@@ -2194,6 +2446,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   }
 
   Future<void> _beatOnce() async {
+    unawaited(flushHealth());
     metered = await tunnel.metered();
     final ms = await tunnel.delay();
     final e = exit;
@@ -2220,6 +2473,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       // swapped, but Home must stop saying everything is fine.
       if (!exitSilent) {
         exitSilent = true;
+        health.record(
+          'silent',
+          k: e.id,
+          d: {'proto': protoOf(e.server.link), 'smart': false},
+        );
         notifyListeners();
       }
       return;
@@ -2231,7 +2489,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     connectedAt = null;
     tunnelMessage = null;
     notifyListeners();
-    if (!_failover()) {
+    if (!_failover(as: 'silent')) {
+      _noteNoExit();
       await _stopTunnel();
       phase = Phase.dropped;
       tunnelMessage = '${e.title} stopped answering.';
@@ -2309,7 +2568,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       }),
     );
     tunnelAvailable = await tunnel.available();
-    if (tunnelAvailable!) geoAvailable = await tunnel.hasGeo();
+    if (tunnelAvailable!) {
+      geoAvailable = await tunnel.hasGeo();
+      await _readNativeHealth();
+    }
     notifyListeners();
     if (await tunnel.current() != TunnelState.up) return;
     tunnel.listen(_onTunnel);
@@ -2381,6 +2643,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   void _logSession() {
     final e = exit;
     if (connectedAt == null || e == null) return;
+    health.count(minutes: (elapsed.inSeconds / 60).ceil());
     sessions.insert(
       0,
       Session(

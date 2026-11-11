@@ -74,6 +74,10 @@ class FakeApi extends ApiClient {
   /// More exits after the usual three, for every FakeApi made after it is set.
   static List<Map<String, Object>> extraServers = [];
   final reports = <Map<String, Object?>>[];
+
+  /// Health report batches the app sent, and the mode the Worker answers.
+  final healthBodies = <Map<String, Object?>>[];
+  String healthMode = 'all';
   final orderBodies = <Map<String, Object?>>[];
 
   Map<String, Object?> order(String method) => {
@@ -328,6 +332,13 @@ class FakeApi extends ApiClient {
         return {};
       case 'GET /me/ip':
         return {'ip': '185.220.101.42', 'cc': 'DE', 'city': 'Frankfurt'};
+      case 'POST /me/health':
+        healthBodies.add(Map<String, Object?>.from(body ?? const {}));
+        return {
+          'ok': true,
+          'stored': ((body?['events'] as List?) ?? const []).length,
+          'mode': healthMode,
+        };
       case 'POST /net/report':
         if (body?['kind'] != null) reportKinds.add('${body!['kind']}');
         reports.addAll(
@@ -401,6 +412,20 @@ class FakeTunnel extends Tunnel {
   Future<TunnelState> current() async => TunnelState.down;
   @override
   Future<void> stop() async => stopped = true;
+
+  /// What Android noted since the last launch (read once), and the core's
+  /// reason for a failed start.
+  Map<String, dynamic> native = {};
+  String? startReason;
+  @override
+  Future<Map<String, dynamic>> health() async {
+    final n = native;
+    native = {};
+    return n;
+  }
+
+  @override
+  Future<String?> startError() async => startReason;
 
   /// What the VPN notification was last told, as "flag|place|ip|protocol".
   final List<String> notes = [];

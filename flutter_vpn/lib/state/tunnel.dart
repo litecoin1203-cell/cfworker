@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/services.dart';
 
@@ -122,6 +123,28 @@ class Tunnel {
       return 'no native side';
     } on PlatformException catch (e) {
       return '${e.code}: ${e.message ?? ''}';
+    }
+  }
+
+  /// What Android noted for the health reports since the last read: process
+  /// exits (crash, kill) and long battery sessions. Empty off Android.
+  Future<Map<String, dynamic>> health() async {
+    try {
+      final r = await _method.invokeMethod<Object>('health');
+      final j = r == null ? null : jsonDecode(jsonEncode(r));
+      return j is Map<String, dynamic> ? j : const {};
+    } catch (_) {
+      return const {};
+    }
+  }
+
+  /// The core's reason the last tunnel start failed (addresses blanked),
+  /// once; null when none.
+  Future<String?> startError() async {
+    try {
+      return await _method.invokeMethod<String>('startError');
+    } catch (_) {
+      return null;
     }
   }
 

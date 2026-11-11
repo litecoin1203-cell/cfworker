@@ -59,6 +59,7 @@ class PleatVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        Health.install(this)
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -165,6 +166,7 @@ class PleatVpnService : VpnService() {
                 start(config)
                 probe { gen == generation }
             } catch (e: Throwable) {
+                Health.startFailed(e)
                 false
             } finally {
                 // The new tun took over: the old one goes. No new tun (the
@@ -179,6 +181,9 @@ class PleatVpnService : VpnService() {
             }
             if (gen != generation) return@execute
             if (ok) {
+                // for the health reports: a marker of a running tunnel, and the session's battery
+                Health.tunnelUp(this)
+                Health.sessionStart(this)
                 TunnelHub.set("up")
                 main.post {
                     if (gen != generation) return@post
@@ -276,16 +281,19 @@ class PleatVpnService : VpnService() {
      * answers. Gives up early once [current] turns false.
      */
     private fun probe(current: () -> Boolean): Boolean {
+        var why: Throwable? = null
         repeat(3) {
             if (!current()) return false
             try {
                 val ms = core?.measureDelay(Engine.TEST_URL) ?: -1L
                 if (ms >= 0) return true
             } catch (e: Exception) {
-                // no answer this time
+                // no answer this time; the core's reason goes to the health report
+                why = e
             }
             Thread.sleep(800)
         }
+        Health.startFailed(why ?: Exception("no answer through the exit (timeout)"))
         return false
     }
 
@@ -336,6 +344,8 @@ class PleatVpnService : VpnService() {
         val gen = ++generation
         ops.execute {
             teardown()
+            Health.tunnelStopped(this)
+            Health.sessionEnd(this)
             // A newer start may have come in meanwhile; it owns the service now.
             if (gen != generation) return@execute
             TunnelHub.set(state)
@@ -364,6 +374,8 @@ class PleatVpnService : VpnService() {
         val wasUp = TunnelHub.state == "up"
         ops.execute {
             teardown()
+            Health.tunnelStopped(this)
+            Health.sessionEnd(this)
             // Killed while running. Otherwise the stop has already said
             // so, and a newer service may be starting.
             if (wasUp) TunnelHub.set("down")

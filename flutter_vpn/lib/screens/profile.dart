@@ -233,6 +233,16 @@ class _ProfileScreenState extends State<ProfileScreen> {
                         ),
                       ),
                       _Row(
+                        icon: PIcon.chart,
+                        title: 'Send diagnostics',
+                        body: 'Problems reach support on their own. Never your configs or browsing.',
+                        trailing: PToggle(
+                          value: app.sendDiagnostics,
+                          onChanged: app.setSendDiagnostics,
+                          label: 'Send diagnostics',
+                        ),
+                      ),
+                      _Row(
                         icon: PIcon.lock,
                         title: 'Change password',
                         body: 'Other phones are signed out.',
@@ -354,7 +364,22 @@ class _VersionFooterState extends State<_VersionFooter> {
       children: [
         const PleatMark(size: 34),
         const SizedBox(height: 10),
-        Text(v.isEmpty ? 'Pleat' : 'Pleat $v', style: PType.h3()),
+        // A long press sends a test health report, to see one reach support.
+        GestureDetector(
+          onLongPress: () async {
+            final ok = await app.sendTestReport();
+            if (!context.mounted) return;
+            showNote(
+              context,
+              ok
+                  ? 'Test report sent.'
+                  : (app.sendDiagnostics
+                        ? 'Couldn’t send it now. It goes with the next report.'
+                        : 'Turn on Send diagnostics first.'),
+            );
+          },
+          child: Text(v.isEmpty ? 'Pleat' : 'Pleat $v', style: PType.h3()),
+        ),
         const SizedBox(height: 6),
         Row(
           mainAxisSize: MainAxisSize.min,
