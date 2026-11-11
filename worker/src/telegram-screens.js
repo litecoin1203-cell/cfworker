@@ -876,6 +876,13 @@ export async function panelTunnelDiag(env, id, reread = false) {
     if (d.hostsStatus !== 200) lines.push('   ⚠️ بدون هاست‌ها نمی‌شود کانفیگ را به گروه وصل کرد.');
     lines.push(`۴. هاست‌های تانل: ${fa(d.tunnelHosts)}`);
   }
+  const pr = (await first(env, 'SELECT value FROM settings WHERE key = ?', `tunnel_probe_${p.id}`).catch(() => null))?.value;
+  let probe = null; try { probe = pr ? JSON.parse(pr) : null; } catch (e) { /* none */ }
+  if (d && d.kind === 'pasarguard' && (d.groupsStatus !== 200 || d.hostsStatus !== 200)) {
+    lines.push('', probe && probe.sub ? '🧪 روش جایگزین: یک کاربر آزمایشی (cgtunnel_…) فقط در گروه Tunnel روی پنل ساخته شده و کانفیگ‌هایش «تانل» حساب می‌شوند. آن را پاک نکن.'
+      : probe && probe.error === 'no_group' ? '🧪 روش جایگزین: گروهی با نام Tunnel در لیست ساده پیدا نشد.'
+        : probe && probe.error ? `🧪 روش جایگزین ناموفق بود (${probe.error}): ادمین پنل اجازه‌ی ساخت کاربر در گروه Tunnel را ندارد.` : '🧪 روش جایگزین: با «دوباره بخوان» یک کاربر آزمایشی فقط در گروه Tunnel ساخته می‌شود.');
+  }
   lines.push('', stored ? `ذخیره‌شده در Worker: ${fa((stored.rules || []).length)} قاعده (${fa((stored.rules || []).filter((r) => r.t).length)} تانل) · ${fa(Math.round((Date.now() / 1000 - (stored.at || 0)) / 60))} دقیقه پیش` : 'هنوز چیزی ذخیره نشده (Worker هر ۱۵ دقیقه می‌خواند).');
   lines.push('در لیست 🖥 سرورها، سرورهای تانل با 🚇 علامت می‌خورند.');
   return { text: lines.join('\n'), kb: [[b('🔄 دوباره بخوان و ذخیره کن', `m:ptn:${p.id}:1`)], [b('🖥 سرورها', `m:srvs:${p.id}`)], nav(`pp:${p.id}`)] };

@@ -4437,6 +4437,22 @@ section('configs from a panel\'s "Tunnel" group are marked; the panel number is 
   const diag = await panelTunnelDiag(env, 1, true);
   ok(/Tunnel/.test(diag.text) && /۴\. هاست‌های تانل: 1/.test(diag.text) && /✅ ۲۰۰/.test(diag.text), 'tunnel diagnostic shows the group and the tunnel host: ' + diag.text.slice(0, 400));
   ok(!/\.[a-z]{2,}:\d|vless:|https?:/i.test(diag.text), 'tunnel diagnostic shows no address or link');
+  // a reseller admin (403 on groups and hosts): a probe user that sits only in the Tunnel group finds the tunnel configs
+  {
+    const pg1 = fakes.panels[PANEL];
+    pg1.groupsSudoOnly = true; pg1.hostsSudoOnly = true; pg1.tunnelGroupId = 7;
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'panel_hosts_1'").run();
+    await refreshHostRules(env);
+    const rules = JSON.parse((await row("SELECT value FROM settings WHERE key = 'panel_hosts_1'")).value).rules;
+    ok(rules.length === 1 && rules[0].t === true && rules[0].a[0] === `de1.${pg1.host}`, 'without group/host access the probe user finds the tunnel host: ' + JSON.stringify(rules));
+    const made = Object.keys(pg1.users).filter((n) => n.startsWith('cgtunnel_'));
+    ok(made.length === 1 && pg1.users[made[0]].group_ids.join() === '7', 'one probe user, only in the Tunnel group');
+    await refreshHostRules(env, 1, true);
+    ok(Object.keys(pg1.users).filter((n) => n.startsWith('cgtunnel_')).length === 1, 'the probe user is reused, not made again');
+    const after2 = (await call('GET', '/api/v1/vpn/servers', { token: tok, headers: H })).data;
+    ok(after2.filter((s) => s.country_code === 'DE').every((s) => s.tunnel === true) && after2.filter((s) => s.country_code !== 'DE').every((s) => !s.tunnel), 'configs are marked through the probe');
+    pg1.groupsSudoOnly = false; pg1.hostsSudoOnly = false; pg1.tunnelGroupId = 0;
+  }
   // a panel without a Tunnel group: its hosts are not even read
   const p1 = fakes.panels[PANEL];
   p1.groupList = [{ id: 1, name: 'default', inbound_tags: ['vless-in'] }];

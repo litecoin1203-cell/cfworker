@@ -71,8 +71,14 @@ export function installFakes({ panelBase }) {
   const resJson = (obj, status = 200) => new Response(JSON.stringify(obj), { status, headers: { 'content-type': 'application/json' } });
   const resText = (text, status = 200) => new Response(text, { status });
 
-  function subLinks(pg) {
+  function subLinks(pg, path = '') {
     const h = pg.host;
+    // a user that sits only in the tunnel group (pg.tunnelGroupId) gets only the tunnel host's config
+    const tok = (path.match(/^\/sub\/([^/]+)/) || [])[1];
+    const who = tok && Object.values(pg.users).find((u) => u.token === tok);
+    if (pg.tunnelGroupId && who && who.group_ids && who.group_ids.length && who.group_ids.every((g) => g === pg.tunnelGroupId)) {
+      return `vless://uuid@de1.${h}:443?security=tls&type=ws#%F0%9F%87%A9%F0%9F%87%AA%20Germany%20MyPanel`;
+    }
     return [
       `vless://uuid@nl1.${h}:443?security=reality&type=tcp#%F0%9F%87%B3%F0%9F%87%B1%20Netherlands`,
       `vless://uuid@de1.${h}:443?security=tls&type=ws#%F0%9F%87%A9%F0%9F%87%AA%20Germany%20MyPanel`,
@@ -111,7 +117,7 @@ export function installFakes({ panelBase }) {
       if (path === '/api/groups') return pg.groupsSudoOnly ? resText('{"detail":"You\'re not allowed"}', 403) : resJson({ groups: pg.groupList || [{ id: 1, name: 'default' }] });
       // hosts: what share links are made from (address, port, remark), each tied to an inbound
       if (path === '/api/hosts') { pg.hostReads = (pg.hostReads || 0) + 1; return pg.hostsSudoOnly ? resText('{"detail":"You\'re not allowed"}', 403) : resJson(pg.hosts || []); }
-      if (path.startsWith('/api/groups/simple')) return resJson({ groups: [{ id: 1, name: 'default' }, { id: 2, name: 'reseller' }], total: 2 });
+      if (path.startsWith('/api/groups/simple')) return resJson({ groups: (pg.groupList || [{ id: 1, name: 'default' }, { id: 2, name: 'reseller' }]).map((g) => ({ id: g.id, name: g.name })), total: 2 });
       let mm;
       if (path === '/api/user' && method === 'POST') {
         const b = JSON.parse(body);
@@ -143,11 +149,11 @@ export function installFakes({ panelBase }) {
       }
       if (path.match(/^\/sub\/[^/]+\/v2ray$/) && pg.kind !== 'pasarguard') {
         pg.lastLinksHwid = new Headers(init.headers || {}).get('x-hwid');
-        return resText(btoa(subLinks(pg)));
+        return resText(btoa(subLinks(pg, path)));
       }
       if (path.match(/^\/sub\/[^/]+\/links$/) && pg.kind === 'pasarguard') {
         pg.lastLinksHwid = new Headers(init.headers || {}).get('x-hwid');
-        return resText(subLinks(pg));
+        return resText(subLinks(pg, path));
       }
       if (path.match(/^\/sub\/[^/]+\/?$/)) {
         const hh = new Headers(init.headers || {});
@@ -155,7 +161,7 @@ export function installFakes({ panelBase }) {
         pg.lastSubPath = path;
         // a panel with "custom JSON for v2rayNG" answers the core's agent with an Xray JSON config
         if (pg.subJson) return resJson([{ remarks: 'x', outbounds: [] }]);
-        return new Response(btoa(subLinks(pg)), { status: 200, headers: { 'subscription-userinfo': 'upload=0; download=0; total=0; expire=0' } });
+        return new Response(btoa(subLinks(pg, path)), { status: 200, headers: { 'subscription-userinfo': 'upload=0; download=0; total=0; expire=0' } });
       }
       if (path.startsWith('/sub/')) return resText('{"detail":"Not Found"}', 404);
       return resText('panel: unhandled ' + method + ' ' + path, 500);
