@@ -239,6 +239,38 @@ export class PasarGuard {
     })).slice(0, 300);
   }
 
+  // What the Tunnel detection can see on this panel, step by step, for the admin bot's diagnostic. Facts only:
+  // group names, counts and HTTP statuses; never an address, port or remark.
+  async tunnelDiag() {
+    const out = { kind: this.kind, groups: null, groupsStatus: 0, tunnelGroups: [], tags: 0, hosts: null, hostsStatus: 0, tunnelHosts: 0 };
+    if (this.kind !== 'pasarguard') return out;
+    const probe = async (path) => {
+      try { return { status: 200, data: await this._json('GET', path) }; }
+      catch (e) { if (e instanceof PasarGuardError) return { status: e.status || 0, data: null }; throw e; }
+    };
+    const g = await probe('/api/groups');
+    out.groupsStatus = g.status;
+    if (g.data) {
+      out.groups = (g.data.groups || []).map((x) => ({ name: String(x.name || '').slice(0, 30), off: !!x.is_disabled, tags: (x.inbound_tags || []).length }));
+      const tunnel = (g.data.groups || []).filter((x) => !x.is_disabled && /tunn?el|تانل/i.test(String(x.name || '')));
+      out.tunnelGroups = tunnel.map((x) => String(x.name).slice(0, 30));
+      out.tags = new Set(tunnel.flatMap((x) => x.inbound_tags || [])).size;
+    } else {
+      const simple = await probe('/api/groups/simple?all=true');
+      out.simpleStatus = simple.status;
+      if (simple.data) out.groups = (simple.data.groups || []).map((x) => ({ name: String(x.name || '').slice(0, 30), off: !!x.is_disabled, tags: null }));
+    }
+    const h = await probe('/api/hosts');
+    out.hostsStatus = h.status;
+    if (h.data) {
+      const list = Array.isArray(h.data) ? h.data : h.data.hosts || [];
+      out.hosts = list.length;
+      const rules = await this.hostRules().catch(() => null);
+      out.tunnelHosts = (rules || []).filter((r) => r.t).length;
+    }
+    return out;
+  }
+
   async listGroupIds() {
     return (await this.listGroups()).map((g) => g.id);
   }

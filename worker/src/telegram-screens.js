@@ -840,17 +840,45 @@ export async function panelServerList(env, id) {
   const known = new Set(servers.map((s) => s.key));
   const extra = [...new Set([...Object.keys(labels), ...[...ov.hidden].map((h) => h.split(':')[1])])].filter((k) => !known.has(k));
   const mark = (k) => `${ov.hidden.has(p.id + ':' + k) ? '🙈 ' : ''}${labels[k] ? '✏️ ' : ''}`;
-  const lines = servers.map((s) => `${mark(s.key)}${labels[s.key] || s.name} — ${s.type}${s.cc ? ` · ${s.cc}` : ''}`);
+  const lines = servers.map((s) => `${mark(s.key)}${s.tunnel ? '🚇 ' : ''}${labels[s.key] || s.name} — ${s.type}${s.cc ? ` · ${s.cc}` : ''}`);
   const why = source === 'none' ? 'هنوز هیچ کاربر فعالی روی این پنل نیست، پس لیست سرورهایش خوانده نمی‌شود.'
     : source === 'error' ? 'پنل جواب نداد؛ لیست سرورها خوانده نشد.' : servers.length ? '' : 'این پنل کانفیگی نداد.';
   return {
     text: [crumb('🗂 پنل‌ها', `#${p.id}`, '🖥 سرورها'), '', `🖥 سرورهای پنل #${p.id} — ${p.label}`, '',
       ...lines, ...(why ? [why] : []), ...(extra.length ? ['', `${fa(extra.length)} سرور تنظیم‌شده الان در پنل نیست.`] : []), '',
-      '🙈 = از اپ برداشته شده · ✏️ = نام دلخواه. روی هر سرور بزن.'].join('\n'),
+      '🙈 = از اپ برداشته شده · ✏️ = نام دلخواه · 🚇 = تانل ایران. روی هر سرور بزن.'].join('\n'),
     kb: [...servers.slice(0, 30).map((s) => [b(`${mark(s.key)}${labels[s.key] || s.name} · ${s.type}`.slice(0, 60), `m:srv:${p.id}:${s.key}`)]),
       ...extra.slice(0, 10).map((k) => [b(`${mark(k)}${labels[k] || 'سرور قدیمی'}`, `m:srv:${p.id}:${k}`)]),
-      [b('🔄 به‌روزرسانی', `m:srvs:${p.id}`)], nav(`pp:${p.id}`)],
+      [b('🔄 به‌روزرسانی', `m:srvs:${p.id}`), b('🚇 عیب‌یابی تانل', `m:ptn:${p.id}`)], nav(`pp:${p.id}`)],
   };
+}
+
+// Why configs are (not) marked as Iran tunnel: what the Worker can read on the panel, step by step.
+export async function panelTunnelDiag(env, id, reread = false) {
+  const { getPanel, adapterFor, refreshHostRules, hostRulesFor } = await import('./panels.js');
+  const p = await getPanel(env, id);
+  if (!p) return { text: crumb('🗂 پنل‌ها', '🚇 تانل') + '\n\nپنل پیدا نشد.', kb: [nav('pa')] };
+  let d = null, err = '';
+  try { d = await (await adapterFor(env, p)).tunnelDiag(); } catch (e) { err = e.message || 'error'; }
+  if (reread && d) { try { await refreshHostRules(env, p.id, true); } catch (e) { /* shown below by the stored age */ } }
+  const row = await first(env, 'SELECT value FROM settings WHERE key = ?', `panel_hosts_${p.id}`);
+  let stored = null; try { stored = row ? JSON.parse(row.value) : null; } catch (e) { /* none */ }
+  const st = (n) => (n === 200 ? '✅ ۲۰۰' : n ? `❌ ${n}` : '❌ بدون پاسخ');
+  const lines = [crumb('🗂 پنل‌ها', `#${p.id}`, '🚇 عیب‌یابی تانل'), ''];
+  if (!d) lines.push(`پنل خوانده نشد: ${err}`);
+  else if (d.kind !== 'pasarguard') lines.push(`این پنل از نوع ${d.kind} است و گروه ندارد؛ نشانه‌ی تانل فقط برای PasarGuard کار می‌کند.`);
+  else {
+    lines.push(`۱. خواندن گروه‌ها (/api/groups): ${st(d.groupsStatus)}`);
+    if (d.groupsStatus !== 200) lines.push(`   ${d.simpleStatus === 200 ? 'لیست ساده خوانده شد ولی بدون inbound_tags است؛ برای تشخیص تانل کافی نیست.' : 'لیست ساده هم خوانده نشد.'}`, '   ⚠️ احتمالاً ادمین پنل اجازه‌ی خواندن گروه‌ها را ندارد (ادمین sudo لازم است).');
+    if (d.groups) lines.push(`   گروه‌ها: ${d.groups.length ? d.groups.map((g) => `${g.name}${g.off ? ' (غیرفعال)' : ''}${g.tags == null ? '' : ` [${fa(g.tags)} inbound]`}`).join('، ') : '—'}`);
+    lines.push(`۲. گروه تانل (نامی شامل Tunnel/Tunel/تانل): ${d.tunnelGroups.length ? '✅ ' + d.tunnelGroups.join('، ') + ` · ${fa(d.tags)} inbound` : '❌ پیدا نشد'}`);
+    lines.push(`۳. خواندن هاست‌ها (/api/hosts): ${st(d.hostsStatus)}${d.hosts == null ? '' : ` · ${fa(d.hosts)} هاست`}`);
+    if (d.hostsStatus !== 200) lines.push('   ⚠️ بدون هاست‌ها نمی‌شود کانفیگ را به گروه وصل کرد.');
+    lines.push(`۴. هاست‌های تانل: ${fa(d.tunnelHosts)}`);
+  }
+  lines.push('', stored ? `ذخیره‌شده در Worker: ${fa((stored.rules || []).length)} قاعده (${fa((stored.rules || []).filter((r) => r.t).length)} تانل) · ${fa(Math.round((Date.now() / 1000 - (stored.at || 0)) / 60))} دقیقه پیش` : 'هنوز چیزی ذخیره نشده (Worker هر ۱۵ دقیقه می‌خواند).');
+  lines.push('در لیست 🖥 سرورها، سرورهای تانل با 🚇 علامت می‌خورند.');
+  return { text: lines.join('\n'), kb: [[b('🔄 دوباره بخوان و ذخیره کن', `m:ptn:${p.id}:1`)], [b('🖥 سرورها', `m:srvs:${p.id}`)], nav(`pp:${p.id}`)] };
 }
 
 export async function panelServer(env, id, key) {

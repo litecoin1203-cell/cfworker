@@ -4432,6 +4432,11 @@ section('configs from a panel\'s "Tunnel" group are marked; the panel number is 
   await refreshHostRules(env);
   for (const p of Object.values(fakes.panels)) p.down = false;
   ok((await row("SELECT value FROM settings WHERE key = 'panel_hosts_1'")).value === w0, 'an unreachable panel keeps its last hosts');
+  // the bot's diagnostic says what the Worker can read on the panel
+  const { panelTunnelDiag } = await import('../src/telegram-screens.js');
+  const diag = await panelTunnelDiag(env, 1, true);
+  ok(/Tunnel/.test(diag.text) && /۴\. هاست‌های تانل: 1/.test(diag.text) && /✅ ۲۰۰/.test(diag.text), 'tunnel diagnostic shows the group and the tunnel host: ' + diag.text.slice(0, 400));
+  ok(!/\.[a-z]{2,}:\d|vless:|https?:/i.test(diag.text), 'tunnel diagnostic shows no address or link');
   // a panel without a Tunnel group: its hosts are not even read
   const p1 = fakes.panels[PANEL];
   p1.groupList = [{ id: 1, name: 'default', inbound_tags: ['vless-in'] }];
