@@ -10,6 +10,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- In-app update: Android's installer opens on Pleat's own new APK (the person confirms it). -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!-- Android 16: the update download as a Live Update (status-bar chip). -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"
@@ -60,6 +62,10 @@
             android:authorities="${applicationId}.apk"
             android:exported="false"
             android:grantUriPermissions="true" />
+        <!-- Stop and Later on the update notification (Updates.kt). -->
+        <receiver
+            android:name=".UpdateActions"
+            android:exported="false" />
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

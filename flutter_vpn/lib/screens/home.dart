@@ -6,6 +6,7 @@ import '../design/geometry.dart';
 import '../design/icons.dart';
 import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
+import '../design/update_track.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
 import '../state/updater.dart';
@@ -44,7 +45,7 @@ class _HomeScreenState extends State<HomeScreen> {
               padding: const EdgeInsets.fromLTRB(20, 12, 12, 0),
               child: _Header(app: app),
             ),
-            if (app.appUpdate != null)
+            if (app.appUpdate != null && !app.updateLater)
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
                 child: _UpdateBanner(app: app),
@@ -221,7 +222,9 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// A new Pleat is out: one line and a button, until it is installed.
+/// A new Pleat is out: the same card as the system notification. The
+/// three-part line (Download, Check, Install) carries the Pleat mark along
+/// as it goes; the button does whatever is next.
 class _UpdateBanner extends StatelessWidget {
   const _UpdateBanner({required this.app});
   final AppState app;
@@ -230,49 +233,85 @@ class _UpdateBanner extends StatelessWidget {
   Widget build(BuildContext context) {
     final u = app.appUpdate!;
     final up = app.updater;
-    final busy = up.step == UpdateStep.downloading && up.total > 0;
+    final c = UpdateCopy.of(up, u);
+    final t = updateTrack(up);
+    final busy = up.busy;
+    final later = !busy && !u.force && up.step == UpdateStep.idle;
     return SurfaceCard(
       onTap: app.openUpdate,
       label: 'Update Pleat',
-      padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-      child: Row(
+      padding: const EdgeInsets.fromLTRB(18, 14, 14, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: PColors.blue,
-              shape: BoxShape.circle,
-            ),
-            alignment: Alignment.center,
-            child: PIconView(PIcon.refresh, size: 18, color: PColors.onAccent),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Pleat ${u.version} is ready',
-                  style: PType.h3().copyWith(fontSize: 15),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      c.short,
+                      style: PType.h3().copyWith(fontSize: 15),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      c.side.isEmpty || !busy
+                          ? c.shortText
+                          : '${c.shortText}  ·  ${c.side}',
+                      style: PType.small(
+                        color: up.step == UpdateStep.failed
+                            ? PColors.ink
+                            : null,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  busy
-                      ? 'Downloading… ${(100 * up.received / up.total).floor()}%'
-                      : (u.force
-                            ? 'Needed to keep using Pleat.'
-                            : 'Tap to update.'),
-                  style: PType.small(),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+              ),
+              if (c.button.isNotEmpty) ...[
+                const SizedBox(width: 10),
+                PillButton(
+                  label: c.button,
+                  icon: busy ? PIcon.close : PIcon.download,
+                  color: busy ? PColors.mist : null,
+                  textColor: busy ? PColors.accentInk : null,
+                  height: 38,
+                  expand: false,
+                  onTap: app.goUpdate,
                 ),
               ],
+            ],
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: UpdateTrack(
+              stage: t.stage,
+              frac: t.frac,
+              from: up.version,
+              to: u.version,
             ),
           ),
-          PIconView(PIcon.chevron, size: 18, color: PColors.muted),
+          if (later)
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Pressable(
+                onTap: app.putOffUpdate,
+                label: 'Later',
+                radius: PRadius.pill,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(0, 8, 12, 4),
+                  child: Text(
+                    'LATER',
+                    style: PType.button(color: PColors.accentInk),
+                  ),
+                ),
+              ),
+            ),
         ],
       ),
     );
