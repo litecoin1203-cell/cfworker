@@ -1,6 +1,7 @@
 // Reach and reports, and the system: broadcasts, stats, backup, health, the admin log with undo, admins, every setting.
 import { useState } from 'preact/hooks';
 import { admin } from './api.js';
+import { SyncActs } from './monitor.jsx';
 import { useLoad, Loading, act, Page } from './kit.jsx';
 import { List, Row, Section, Chips, Search, Tag, Act, Button, EmptyState, KV, openForm, toast } from '../ui.jsx';
 import { n, short, ago, day, dayShort, plural, METHOD, ROLE, AUDIENCE, BC_STATUS, settingLabel, actionLabel, englishSummary } from './fmt.js';
@@ -153,7 +154,9 @@ export function System({ nav }) {
       ) : null}
       <Section title="More" />
       <List>
-        <Row icon="pulse" title="Health" sub="Webhook, panel sync, queues" onClick={() => nav.push('health')} chevron />
+        <Row icon="pulse" title="System health" sub="Webhook, panel sync, sync now" onClick={() => nav.push('health')} chevron />
+        <Row icon="cloud" title="Cloudflare" sub="Free plan use, errors, CPU, deploys" onClick={() => nav.push('cloud')} chevron />
+        <Row icon="heart" title="App health" sub="Reports from users' phones" onClick={() => nav.push('reports')} chevron />
         <Row icon="history" title="Admin log" sub="Every change, with undo for 10 minutes" onClick={() => nav.push('audit')} chevron />
         {owner ? <Row icon="shield" title="Admins" sub="Support and viewer roles" onClick={() => nav.push('admins')} chevron /> : null}
         {owner ? <Row icon="settings" title="All settings" sub="Every value, with history" onClick={() => nav.push('settings')} chevron /> : null}
@@ -167,7 +170,7 @@ const HOOK = { ok: ['Connected', 'ok'], missing: ['Not set', 'bad'], other: ['Po
 export function Health({ nav }) {
   const st = useLoad(() => admin.health(), []);
   return (
-    <Page title="Health" nav={nav} right={<Act onClick={() => st.reload()}>Refresh</Act>}>
+    <Page title="System health" nav={nav} right={<Act onClick={() => st.reload()}>Refresh</Act>}>
       <Loading st={st} rows={4}>
         {(h) => {
           const hk = HOOK[h.webhook.state] || [h.webhook.state, ''];
@@ -187,8 +190,15 @@ export function Health({ nav }) {
                 <Row icon="server" title="Panels refusing new accounts" onClick={q.panel_errors ? () => nav.push('panels') : undefined} chevron={!!q.panel_errors}
                   end={<Tag tone={q.panel_errors ? 'bad' : 'ok'}>{n(q.panel_errors)}</Tag>} />
               </List>
+              <SyncActs q={q} owner={nav.role === 'owner'} after={st.reload} />
+              {nav.role === 'owner' ? <p class="note" style={{ marginTop: '8px' }}>Sync now runs one panel sync right away (once a minute). Retry puts accounts that failed 3 times back at the front of the queue.</p> : null}
               <Section title="Broadcasts" />
               <List><Row icon="megaphone" title="Sending now" end={<b>{n(h.broadcasts_sending)}</b>} onClick={() => nav.push('broadcasts')} chevron /></List>
+              <Section title="Monitoring" />
+              <List>
+                <Row icon="cloud" title="Cloudflare" sub="Free plan use, errors, CPU, deploys" onClick={() => nav.push('cloud')} chevron />
+                <Row icon="heart" title="App health" sub="Reports from users' phones" onClick={() => nav.push('reports')} chevron />
+              </List>
             </>
           );
         }}

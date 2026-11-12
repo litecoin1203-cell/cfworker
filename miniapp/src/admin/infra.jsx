@@ -137,14 +137,12 @@ export function PanelDetail({ p, nav }) {
   );
 }
 
+const srvSub = (s) => [s.label ? `auto: ${s.name}` : null, s.type, s.tunnel ? 'Iran tunnel' : null,
+  s.cc ? (s.named ? `${s.cc} (panel name says ${s.named})` : s.cc) : s.gone ? null : 'country unknown', s.gone ? 'not on the panel now' : null].filter(Boolean).join(' · ');
+
 export function PanelServers({ p, nav }) {
   const st = useLoad(() => admin.panelServers(p.id), [p.id]);
   const owner = nav.role === 'owner';
-  const rename = async (s) => {
-    const v = await openForm({ title: 'Name in the app', lead: 'English letters, digits or emoji, up to 40. Empty = the automatic name. Rankings keep working after a rename.', submit: 'Save',
-      fields: [{ key: 'label', label: 'Name', value: s.label || '', placeholder: s.name, max: 40 }] });
-    if (v) act('server.rename', { panelId: p.id, key: s.key, label: v.label.trim() }, { done: v.label.trim() ? 'Renamed' : 'Back to the automatic name', after: st.reload });
-  };
   return (
     <Page title="Servers" sub={p.label} nav={nav} right={<button type="button" class="iconbtn" aria-label="Refresh" onClick={st.reload}><Icon name="refresh" /></button>}>
       <Loading st={st} rows={6}>
@@ -153,15 +151,128 @@ export function PanelServers({ p, nav }) {
             {d.source === 'none' ? <p class="note" style={{ marginBottom: '10px' }}>No active user on this panel yet, so its server list cannot be read.</p> : null}
             {d.source === 'error' ? <p class="note alert-t" style={{ marginBottom: '10px' }}>The panel did not answer; the list could not be read.</p> : null}
             {d.servers.length ? (
-              <List>{d.servers.map((s) => <Row icon="server" title={s.label || s.name} sub={[s.label ? `auto: ${s.name}` : null, s.type, s.cc, s.gone ? 'not on the panel now' : null].filter(Boolean).join(' · ')}
-                onClick={owner ? () => rename(s) : undefined}
+              <List>{d.servers.map((s) => <Row icon={s.tunnel ? 'tunnel' : 'server'} title={s.label || s.name} sub={srvSub(s)} wrap
+                onClick={() => nav.push('server', { id: p.id, panel: p.label, s })}
                 end={owner ? <Toggle on={!s.hidden} label="Shown in the app" onChange={(show) => act('server.hide', { panelId: p.id, key: s.key, on: !show }, { done: show ? 'Shown in the app' : 'Hidden from the app', after: st.reload })} /> : <Tag tone={s.hidden ? '' : 'ok'}>{s.hidden ? 'Hidden' : 'Shown'}</Tag>} />)}</List>
             ) : d.source === 'ok' || d.source === 'cache' ? <EmptyState icon="server" title="No servers" /> : null}
-            <p class="note" style={{ marginTop: '10px' }}>The switch shows or hides a server in the app. Tap a server to rename it. Addresses and links are never shown here.</p>
+            {d.servers.some((s) => !s.cc && !s.gone) ? <p class="note" style={{ marginTop: '10px' }}>Country unknown = the config's name on the panel has no country. Put a flag or a country name in it on the panel (🇩🇪, Germany), or give it a name here with a flag. Pleat also learns the real country once someone connects to it.</p> : null}
+            <List>
+              <Row icon="tunnel" title="Iran tunnel diagnostic" sub="Why configs are (not) marked as tunnel" onClick={() => nav.push('tunnel', { id: p.id, label: p.label })} chevron />
+            </List>
+            <p class="note" style={{ marginTop: '10px' }}>The switch shows or hides a server in the app. Tap a server for its name, country and network stats. Addresses and links are never shown here.</p>
           </>
         )}
       </Loading>
     </Page>
+  );
+}
+
+// one server of a panel: shown or hidden in the app, its name in the app, its real country, network stats, history
+export function ServerDetail({ p, nav }) {
+  const st = useLoad(() => admin.panelServers(p.id), [p.id]);
+  const owner = nav.role === 'owner';
+  return (
+    <Loading st={st} rows={4}>
+      {(d) => {
+        const s = d.servers.find((x) => x.key === p.s.key) || p.s;
+        const rename = async () => {
+          const v = await openForm({ title: 'Name in the app', lead: 'English letters, digits or emoji, up to 40. A flag sets the country. Empty = the automatic name. Rankings keep working after a rename.', submit: 'Save',
+            fields: [{ key: 'label', label: 'Name', value: s.label || '', placeholder: s.name, max: 40 }] });
+          if (v) act('server.rename', { panelId: p.id, key: s.key, label: v.label.trim() }, { done: v.label.trim() ? 'Renamed' : 'Back to the automatic name', after: st.reload });
+        };
+        return (
+          <Page title={s.label || s.name} sub={`${p.panel || 'Panel #' + p.id}${s.type ? ' · ' + s.type : ''}`} nav={nav}>
+            <div class="card">
+              <KV k="Shown in the app">{owner ? <Toggle on={!s.hidden} label="Shown in the app" onChange={(show) => act('server.hide', { panelId: p.id, key: s.key, on: !show }, { done: show ? 'Shown in the app' : 'Hidden from the app', after: st.reload })} /> : s.hidden ? 'Hidden' : 'Shown'}</KV>
+              <KV k="Name in the app">{s.label || `Automatic (${s.name})`}</KV>
+              <KV k="Country">{s.cc || 'Unknown'}</KV>
+              {s.tunnel ? <KV k="Route">Iran tunnel</KV> : null}
+              {s.gone ? <KV k="On the panel">Not any more</KV> : null}
+            </div>
+            {s.named ? <p class="note" style={{ marginTop: '10px' }}>Its panel name says {s.named}, but its real exit (seen from its IP) is in {s.cc}; the app shows {s.cc}.</p> : null}
+            {!s.cc && s.remark ? <p class="note" style={{ marginTop: '10px' }}>Name on the panel: “<bdi>{s.remark}</bdi>”. The country is read from a flag, a country or city name, or a two-letter code in it. To fix it here, give it a name with a flag (for example 🇩🇪 Germany Tunnel).</p> : null}
+            <Section title="Manage" />
+            <List>
+              {owner ? <Row icon="edit" title="Name in the app" sub={s.label ? s.label : 'Automatic'} onClick={rename} chevron /> : null}
+              {owner && s.label ? <Row icon="undo" title="Back to the automatic name" onClick={() => act('server.rename', { panelId: p.id, key: s.key, label: '' }, { done: 'Back to the automatic name', after: st.reload })} chevron /> : null}
+              <Row icon="wifi" title="Network stats" sub="This server on every carrier, and Google's view" onClick={() => nav.push('netServer', { key: s.key, name: s.label || s.name })} chevron />
+              <Row icon="pulse" title="App health reports" sub="Open problems on this exit" onClick={() => nav.push('reportList', { server: s.key, title: s.label || s.name })} chevron />
+              <Row icon="history" title="History" onClick={() => nav.push('audit', { type: 'server', id: `${p.id}.${s.key}` })} chevron />
+            </List>
+            <p class="note" style={{ marginTop: '10px' }}>Rankings and stats follow the server's fixed key, so a new name keeps them.</p>
+          </Page>
+        );
+      }}
+    </Loading>
+  );
+}
+
+const HTTP = (n) => (n === 200 ? <Tag tone="ok">200 OK</Tag> : <Tag tone="bad">{n ? 'HTTP ' + n : 'No answer'}</Tag>);
+const PROBE = { no_group: 'no group named Tunnel in the simple list' };
+
+// Why configs are (not) marked as Iran tunnel: what the Worker can read on the panel, step by step
+export function TunnelDiag({ p, nav }) {
+  const st = useLoad(() => admin.tunnel(p.id, false), [p.id]);
+  const owner = nav.role === 'owner';
+  const reread = async () => {
+    try { await admin.tunnel(p.id, true); toast('Read again and stored'); } catch (e) { toast(e.message, { bad: true }); }
+    st.reload();
+  };
+  return (
+    <Page title="Iran tunnel" sub={p.label} nav={nav} right={<button type="button" class="iconbtn" aria-label="Refresh" onClick={st.reload}><Icon name="refresh" /></button>}>
+      <Loading st={st} rows={5}>
+        {(t) => {
+          const d = t.diag;
+          const blocked = d && d.kind === 'pasarguard' && (d.groups_status !== 200 || d.hosts_status !== 200);
+          return (
+            <>
+              {!d ? <EmptyState icon="warn" title="The panel could not be read" text={t.error || ''} />
+                : d.kind !== 'pasarguard' ? <p class="note">This panel is {d.kind}; it has no groups. The tunnel mark works on PasarGuard only.</p> : (
+                  <List>
+                    <Row icon="layers" title="1. Read groups" sub={d.groups_status !== 200 ? (d.simple_status === 200 ? 'The simple list was read but without inbound tags; not enough. The panel admin probably needs sudo.' : 'The simple list could not be read either. The panel admin probably needs sudo.')
+                      : d.groups ? d.groups.map((g) => `${g.name}${g.off ? ' (off)' : ''}${g.tags == null ? '' : ` [${g.tags}]`}`).join(', ') || '—' : ''} wrap end={HTTP(d.groups_status)} />
+                    <Row icon="tunnel" title="2. Tunnel group" sub={d.tunnel_groups.length ? `${d.tunnel_groups.join(', ')} · ${plural(d.tags, 'inbound')}` : 'No group named Tunnel'} wrap end={<Tag tone={d.tunnel_groups.length ? 'ok' : 'bad'}>{d.tunnel_groups.length ? 'Found' : 'Missing'}</Tag>} />
+                    <Row icon="server" title="3. Read hosts" sub={d.hosts_status === 200 ? plural(d.hosts || 0, 'host') : 'Without hosts a config cannot be tied to a group.'} wrap end={HTTP(d.hosts_status)} />
+                    <Row icon="route" title="4. Tunnel hosts" end={<b class="num">{n(d.tunnel_hosts)}</b>} />
+                  </List>
+                )}
+              {blocked ? (
+                <div class={'banner ' + (t.probe && t.probe.ok ? 'ok' : 'warn')} style={{ marginTop: '12px' }}>
+                  <Icon name={t.probe && t.probe.ok ? 'check' : 'info'} />
+                  <span><b>The other way: a probe user</b>{t.probe && t.probe.ok ? 'A test user (cgtunnel_…) lives only in the Tunnel group; its configs count as tunnel. Do not delete it.'
+                    : t.probe && t.probe.error ? `It failed (${PROBE[t.probe.error] || t.probe.error}): the panel admin may not create users in the Tunnel group.` : 'Reading again makes a test user that lives only in the Tunnel group.'}</span>
+                </div>
+              ) : null}
+              <p class="note" style={{ marginTop: '12px' }}>{t.stored ? `Stored in the Worker: ${plural(t.stored.rules, 'rule')} (${n(t.stored.tunnel_rules)} tunnel), ${ago(t.stored.at)}.` : 'Nothing stored yet (the Worker reads every 15 minutes).'} Tunnel servers carry the tunnel icon in the server list.</p>
+              {owner ? <div style={{ marginTop: '14px' }}><Button kind="soft" onClick={reread}>Read again and store</Button></div> : null}
+            </>
+          );
+        }}
+      </Loading>
+    </Page>
+  );
+}
+
+// one server on every carrier (rank, connect rate, ping, speed) and how Google sees it
+export function NetServer({ p, nav }) {
+  const st = useLoad(() => admin.netServer(p.key), [p.key]);
+  const owner = nav.role === 'owner';
+  return (
+    <Loading st={st} rows={4}>
+      {(d) => (
+        <Page title={d.name || p.name || 'Server'} sub="Last 3 days of tests from users' phones" nav={nav}>
+          <div class="card tight">
+            <KV k="Google">{d.google ? <><Tag tone={GOOGLE_TONE[d.google.status]}>{d.google.status === 'google' ? 'OK' : d.google.status === 'no_gemini' ? 'Partly' : 'Bad'}</Tag> {GOOGLE[d.google.status]} · {plural(d.google.tests, 'test')}</> : 'No Google test yet'}</KV>
+          </div>
+          <Section title="On each carrier" />
+          {d.carriers.length ? (
+            <List>{d.carriers.map((c) => <Row icon="wifi" title={c.isp} sub={[`connects ${c.ok_pct}%`, c.ms ? `${c.ms} ms` : null, c.mbps ? `${c.mbps} Mbps` : null, plural(c.users, 'user')].filter(Boolean).join(' · ')}
+              end={<Tag tone={c.rank === 1 ? 'ok' : c.rank > c.of - 2 && c.of > 3 ? 'bad' : ''}>#{c.rank} of {c.of}</Tag>} />)}</List>
+          ) : <EmptyState icon="wifi" title="Not tested" text="No carrier tested this server in 3 days." />}
+          {owner ? <div style={{ marginTop: '16px' }}><Button kind="ghost" onClick={() => act('net.reset', { kind: 's', id: d.key }, { confirm: `Clear every network stat of ${d.name || 'this server'}? The ranking rebuilds from new reports.`, done: 'Server stats cleared', after: st.reload })}>Clear this server's stats</Button></div> : null}
+        </Page>
+      )}
+    </Loading>
   );
 }
 
@@ -285,7 +396,7 @@ export function Network({ nav }) {
             <List>{d.carriers.map((c) => <Row icon="wifi" title={c.isp} sub={`${plural(c.tests, 'test')} · best: ${c.servers[0] ? `${c.servers[0].name} (${c.servers[0].ok_pct}%${c.servers[0].ms ? ', ' + c.servers[0].ms + ' ms' : ''})` : '—'}`} onClick={() => nav.push('carrier', { asn: c.asn, c })} chevron />)}</List>
           ) : <EmptyState icon="wifi" title="No results yet" text="After a few tests in the app, the ranking shows here." />) : (d.google.length ? (
             <>
-              <List>{d.google.map((g) => <Row icon="globe" title={g.name} sub={`${GOOGLE[g.status]} · seen as ${g.cc || '?'} · ${plural(g.tests, 'test')}`} end={<Tag tone={GOOGLE_TONE[g.status]}>{g.status === 'google' ? 'OK' : g.status === 'no_gemini' ? 'Partly' : 'Bad'}</Tag>} />)}</List>
+              <List>{d.google.map((g) => <Row icon="globe" title={g.name} sub={`${GOOGLE[g.status]} · seen as ${g.cc || '?'} · ${plural(g.tests, 'test')}`} onClick={() => nav.push('netServer', { key: g.key, name: g.name })} end={<Tag tone={GOOGLE_TONE[g.status]}>{g.status === 'google' ? 'OK' : g.status === 'no_gemini' ? 'Partly' : 'Bad'}</Tag>} />)}</List>
               <p class="note" style={{ marginTop: '10px' }}>For a red one: give that node another exit IP (for example WARP) so Google sees another country.</p>
             </>
           ) : <EmptyState icon="globe" title="No Google tests yet" text="Each user tests their server after connecting." />))}
@@ -299,6 +410,7 @@ export function Carrier({ p, nav }) {
   const c = p.c;
   const owner = nav.role === 'owner';
   const srv = (s, good) => <Row icon={good ? 'bolt' : 'server'} title={s.name} sub={[`connects ${s.ok_pct}%`, s.ms ? `${s.ms} ms` : null, s.mbps ? `${s.mbps} Mbps` : null, plural(s.users, 'user')].filter(Boolean).join(' · ')}
+    onClick={() => nav.push('netServer', { key: s.key, name: s.name })}
     end={owner ? <Act kind="ghost" onClick={() => act('net.reset', { kind: 's', id: s.key }, { confirm: `Clear every network stat of ${s.name}? The ranking rebuilds from new reports.`, done: 'Server stats cleared' })}>Clear</Act> : null} />;
   const best = c.servers.slice(0, 5), weak = c.servers.length > 5 ? c.servers.slice(-3).reverse() : [];
   return (

@@ -65,6 +65,8 @@ export function Home({ nav }) {
                   <Row icon="users" title="Users" sub={`${n(d.users)} accounts · ${n(d.active)} active`} end={<Act onClick={() => nav.go('users')}>Open</Act>} onClick={() => nav.go('users')} />
                   <Row icon="megaphone" title="Broadcast" sub="Send a message to your Telegram users" end={<Act onClick={() => nav.push('broadcasts')}>Write</Act>} onClick={() => nav.push('broadcasts')} />
                   <Row icon="chart" title="Stats" sub="Sales, sign-ups and best plans" end={<Act onClick={() => nav.push('stats')}>View</Act>} onClick={() => nav.push('stats')} />
+                  <Row icon="cloud" title="Cloudflare" sub="Today's Free plan use, errors and CPU" end={<Act onClick={() => nav.push('cloud')}>View</Act>} onClick={() => nav.push('cloud')} />
+                  <Row icon="heart" title="App health" sub="Crashes and problems from users' phones" end={<Act onClick={() => nav.push('reports')}>View</Act>} onClick={() => nav.push('reports')} />
                 </List>
               </>
             ) : null}
@@ -87,13 +89,17 @@ const SECTIONS = [
     { s: 'app', icon: 'phone', title: 'Pleat app', sub: 'Announcement, domains, bridges, trial, updates' },
     { s: 'net', icon: 'wifi', title: 'Carriers and ranking', sub: 'Best servers per operator, Google check' },
   ] },
+  { title: 'Monitoring', rows: [
+    { s: 'cloud', icon: 'cloud', title: 'Cloudflare', sub: 'Free plan use, errors, CPU, capacity, deploys' },
+    { s: 'reports', icon: 'heart', title: 'App health', sub: 'Crashes and connection problems from users\' phones' },
+    { s: 'health', icon: 'pulse', title: 'System health', sub: 'Webhook, panel sync, sync now' },
+  ] },
   { title: 'Reach and reports', rows: [
     { s: 'broadcasts', icon: 'megaphone', title: 'Broadcast', sub: 'A message to your Telegram users' },
     { s: 'stats', icon: 'chart', title: 'Stats', sub: 'Today, 7 and 30 days' },
   ] },
   { title: 'System', rows: [
     { s: 'audit', icon: 'history', title: 'Admin log', sub: 'Every change, with undo for 10 minutes' },
-    { s: 'health', icon: 'pulse', title: 'Health', sub: 'Webhook, panel sync, queues' },
     { s: 'admins', icon: 'shield', title: 'Admins', sub: 'Support and viewer roles', owner: true },
     { s: 'settings', icon: 'settings', title: 'All settings', sub: 'Every value, with history', owner: true },
   ] },

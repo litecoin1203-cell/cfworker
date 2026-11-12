@@ -236,6 +236,7 @@ export function UserCard({ p, nav }) {
               <Row icon="wallet" title="Wallet" sub={`${n(u.wallet)} toman`} onClick={() => nav.push('userWallet', { id: u.id, label: u.label })} chevron />
               <Row icon="receipt" title="Orders" sub={u.order_count ? plural(u.order_count, 'order') + (u.orders[0] ? ` · last ${day(u.orders[0].created_at)}` : '') : 'None yet'} onClick={() => nav.push('userOrders', { id: u.id, label: u.label })} chevron />
               <Row icon="wifi" title="Connection experience" sub="Networks and how each server did" onClick={() => nav.push('userNets', { id: u.id, label: u.label })} chevron />
+              <Row icon="heart" title="App health reports" sub="Crashes and problems from this user's phone" onClick={() => nav.push('reportList', { user: u.id, title: u.label })} chevron />
               <Row icon="message" title="Telegram" sub={u.telegram ? `${u.telegram.username ? '@' + u.telegram.username + ' · ' : ''}id ${u.telegram.id}` : 'Not linked'} />
               <Row icon="mail" title="Email" sub={u.email || (u.login === 'telegram' ? 'None (Telegram only)' : '—')} />
               {u.referral_code ? <Row icon="gift" title="Invite code" sub={u.referral_code} /> : null}

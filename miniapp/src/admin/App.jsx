@@ -9,14 +9,18 @@ import { Home, More } from './home.jsx';
 import { Receipts, OrderDetail } from './orders.jsx';
 import { Users, UserCard, UserWallet, UserOrders, UserNets } from './users.jsx';
 import { Plans, PlanDetail, Coupons, CouponDetail, Referral, Payments, Coins, SmsLog } from './sales.jsx';
-import { Panels, PanelDetail, PanelServers, AppSettings, Network, Carrier } from './infra.jsx';
+import { Panels, PanelDetail, PanelServers, ServerDetail, TunnelDiag, NetServer, AppSettings, Network, Carrier } from './infra.jsx';
+import { Cloud, CloudDays, CloudErrors, CloudQueries, CloudDeploys, CloudToken } from './monitor.jsx';
+import { Reports, ReportList, ReportServers, ReportUsers, ReportVersions, Problem } from './reports.jsx';
 import { Broadcasts, BroadcastDetail, Stats, System, Health, Audit, Admins, Settings } from './system.jsx';
 
 const SCREENS = {
   home: Home, more: More, receipts: Receipts, order: OrderDetail,
   users: Users, user: UserCard, userWallet: UserWallet, userOrders: UserOrders, userNets: UserNets,
   plans: Plans, plan: PlanDetail, coupons: Coupons, coupon: CouponDetail, referral: Referral, payments: Payments, coins: Coins, sms: SmsLog,
-  panels: Panels, panel: PanelDetail, servers: PanelServers, app: AppSettings, net: Network, carrier: Carrier,
+  panels: Panels, panel: PanelDetail, servers: PanelServers, server: ServerDetail, tunnel: TunnelDiag, netServer: NetServer, app: AppSettings, net: Network, carrier: Carrier,
+  cloud: Cloud, cloudDays: CloudDays, cloudErrors: CloudErrors, cloudQueries: CloudQueries, cloudDeploys: CloudDeploys, cloudToken: CloudToken,
+  reports: Reports, reportList: ReportList, reportServers: ReportServers, reportUsers: ReportUsers, reportVersions: ReportVersions, problem: Problem,
   broadcasts: Broadcasts, broadcast: BroadcastDetail, stats: Stats, system: System, health: Health, audit: Audit, admins: Admins, settings: Settings,
 };
 

@@ -73,15 +73,31 @@ const ROUTES = [
   ['GET', /^\/admin\/panels$/, 'viewer', (env) => panels(env)],
   ['GET', /^\/admin\/panels\/(\d{1,12})$/, 'viewer', (env, c) => panel(env, c.m[1])],
   ['GET', /^\/admin\/panels\/(\d{1,12})\/servers$/, 'viewer', (env, c) => panelServerList(env, c.m[1])],
+  ['GET', /^\/admin\/panels\/(\d{1,12})\/tunnel$/, 'viewer', (env, c) => tunnelDiag(env, c.m[1], false)],
   ['GET', /^\/admin\/app$/, 'viewer', (env) => app(env)],
   ['GET', /^\/admin\/app\/domains\/test$/, 'viewer', (env) => domainTest(env)],
   ['GET', /^\/admin\/net$/, 'viewer', (env) => net(env)],
   ['GET', /^\/admin\/net\/users$/, 'viewer', (env) => netUsers(env)],
+  ['GET', /^\/admin\/net\/server$/, 'viewer', (env, c) => netServer(env, c.url)],
   ['GET', /^\/admin\/stats$/, 'viewer', (env, c) => stats(env, c.url)],
   ['GET', /^\/admin\/broadcasts$/, 'viewer', (env) => broadcasts(env)],
   ['GET', /^\/admin\/broadcasts\/(\d{1,12})$/, 'viewer', (env, c) => broadcast(env, c.m[1])],
   ['GET', /^\/admin\/health$/, 'viewer', (env) => health(env)],
   ['GET', /^\/admin\/audit$/, 'viewer', (env, c) => audit(env, c.url)],
+  // Pleat's automatic health reports (health.js)
+  ['GET', /^\/admin\/reports$/, 'viewer', (env) => reports(env, 'summary')],
+  ['GET', /^\/admin\/reports\/problems$/, 'viewer', (env, c) => reportProblems(env, c.url)],
+  ['GET', /^\/admin\/reports\/problem$/, 'viewer', (env, c) => reportProblem(env, c.url)],
+  ['GET', /^\/admin\/reports\/servers$/, 'viewer', (env) => reports(env, 'servers')],
+  ['GET', /^\/admin\/reports\/users$/, 'viewer', (env) => reports(env, 'users')],
+  ['GET', /^\/admin\/reports\/versions$/, 'viewer', (env) => reports(env, 'versions')],
+  // ☁️ Cloudflare monitoring (cfmon.js)
+  ['GET', /^\/admin\/cf$/, 'viewer', (env) => cf(env, 'overviewData')],
+  ['GET', /^\/admin\/cf\/history$/, 'viewer', (env) => cf(env, 'historyData')],
+  ['GET', /^\/admin\/cf\/errors$/, 'viewer', (env) => cf(env, 'errorsData')],
+  ['GET', /^\/admin\/cf\/queries$/, 'viewer', (env) => cf(env, 'queriesData')],
+  ['GET', /^\/admin\/cf\/deploys$/, 'viewer', (env) => cf(env, 'deploysData')],
+  ['GET', /^\/admin\/cf\/token$/, 'viewer', (env) => cf(env, 'tokenState')],
   ['GET', /^\/admin\/settings$/, 'owner', (env) => settings(env)],
   ['GET', /^\/admin\/admins$/, 'owner', (env) => admins(env)],
   ['POST', /^\/admin\/action$/, 'support', async (env, c) => action(env, c.admin, await c.body())],
@@ -91,6 +107,8 @@ const ROUTES = [
   ['POST', /^\/admin\/panels$/, 'owner', async (env, c) => addPanel(env, c.admin, await c.body())],
   ['POST', /^\/admin\/panels\/(\d{1,12})\/cred$/, 'owner', async (env, c) => panelCred(env, c.admin, c.m[1], await c.body())],
   ['POST', /^\/admin\/panels\/(\d{1,12})\/test$/, 'owner', (env, c) => panelTest(env, c.admin, c.m[1])],
+  ['POST', /^\/admin\/panels\/(\d{1,12})\/tunnel$/, 'owner', (env, c) => tunnelDiag(env, c.m[1], true)],
+  ['POST', /^\/admin\/sync$/, 'owner', (env) => syncNow(env)],
   ['POST', /^\/admin\/backup$/, 'owner', (env, c) => backup(env, c.admin)],
 ];
 
@@ -477,8 +495,11 @@ export async function panelServerList(env, id) {
   const { servers, source } = await panelServers(env, p);
   const known = new Set(servers.map((s) => s.key));
   const extra = [...new Set([...Object.keys(labels), ...[...ov.hidden].filter((h) => h.startsWith(p.id + ':')).map((h) => h.split(':')[1])])].filter((k) => !known.has(k));
-  const out = (key, name, type, cc, gone) => ({ key, name, type: type || null, cc: cc || null, label: labels[key] || null, hidden: ov.hidden.has(p.id + ':' + key), gone: !!gone });
-  return json({ source, servers: [...servers.slice(0, 60).map((s) => out(s.key, s.name, s.type, s.cc)), ...extra.slice(0, 20).map((k) => out(k, 'Old server', null, null, true))] });
+  // tunnel = an Iran-tunnel config; named = the country the panel's name says when the exit is really elsewhere (cc);
+  // remark = the panel's own name, only when no country could be read from it (so the admin can fix it)
+  const out = (key, name, type, cc, gone, s = {}) => ({ key, name, type: type || null, cc: cc || null, label: labels[key] || null, hidden: ov.hidden.has(p.id + ':' + key), gone: !!gone,
+    tunnel: !!s.tunnel, named: s.named || null, remark: !cc && s.remark ? String(s.remark).slice(0, 80) : null });
+  return json({ source, servers: [...servers.slice(0, 60).map((s) => out(s.key, s.name, s.type, s.cc, false, s)), ...extra.slice(0, 20).map((k) => out(k, 'Old server', null, null, true))] });
 }
 
 // POST /admin/panels {label, kind?}: a new panel; it takes nobody until it is tested and rolled out
@@ -574,6 +595,67 @@ export async function netUsers(env) {
     WHERE n.last_at >= ? GROUP BY n.user_id ORDER BY at DESC, n.user_id DESC LIMIT 12`, since);
   return json({ groups: groups.map((g) => ({ asn: g.asn, kind: g.kind || '', isp: g.isp || `AS${g.asn}`, users: g.u })),
     recent: recent.map((r) => ({ id: r.id, user: userLabel(r), at: r.at })) });
+}
+
+// GET /admin/net/server?key=: one server on every carrier (rank, connect rate, ping, speed) and Google's view
+export async function netServer(env, url) {
+  const { netServerData } = await import('./telegram-screens.js');
+  const d = await netServerData(env, String(url.searchParams.get('key') || ''));
+  if (!d) throw err(404, 'not_found', 'Server not found.');
+  const srv = (s) => ({ ok_pct: s.ok, ms: s.ms || null, mbps: s.kbps ? Math.round(s.kbps / 100) / 10 : null, users: s.users });
+  return json({ key: d.key, name: d.name, google: d.google, carriers: d.carriers.map((r) => ({ isp: r.isp, asn: r.asn, rank: r.rank, of: r.of, ...srv(r.s) })) });
+}
+
+// GET /admin/panels/:id/tunnel: why configs are (not) marked as Iran tunnel, step by step (POST, owner: read again and store)
+export async function tunnelDiag(env, id, reread) {
+  const { tunnelDiagData } = await import('./telegram-screens.js');
+  const t = await tunnelDiagData(env, parseInt(id, 10), reread);
+  if (!t) throw err(404, 'not_found', 'Panel not found.');
+  const d = t.diag;
+  return json({ panel: t.panel, error: t.error ? String(t.error).slice(0, 200) : null, probe: t.probe, stored: t.stored,
+    diag: d ? { kind: d.kind, groups_status: d.groupsStatus || null, simple_status: d.simpleStatus || null,
+      groups: d.groups ? d.groups.slice(0, 30).map((g) => ({ name: String(g.name || '').slice(0, 60), off: !!g.off, tags: g.tags == null ? null : g.tags })) : null,
+      tunnel_groups: d.tunnelGroups || [], tags: d.tags || 0, hosts_status: d.hostsStatus || null, hosts: d.hosts == null ? null : d.hosts, tunnel_hosts: d.tunnelHosts || 0 } : null });
+}
+
+// ---------------- Pleat health reports ----------------
+export async function reports(env, what) {
+  const H = await import('./health.js');
+  if (what === 'servers') return json({ servers: await H.serversData(env) });
+  if (what === 'users') return json({ users: await H.usersData(env) });
+  if (what === 'versions') return json(await H.versionsData(env));
+  return json(await H.summaryData(env));
+}
+// GET /admin/reports/problems?prio= | ?server= | ?user=
+export async function reportProblems(env, url) {
+  const H = await import('./health.js');
+  const g = (k) => url.searchParams.get(k) || '';
+  const d = await H.problemsData(env, { prio: g('prio'), server: g('server'), user: g('user') });
+  if (!d) throw err(404, 'not_found', 'Nothing found.');
+  return json(d);
+}
+// GET /admin/reports/problem?fp=
+export async function reportProblem(env, url) {
+  const H = await import('./health.js');
+  const d = await H.problemData(env, String(url.searchParams.get('fp') || ''));
+  if (!d) throw err(404, 'not_found', 'Nothing found.');
+  return json(d);
+}
+
+// ---------------- Cloudflare monitoring ----------------
+// The bot's Persian error wording (text) stays out; the page words each error code itself. Never the token.
+const noText = (o) => JSON.parse(JSON.stringify(o, (k, v) => (k === 'text' ? undefined : v)));
+export async function cf(env, fn) {
+  const C = await import('./cfmon.js');
+  return json(noText(await C[fn](env)));
+}
+
+// POST /admin/sync (owner): one panel sync now, like the bot's "sync now"; at most once a minute
+export async function syncNow(env) {
+  const { manualSync } = await import('./sync.js');
+  const r = await manualSync(env);
+  if (r.wait) throw err(429, 'wait', 'A sync just ran. Wait a minute.');
+  return json(r);
 }
 
 // ---------------- stats ----------------

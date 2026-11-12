@@ -83,22 +83,38 @@ function detailValue(k, v, d) {
   return v;
 }
 // A native crash in one line of plain words, from what the phone sent. Before 1.2.38 only the signal is known.
-export function crashGuess(d) {
+// A native crash in one line of plain words, from what the phone sent. Before 1.2.38 only the signal is known.
+// crashKind gives the reading as a code (the Mini App words it in English); crashGuess words it for the bot.
+export function crashKind(d) {
   const abort = String(d.abort || '');
-  if (d.go) return 'هسته‌ی Xray (کد Go) panic کرد؛ متنش در «panic هسته» است. ربطش به سرور/پروتکل را از «پروتکل» ببین.';
-  if (/^fdsan/i.test(abort)) return 'یک fd دوبار بسته شد (fdsan) — باگ سمت اپ در بستن tun/سوکت، نه سرور.';
-  if (/libhev/.test(d.lib || '')) return 'کرش در لایه‌ی تانل (hev-socks5-tunnel)، نه هسته‌ی Xray.';
-  if (/libgojni/.test(d.lib || '')) return 'کرش در هسته‌ی Xray (کتابخانه‌ی Go).';
-  if (/libflutter|libapp/.test(d.lib || '')) return 'کرش در موتور نمایش اپ (Flutter)، نه هسته یا سرور.';
-  if (abort) return 'کتابخانه‌ی C خودش abort کرد؛ «پیام abort» علت را می‌گوید.';
-  if (/^quiet/.test(String(d.stderr || ''))) return 'panic هسته‌ی Go نبوده: Go پیش از هر panic در stderr می‌نویسد و این بار چیزی ننوشت. منبع باید fdsan/libc، لایه‌ی تانل (hev)، یا موتور Flutter باشد.';
+  if (d.go) return 'go_panic';
+  if (/^fdsan/i.test(abort)) return 'fdsan';
+  if (/libhev/.test(d.lib || '')) return 'hev';
+  if (/libgojni/.test(d.lib || '')) return 'xray_lib';
+  if (/libflutter|libapp/.test(d.lib || '')) return 'flutter';
+  if (abort) return 'c_abort';
+  if (/^quiet/.test(String(d.stderr || ''))) return 'not_go';
   // re-read from Android's history: details only if Android still kept the crash's tombstone
-  if (d.earlier) return 'کرش قدیمی (از قبل از به‌روزرسانی) که دوباره خوانده شد، ولی اندروید جزئیاتش را نگه نداشته بود. علتش از همین گزارش معلوم نمی‌شود؛ کرش بعدی روی 1.2.38+ متن panic، کتابخانه و سرور را می‌آورد.';
-  if (d.tomb === 'none') return 'اندروید برای این کرش tombstone نگه نداشته؛ اگر panic هسته‌ی Go بود، «panic هسته» باید پر باشد و نیست.';
-  if (d.reason === 5 && d.status === 6) return 'abort عمدی: یا panic هسته‌ی Go (Xray)، یا fdsan/libc، یا موتور Flutter. این نسخه بیش از این نفرستاده؛ از Pleat 1.2.38 متن panic، کتابخانه و پروتکل هم می‌آید.';
-  if (d.reason === 5 && d.status === 11) return 'دسترسی نامعتبر به حافظه در کد native (C)؛ کد Go چنین خطایی را به panic و SIGABRT تبدیل می‌کند.';
+  if (d.earlier) return 'earlier';
+  if (d.tomb === 'none') return 'no_tombstone';
+  if (d.reason === 5 && d.status === 6) return 'sigabrt';
+  if (d.reason === 5 && d.status === 11) return 'sigsegv';
   return '';
 }
+const CRASH_FA = {
+  go_panic: 'هسته‌ی Xray (کد Go) panic کرد؛ متنش در «panic هسته» است. ربطش به سرور/پروتکل را از «پروتکل» ببین.',
+  fdsan: 'یک fd دوبار بسته شد (fdsan) — باگ سمت اپ در بستن tun/سوکت، نه سرور.',
+  hev: 'کرش در لایه‌ی تانل (hev-socks5-tunnel)، نه هسته‌ی Xray.',
+  xray_lib: 'کرش در هسته‌ی Xray (کتابخانه‌ی Go).',
+  flutter: 'کرش در موتور نمایش اپ (Flutter)، نه هسته یا سرور.',
+  c_abort: 'کتابخانه‌ی C خودش abort کرد؛ «پیام abort» علت را می‌گوید.',
+  not_go: 'panic هسته‌ی Go نبوده: Go پیش از هر panic در stderr می‌نویسد و این بار چیزی ننوشت. منبع باید fdsan/libc، لایه‌ی تانل (hev)، یا موتور Flutter باشد.',
+  earlier: 'کرش قدیمی (از قبل از به‌روزرسانی) که دوباره خوانده شد، ولی اندروید جزئیاتش را نگه نداشته بود. علتش از همین گزارش معلوم نمی‌شود؛ کرش بعدی روی 1.2.38+ متن panic، کتابخانه و سرور را می‌آورد.',
+  no_tombstone: 'اندروید برای این کرش tombstone نگه نداشته؛ اگر panic هسته‌ی Go بود، «panic هسته» باید پر باشد و نیست.',
+  sigabrt: 'abort عمدی: یا panic هسته‌ی Go (Xray)، یا fdsan/libc، یا موتور Flutter. این نسخه بیش از این نفرستاده؛ از Pleat 1.2.38 متن panic، کتابخانه و پروتکل هم می‌آید.',
+  sigsegv: 'دسترسی نامعتبر به حافظه در کد native (C)؛ کد Go چنین خطایی را به panic و SIGABRT تبدیل می‌کند.',
+};
+export const crashGuess = (d) => CRASH_FA[crashKind(d)] || '';
 
 // the same 8 hex for the same problem on every phone, so the bot can group them
 export function fingerprint(type, k, c) {
@@ -384,32 +400,24 @@ const since = () => dayOf(nowSec()) - DAYS + 1;
 const ago = (t, now = nowSec()) => (!t ? '—' : now - t < 3600 ? `${fa(Math.max(1, Math.round((now - t) / 60)))} دقیقه پیش` : now - t < 172800 ? `${fa(Math.round((now - t) / 3600))} ساعت پیش` : `${fa(Math.round((now - t) / 86400))} روز پیش`);
 const T = (...p) => crumb('🩺 سلامت اپ', ...p);
 
-export async function screenHome(env) {
-  const now = nowSec();
+// ---------------- the reports as data: the bot screens below and the Mini App (admin-api.js) ----------------
+const counts = (by, p) => ({ open24: (by[p] && by[p].p1) || 0, count24: (by[p] && by[p].c1) || 0, open7: (by[p] && by[p].p7) || 0, count7: (by[p] && by[p].c7) || 0 });
+
+// open problems per priority (24 hours and 7 days), how many phones reported, the sending mode, and one row a day
+export async function summaryData(env) {
+  const now = nowSec(), from = since();
   const rows = await all(env, `SELECT prio, COUNT(DISTINCT fp) p7, SUM(count) c7, COUNT(DISTINCT CASE WHEN last_at >= ?2 THEN fp END) p1,
-      SUM(CASE WHEN last_at >= ?2 THEN count ELSE 0 END) c1 FROM health_events WHERE day >= ?1 AND state = 'open' GROUP BY prio`, since(), now - 86400);
-  const phones = await first(env, 'SELECT COUNT(DISTINCT user_id) u FROM health_events WHERE day >= ?', since());
-  const by = Object.fromEntries(rows.map((r) => [r.prio, r]));
-  const g = (p, k) => fa((by[p] && by[p][k]) || 0);
+      SUM(CASE WHEN last_at >= ?2 THEN count ELSE 0 END) c1 FROM health_events WHERE day >= ?1 AND state = 'open' GROUP BY prio`, from, now - 86400);
+  const phones = await first(env, 'SELECT COUNT(DISTINCT user_id) u FROM health_events WHERE day >= ?', from);
+  const perDay = await all(env, 'SELECT day, prio, SUM(count) c FROM health_events WHERE day >= ? AND prio < 4 GROUP BY day, prio', from);
   const { mode } = await healthSettings(env);
-  const next = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
-  return {
-    text: [T(), '',
-      'گزارش‌هایی که اپ Pleat خودکار از گوشی کاربرها می‌فرستد. عدد = مشکل‌های باز (بار تکرار).', '',
-      `۲۴ ساعت: 🔴 ${g(1, 'p1')} (${g(1, 'c1')}) · 🟠 ${g(2, 'p1')} (${g(2, 'c1')}) · 🟡 ${g(3, 'p1')} (${g(3, 'c1')})`,
-      `۷ روز: 🔴 ${g(1, 'p7')} (${g(1, 'c7')}) · 🟠 ${g(2, 'p7')} (${g(2, 'c7')}) · 🟡 ${g(3, 'p7')} (${g(3, 'c7')})`,
-      `کاربرهای گزارش‌دهنده (۷ روز): ${fa(phones ? phones.u : 0)}`, '',
-      `ارسال از اپ: ${MODE_FA[mode]}`,
-      '🔴 موارد بحرانی همان لحظه در همین چت خبر داده می‌شوند.'].join('\n'),
-    kb: [
-      [b(`🔴 بحرانی (${g(1, 'p7')})`, 'm:hlp:1'), b(`🟠 مهم (${g(2, 'p7')})`, 'm:hlp:2')],
-      [b(`🟡 متوسط (${g(3, 'p7')})`, 'm:hlp:3'), b('⚪ خلاصه‌های روزانه', 'm:hlp:4')],
-      [b('🖥 بر اساس سرور', 'm:hlk'), b('👥 بر اساس کاربر', 'm:hlu')],
-      [b('📱 نسخه‌ها و گوشی‌ها', 'm:hlv')],
-      [b(`⚙️ ارسال: ${MODE_FA[mode]} ← ${MODE_FA[next]}`, `m:hlm:${next}`)],
-      nav('home'),
-    ],
-  };
+  const by = Object.fromEntries(rows.map((r) => [r.prio, r]));
+  const days = Array.from({ length: DAYS }, (_, i) => {
+    const d = from + i;
+    const c = (p) => perDay.filter((r) => r.day === d && r.prio === p).reduce((a, r) => a + r.c, 0);
+    return { day: d * 86400, p1: c(1), p2: c(2), p3: c(3) };
+  });
+  return { days_back: DAYS, mode, modes: MODES, phones: phones ? phones.u : 0, prio: { 1: counts(by, 1), 2: counts(by, 2), 3: counts(by, 3), 4: counts(by, 4) }, days };
 }
 
 // problems (grouped by fp over 7 days) for a filter: one priority, one server or one user
@@ -418,8 +426,97 @@ async function problems(env, where, args) {
       SUM(count) c, COUNT(DISTINCT user_id) u, MAX(last_at) last FROM health_events
     WHERE day >= ? AND state = 'open' AND ${where} GROUP BY fp ORDER BY prio, last DESC LIMIT 10`, since(), ...args);
 }
+const problemOut = (r) => ({ fp: r.fp, prio: r.prio, type: r.type, exit_key: r.exit_key || null, exit_name: r.exit_name || null, cause: r.cause || null, count: r.c, users: r.u, last: r.last });
+// {prio} | {server: exit key} | {user: id}; null when the filter is not valid
+export async function problemsData(env, { prio, server, user } = {}) {
+  if (server) {
+    if (!KEY_RE.test(String(server))) return null;
+    const list = await problems(env, 'exit_key = ?', [server]);
+    return { filter: 'server', server, name: (list[0] && list[0].exit_name) || null, problems: list.map(problemOut) };
+  }
+  if (user) {
+    const uid = parseInt(user, 10);
+    if (!(uid > 0)) return null;
+    const u = await first(env, 'SELECT id, email, tg_username, tg_id FROM users WHERE id = ?', uid);
+    return { filter: 'user', user: uid, name: u ? whoOf(u) : null, problems: (await problems(env, 'user_id = ?', [uid])).map(problemOut) };
+  }
+  const p = [1, 2, 3, 4].includes(parseInt(prio, 10)) ? parseInt(prio, 10) : 1;
+  return { filter: 'prio', prio: p, problems: (await problems(env, 'prio = ?', [p])).map(problemOut) };
+}
+
+// servers with open problems (7 days), worst first
+export async function serversData(env) {
+  const rows = await all(env, `SELECT exit_key, MAX(exit_name) name, SUM(count) c, COUNT(DISTINCT user_id) u, COUNT(DISTINCT fp) n, MIN(prio) top
+    FROM health_events WHERE day >= ? AND state = 'open' AND exit_key != '' AND prio < 4 GROUP BY exit_key ORDER BY top, c DESC LIMIT 10`, since());
+  return rows.map((r) => ({ key: r.exit_key, name: r.name || r.exit_key, top: r.top, problems: r.n, count: r.c, users: r.u }));
+}
+
+// users with open problems (7 days), worst first
+export async function usersData(env) {
+  const rows = await all(env, `SELECT h.user_id, u.email, u.tg_username, u.tg_id, MIN(h.prio) top, SUM(h.count) c, COUNT(DISTINCT h.fp) n,
+      MAX(h.app_ver) app, MAX(h.model) model FROM health_events h LEFT JOIN users u ON u.id = h.user_id
+    WHERE h.day >= ? AND h.state = 'open' AND h.prio < 4 GROUP BY h.user_id ORDER BY top, c DESC LIMIT 10`, since());
+  return rows.map((r) => ({ id: r.user_id, name: r.email || r.tg_id ? whoOf({ ...r, id: r.user_id }) : null, deleted: !(r.email || r.tg_id),
+    top: r.top, problems: r.n, count: r.c, app: r.app || null, model: r.model || null }));
+}
+
+// app versions, Android versions and phone models that reported (7 days)
+export async function versionsData(env) {
+  const q = (col) => all(env, `SELECT ${col} v, COUNT(DISTINCT user_id) u, SUM(CASE WHEN prio = 1 THEN count ELSE 0 END) crit
+    FROM health_events WHERE day >= ? AND ${col} != '' GROUP BY ${col} ORDER BY u DESC, v DESC LIMIT 8`, since());
+  const [apps, oses, models] = [await q('app_ver'), await q('os'), await q('model')];
+  const out = (r) => ({ name: r.v, users: r.u, critical: r.crit });
+  return { apps: apps.map(out), os: oses.map(out), models: models.map(out) };
+}
+
+// one problem: who, which versions and phones, the last report's details and, for a native crash, its reading
+export async function problemData(env, fp) {
+  if (!FP_RE.test(String(fp || ''))) return null;
+  const rows = await all(env, `SELECT h.*, u.email, u.tg_username, u.tg_id FROM health_events h LEFT JOIN users u ON u.id = h.user_id
+    WHERE h.fp = ? AND h.day >= ? ORDER BY h.last_at DESC LIMIT 30`, fp, since());
+  if (!rows.length) return { fp, gone: true };
+  const top = rows[0];
+  const set = (f) => [...new Set(rows.map(f).filter(Boolean))].slice(0, 6);
+  const users = [...new Map(rows.map((r) => [r.user_id, r])).values()];
+  let d = {};
+  try { d = JSON.parse(top.detail || '{}'); } catch (e) { d = {}; }
+  return {
+    fp, gone: false, prio: top.prio, type: top.type, exit_key: top.exit_key || null, exit_name: top.exit_name || null, cause: top.cause || null,
+    state: rows.some((r) => r.state === 'open') ? 'open' : rows.some((r) => r.state === 'muted') ? 'muted' : 'resolved',
+    total: rows.reduce((a, r) => a + r.count, 0), first: Math.min(...rows.map((r) => r.first_at)), last: top.last_at,
+    users: users.map((r) => ({ id: r.user_id, name: r.email || r.tg_id ? whoOf({ ...r, id: r.user_id }) : null })),
+    apps: set((r) => r.app_ver), os: set((r) => r.os), models: set((r) => r.model), isps: set((r) => r.isp), nets: set((r) => r.net),
+    detail: d, crash: top.type === 'crash' && top.cause === 'native' ? crashKind(d) || null : null,
+  };
+}
+
+// ---------------- bot screens from the data ----------------
+export async function screenHome(env) {
+  const h = await summaryData(env);
+  const g = (p, k) => fa(h.prio[p][k]);
+  const mode = h.mode;
+  const next = MODES[(MODES.indexOf(mode) + 1) % MODES.length];
+  return {
+    text: [T(), '',
+      'گزارش‌هایی که اپ Pleat خودکار از گوشی کاربرها می‌فرستد. عدد = مشکل‌های باز (بار تکرار).', '',
+      `۲۴ ساعت: 🔴 ${g(1, 'open24')} (${g(1, 'count24')}) · 🟠 ${g(2, 'open24')} (${g(2, 'count24')}) · 🟡 ${g(3, 'open24')} (${g(3, 'count24')})`,
+      `۷ روز: 🔴 ${g(1, 'open7')} (${g(1, 'count7')}) · 🟠 ${g(2, 'open7')} (${g(2, 'count7')}) · 🟡 ${g(3, 'open7')} (${g(3, 'count7')})`,
+      `کاربرهای گزارش‌دهنده (۷ روز): ${fa(h.phones)}`, '',
+      `ارسال از اپ: ${MODE_FA[mode]}`,
+      '🔴 موارد بحرانی همان لحظه در همین چت خبر داده می‌شوند.'].join('\n'),
+    kb: [
+      [b(`🔴 بحرانی (${g(1, 'open7')})`, 'm:hlp:1'), b(`🟠 مهم (${g(2, 'open7')})`, 'm:hlp:2')],
+      [b(`🟡 متوسط (${g(3, 'open7')})`, 'm:hlp:3'), b('⚪ خلاصه‌های روزانه', 'm:hlp:4')],
+      [b('🖥 بر اساس سرور', 'm:hlk'), b('👥 بر اساس کاربر', 'm:hlu')],
+      [b('📱 نسخه‌ها و گوشی‌ها', 'm:hlv')],
+      [b(`⚙️ ارسال: ${MODE_FA[mode]} ← ${MODE_FA[next]}`, `m:hlm:${next}`)],
+      nav('home'),
+    ],
+  };
+}
+
 function problemList(list, title, back, extra = []) {
-  const lines = list.map((r, i) => `${i + 1}. ${problemLabel(r)}\n    ${fa(r.c)} بار · ${fa(r.u)} کاربر · آخرین: ${ago(r.last)}`);
+  const lines = list.map((r, i) => `${i + 1}. ${problemLabel(r)}\n    ${fa(r.count)} بار · ${fa(r.users)} کاربر · آخرین: ${ago(r.last)}`);
   return {
     text: [title, '', ...(lines.length ? lines : ['✅ در ۷ روز اخیر مشکل بازی نیست.']), ...(lines.length ? ['', 'روی هر مورد بزن تا گوشی‌ها، نسخه‌ها و متن خطا را ببینی.'] : [])].join('\n'),
     kb: [...list.map((r, i) => [b(`${i + 1}. ${problemLabel(r)}`.slice(0, 60), `m:he:${r.fp}`)]), ...extra, nav(back)],
@@ -427,83 +524,72 @@ function problemList(list, title, back, extra = []) {
 }
 
 export async function screenPrio(env, prio) {
-  const p = [1, 2, 3, 4].includes(prio) ? prio : 1;
-  return problemList(await problems(env, 'prio = ?', [p]), T(PRIO_FA[p]), 'hl');
+  const d = await problemsData(env, { prio });
+  return problemList(d.problems, T(PRIO_FA[d.prio]), 'hl');
 }
 
 export async function screenServers(env, key) {
   if (key) {
-    if (!KEY_RE.test(key)) return { text: T('🖥 سرورها') + '\n\nپیدا نشد.', kb: [nav('hlk')] };
-    const list = await problems(env, 'exit_key = ?', [key]);
-    return problemList(list, T('🖥 سرورها', untrusted((list[0] && list[0].exit_name) || key)), 'hlk', [[b('📊 این سرور روی اپراتورها', `m:nsv:${key}`)]]);
+    const d = await problemsData(env, { server: key });
+    if (!d) return { text: T('🖥 سرورها') + '\n\nپیدا نشد.', kb: [nav('hlk')] };
+    return problemList(d.problems, T('🖥 سرورها', untrusted(d.name || key)), 'hlk', [[b('📊 این سرور روی اپراتورها', `m:nsv:${key}`)]]);
   }
-  const rows = await all(env, `SELECT exit_key, MAX(exit_name) name, SUM(count) c, COUNT(DISTINCT user_id) u, COUNT(DISTINCT fp) n, MIN(prio) top
-    FROM health_events WHERE day >= ? AND state = 'open' AND exit_key != '' AND prio < 4 GROUP BY exit_key ORDER BY top, c DESC LIMIT 10`, since());
-  const lines = rows.map((r) => `${PRIO_FA[r.top].split(' ')[0]} ${untrusted(r.name || r.exit_key)} — ${fa(r.n)} مشکل · ${fa(r.c)} بار · ${fa(r.u)} کاربر`);
+  const rows = await serversData(env);
+  const lines = rows.map((r) => `${PRIO_FA[r.top].split(' ')[0]} ${untrusted(r.name)} — ${fa(r.problems)} مشکل · ${fa(r.count)} بار · ${fa(r.users)} کاربر`);
   return {
     text: [T('🖥 بر اساس سرور'), '', ...(lines.length ? lines : ['در ۷ روز اخیر هیچ سروری مشکل باز ندارد.'])].join('\n'),
-    kb: [...rows.map((r) => [b(untrusted(r.name || r.exit_key).slice(0, 40), `m:hlk:${r.exit_key}`)]), nav('hl')],
+    kb: [...rows.map((r) => [b(untrusted(r.name).slice(0, 40), `m:hlk:${r.key}`)]), nav('hl')],
   };
 }
 
 export async function screenUsers(env, uid) {
   if (uid) {
-    const u = await first(env, 'SELECT id, email, tg_username, tg_id FROM users WHERE id = ?', uid);
-    const name = u ? whoOf(u) : `#${uid}`;
-    return problemList(await problems(env, 'user_id = ?', [uid]), T('👥 کاربران', untrusted(name)), 'hlu', u ? [[b('👤 کارت کاربر', `m:u:${uid}`)]] : []);
+    const d = await problemsData(env, { user: uid });
+    return problemList(d.problems, T('👥 کاربران', untrusted(d.name || `#${uid}`)), 'hlu', d.name ? [[b('👤 کارت کاربر', `m:u:${uid}`)]] : []);
   }
-  const rows = await all(env, `SELECT h.user_id, u.email, u.tg_username, u.tg_id, MIN(h.prio) top, SUM(h.count) c, COUNT(DISTINCT h.fp) n,
-      MAX(h.app_ver) app, MAX(h.model) model FROM health_events h LEFT JOIN users u ON u.id = h.user_id
-    WHERE h.day >= ? AND h.state = 'open' AND h.prio < 4 GROUP BY h.user_id ORDER BY top, c DESC LIMIT 10`, since());
-  const name = (r) => untrusted(r.email || r.tg_id ? whoOf({ ...r, id: r.user_id }) : `#${r.user_id} (حذف‌شده)`);
-  const lines = rows.map((r) => `${PRIO_FA[r.top].split(' ')[0]} ${name(r)} — ${fa(r.n)} مشکل · ${fa(r.c)} بار${r.app ? ` · Pleat ${r.app}` : ''}${r.model ? ` · ${untrusted(r.model)}` : ''}`);
+  const rows = await usersData(env);
+  const name = (r) => untrusted(r.deleted ? `#${r.id} (حذف‌شده)` : r.name);
+  const lines = rows.map((r) => `${PRIO_FA[r.top].split(' ')[0]} ${name(r)} — ${fa(r.problems)} مشکل · ${fa(r.count)} بار${r.app ? ` · Pleat ${r.app}` : ''}${r.model ? ` · ${untrusted(r.model)}` : ''}`);
   return {
     text: [T('👥 بر اساس کاربر'), '', ...(lines.length ? lines : ['در ۷ روز اخیر از هیچ کاربری مشکل بازی نرسیده.'])].join('\n'),
-    kb: [...rows.map((r) => [b(name(r).slice(0, 40), `m:hlu:${r.user_id}`)]), nav('hl')],
+    kb: [...rows.map((r) => [b(name(r).slice(0, 40), `m:hlu:${r.id}`)]), nav('hl')],
   };
 }
 
 export async function screenVersions(env) {
-  const q = (col) => all(env, `SELECT ${col} v, COUNT(DISTINCT user_id) u, SUM(CASE WHEN prio = 1 THEN count ELSE 0 END) crit
-    FROM health_events WHERE day >= ? AND ${col} != '' GROUP BY ${col} ORDER BY u DESC, v DESC LIMIT 8`, since());
-  const [apps, oses, models] = [await q('app_ver'), await q('os'), await q('model')];
-  const line = (r) => `▪️ ${untrusted(r.v)} — ${fa(r.u)} کاربر${r.crit ? ` · 🔴 ${fa(r.crit)}` : ''}`;
+  const v = await versionsData(env);
+  const line = (r) => `▪️ ${untrusted(r.name)} — ${fa(r.users)} کاربر${r.critical ? ` · 🔴 ${fa(r.critical)}` : ''}`;
   return {
-    text: [T('📱 نسخه‌ها و گوشی‌ها'), '', 'نسخه‌ی اپ:', ...(apps.length ? apps.map(line) : ['—']), '', 'اندروید:', ...(oses.length ? oses.map(line) : ['—']), '',
-      'مدل گوشی:', ...(models.length ? models.map(line) : ['—']), '', '🔴 = تعداد رویدادهای بحرانی در ۷ روز.'].join('\n'),
+    text: [T('📱 نسخه‌ها و گوشی‌ها'), '', 'نسخه‌ی اپ:', ...(v.apps.length ? v.apps.map(line) : ['—']), '', 'اندروید:', ...(v.os.length ? v.os.map(line) : ['—']), '',
+      'مدل گوشی:', ...(v.models.length ? v.models.map(line) : ['—']), '', '🔴 = تعداد رویدادهای بحرانی در ۷ روز.'].join('\n'),
     kb: [nav('hl')],
   };
 }
 
 export async function screenEvent(env, fp) {
-  if (!FP_RE.test(String(fp || ''))) return { text: T() + '\n\nپیدا نشد.', kb: [nav('hl')] };
-  const rows = await all(env, `SELECT h.*, u.email, u.tg_username, u.tg_id FROM health_events h LEFT JOIN users u ON u.id = h.user_id
-    WHERE h.fp = ? AND h.day >= ? ORDER BY h.last_at DESC LIMIT 30`, fp, since());
-  if (!rows.length) return { text: T() + '\n\nاین مورد در ۷ روز اخیر دیگر نیست (پاک شده).', kb: [nav('hl')] };
-  const top = rows[0];
-  const set = (f) => [...new Set(rows.map(f).filter(Boolean))].slice(0, 6).map(untrusted).join('، ') || '—';
-  const total = rows.reduce((s, r) => s + r.count, 0);
-  const users = [...new Map(rows.map((r) => [r.user_id, r])).values()];
-  let d = {};
-  try { d = JSON.parse(top.detail || '{}'); } catch (e) { d = {}; }
+  const e = await problemData(env, fp);
+  if (!e) return { text: T() + '\n\nپیدا نشد.', kb: [nav('hl')] };
+  if (e.gone) return { text: T() + '\n\nاین مورد در ۷ روز اخیر دیگر نیست (پاک شده).', kb: [nav('hl')] };
+  const list = (a) => a.map(untrusted).join('، ') || '—';
+  const d = e.detail;
   const val = (v) => (Array.isArray(v) ? v.map((x) => (x && typeof x === 'object' ? Object.entries(x).map(([k, y]) => `${k}=${y}`).join(' ') : x)).join(' | ') : typeof v === 'boolean' ? (v ? 'بله' : 'نه') : v);
   const detail = Object.entries(d).map(([k, v]) => `• ${DETAIL_FA[k] || k}: ${untrusted(val(detailValue(k, v, d)))}`);
-  const guess = top.type === 'crash' && top.cause === 'native' ? crashGuess(d) : '';
-  const state = rows.some((r) => r.state === 'open') ? 'open' : rows.some((r) => r.state === 'muted') ? 'muted' : 'resolved';
-  const lines = [T(PRIO_FA[top.prio], problemLabel(top)), '',
-    `${PRIO_FA[top.prio]} — ${problemLabel(top)}`,
-    `وضعیت: ${state === 'open' ? '🟢 باز' : state === 'muted' ? '🔇 بی‌صدا' : '✅ رسیدگی‌شده'}`,
-    `تکرار: ${fa(total)} بار · ${fa(users.length)} کاربر · اولین: ${ago(Math.min(...rows.map((r) => r.first_at)))} · آخرین: ${ago(top.last_at)}`, '',
-    `👥 کاربرها: ${users.slice(0, 5).map((r) => untrusted(r.email || r.tg_id ? whoOf({ ...r, id: r.user_id }) : '#' + r.user_id)).join('، ')}${users.length > 5 ? ' …' : ''}`,
-    `📲 نسخه: ${set((r) => r.app_ver)}`, `🤖 اندروید: ${set((r) => r.os)}`, `📱 گوشی: ${set((r) => r.model)}`,
-    `📶 شبکه: ${set((r) => r.isp)}${rows.some((r) => r.net) ? ` (${set((r) => ({ wifi: 'وای‌فای', cell: 'دیتا', other: 'دیگر' })[r.net])})` : ''}`,
+  const guess = e.crash ? CRASH_FA[e.crash] : '';
+  const label = problemLabel(e);
+  const lines = [T(PRIO_FA[e.prio], label), '',
+    `${PRIO_FA[e.prio]} — ${label}`,
+    `وضعیت: ${e.state === 'open' ? '🟢 باز' : e.state === 'muted' ? '🔇 بی‌صدا' : '✅ رسیدگی‌شده'}`,
+    `تکرار: ${fa(e.total)} بار · ${fa(e.users.length)} کاربر · اولین: ${ago(e.first)} · آخرین: ${ago(e.last)}`, '',
+    `👥 کاربرها: ${e.users.slice(0, 5).map((u) => untrusted(u.name || '#' + u.id)).join('، ')}${e.users.length > 5 ? ' …' : ''}`,
+    `📲 نسخه: ${list(e.apps)}`, `🤖 اندروید: ${list(e.os)}`, `📱 گوشی: ${list(e.models)}`,
+    `📶 شبکه: ${list(e.isps)}${e.nets.length ? ` (${list(e.nets.map((n) => ({ wifi: 'وای‌فای', cell: 'دیتا', other: 'دیگر' })[n]))})` : ''}`,
     ...(detail.length ? ['', 'آخرین گزارش:', ...detail] : []),
     ...(guess ? ['', `🧭 برداشت: ${untrusted(guess)}`] : [])];
   const kb = [];
-  if (state === 'open') kb.push([b('✅ رسیدگی شد', `m:her:${fp}`), b('🔇 بی‌صدا ۷ روز', `m:hem:${fp}:1`)]);
-  else if (state === 'muted') kb.push([b('🔔 دوباره نشان بده', `m:hem:${fp}:0`)]);
-  if (top.exit_key) kb.push([b('🖥 همه‌ی مشکل‌های این سرور', `m:hlk:${top.exit_key}`)]);
-  if (users.length === 1) kb.push([b('👤 کارت کاربر', `m:u:${users[0].user_id}`)]);
-  kb.push(nav(`hlp:${top.prio}`));
+  if (e.state === 'open') kb.push([b('✅ رسیدگی شد', `m:her:${fp}`), b('🔇 بی‌صدا ۷ روز', `m:hem:${fp}:1`)]);
+  else if (e.state === 'muted') kb.push([b('🔔 دوباره نشان بده', `m:hem:${fp}:0`)]);
+  if (e.exit_key) kb.push([b('🖥 همه‌ی مشکل‌های این سرور', `m:hlk:${e.exit_key}`)]);
+  if (e.users.length === 1) kb.push([b('👤 کارت کاربر', `m:u:${e.users[0].id}`)]);
+  kb.push(nav(`hlp:${e.prio}`));
   return { text: lines.join('\n'), kb };
 }

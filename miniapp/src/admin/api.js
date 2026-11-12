@@ -98,6 +98,19 @@ export const admin = {
   settings: () => call('/admin/settings'),
   admins: () => call('/admin/admins'),
   backup: () => post('/admin/backup'),
+  // Iran-tunnel diagnostic of one panel; reread (owner) reads the panel again and stores it
+  tunnel: (id, reread) => (reread ? call(`/admin/panels/${id}/tunnel`, { method: 'POST', body: {}, timeoutMs: 45000 }) : call(`/admin/panels/${id}/tunnel`, { timeoutMs: 45000 })),
+  netServer: (key) => call('/admin/net/server' + q({ key })),
+  syncNow: () => call('/admin/sync', { method: 'POST', body: {}, timeoutMs: 45000 }),
+  // Pleat health reports
+  reports: () => call('/admin/reports'),
+  reportProblems: (o) => call('/admin/reports/problems' + q(o)),
+  reportProblem: (fp) => call('/admin/reports/problem' + q({ fp })),
+  reportServers: () => call('/admin/reports/servers'),
+  reportUsers: () => call('/admin/reports/users'),
+  reportVersions: () => call('/admin/reports/versions'),
+  // Cloudflare monitoring
+  cf: (part = '') => call('/admin/cf' + (part ? '/' + part : ''), { timeoutMs: 30000 }),
   // {ok, text, audit_id, undoable} or {ok: false, error}
   action: (name, args, confirm = false) => post('/admin/action', { name, args, confirm }),
   undo: (auditId) => post('/admin/undo', { audit_id: auditId }),

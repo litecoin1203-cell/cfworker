@@ -656,3 +656,15 @@ export async function runSync(env, { spent = 0 } = {}) {
   });
   return out;
 }
+
+// "Sync now" from the bot or the Mini App: one runSync in the admin's own request (its own subrequest budget),
+// at most once a minute. Returns {wait: true}, {ok: true, pushed, created, expired} or {ok: false} (logged).
+export async function manualSync(env) {
+  const t = await first(env, "SELECT value FROM settings WHERE key = 'sync_manual_at'");
+  if (t && nowSec() - parseInt(t.value, 10) < 60) return { wait: true };
+  await run(env, `INSERT INTO settings (key, value) VALUES ('sync_manual_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, String(nowSec()));
+  try {
+    const out = await runSync(env, { spent: 6 });
+    return { ok: true, pushed: out.pushed || 0, created: out.created || 0, expired: out.expired || 0 };
+  } catch (e) { logError('manual sync failed', e); return { ok: false }; }
+}

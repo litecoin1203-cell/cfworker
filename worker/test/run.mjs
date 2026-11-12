@@ -4996,6 +4996,121 @@ section('admin bot: ☁️ Cloudflare monitoring (quota, errors, queries, deploy
   }
 }
 
+section('Mini App admin parity: Cloudflare monitoring, app health reports, sync now, tunnel diagnostic, one server on every carrier');
+{
+  const { createHmac } = await import('node:crypto');
+  const sign = (fields) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(env.TELEGRAM_BOT_TOKEN).digest();
+    return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+  };
+  const initFor = (id) => sign({ user: JSON.stringify({ id, first_name: 'A' }), auth_date: String(Math.floor(Date.now() / 1000)) });
+  const A = (method, path, token, json) => call(method, '/api/v1/admin' + path, { token, json });
+  const tok = async (id) => (await A('POST', '/auth', null, { init_data: initFor(id) })).data.access_token;
+  const CF = await import('../src/cfmon.js');
+  const persian = (o) => /[؀-ۿ]/.test(JSON.stringify(o));
+  const T = await tok(12345);
+  await env.DB.prepare("INSERT INTO admins (tg_id, role, added_at) VALUES ('920001', 'support', 1), ('920002', 'viewer', 1)").run();
+  const S = await tok(920001), V = await tok(920002);
+
+  // a few health reports to look at
+  const u = await env.DB.prepare("SELECT id FROM users WHERE email = 'admin-mini-target@example.com'").first();
+  const now = Math.floor(Date.now() / 1000), today = Math.floor(now / 86400);
+  const H = await import('../src/health.js');
+  const fp = H.fingerprint('crash', 'kabc12345', 'native');
+  await env.DB.prepare(`INSERT INTO health_events (user_id, day, fp, prio, type, exit_key, exit_name, cause, count, first_at, last_at, app_ver, os, model, net, isp, detail)
+    VALUES (?, ?, ?, 1, 'crash', 'kabc12345', 'DE 3', 'native', 4, ?, ?, '1.2.46', 'Android 12', 'M2010J19CI', 'wifi', 'Irancell', ?)`)
+    .bind(u.id, today, fp, now - 3600, now - 60, JSON.stringify({ reason: 5, status: 6, stderr: 'quiet at the crash', tunnel: true })).run();
+
+  const viewerReads = ['/reports', '/reports/servers', '/reports/users', '/reports/versions', '/reports/problems?prio=1', '/reports/problems?server=kabc12345',
+    `/reports/problems?user=${u.id}`, `/reports/problem?fp=${fp}`, '/cf', '/cf/history', '/cf/errors', '/cf/queries', '/cf/deploys', '/cf/token', '/net/server?key=kabc12345'];
+  const realFetch = globalThis.fetch;
+  const TOKEN = 'cf-token-value-should-never-show-9876543210';
+  const hourIso = (t) => new Date((t - (t % 3600)) * 1000).toISOString().replace('.000Z', 'Z');
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const j = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
+    if (url === 'https://api.cloudflare.com/client/v4/graphql') {
+      const q = JSON.parse(init.body).query, acc = {};
+      if (q.includes('workersInvocationsAdaptive')) acc.workersInvocationsAdaptive = [
+        { sum: { requests: 3000, errors: 30, subrequests: 4000 }, quantiles: { cpuTimeP50: 2, cpuTimeP99: 6 }, dimensions: { datetimeHour: hourIso(now), scriptName: 'cloudgold', status: 'success' } },
+        { sum: { requests: 20, errors: 20, subrequests: 0 }, quantiles: { cpuTimeP50: 11, cpuTimeP99: 12 }, dimensions: { datetimeHour: hourIso(now - 7200), scriptName: 'cloudgold', status: 'exceededCpu' } }];
+      if (q.includes('d1AnalyticsAdaptiveGroups')) { acc.d1AnalyticsAdaptiveGroups = [{ sum: { readQueries: 1, writeQueries: 1, rowsRead: 100000, rowsWritten: 9000 }, dimensions: { date: new Date(now * 1000).toISOString().slice(0, 10), databaseId: 'db' } }]; acc.d1StorageAdaptiveGroups = []; }
+      if (q.includes('d1QueriesAdaptiveGroups')) acc.d1QueriesAdaptiveGroups = [{ sum: { rowsRead: 900, rowsWritten: 0, queryDurationMs: 10 }, avg: { queryDurationMs: 0.1 }, dimensions: { query: 'SELECT 1 FROM users' } }];
+      return j({ data: { viewer: { accounts: [acc] } }, errors: null });
+    }
+    if (url.includes('/deploy-worker.yml/runs')) return j({ workflow_runs: [{ run_number: 70, status: 'completed', conclusion: 'success', created_at: new Date((now - 600) * 1000).toISOString(), head_sha: 'ddddddd1' }] });
+    if (url.includes('/flutter-vpn.yml/runs')) return j({ workflow_runs: [] });
+    if (url.includes('/compare/ddddddd1...main')) return j({ ahead_by: 1, commits: [{ commit: { message: 'Merge pull request #85 from x/y' } }] });
+    if (url.startsWith('https://api.cloudflare.com/') || url.startsWith('https://api.github.com/')) return j({ success: false }, 403);
+    return realFetch(input, init);
+  };
+  try {
+    for (const tokenSet of [false, true]) {
+      if (tokenSet) { env.CF_ANALYTICS_TOKEN = TOKEN; env.CF_ACCOUNT_ID = 'b'.repeat(32); } else { delete env.CF_ANALYTICS_TOKEN; delete env.CF_ACCOUNT_ID; }
+      CF.clearCache();
+      for (const p of viewerReads) {
+        const r = await A('GET', p, V);
+        ok(r.status === 200 && !JSON.stringify(r.data).includes(TOKEN) && (!p.startsWith('/cf') || !persian(r.data)),
+          `viewer opens ${p} (token ${tokenSet ? 'set' : 'not set'}): ${r.status}, English codes only, never the token ${r.status !== 200 || persian(r.data) ? JSON.stringify(r.data).slice(0, 300) : ''}`);
+      }
+    }
+    for (const p of ['/reports', '/cf', '/net/server?key=kabc12345']) ok((await A('GET', p, S)).status === 403, `support cannot open ${p}`);
+    ok((await A('GET', '/reports/problem?fp=nope', T)).status === 404 && (await A('GET', '/net/server?key=../x', T)).status === 404, 'bad keys are a 404');
+
+    // what the dashboard draws
+    CF.clearCache();
+    const ov = (await A('GET', '/cf', T)).data;
+    ok(ov.token && ov.workers.hours.length === 24 && ov.workers.requests.used === 3020 && ov.workers.requests.limit === 100000 && ov.d1.rows_written.used === 9000
+      && ov.workers.last24.cpu_over === 20 && ov.workers.last24.status.exceededCpu === 20 && ov.reset_at - ov.day_start === 86400 && typeof ov.alerts === 'boolean',
+    'overview: quota per allowance with limit, 24 hourly buckets, CPU rejections, status breakdown, reset time: ' + JSON.stringify(ov).slice(0, 400));
+    ok(ov.workers.hours[23].requests === 3000 && ov.workers.hours[23].errors === 30, 'the last hourly bucket is this hour');
+    const hi = (await A('GET', '/cf/history', T)).data;
+    ok(hi.days.length === 7 && hi.days[6].today && hi.days[6].rows_written === 9000, 'history: 7 days, today last');
+    const dp = (await A('GET', '/cf/deploys', T)).data;
+    ok(dp.deploys[0].state === 'ok' && dp.behind.commits === 1 && dp.behind.prs[0] === 85, 'deploys: run state and the PRs merged but not deployed');
+    ok((await A('GET', '/cf/token', T)).data.works === true, 'token state: works, without the token');
+    ok((await A('GET', '/cf/queries', T)).data.read[0].query.includes('FROM users'), 'costliest queries');
+    env.CF_ANALYTICS_TOKEN = 'x'; CF.clearCache();
+    globalThis.fetch = async (input, init) => (String(typeof input === 'string' ? input : input.url).includes('graphql') ? new Response(JSON.stringify({ data: null, errors: [{ message: 'no such account' }] })) : realFetch(input, init));
+    const bad = (await A('GET', '/cf', T)).data;
+    ok(bad.workers.error.code === 'cf' && bad.workers.error.detail.includes('no such account') && !persian(bad), 'a Cloudflare error comes as a code with its own English message');
+
+    // health reports
+    const sm = (await A('GET', '/reports', T)).data;
+    ok(sm.prio[1].open7 >= 1 && sm.days.length === 7 && sm.days[6].p1 >= 4 && sm.modes.includes('off'), 'reports: open per priority, 7 columns, the modes');
+    const pr = (await A('GET', `/reports/problem?fp=${fp}`, T)).data;
+    ok(pr.state === 'open' && pr.crash === 'not_go' && pr.users[0].id === u.id && pr.models.includes('M2010J19CI') && pr.detail.reason === 5, 'one problem: crash reading code, users, phones, last report');
+    ok((await A('POST', '/action', V, { name: 'health.resolve', args: { fp } })).data.ok === false, 'a viewer cannot mark it handled');
+    const rs = await A('POST', '/action', T, { name: 'health.resolve', args: { fp } });
+    ok(rs.data.ok && (await A('GET', `/reports/problem?fp=${fp}`, T)).data.state === 'resolved' && rs.data.undoable, 'the owner marks it handled (with undo)');
+    const md = await A('POST', '/action', T, { name: 'health.mode', args: { mode: 'p2' } });
+    ok(md.data.ok && (await A('GET', '/reports', T)).data.mode === 'p2', 'the owner sets what the app sends');
+    await A('POST', '/action', T, { name: 'health.mode', args: { mode: 'all' } });
+
+    // sync now / retry / clear
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'sync_manual_at'").run();
+    ok((await A('POST', '/sync', V)).status === 403, 'a viewer cannot run a sync');
+    const sy = await A('POST', '/sync', T);
+    ok(sy.status === 200 && sy.data.ok === true && typeof sy.data.pushed === 'number', 'the owner runs one sync now: ' + JSON.stringify(sy.data));
+    ok((await A('POST', '/sync', T)).status === 429, 'a second sync within a minute is refused');
+    ok((await A('POST', '/action', T, { name: 'sync.retry', args: {} })).data.ok, 'retry stuck accounts from the Mini App');
+    ok((await A('POST', '/action', T, { name: 'cf.errors_clear', args: {} })).data.ok, 'clear the Worker error list from the Mini App');
+
+    // servers: tunnel / country marks, tunnel diagnostic
+    const pn = await env.DB.prepare('SELECT id FROM panels ORDER BY id LIMIT 1').first();
+    const sv = (await A('GET', `/panels/${pn.id}/servers`, T)).data;
+    ok(sv.servers.every((x) => 'tunnel' in x && 'named' in x && 'remark' in x), 'server list carries the tunnel mark, panel-name country and unknown-country remark');
+    const td = await A('GET', `/panels/${pn.id}/tunnel`, V);
+    ok(td.status === 200 && td.data.panel.id === pn.id && 'diag' in td.data && 'stored' in td.data, 'a viewer reads the tunnel diagnostic: ' + JSON.stringify(td.data).slice(0, 200));
+    ok((await A('POST', `/panels/${pn.id}/tunnel`, V)).status === 403, 'only the owner reads it again and stores it');
+  } finally {
+    globalThis.fetch = realFetch;
+    delete env.CF_ANALYTICS_TOKEN; delete env.CF_ACCOUNT_ID; CF.clearCache();
+    await env.DB.prepare("DELETE FROM admins WHERE tg_id IN ('920001', '920002')").run();
+  }
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
