@@ -402,6 +402,17 @@ void main() {
         backups: [samples['wireguard']!, samples['hysteria2']!],
       ),
     );
+    // Protect's Shield: ads, trackers and adult sites refused by name (the
+    // core must find both lists in the app's geosite.dat). The "pleat" key
+    // is the VPN service's, taken out before the core sees the config.
+    final shielded = jsonDecode(
+      xrayConfig(
+        samples['trojan']!,
+        localDirect: true,
+        shield: const Shield(level: 2, adult: true),
+      ),
+    ) as Map<String, dynamic>..remove(pleatKey);
+    File('$out/shield.json').writeAsStringSync(jsonEncode(shielded));
     // The tunnel with the app's own API port, and the bridge.
     const login = (user: 'u1', pass: 'p1');
     File('$out/tunnel_api.json').writeAsStringSync(

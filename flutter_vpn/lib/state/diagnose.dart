@@ -204,7 +204,7 @@ List<Finding> summarize(
       Finding(
         '${ok.length} of ${tested.length} exits work here',
         'Fastest now: ${best.label} (${best.title}) at ${best.measured} ms.'
-            '${smart ? ' Smart connect picks it for you.' : ' Turn on Smart connect in Protect and Pleat picks the fastest working exit, and moves on if it stops answering.'}',
+            '${smart ? ' Smart connect picks it for you.' : ' Turn on Smart connect in Home › Route and Pleat picks the fastest working exit, and moves on if it stops answering.'}',
         good: true,
       ),
     );
@@ -257,7 +257,7 @@ List<Finding> summarize(
       out.add(
         const Finding(
           'Faster local sites',
-          'Turn on Local sites direct in Protect: Iranian sites then skip the tunnel, so they load faster and don’t use your data.',
+          'Turn on Iranian sites in Home › Route › Split route: they then skip the tunnel, so they load faster and don’t use your data.',
         ),
       );
     }

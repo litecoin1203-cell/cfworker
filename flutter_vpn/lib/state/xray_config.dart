@@ -82,6 +82,12 @@ const _privateCidrs = [
 /// Xray setting: it rides along under [pleatKey], and the VPN service
 /// takes it out before the core sees the config.
 ///
+/// [shield]: Protect's Shield. Its blocks match the name an app asked for
+/// (the sniffed one), only for the apps' traffic (the socks inbound), so
+/// the start and connection checks are never touched; they need the geo
+/// files. [Shield.dns] is the resolver the tun hands to apps, which also
+/// rides under [pleatKey] for the VPN service.
+///
 /// [exitNote]: the exit's anonymous key and its protocols (backups too),
 /// e.g. "vless/reality/tcp + vmess/none/ws": also under [pleatKey], kept by
 /// the service so a crash report names the exit it happened on.
@@ -93,6 +99,7 @@ String xrayConfig(
   List<String> backups = const [],
   List<String> directSites = const [],
   List<String> bypassApps = const [],
+  Shield shield = Shield.off,
   ({String k, String p})? exitNote,
 }) {
   final proxy = outboundOf(link);
@@ -121,10 +128,14 @@ String xrayConfig(
   final blockQuic =
       localDirect ||
       [proxy, ...spares].any((o) => !udpNative.contains(o['protocol']));
+  final dns = shield.dns;
+  final blocked = shield.blockedSites;
   return jsonEncode({
-    if (!forTest && (bypassApps.isNotEmpty || exitNote != null))
+    if (!forTest &&
+        (bypassApps.isNotEmpty || exitNote != null || shield.filtersDns))
       pleatKey: {
         if (bypassApps.isNotEmpty) 'bypass': bypassApps,
+        if (shield.filtersDns) 'dns': dns,
         // the exit's anonymous key and protocols, so a crash report can say
         // which exit the core was carrying; never an address
         if (exitNote != null) 'exit': {'k': exitNote.k, 'p': exitNote.p},
@@ -207,6 +218,15 @@ String xrayConfig(
         ],
       'rules': [
         {'type': 'field', 'ip': _privateCidrs, 'outboundTag': 'direct'},
+        // Shield: ads, trackers and adult sites by name, before anything
+        // can send them direct (an Iranian ad network is still an ad).
+        if (!forTest && blocked.isNotEmpty)
+          {
+            'type': 'field',
+            'inboundTag': ['socks'],
+            'domain': blocked,
+            'outboundTag': 'block',
+          },
         if (blockQuic)
           {
             'type': 'field',
@@ -754,4 +774,43 @@ Object? _json(String? s) {
   } on FormatException {
     return null;
   }
+}
+
+/// Protect's Shield: what is kept from loading. Malware and phishing are
+/// refused by the resolver (Cloudflare's security and family resolvers
+/// answer 0.0.0.0 for them); ads, trackers and adult sites are also
+/// matched by name in the core, so an app with its own resolver can't
+/// reach them either. Blocked things never download, so they cost no
+/// plan data.
+class Shield {
+  const Shield({this.level = 0, this.adult = false, this.lists = true});
+
+  static const off = Shield();
+
+  /// 0 off, 1 safe (malware and phishing), 2 clean (safe + ads, trackers).
+  final int level;
+
+  /// Adult sites too (any level).
+  final bool adult;
+
+  /// The core has its place lists (geo files): the name rules need them.
+  final bool lists;
+
+  /// The resolvers the tun gives apps, through the exit.
+  List<String> get dns => adult
+      ? const ['1.1.1.3', '1.0.0.3']
+      : level >= 1
+      ? const ['1.1.1.2', '1.0.0.2']
+      : const ['1.1.1.1', '1.0.0.1'];
+
+  /// The resolver is one of Cloudflare's filtering ones.
+  bool get filtersDns => adult || level >= 1;
+
+  /// Name lists the core refuses for the apps' traffic.
+  List<String> get blockedSites => [
+    if (lists && level >= 2) 'geosite:category-ads-all',
+    if (lists && adult) 'geosite:category-porn',
+  ];
+
+  Shield withLists(bool on) => Shield(level: level, adult: adult, lists: on);
 }

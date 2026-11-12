@@ -54,6 +54,9 @@ class MainActivity : FlutterActivity() {
 
     /** Download tests run one by one: side by side they would split the line. */
     private val speeds = Executors.newSingleThreadExecutor()
+
+    /** Protect's Google view and privacy check: one at a time, each a few page loads. */
+    private val probes = Executors.newSingleThreadExecutor()
     private val main = Handler(Looper.getMainLooper())
 
     /** A screen the notification asked for, until the app reads it. */
@@ -238,6 +241,45 @@ class MainActivity : FlutterActivity() {
                             }
                             main.post { result.success(kbps) }
                         }
+                    }
+                    "google" -> {
+                        val config = call.argument<String>("config")
+                        if (config == null) {
+                            result.success(null)
+                            return@setMethodCallHandler
+                        }
+                        // What Google sees of one exit, as JSON text (Probe.google).
+                        probes.execute {
+                            val text = try {
+                                Engine.init(this)
+                                Probe.google(config).toString()
+                            } catch (e: Throwable) {
+                                null
+                            }
+                            main.post { result.success(text) }
+                        }
+                    }
+                    "leaks" -> {
+                        val config = call.argument<String>("config")
+                        val dns = call.argument<String>("dns") ?: "1.1.1.1"
+                        if (config == null) {
+                            result.success(null)
+                            return@setMethodCallHandler
+                        }
+                        // Protect's privacy check through the session's own config (Probe.leaks).
+                        probes.execute {
+                            val text = try {
+                                Engine.init(this)
+                                Probe.leaks(applicationContext, config, dns).toString()
+                            } catch (e: Throwable) {
+                                null
+                            }
+                            main.post { result.success(text) }
+                        }
+                    }
+                    "locationSettings" -> {
+                        startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                        result.success(null)
                     }
                     "metered" -> {
                         // Pleat is outside its own tunnel, so this is the real
