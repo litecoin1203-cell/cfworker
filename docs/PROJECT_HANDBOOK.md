@@ -809,6 +809,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
   PR #82 (1.2.46) Protect redesign.
 - PR #84 admin bot ☁️ Cloudflare monitoring; PR #85 the admin Mini App catches up with every bot screen added since
   #52, with the Cloudflare part as a visual dashboard.
+- PR #86 the Telegram sign-in / verify code message: "security code" card, code hidden under a spoiler, "didn't ask?" note.
 
 ---
 
@@ -900,6 +901,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 82 | 11-12 | Protect redesign: Shield, Privacy check, Google location (1.2.46) |
 | 84 | 11-12 | Admin bot ☁️ Cloudflare monitoring (Free-plan meters, errors, costly queries, deploys, hourly alert), Worker error log (0023), sync now / retry stuck |
 | 85 | 11-12 | Admin Mini App back to full bot parity: visual Cloudflare dashboard, app health reports, sync now / retry, tunnel diagnostic, server page, server on every carrier; bot screens drawn from shared data functions |
+| 86 | 11-12 | Telegram code message redesign (Worker only): code under a spoiler, 5-minute line, "didn't ask?" quote |
 
 ---
 

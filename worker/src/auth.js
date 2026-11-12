@@ -213,8 +213,9 @@ export async function tgIssueCode(env, nonce, from) {
       codes_sent = codes_sent + 1, attempts = 0 WHERE nonce_hash = ? AND used = 0 AND codes_sent < ? AND (tg_id IS NULL OR tg_id = ?)`,
     from.id, username, name, await codeHash(env, nonce, code), now + CODE_SEC, h, MAX_CODES, from.id);
   if (!r.meta.changes) return { text: expired };
-  if (row.link_user_id) return { text: `Your Pleat verification code:\n\n<code>${code}</code>\n\nType it in the app to verify this Telegram account. It works for 5 minutes. Never share this code with anyone.`, html: true };
-  return { text: `Your Pleat sign-in code:\n\n<code>${code}</code>\n\nType it in the app. It works for 5 minutes. Never share this code with anyone.`, html: true };
+  // the code sits under a spoiler (hidden until tapped); Telegram does not allow <code> inside <tg-spoiler>
+  if (row.link_user_id) return { text: `🛡 <b>Pleat verification code</b>\n\nTap to reveal:  <tg-spoiler>${code}</tg-spoiler>\n\nEnter it in the Pleat app within <b>5 minutes</b> to verify this Telegram account.\n\n<blockquote>Didn't ask for this? Ignore this message. Nothing changes without this code.</blockquote>`, html: true };
+  return { text: `🛡 <b>Pleat security code</b>\n\nTap to reveal:  <tg-spoiler>${code}</tg-spoiler>\n\nEnter it in the Pleat app within <b>5 minutes</b>.\n\n<blockquote>Didn't try to sign in? Ignore this message. Nobody can get into your account without this code.</blockquote>`, html: true };
 }
 
 // Telegram username follows the person: whoever had it before (they renamed on Telegram) loses it here.
