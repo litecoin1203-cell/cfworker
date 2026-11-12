@@ -157,6 +157,10 @@ object Health {
                         .putLong("go_crash_at", file.lastModified())
                         .commit()
                 }
+                // what the last process left, for a crash that had no Go line:
+                // written as it died (something else) or quiet (not a Go panic)
+                val tail = text.lineSequence().map { it.trim() }.lastOrNull { it.isNotEmpty() }.orEmpty()
+                ring(app, "se_files", JSONObject().put("at", file.lastModified()).put("tail", blank(tail).take(120)))
             }
         } catch (e: Exception) {
             // nothing to learn from it
@@ -172,9 +176,33 @@ object Health {
             } finally {
                 Os.close(fd)
             }
+            ring(app, "se_caps", JSONObject().put("at", System.currentTimeMillis()).put("cap", "ok"))
         } catch (e: Exception) {
             // stderr stays where it was; only Go's crash line is missed
+            ring(app, "se_caps", JSONObject().put("at", System.currentTimeMillis()).put("cap", "fail ${e.javaClass.simpleName}"))
         }
+    }
+
+    /**
+     * A few entries per process, newest last: after a crash Android may start
+     * Pleat's process again more than once before the app reads the report.
+     */
+    @Synchronized
+    private fun ring(app: Context, key: String, one: JSONObject) {
+        try {
+            val p = prefs(app)
+            val log = try { JSONArray(p.getString(key, "[]")) } catch (e: Exception) { JSONArray() }
+            log.put(one)
+            while (log.length() > STATE_LOG) log.remove(0)
+            p.edit().putString(key, log.toString()).commit()
+        } catch (e: Exception) {}
+    }
+
+    private fun entries(app: Context, key: String): List<JSONObject> = try {
+        val a = JSONArray(prefs(app).getString(key, "[]"))
+        List(a.length()) { a.optJSONObject(it) }.filterNotNull()
+    } catch (e: Exception) {
+        emptyList()
     }
 
     /** Called at each tunnel start: the file never grows past a megabyte. */
@@ -192,30 +220,51 @@ object Health {
      * starting, up (for how long) or stopping. [key] and [proto] only from
      * the app's own "pleat" note in the config; never an address.
      */
+    @Synchronized
     fun tunnelState(ctx: Context, op: String, key: String? = null, proto: String? = null) {
         try {
-            val e = prefs(ctx).edit().putString("t_op", op).putLong("t_at", System.currentTimeMillis())
-            if (key != null) e.putString("t_k", key.takeIf { KEY.matches(it) } ?: "")
-            if (proto != null) e.putString("t_p", proto.takeIf { PROTO.matches(it) } ?: "")
-            if (op == "up") e.putLong("t_up", System.currentTimeMillis())
-            e.apply()
+            val p = prefs(ctx)
+            val log = try { JSONArray(p.getString("t_log", "[]")) } catch (e: Exception) { JSONArray() }
+            val last = if (log.length() > 0) log.optJSONObject(log.length() - 1) else null
+            val now = System.currentTimeMillis()
+            val one = JSONObject()
+                .put("op", op)
+                .put("at", now)
+                .put("k", key?.takeIf { KEY.matches(it) } ?: if (key == null) last?.optString("k").orEmpty() else "")
+                .put("p", proto?.takeIf { PROTO.matches(it) } ?: if (proto == null) last?.optString("p").orEmpty() else "")
+                .put("up", if (op == "up") now else if (op == "starting") 0L else last?.optLong("up") ?: 0L)
+            log.put(one)
+            while (log.length() > STATE_LOG) log.remove(0)
+            p.edit().putString("t_log", log.toString()).apply()
         } catch (e: Exception) {}
     }
+
+    /**
+     * The last few changes, not just the newest: after a crash Android starts
+     * the VPN again (always-on, a sticky service) and that new "starting"
+     * lands before the app reads why the old process ended. The crash's own
+     * state is the last one noted before it.
+     */
+    private const val STATE_LOG = 8
 
     private val KEY = Regex("^[a-z0-9]{6,16}$")
     private val PROTO = Regex("^[a-z0-9/ ,+-]{1,80}$")
 
     /** What the tunnel was doing at [at] (an exit's time), into [d]. */
     private fun tunnelAt(app: Context, at: Long, d: MutableMap<String, Any>) {
-        val p = prefs(app)
-        val since = p.getLong("t_at", 0L)
-        if (since == 0L || since > at) return // nothing noted before it ended
-        val op = p.getString("t_op", "").orEmpty()
+        val log = try { JSONArray(prefs(app).getString("t_log", "[]")) } catch (e: Exception) { return }
+        var s: JSONObject? = null
+        for (i in 0 until log.length()) {
+            val o = log.optJSONObject(i) ?: continue
+            if (o.optLong("at") <= at) s = o
+        }
+        val st = s ?: return // nothing noted before it ended
+        val op = st.optString("op")
         if (op.isEmpty()) return
         d["op"] = op
-        p.getString("t_p", "")?.takeIf { it.isNotEmpty() }?.let { d["proto"] = it }
-        if (op != "off") p.getString("t_k", "")?.takeIf { it.isNotEmpty() }?.let { d["k"] = it }
-        val up = p.getLong("t_up", 0L)
+        st.optString("p").takeIf { it.isNotEmpty() }?.let { d["proto"] = it }
+        if (op != "off") st.optString("k").takeIf { it.isNotEmpty() }?.let { d["k"] = it }
+        val up = st.optLong("up")
         if (op == "up" && up in 1..at) d["up_s"] = ((at - up) / 1000).toInt()
     }
 
@@ -473,7 +522,22 @@ object Health {
         val go = p.getString("go_crash", null)
         val at = p.getLong("go_crash_at", 0L)
         // the stderr file was last written as the process died
-        if (go != null && Math.abs(at - info.timestamp) < 120_000L) d["go"] = go
+        if (go != null && Math.abs(at - info.timestamp) < 120_000L) {
+            d["go"] = go
+        } else {
+            // No Go line: say what stderr showed, so "not a Go panic" (Go
+            // always writes there first) is told apart from "not captured".
+            val t = info.timestamp
+            // the capture of the process that died: the last one started before it
+            val cap = entries(app, "se_caps").lastOrNull { it.optLong("at") <= t }?.optString("cap").orEmpty()
+            val written = entries(app, "se_files").lastOrNull { Math.abs(it.optLong("at") - t) < 120_000L }
+            d["stderr"] = when {
+                cap.isEmpty() -> "not captured"
+                cap != "ok" -> cap
+                written != null -> "written at the crash: " + written.optString("tail")
+                else -> "quiet at the crash"
+            }.take(160)
+        }
     }
 
     /** The main thread's first frames from an ANR report. */

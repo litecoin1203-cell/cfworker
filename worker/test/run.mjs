@@ -4793,6 +4793,7 @@ section('Pleat health reports: priorities, one row per problem, caps, scrubbing,
     'a re-read old crash with no details says Android kept none, not that the version sends too little');
   await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?').bind(JSON.stringify({ reason: 5, status: 6, sig: 'SIGABRT', tomb: 'none' }), crash.id).run();
   ok((await menu.renderScreen(env, `he:${crash.fp}`)).text.includes('none = اندروید چیزی نگه نداشته'), 'tomb state in words');
+  ok(H.crashGuess({ reason: 5, status: 6, stderr: 'quiet at the crash', tomb: 'none' }).includes('panic هسته‌ی Go نبوده'), 'a quiet stderr rules out a Go panic');
   ok(H.crashGuess({ abort: 'fdsan: attempted to close file descriptor 87' }).includes('fdsan') && H.crashGuess({ lib: 'libhev-socks5-tunnel.so' }).includes('hev')
     && H.crashGuess({ lib: 'libflutter.so' }).includes('Flutter'), 'the guess follows the abort message and the library');
   // scrub on its own
