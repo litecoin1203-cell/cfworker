@@ -747,6 +747,15 @@ void main() {
     expect(api.authedCalls, isEmpty);
   });
 
+  testWidgets('sign out makes the home-screen widget forget the last exit', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel();
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    await app.signOut();
+    expect(tunnel.forgot, isTrue);
+  });
+
   testWidgets('a full check during a quick run still tests every exit', (
     tester,
   ) async {

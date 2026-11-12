@@ -1660,7 +1660,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// called after this.
   Future<void> signOut() async {
     await _endTunnel(log: true);
-    await tunnel.forget();
+    // Not awaited: a platform call must never hold up signing out.
+    unawaited(tunnel.forget());
     await api.tokens.clear();
     _forgetAccount();
   }
