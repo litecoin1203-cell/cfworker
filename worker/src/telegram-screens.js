@@ -841,7 +841,7 @@ export async function panelServerList(env, id) {
   const known = new Set(servers.map((s) => s.key));
   const extra = [...new Set([...Object.keys(labels), ...[...ov.hidden].map((h) => h.split(':')[1])])].filter((k) => !known.has(k));
   const mark = (k) => `${ov.hidden.has(p.id + ':' + k) ? '🙈 ' : ''}${labels[k] ? '✏️ ' : ''}`;
-  const lines = servers.map((s) => `${mark(s.key)}${s.tunnel ? '🚇 ' : ''}${labels[s.key] || s.name} — ${s.type}${s.cc ? ` · ${s.cc}` : ` · ❓ کشور نامشخص${s.remark ? ` (نام در پنل: «${s.remark}»)` : ''}`}`);
+  const lines = servers.map((s) => `${mark(s.key)}${s.tunnel ? '🚇 ' : ''}${labels[s.key] || s.name} — ${s.type}${s.cc ? ` · ${s.cc}${s.named ? ` (📍 در پنل ${s.named}، خروجی واقعی ${s.cc})` : ''}` : ` · ❓ کشور نامشخص${s.remark ? ` (نام در پنل: «${s.remark}»)` : ''}`}`);
   const why = source === 'none' ? 'هنوز هیچ کاربر فعالی روی این پنل نیست، پس لیست سرورهایش خوانده نمی‌شود.'
     : source === 'error' ? 'پنل جواب نداد؛ لیست سرورها خوانده نشد.' : servers.length ? '' : 'این پنل کانفیگی نداد.';
   return {
@@ -900,6 +900,7 @@ export async function panelServer(env, id, key) {
   return {
     text: [crumb('🗂 پنل‌ها', `#${p.id}`, '🖥 سرور'), '', `🖥 ${o.label || (s ? s.name : 'سرور قدیمی')}`,
       s ? `نوع: ${s.type} · کشور: ${s.cc || '❓ نامشخص'}` : 'این سرور الان در لیست پنل نیست.',
+      ...(s && s.named ? [`📍 نامش در پنل ${s.named} است ولی خروجی واقعی‌اش (از IP) در ${s.cc} است؛ در اپ ${s.cc} نشان داده می‌شود.`] : []),
       ...(s && !s.cc ? [`نام در پنل: «${s.remark || '—'}»`, 'کشور از پرچم، نام کشور/شهر (انگلیسی یا فارسی) یا کد دوحرفی در نام پنل خوانده می‌شود. برای درست شدن: «✏️ نام در اپ» را با پرچم بده (مثلاً 🇩🇪 Germany Tunnel).'] : []),
       `در اپ: ${o.hidden ? '🙈 مخفی (کاربرها نمی‌بینندش)' : '👁 نمایش داده می‌شود'}`,
       `نام در اپ: ${o.label ? o.label : `خودکار${s ? ` (${s.name})` : ''}`}`, '',

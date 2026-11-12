@@ -188,10 +188,15 @@ function remarkOf(link) {
 // The country of one config: its panel remark first (flag, name or code), then a host label like "de1.".
 // Before this, only a flag emoji counted, so a remark such as "Germany Tunnel" or "آلمان" showed as an unknown country.
 // exits = {serverKey: cc} learned from Pleat (exitCountries): where the exit really comes out, by its IP.
+// A remark can be wrong: a config named "TR" may leave through a server in Germany (seen 2026-11-11: TR 1 and
+// TR 7 came out at Hetzner / dataforest in DE). Once the exit's country is confirmed (two reports in a row, none
+// pending against it), it wins over the remark, because that is where the user really appears.
+export const EXIT_CONFIRMED = 2;
 export function countryOfLink(link, exits = null) {
+  const seen = exits && exits[serverKey(link)];
+  if (seen && seen.cc && (seen.n || 0) >= EXIT_CONFIRMED && !seen.pending) return seen.cc;
   const cc = countryFromRemark(remarkOf(link));
   if (cc) return cc;
-  const seen = exits && exits[serverKey(link)];
   if (seen && seen.cc) return seen.cc;
   try { return countryFromHost(linkEndpoint(link)?.host || ''); } catch (e) { return ''; }
 }
@@ -367,7 +372,9 @@ export async function panelServers(env, panel) {
     const n = (perCc[cc || '?'] = (perCc[cc || '?'] || 0) + 1);
     const type = Object.keys(linkKinds([link]).counts)[0] || '?';
     // remark: what the panel calls it, shown to the admin only when no country was found (never an address)
-    servers.push({ key, name: cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`, type, cc, tunnel: isTunnelLink(rules, link), remark: cc ? '' : [...remarkOf(link).trim()].slice(0, 60).join('') });
+    servers.push({ key, name: cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`, type, cc, tunnel: isTunnelLink(rules, link), remark: cc ? '' : [...remarkOf(link).trim()].slice(0, 60).join(''),
+      // the panel's name says another country than where the exit really comes out (the real one is used)
+      named: ((r) => (r && cc && r !== cc ? r : ''))(countryFromRemark(remarkOf(link))) });
   }
   return { servers: servers.slice(0, 60), source: 'account' };
 }
