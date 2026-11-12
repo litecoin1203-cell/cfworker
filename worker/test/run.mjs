@@ -4796,6 +4796,12 @@ section('Pleat health reports: priorities, one row per problem, caps, scrubbing,
   await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?').bind(JSON.stringify({ reason: 5, status: 6, sig: 'SIGABRT', tomb: 'none' }), crash.id).run();
   ok((await menu.renderScreen(env, `he:${crash.fp}`)).text.includes('none = اندروید چیزی نگه نداشته'), 'tomb state in words');
   ok(H.crashGuess({ reason: 5, status: 6, stderr: 'quiet at the crash', tomb: 'none' }).includes('panic هسته‌ی Go نبوده'), 'a quiet stderr rules out a Go panic');
+  // "none answered": the servers by name, each with why it was left out
+  await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?')
+    .bind(JSON.stringify(H.cleanDetail({ route: 'auto', country: 'DE', tried: [{ k: kDE }], why: [{ k: kDE, c: 'refused' }, { k: kNL, c: 'timeout' }, { k: 'kunknown1', c: 'ok' }], age: 42 })), crash.id).run();
+  const named = (await menu.renderScreen(env, `he:${crash.fp}`)).text;
+  ok(named.includes('🇩🇪 DE1: سرور رد کرد') && named.includes('🇳🇱 NL2: بی‌جواب') && named.includes('kunknown1: جواب داد') && named.includes('امتحان‌شده: 🇩🇪 DE1'),
+    'a none-answered report names each server and why it was left out: ' + named);
   ok(H.crashGuess({ abort: 'fdsan: attempted to close file descriptor 87' }).includes('fdsan') && H.crashGuess({ lib: 'libhev-socks5-tunnel.so' }).includes('hev')
     && H.crashGuess({ lib: 'libflutter.so' }).includes('Flutter'), 'the guess follows the abort message and the library');
   // scrub on its own

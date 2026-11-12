@@ -491,7 +491,7 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.46+49** (`flutter_vpn/pubspec.yaml`), APK built and on `pleat-latest`.
+Version on main: **1.2.47+50** (`flutter_vpn/pubspec.yaml`), APK built and on `pleat-latest`.
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
 Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLibXrayLite tag **v26.7.5**
 (Xray 26.6.27 inside), hev-socks5-tunnel commit `67dfba56`.
@@ -1053,6 +1053,14 @@ One user (Xiaomi, Android 12) had 5 native SIGABRT crashes (reason 5 / status 6)
 connected. Root cause **unproven**: the old reports carried only the signal. #77/#79/#80 now capture tombstone,
 Go stderr and the tunnel state; waiting for a **fresh** crash report from 1.2.42+. Suggested diagnostic: try a
 non-DE country (e.g. NL) on that phone.
+
+### Open investigation: "No server connected · DE" (2026-11-12)
+17 reports in 12 h from the same phone model (two accounts), route Auto + country DE, 5 DE exits, sometimes
+nothing in "tried". Proven from the code: "tried" was emptied by the resync retry (it cleared the list before trying
+again), so an empty list did not mean nothing was tried. Earlier reports named two DE exits really tried and failed.
+1.2.47 keeps every exit tried in the connect, adds `why` (each route exit's last test result on that network:
+timeout / refused / tls / reality / ok / untested) and `age`, and the bot shows server names instead of keys. Which
+DE server fails and why is known only from the next report.
 
 ### Telegram Mini App (user stage 1 + full admin panel built, PRs #50–#52)
 - Stage 0 result (Ali's phone, 2026-11-08): with only Telegram's proxy the Mini App did **not** open; it opens with a

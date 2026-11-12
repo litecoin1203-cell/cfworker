@@ -49,7 +49,10 @@ const CAUSE_FA = {
   signaled: 'سیگنال سیستم', unclean: 'بسته‌شدن ناگهانی', permission: 'مجوز VPN', other: 'دیگر',
   download: 'دانلود', verify: 'بررسی فایل', install: 'نصب',
 };
+// a route exit's state in a "none answered" report, beside CAUSE_FA's failure causes
+const WHY_FA = { ok: 'جواب داد', untested: 'تست نشده' };
 const DETAIL_FA = {
+  why: 'وضعیت هر سرور', age: 'ثانیه از آخرین تست', exits: 'سرورهای این مسیر', country: 'کشور',
   proto: 'پروتکل', ms: 'زمان (ms)', s: 'ثانیه', err: 'خطای هسته', kind: 'نوع', tunnel: 'تانل وصل بود', trace: 'trace', reason: 'دلیل',
   min: 'دقیقه', rate: '٪ باتری در ساعت', drop: '٪ افت باتری', off: '٪ صفحه خاموش', opt: 'بهینه‌سازی باتری روشن', route: 'مسیر',
   tried: 'امتحان‌شده', bridge: 'پل', stage: 'مرحله', expected: 'کشور مورد انتظار', actual: 'کشور واقعی', misses: 'پینگ از دست رفته',
@@ -480,13 +483,18 @@ export async function problemData(env, fp) {
   const users = [...new Map(rows.map((r) => [r.user_id, r])).values()];
   let d = {};
   try { d = JSON.parse(top.detail || '{}'); } catch (e) { d = {}; }
+  // the detail's server keys (tried, why) by the names this user's app shows
+  let names = {};
+  if (JSON.stringify(d).includes('"k":')) {
+    try { names = JSON.parse((await first(env, 'SELECT keys FROM user_skeys WHERE user_id = ?', top.user_id))?.keys || '{}') || {}; } catch (e) { names = {}; }
+  }
   return {
     fp, gone: false, prio: top.prio, type: top.type, exit_key: top.exit_key || null, exit_name: top.exit_name || null, cause: top.cause || null,
     state: rows.some((r) => r.state === 'open') ? 'open' : rows.some((r) => r.state === 'muted') ? 'muted' : 'resolved',
     total: rows.reduce((a, r) => a + r.count, 0), first: Math.min(...rows.map((r) => r.first_at)), last: top.last_at,
     users: users.map((r) => ({ id: r.user_id, name: r.email || r.tg_id ? whoOf({ ...r, id: r.user_id }) : null })),
     apps: set((r) => r.app_ver), os: set((r) => r.os), models: set((r) => r.model), isps: set((r) => r.isp), nets: set((r) => r.net),
-    detail: d, crash: top.type === 'crash' && top.cause === 'native' ? crashKind(d) || null : null,
+    detail: d, names, crash: top.type === 'crash' && top.cause === 'native' ? crashKind(d) || null : null,
   };
 }
 
@@ -572,7 +580,17 @@ export async function screenEvent(env, fp) {
   if (e.gone) return { text: T() + '\n\nاین مورد در ۷ روز اخیر دیگر نیست (پاک شده).', kb: [nav('hl')] };
   const list = (a) => a.map(untrusted).join('، ') || '—';
   const d = e.detail;
-  const val = (v) => (Array.isArray(v) ? v.map((x) => (x && typeof x === 'object' ? Object.entries(x).map(([k, y]) => `${k}=${y}`).join(' ') : x)).join(' | ') : typeof v === 'boolean' ? (v ? 'بله' : 'نه') : v);
+  const names = e.names || {};
+  // {k: server key, c: cause} → "DE 3: بی‌جواب"; other objects as key=value
+  const item = (x) => {
+    if (!x || typeof x !== 'object') return x;
+    if (x.k) {
+      const rest = Object.entries(x).filter(([k]) => k !== 'k').map(([k, y]) => (k === 'c' ? CAUSE_FA[y] || WHY_FA[y] || y : `${k}=${y}`));
+      return [names[x.k] || x.k, ...rest].join(rest.length ? ': ' : '');
+    }
+    return Object.entries(x).map(([k, y]) => `${k}=${y}`).join(' ');
+  };
+  const val = (v) => (Array.isArray(v) ? v.map(item).join(' | ') : typeof v === 'boolean' ? (v ? 'بله' : 'نه') : v);
   const detail = Object.entries(d).map(([k, v]) => `• ${DETAIL_FA[k] || k}: ${untrusted(val(detailValue(k, v, d)))}`);
   const guess = e.crash ? CRASH_FA[e.crash] : '';
   const label = problemLabel(e);
