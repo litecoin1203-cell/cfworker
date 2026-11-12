@@ -2202,7 +2202,7 @@ section('sign up and log in with Telegram (6-digit code from the bot)');
   env.TELEGRAM_BOT_USERNAME = 'PleatBot';
   const tgUser = (id, username, first_name = 'Sara') => ({ id, is_bot: false, username, first_name });
   const openLink = (nonce, from) => tgWebhook({ message: { chat: { id: from.id, type: 'private' }, from, text: '/start L' + nonce } });
-  const lastCode = () => { const t = fakes.tg.messages[fakes.tg.messages.length - 1]; const m = /<code>(\d{6})<\/code>/.exec(t.text || ''); return m && m[1]; };
+  const lastCode = () => { const t = fakes.tg.messages[fakes.tg.messages.length - 1]; const m = /<tg-spoiler>(\d{6})<\/tg-spoiler>/.exec(t.text || ''); return m && m[1]; };
   const start = async () => (await call('POST', '/api/v1/auth/tg/start')).data;
 
   const s1 = await start();
@@ -2316,7 +2316,7 @@ section('profile: verify Telegram on an email account, backup email, package his
 {
   env.TELEGRAM_BOT_USERNAME = 'PleatBot';
   const openLink = (nonce, from) => tgWebhook({ message: { chat: { id: from.id, type: 'private' }, from, text: '/start L' + nonce } });
-  const lastCode = () => { const t = fakes.tg.messages[fakes.tg.messages.length - 1]; const m = /<code>(\d{6})<\/code>/.exec(t.text || ''); return m && m[1]; };
+  const lastCode = () => { const t = fakes.tg.messages[fakes.tg.messages.length - 1]; const m = /<tg-spoiler>(\d{6})<\/tg-spoiler>/.exec(t.text || ''); return m && m[1]; };
   const tok = await signup('profile@example.com', { device: 'prof-dev' });
   let me = (await call('GET', '/api/v1/me', { token: tok })).data;
   ok(me.telegram_verified === false && me.telegram === null && me.email === 'profile@example.com', 'email account starts without Telegram');
