@@ -32,11 +32,22 @@ object WidgetTrail {
             val start = f.bufferedReader().use { it.readLine() }?.toLongOrNull() ?: return
             val ms = System.currentTimeMillis() - start
             if (ms > LIVE_MS) return
-            f.appendText("${name.take(48).replace(Regex("[^A-Za-z0-9_:.+-]"), "_")}+$ms\n")
+            f.appendText("${name.take(120).replace(Regex("[^A-Za-z0-9_:.+-]"), "_")}+$ms\n")
         } catch (e: Exception) {}
     }
 
-    fun step(ctx: Context, name: String, e: Throwable) = step(ctx, "$name:${e.javaClass.simpleName}")
+    /**
+     * The error as short lowercase words ("unsatisfied_link_error:dlopen_failed"),
+     * which the health report's scrubber keeps: a long CamelCase class name
+     * reads to it like a key and was blanked.
+     */
+    fun step(ctx: Context, name: String, e: Throwable) {
+        val kind = e.javaClass.simpleName.replace(Regex("([a-z])([A-Z])"), "$1_$2").lowercase()
+        val why = (e.message ?: e.cause?.message).orEmpty().lowercase()
+            .replace(Regex("[^a-z0-9 ]"), " ").trim().split(Regex(" +"))
+            .filter { it.length in 1..14 }.take(8).joinToString("_")
+        step(ctx, "$name:$kind" + if (why.isNotEmpty()) ":$why" else "")
+    }
 
     /** Once, by the app: the last widget start, if it never came up. */
     @Synchronized

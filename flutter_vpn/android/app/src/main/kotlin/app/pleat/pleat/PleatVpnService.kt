@@ -61,6 +61,21 @@ class PleatVpnService : VpnService() {
         instance = this
         TunnelHub.app = applicationContext
         WidgetTrail.step(this, "svc_create")
+        // The same loading, on the main thread, the app does when it opens
+        // (MainActivity.engineError). Started from the widget with Pleat
+        // closed, the service was the first to load the core and the tun
+        // library, from its worker thread, and every start then failed
+        // between the core and the tun (widget trail: core, start_err).
+        // That this loading order is the cause is suspected, not proven;
+        // the trail now names the error either way.
+        try {
+            Class.forName("libv2ray.Libv2ray")
+            System.loadLibrary("hev-socks5-tunnel")
+            Engine.init(this)
+            WidgetTrail.step(this, "preload")
+        } catch (e: Throwable) {
+            WidgetTrail.step(this, "preload_err", e)
+        }
         Health.install(this)
     }
 
