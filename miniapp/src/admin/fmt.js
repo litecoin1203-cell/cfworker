@@ -75,6 +75,7 @@ const ACTION = {
   'panel.rollout': 'Panel share', 'panel.groups': 'Panel groups', 'panel.drain': 'Panel removed', 'panel.rename': 'Panel renamed', 'panel.enable': 'Panel enabled',
   'panel.add': 'Panel added', 'panel.cred': 'Panel login changed', 'panel.test': 'Panel tested',
   'health.resolve': 'App problem resolved / reopened', 'health.mute': 'App problem muted', 'health.mode': 'App health reports mode',
+  'cf.errors_clear': 'Worker error log cleared', 'sync.retry': 'Stuck panel accounts retried',
   'user.grant': 'Plan given', 'user.link': 'Panel account linked', 'user.reset_password': 'Password changed', 'user.add_days': 'Days added', 'user.add_gb': 'Data added',
   'user.reset_usage': 'Usage reset', 'user.pause': 'Pause / resume', 'user.end': 'Subscription ended', 'user.plan_name': 'Plan name changed', 'user.wallet': 'Wallet changed',
   'user.device_remove': 'Device removed', 'user.logout_all': 'Signed out everywhere', 'user.block': 'Block / unblock', 'user.unlink_tg': 'Telegram unlinked', 'user.unlink_panel': 'Panel account unlinked',
@@ -90,7 +91,7 @@ export const actionLabel = (a) => (ACTION[a] || (String(a).endsWith('.undo') ? `
 export const SETTING = {
   card_number: 'Card number', card_holder: 'Card holder', card_bank: 'Bank', usdt_rate_toman: 'Tether price (old)', referral_percent: 'Referral reward %',
   pg_group_ids: 'Panel groups', support_url: 'Support link', min_topup_toman: 'Minimum top-up', announcement: 'App announcement', app_api_bases: 'App domains',
-  app_bridges: 'App bridges', trial_data_gb: 'Trial data (GB, 0 = as plan)', trial_needs_telegram: 'Trial needs verified Telegram', usd_rate_toman: 'Manual dollar price (0 = auto)',
+  app_bridges: 'App bridges', trial_data_gb: 'Trial data (GB, 0 = as plan)', trial_needs_telegram: 'Trial needs verified Telegram', cf_alerts: 'Hourly Cloudflare alerts (1 = on)', usd_rate_toman: 'Manual dollar price (0 = auto)',
   coin_minutes: 'Crypto payment time (min)', card_unique: 'Unique card amount (1 on, 0 off)', card_auto: 'Card SMS confirm', sms_senders: 'Trusted bank senders',
   sms_key: 'SMS address key', coin_auto: 'Crypto confirm',
 };
