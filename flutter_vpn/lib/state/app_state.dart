@@ -1660,6 +1660,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// called after this.
   Future<void> signOut() async {
     await _endTunnel(log: true);
+    await tunnel.forget();
     await api.tokens.clear();
     _forgetAccount();
   }
@@ -2761,6 +2762,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   void _onTunnel(TunnelState s) {
     if (s == TunnelState.starting) {
       _started = true;
+      // Started outside the app (the home-screen widget, or Android's
+      // always-on): follow it, so Home shows Connecting, then Protected.
+      if (phase == Phase.idle || phase == Phase.dropped) {
+        _attempt++;
+        _tunnelHeld = true;
+        tunnelMessage = null;
+        progressNote = null;
+        phase = Phase.handshaking;
+        notifyListeners();
+      }
       return;
     }
     if (s != TunnelState.up && phase == Phase.handshaking && !_started) {
@@ -3016,6 +3027,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           if (lockAsk != null) lockAskSheet.value++;
         }
         if (screen == 'update') openUpdate();
+        // The home-screen widget couldn't start the tunnel by itself (no
+        // exit used yet, or Android's VPN permission to ask): connect here.
+        if (screen == 'connect') {
+          setTab(0);
+          if (signedIn && (phase == Phase.idle || phase == Phase.dropped)) {
+            unawaited(connect());
+          }
+        }
         if (screen == 'update_go') {
           openUpdate();
           unawaited(goUpdate());
@@ -3028,6 +3047,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       await _readNativeHealth();
     }
     notifyListeners();
+    // Always listening: the home-screen widget can start or stop the
+    // tunnel while the app is open in the background.
+    if (tunnelAvailable!) tunnel.listen(_onTunnel);
     if (await tunnel.current() != TunnelState.up) return;
     tunnel.listen(_onTunnel);
     _tunnelHeld = true;

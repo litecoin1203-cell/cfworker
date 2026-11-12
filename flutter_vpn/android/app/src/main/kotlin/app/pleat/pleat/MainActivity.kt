@@ -66,6 +66,7 @@ class MainActivity : FlutterActivity() {
     override fun configureFlutterEngine(engine: FlutterEngine) {
         super.configureFlutterEngine(engine)
         Health.install(this)
+        TunnelHub.app = applicationContext
         EventChannel(engine.dartExecutor.binaryMessenger, "pleat/tunnel/state")
             .setStreamHandler(TunnelHub.stream)
         pendingOpen = pendingOpen ?: intent?.getStringExtra(TunnelNote.EXTRA_OPEN)
@@ -126,6 +127,13 @@ class MainActivity : FlutterActivity() {
                             since = call.argument<Number>("since")?.toLong() ?: 0L,
                         )
                         PleatVpnService.noteChanged()
+                        StatusWidget.remember(this, TunnelNote.info.flag, TunnelNote.info.place)
+                        StatusWidget.refresh(this)
+                        result.success(null)
+                    }
+                    // Signed out: the widget can't start the old account's exit.
+                    "forget" -> {
+                        StatusWidget.forget(this)
                         result.success(null)
                     }
                     "pendingOpen" -> {

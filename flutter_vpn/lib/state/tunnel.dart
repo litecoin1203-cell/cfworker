@@ -76,6 +76,18 @@ class Tunnel {
     }
   }
 
+  /// Sign-out: the home-screen widget forgets the last exit, so it can't
+  /// start the old account's tunnel.
+  Future<void> forget() async {
+    try {
+      await _method.invokeMethod<void>('forget');
+    } on MissingPluginException {
+      // No native side.
+    } on PlatformException {
+      // An older native side.
+    }
+  }
+
   Future<void> stop() async {
     if (await available()) await _method.invokeMethod<void>('stop');
   }

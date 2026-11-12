@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The Pleat mark (mark.dart): back plane, front plane, and the fold where they overlap. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="100"
+    android:viewportHeight="100">
+    <path
+        android:fillColor="@color/widget_mark_back"
+        android:pathData="M36,10H61L35,90H10Z"
+        android:strokeColor="@color/widget_mark_back"
+        android:strokeLineJoin="round"
+        android:strokeWidth="5" />
+    <path
+        android:fillColor="@color/note_blue"
+        android:pathData="M48.2,24H75.2L57,80H30Z"
+        android:strokeColor="@color/note_blue"
+        android:strokeLineJoin="round"
+        android:strokeWidth="5" />
+    <path
+        android:fillColor="@color/widget_mark_fold"
+        android:pathData="M48.2,24H56.45L38.25,80H30Z" />
+</vector>

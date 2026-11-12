@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The home-screen widget (StatusWidget.kt): day set; values-night has the night set. -->
+<resources>
+    <color name="widget_surface">#FFFFFFFF</color>
+    <color name="widget_track">#FFE6EDF6</color>
+    <color name="widget_track_line">#FFD5DEEA</color>
+    <color name="widget_thumb_off">#FFC3CCD9</color>
+    <color name="widget_mark_back">#FF14284B</color>
+    <color name="widget_mark_fold">#FFA9D4F5</color>
+</resources>

@@ -59,6 +59,7 @@ class PleatVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        TunnelHub.app = applicationContext
         Health.install(this)
     }
 
@@ -114,7 +115,7 @@ class PleatVpnService : VpnService() {
     private var generation = 0
 
     /** Last config, kept out of backups, for Android's always-on start. */
-    private val lastConfig get() = File(noBackupFilesDir, "last-config.json")
+    private val lastConfig get() = StatusWidget.lastConfig(this)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
@@ -131,6 +132,21 @@ class PleatVpnService : VpnService() {
                 lastConfig.writeText(config)
                 begin(config)
             }
+            StatusWidget.ACTION_WIDGET_START -> {
+                // The home-screen widget: the last exit again, without the app.
+                // Started as a foreground service, so the card goes up first
+                // whatever happens next.
+                val config = lastConfig.takeIf { it.exists() }?.readText()
+                val allowed = try { VpnService.prepare(this) == null } catch (e: Exception) { false }
+                if (config == null || !allowed) {
+                    foreground()
+                    // "failed": the widget's next tap opens the app, which can ask.
+                    stopTunnel("failed")
+                    return START_NOT_STICKY
+                }
+                if (TunnelNote.info.place.isEmpty()) TunnelNote.info = StatusWidget.lastInfo(this)
+                begin(config)
+            }
             else -> {
                 // Started by the system (always-on VPN): reuse the last exit.
                 val config = lastConfig.takeIf { it.exists() }?.readText()
@@ -138,6 +154,7 @@ class PleatVpnService : VpnService() {
                     stopTunnel("down")
                     return START_NOT_STICKY
                 }
+                if (TunnelNote.info.place.isEmpty()) TunnelNote.info = StatusWidget.lastInfo(this)
                 begin(config)
             }
         }
@@ -147,6 +164,7 @@ class PleatVpnService : VpnService() {
     private fun begin(config: String) {
         up = false
         upSince = 0
+        StatusWidget.upSince = 0
         foreground()
         val gen = ++generation
         // for a crash report: which exit and protocol, and that it was starting
@@ -188,6 +206,7 @@ class PleatVpnService : VpnService() {
                 Health.tunnelUp(this)
                 Health.tunnelState(this, "up")
                 Health.sessionStart(this)
+                StatusWidget.upSince = System.currentTimeMillis()
                 TunnelHub.set("up")
                 main.post {
                     if (gen != generation) return@post
