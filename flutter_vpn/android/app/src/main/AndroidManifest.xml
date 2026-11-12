@@ -66,6 +66,25 @@
         <receiver
             android:name=".UpdateActions"
             android:exported="false" />
+        <!-- A widget tap without VPN consent: only Android's dialog shows, then the tunnel starts. -->
+        <activity
+            android:name=".WidgetConnect"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:taskAffinity="app.pleat.widget"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+        <!-- The home-screen "Status strip" widget: connect / disconnect in one tap. -->
+        <receiver
+            android:name=".StatusWidget"
+            android:exported="false"
+            android:label="@string/widget_strip_label">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/widget_strip_info" />
+        </receiver>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

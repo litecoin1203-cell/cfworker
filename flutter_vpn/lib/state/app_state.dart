@@ -1660,6 +1660,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// called after this.
   Future<void> signOut() async {
     await _endTunnel(log: true);
+    // Not awaited: a platform call must never hold up signing out.
+    unawaited(tunnel.forget());
     await api.tokens.clear();
     _forgetAccount();
   }
@@ -2629,6 +2631,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       tunnel.listen(_onTunnel);
       _started = false;
+      _external = false;
       _handshake?.cancel();
       // The service tries the exit for up to ~30 s; past that, say so
       // instead of spinning.
@@ -2656,6 +2659,41 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     } catch (_) {
       if (!stale()) _fail('The tunnel didn’t start.');
     }
+  }
+
+  /// The home-screen widget connects without the app: after a session
+  /// comes up, the next best exits (same Route choice) are handed to the
+  /// service, which tries them in turn when the last exit doesn't answer.
+  void _sendSpares() {
+    final cur = exit;
+    if (cur == null) return;
+    // Exits that answered last first; the rest after them, since the
+    // network may have changed since they were tested.
+    final next = routePool.where((e) => e.id != cur.id).toList()
+      ..sort((a, b) {
+        if (a.unreachable != b.unreachable) return a.unreachable ? 1 : -1;
+        return b.smartScore.compareTo(a.smartScore);
+      });
+    final spares = <({String config, String flag, String place})>[];
+    for (final e in next) {
+      if (spares.length == 3) break;
+      try {
+        spares.add((
+          config: xrayConfig(
+            e.server.link,
+            localDirect: localDirect && geoAvailable,
+            directSites: directSites,
+            bypassApps: bypassApps,
+            exitNote: (k: e.id, p: exitProtos(e.server.link, const [])),
+          ),
+          flag: e.flag,
+          place: e.title,
+        ));
+      } on FormatException {
+        // A protocol Pleat can't run: not a spare.
+      }
+    }
+    unawaited(tunnel.spares(spares));
   }
 
   /// Smart connect without a pinned exit: the next two best exits go into
@@ -2758,9 +2796,25 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   bool _started = false;
   Timer? _handshake;
 
+  /// The attempt running now was started outside the app (the widget):
+  /// the service tries its spare exits itself, so the app doesn't fail
+  /// over on top of it, and a final failure just goes back to idle.
+  bool _external = false;
+
   void _onTunnel(TunnelState s) {
     if (s == TunnelState.starting) {
       _started = true;
+      // Started outside the app (the home-screen widget, or Android's
+      // always-on): follow it, so Home shows Connecting, then Protected.
+      if (phase == Phase.idle || phase == Phase.dropped) {
+        _attempt++;
+        _external = true;
+        _tunnelHeld = true;
+        tunnelMessage = null;
+        progressNote = null;
+        phase = Phase.handshaking;
+        notifyListeners();
+      }
       return;
     }
     if (s != TunnelState.up && phase == Phase.handshaking && !_started) {
@@ -2774,7 +2828,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       flushReceipts();
       connectedAt = DateTime.now();
       exitAddress = null;
+      _external = false;
       _pushNote();
+      _sendSpares();
       unawaited(loadExitAddress());
       _noteUp();
       _misses = 0;
@@ -2816,6 +2872,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       connectedAt = null;
       tunnelMessage = 'The tunnel dropped.';
       _save();
+      notifyListeners();
+    } else if ((s == TunnelState.down || s == TunnelState.failed) &&
+        phase == Phase.handshaking &&
+        _external) {
+      // The widget's start: the service already tried its spares.
+      _external = false;
+      _tunnelHeld = false;
+      phase = Phase.idle;
       notifyListeners();
     } else if ((s == TunnelState.down || s == TunnelState.failed) &&
         phase == Phase.handshaking) {
@@ -3016,6 +3080,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           if (lockAsk != null) lockAskSheet.value++;
         }
         if (screen == 'update') openUpdate();
+        // The home-screen widget couldn't start the tunnel by itself (no
+        // exit used yet, or Android's VPN permission to ask): connect here.
+        if (screen == 'connect') {
+          setTab(0);
+          if (signedIn && (phase == Phase.idle || phase == Phase.dropped)) {
+            unawaited(connect());
+          }
+        }
         if (screen == 'update_go') {
           openUpdate();
           unawaited(goUpdate());
@@ -3028,6 +3100,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       await _readNativeHealth();
     }
     notifyListeners();
+    // Always listening: the home-screen widget can start or stop the
+    // tunnel while the app is open in the background.
+    if (tunnelAvailable!) tunnel.listen(_onTunnel);
     if (await tunnel.current() != TunnelState.up) return;
     tunnel.listen(_onTunnel);
     _tunnelHeld = true;

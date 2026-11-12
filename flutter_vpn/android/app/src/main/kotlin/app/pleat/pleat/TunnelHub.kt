@@ -1,5 +1,6 @@
 package app.pleat.pleat
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import io.flutter.plugin.common.EventChannel
@@ -16,9 +17,16 @@ object TunnelHub {
     private val main = Handler(Looper.getMainLooper())
     private var sink: EventChannel.EventSink? = null
 
+    /** For redrawing the home-screen widget; set by the service and the activity. */
+    @Volatile
+    var app: Context? = null
+
     fun set(next: String) {
         state = next
-        main.post { sink?.success(next) }
+        main.post {
+            sink?.success(next)
+            app?.let { StatusWidget.refresh(it) }
+        }
     }
 
     val stream = object : EventChannel.StreamHandler {

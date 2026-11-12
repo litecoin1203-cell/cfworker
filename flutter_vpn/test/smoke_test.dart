@@ -538,6 +538,40 @@ void main() {
     expect(app.recommended.map((e) => e.label), contains('DE 1'));
   });
 
+  testWidgets('the widget gets spare exits; its start is followed', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel();
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    final chosen = app.exits[1];
+    await app.connect(chosen.id);
+    tunnel.emit(TunnelState.up);
+    await tester.pump(PMotion.seal);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(app.phase, Phase.protected);
+    // Spares for a widget start: other exits, never the one in use.
+    expect(tunnel.spareList, isNotEmpty);
+    expect(tunnel.spareList.length, lessThanOrEqualTo(3));
+    for (final s in tunnel.spareList) {
+      expect(s.config, isNot(contains('de1.example.com')));
+    }
+    // Disconnect from the widget (or the notification).
+    tunnel.emit(TunnelState.off);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(app.phase, Phase.idle);
+    // The widget starts the tunnel with the app in the background.
+    final before = tunnel.started;
+    tunnel.emit(TunnelState.starting);
+    await tester.pump();
+    expect(app.phase, Phase.handshaking);
+    // Its exits all failed: back to idle; the app doesn't start others.
+    tunnel.emit(TunnelState.failed);
+    await tester.pump();
+    expect(app.phase, Phase.idle);
+    expect(tunnel.started, before);
+    await tester.pump(const Duration(seconds: 10));
+  });
+
   testWidgets('Protected only after the tunnel is up; a stopped plan drops', (
     tester,
   ) async {
@@ -745,6 +779,15 @@ void main() {
     expect(app.signedIn, isFalse);
     expect(app.me.value, isNull);
     expect(api.authedCalls, isEmpty);
+  });
+
+  testWidgets('sign out makes the home-screen widget forget the last exit', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel();
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    await app.signOut();
+    expect(tunnel.forgot, isTrue);
   });
 
   testWidgets('a full check during a quick run still tests every exit', (

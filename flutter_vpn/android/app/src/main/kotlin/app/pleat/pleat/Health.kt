@@ -85,6 +85,22 @@ object Health {
         startError = blank(t.message.orEmpty().ifEmpty { t.javaClass.simpleName }).take(200)
     }
 
+    /**
+     * Android refused to let the tunnel's service come to the front. Not a
+     * crash any more, but reported like one (crash · java) with its text,
+     * so the health report shows why a widget start did nothing.
+     */
+    fun startRefused(ctx: Context, e: Throwable) {
+        startFailed(e)
+        try {
+            val text = blank("start refused: ${e.javaClass.name}: ${e.message.orEmpty()}").take(600)
+            prefs(ctx.applicationContext).edit()
+                .putString("java_crash", text)
+                .putLong("java_crash_at", System.currentTimeMillis())
+                .apply()
+        } catch (x: Exception) {}
+    }
+
     /** The last start's failure, once. */
     fun takeStartError(): String? = startError.also { startError = null }
 
@@ -383,6 +399,8 @@ object Health {
                 tunnelStopped(app)
             }
         }
+        // a widget start that never came up: its steps and Android's raw exit records
+        WidgetTrail.collect(app, exits)
         if (javaCrash != null && !javaUsed) {
             exits.add(mapOf("t" to "crash", "c" to "java", "d" to mapOf("trace" to javaCrash)))
         }
