@@ -149,6 +149,9 @@ class PleatVpnService : VpnService() {
         upSince = 0
         foreground()
         val gen = ++generation
+        // for a crash report: which exit and protocol, and that it was starting
+        val note = exitNoteOf(config)
+        Health.tunnelState(this, "starting", note.first, note.second)
         // Said at once, so the app knows any later "down" or "failed" is
         // about this attempt.
         TunnelHub.set("starting")
@@ -183,6 +186,7 @@ class PleatVpnService : VpnService() {
             if (ok) {
                 // for the health reports: a marker of a running tunnel, and the session's battery
                 Health.tunnelUp(this)
+                Health.tunnelState(this, "up")
                 Health.sessionStart(this)
                 TunnelHub.set("up")
                 main.post {
@@ -203,6 +207,7 @@ class PleatVpnService : VpnService() {
     }
 
     private fun start(config: String) {
+        Health.trimStderr(this)
         // Apps the person sends past the VPN (Route > Split route): kept out
         // of the tun entirely, so they use the phone's own network and IP.
         val bypass = bypassOf(config)
@@ -279,6 +284,7 @@ class PleatVpnService : VpnService() {
               tcp-read-write-timeout: 300000
               udp-read-write-timeout: 60000
               log-level: error
+              log-file: /dev/null
             """.trimIndent() + "\n"
         )
         TProxyService.TProxyStartService(yaml.absolutePath, iface.fd)
@@ -312,6 +318,14 @@ class PleatVpnService : VpnService() {
         val abc = "abcdefghijkmnopqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789"
         val rnd = SecureRandom()
         return String(CharArray(n) { abc[rnd.nextInt(abc.length)] })
+    }
+
+    /** The exit's anonymous key and protocol under the config's "pleat" key, for the health reports. */
+    private fun exitNoteOf(config: String): Pair<String, String> = try {
+        val exit = JSONObject(config).optJSONObject("pleat")?.optJSONObject("exit")
+        Pair(exit?.optString("k").orEmpty(), exit?.optString("p").orEmpty())
+    } catch (e: Exception) {
+        Pair("", "")
     }
 
     /** Packages under the config's "pleat" key: the apps that skip the VPN. */
@@ -364,8 +378,11 @@ class PleatVpnService : VpnService() {
 
     private fun stopTunnel(state: String) {
         val gen = ++generation
+        Health.tunnelState(this, "stopping")
         ops.execute {
             teardown()
+            // a newer start already noted "starting"
+            if (gen == generation) Health.tunnelState(this, "off")
             Health.tunnelStopped(this)
             Health.sessionEnd(this)
             // A newer start may have come in meanwhile; it owns the service now.
@@ -394,8 +411,10 @@ class PleatVpnService : VpnService() {
         instance = null
         generation++
         val wasUp = TunnelHub.state == "up"
+        Health.tunnelState(this, "stopping")
         ops.execute {
             teardown()
+            Health.tunnelState(this, "off")
             Health.tunnelStopped(this)
             Health.sessionEnd(this)
             // Killed while running. Otherwise the stop has already said

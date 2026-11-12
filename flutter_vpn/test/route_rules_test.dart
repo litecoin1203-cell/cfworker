@@ -101,6 +101,24 @@ void main() {
         ),
       );
       expect((probe as Map).containsKey(pleatKey), isFalse);
+      // the exit's key and protocols ride along for the crash reports, never in a test core
+      final noted = jsonDecode(
+        xrayConfig(
+          'vless://u@nl1.example.com:443?type=tcp#x',
+          exitNote: (k: 'abc123def4', p: 'vless/tcp'),
+        ),
+      );
+      expect((noted as Map)[pleatKey], {
+        'exit': {'k': 'abc123def4', 'p': 'vless/tcp'},
+      });
+      final noTest = jsonDecode(
+        xrayConfig(
+          'vless://u@nl1.example.com:443?type=tcp#x',
+          forTest: true,
+          exitNote: (k: 'abc123def4', p: 'vless/tcp'),
+        ),
+      );
+      expect((noTest as Map).containsKey(pleatKey), isFalse);
     });
   });
 
@@ -339,7 +357,9 @@ void main() {
     final nl = app.exits.firstWhere((e) => e.label == 'NL 1');
     await app.connect(nl.id);
     expect(tunnel.started, contains('domain:mybank.com'));
-    expect(tunnel.started, contains('"pleat":{"bypass":["ir.mci.ecare"]}'));
+    expect((jsonDecode(tunnel.started!) as Map)['pleat']['bypass'], [
+      'ir.mci.ecare',
+    ]);
     // Android's kill switch would cut those apps off: Route says so
     tunnel.guard = (alwaysOn: true, lockdown: true);
     tunnel.emit(TunnelState.up);

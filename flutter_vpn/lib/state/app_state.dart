@@ -332,12 +332,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         final d = x['d'] is Map
             ? (x['d'] as Map).cast<String, Object?>()
             : <String, Object?>{};
-        health.record(
-          '${x['t']}',
-          k: d['tunnel'] == true ? (exitId ?? '') : '',
-          c: '${x['c'] ?? ''}',
-          d: d,
-        );
+        // the exit the service noted before the crash; else (an older
+        // report) the one picked now, when the tunnel was running
+        final noted = d.remove('k');
+        final k = noted is String && noted.isNotEmpty
+            ? noted
+            : d['tunnel'] == true && d['earlier'] != true
+            ? (exitId ?? '')
+            : '';
+        health.record('${x['t']}', k: k, c: '${x['c'] ?? ''}', d: d);
       }
     }
     final battery = h['battery'];
@@ -2599,13 +2602,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       geoAvailable = await tunnel.hasGeo();
       final String config;
       try {
+        final backups = _backupsFor(target);
         config = xrayConfig(
           target.server.link,
           localDirect: localDirect && geoAvailable,
           api: _detours?.login,
-          backups: _backupsFor(target),
+          backups: backups,
           directSites: directSites,
           bypassApps: bypassApps,
+          exitNote: (k: target.id, p: exitProtos(target.server.link, backups)),
         );
       } on FormatException catch (x) {
         health.record(

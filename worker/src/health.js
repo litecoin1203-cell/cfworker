@@ -26,7 +26,7 @@ export const TYPES = {
 const SERVER_ONLY = new Set(['loc_mismatch', 'exit_iran']);
 export const LIMITS = {
   batch: 20, newRows: 25, writes: 120, p1Rows: 15, gapMs: 9 * 60 * 1000, p1GapMs: 50 * 1000,
-  alertGap: 6 * 3600, alertsPerDay: 20, keepDays: 14, resolvedDays: 3, detailBytes: 600,
+  alertGap: 6 * 3600, alertsPerDay: 20, keepDays: 14, resolvedDays: 3, detailBytes: 1000,
 };
 export const MODES = ['all', 'p2', 'off'];
 const KEY_RE = /^[a-z0-9]{6,16}$/;
@@ -53,8 +53,43 @@ const DETAIL_FA = {
   proto: 'پروتکل', ms: 'زمان (ms)', s: 'ثانیه', err: 'خطای هسته', kind: 'نوع', tunnel: 'تانل وصل بود', trace: 'trace', reason: 'دلیل',
   min: 'دقیقه', rate: '٪ باتری در ساعت', drop: '٪ افت باتری', off: '٪ صفحه خاموش', opt: 'بهینه‌سازی باتری روشن', route: 'مسیر',
   tried: 'امتحان‌شده', bridge: 'پل', stage: 'مرحله', expected: 'کشور مورد انتظار', actual: 'کشور واقعی', misses: 'پینگ از دست رفته',
-  sessions: 'جلسه', ok: 'موفق', fail: 'ناموفق', minutes: 'دقیقه‌ی وصل', moved: 'شبکه عوض شد', status: 'کد', what: 'چه چیزی',
+  sessions: 'جلسه', ok: 'موفق', fail: 'ناموفق', minutes: 'دقیقه‌ی وصل', moved: 'شبکه عوض شد', status: 'کد', what: 'توضیح اندروید',
+  // a native crash (Pleat 1.2.38+): what the crash itself said, and what the tunnel was doing
+  sig: 'سیگنال', go: 'panic هسته (Go)', abort: 'پیام abort', cause: 'علت', thread: 'رشته (thread)', lib: 'کتابخانه', frames: 'فریم‌ها',
+  op: 'تانل در حال', up_s: 'ثانیه وصل بود', pss: 'حافظه‌ی اپ (MB)', earlier: 'کرش قبلی، دوباره خوانده شد',
 };
+// ApplicationExitInfo.REASON_* (Android 11+): why Android says the process ended
+const EXIT_REASON_FA = {
+  0: 'نامشخص', 1: 'خود اپ بست', 2: 'سیگنال سیستم', 3: 'کمبود حافظه (LMK)', 4: 'کرش اپ (Java/Kotlin)', 5: 'کرش native (هسته/کتابخانه‌ی C/Go)',
+  6: 'هنگ (ANR)', 7: 'شروع ناموفق', 8: 'تغییر مجوز', 9: 'مصرف بیش از حد', 10: 'کاربر بست', 11: 'کاربر متوقف کرد', 12: 'وابستگی مرد',
+  13: 'دیگر', 14: 'فریزر', 15: 'تغییر بسته', 16: 'به‌روزرسانی اپ',
+};
+const SIGNAL_FA = {
+  6: 'SIGABRT — abort عمدی (panic هسته‌ی Go، یا fdsan/libc)', 11: 'SIGSEGV — دسترسی نامعتبر به حافظه', 7: 'SIGBUS — خطای حافظه',
+  4: 'SIGILL — دستور نامعتبر', 5: 'SIGTRAP — توقف (assert/trap)', 8: 'SIGFPE — خطای محاسبه', 9: 'SIGKILL — کشته شد', 31: 'SIGSYS — syscall ممنوع',
+};
+const OP_FA = { starting: 'وصل‌شدن', up: 'وصل', stopping: 'قطع‌کردن', off: 'خاموش' };
+// a value in words where the phone sends a number or a code word
+function detailValue(k, v, d) {
+  if (k === 'reason' && EXIT_REASON_FA[v] !== undefined) return `${v} = ${EXIT_REASON_FA[v]}`;
+  if (k === 'status' && d.reason === 5 && SIGNAL_FA[v]) return `${v} = ${SIGNAL_FA[v]}`;
+  if (k === 'status' && d.reason === 2 && SIGNAL_FA[v]) return `${v} = ${SIGNAL_FA[v].split(' — ')[0]}`;
+  if (k === 'op' && OP_FA[v]) return OP_FA[v];
+  return v;
+}
+// A native crash in one line of plain words, from what the phone sent. Before 1.2.38 only the signal is known.
+export function crashGuess(d) {
+  const abort = String(d.abort || '');
+  if (d.go) return 'هسته‌ی Xray (کد Go) panic کرد؛ متنش در «panic هسته» است. ربطش به سرور/پروتکل را از «پروتکل» ببین.';
+  if (/^fdsan/i.test(abort)) return 'یک fd دوبار بسته شد (fdsan) — باگ سمت اپ در بستن tun/سوکت، نه سرور.';
+  if (/libhev/.test(d.lib || '')) return 'کرش در لایه‌ی تانل (hev-socks5-tunnel)، نه هسته‌ی Xray.';
+  if (/libgojni/.test(d.lib || '')) return 'کرش در هسته‌ی Xray (کتابخانه‌ی Go).';
+  if (/libflutter|libapp/.test(d.lib || '')) return 'کرش در موتور نمایش اپ (Flutter)، نه هسته یا سرور.';
+  if (abort) return 'کتابخانه‌ی C خودش abort کرد؛ «پیام abort» علت را می‌گوید.';
+  if (d.reason === 5 && d.status === 6) return 'abort عمدی: یا panic هسته‌ی Go (Xray)، یا fdsan/libc، یا موتور Flutter. این نسخه بیش از این نفرستاده؛ از Pleat 1.2.38 متن panic، کتابخانه و پروتکل هم می‌آید.';
+  if (d.reason === 5 && d.status === 11) return 'دسترسی نامعتبر به حافظه در کد native (C)؛ کد Go چنین خطایی را به panic و SIGABRT تبدیل می‌کند.';
+  return '';
+}
 
 // the same 8 hex for the same problem on every phone, so the bot can group them
 export function fingerprint(type, k, c) {
@@ -66,6 +101,18 @@ export function fingerprint(type, k, c) {
 // Package names that look like domains but are code (a trace frame), and file endings ("xray_config.dart").
 const CODE_PREFIX = /^(java|javax|android|androidx|kotlin|kotlinx|dalvik|io\.flutter|app\.pleat|libv2ray|go|com\.android|com\.google\.android|dart|org\.json)\./i;
 const FILE_EXT = /\.(dart|kt|java|so|go|c|cc|h|js)$/i;
+
+// A native crash's library and function names: links, ids, e-mails and IPs go, but "runtime.raise" or a long C
+// function name is neither a host nor a key and stays. Same rule as the app's scrubCode().
+export function scrubCode(v, max = 400) {
+  let s = String(v ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ');
+  s = s
+    .replace(/\b[a-z][a-z0-9+.-]{1,15}:\/\/\S+/gi, '<link>')
+    .replace(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, '<id>')
+    .replace(/[\w.+-]+@[\w-]+(\.[\w-]+)+/g, '<email>')
+    .replace(/\b\d{1,3}(\.\d{1,3}){3}\b/g, '<ip>');
+  return s.replace(/\s+/g, ' ').trim().slice(0, max);
+}
 
 // Takes out anything that could name a server, an account or a person. Kept: words, numbers, code names.
 export function scrub(v, max = 160) {
@@ -103,11 +150,15 @@ export function cleanDetail(d) {
     if (!k) continue;
     if (typeof v === 'number' && Number.isFinite(v)) out[k] = Math.round(v * 100) / 100;
     else if (typeof v === 'boolean') out[k] = v;
-    else if (typeof v === 'string') { const t = scrub(v, k === 'trace' ? 400 : 160); if (t) out[k] = t; }
+    else if (typeof v === 'string') {
+      const t = k === 'frames' ? scrubCode(v, 400) : scrub(v, k === 'trace' ? 400 : k === 'go' ? 300 : 160);
+      if (t) out[k] = t;
+    }
     else if (Array.isArray(v)) out[k] = v.slice(0, 6).map((x) => (x && typeof x === 'object' ? cleanFlat(x) : scrub(x, 32)));
   }
   while (bytes(JSON.stringify(out)) > LIMITS.detailBytes) {
     if (typeof out.trace === 'string' && out.trace.length > 40) { out.trace = out.trace.slice(0, Math.floor(out.trace.length * 0.6)); continue; }
+    if (typeof out.frames === 'string' && out.frames.length > 40) { out.frames = out.frames.slice(0, Math.floor(out.frames.length * 0.6)); continue; }
     const keys = Object.keys(out);
     if (!keys.length) break;
     delete out[keys[keys.length - 1]];
@@ -427,7 +478,8 @@ export async function screenEvent(env, fp) {
   let d = {};
   try { d = JSON.parse(top.detail || '{}'); } catch (e) { d = {}; }
   const val = (v) => (Array.isArray(v) ? v.map((x) => (x && typeof x === 'object' ? Object.entries(x).map(([k, y]) => `${k}=${y}`).join(' ') : x)).join(' | ') : typeof v === 'boolean' ? (v ? 'بله' : 'نه') : v);
-  const detail = Object.entries(d).map(([k, v]) => `• ${DETAIL_FA[k] || k}: ${untrusted(val(v))}`);
+  const detail = Object.entries(d).map(([k, v]) => `• ${DETAIL_FA[k] || k}: ${untrusted(val(detailValue(k, v, d)))}`);
+  const guess = top.type === 'crash' && top.cause === 'native' ? crashGuess(d) : '';
   const state = rows.some((r) => r.state === 'open') ? 'open' : rows.some((r) => r.state === 'muted') ? 'muted' : 'resolved';
   const lines = [T(PRIO_FA[top.prio], problemLabel(top)), '',
     `${PRIO_FA[top.prio]} — ${problemLabel(top)}`,
@@ -436,7 +488,8 @@ export async function screenEvent(env, fp) {
     `👥 کاربرها: ${users.slice(0, 5).map((r) => untrusted(r.email || r.tg_id ? whoOf({ ...r, id: r.user_id }) : '#' + r.user_id)).join('، ')}${users.length > 5 ? ' …' : ''}`,
     `📲 نسخه: ${set((r) => r.app_ver)}`, `🤖 اندروید: ${set((r) => r.os)}`, `📱 گوشی: ${set((r) => r.model)}`,
     `📶 شبکه: ${set((r) => r.isp)}${rows.some((r) => r.net) ? ` (${set((r) => ({ wifi: 'وای‌فای', cell: 'دیتا', other: 'دیگر' })[r.net])})` : ''}`,
-    ...(detail.length ? ['', 'آخرین گزارش:', ...detail] : [])];
+    ...(detail.length ? ['', 'آخرین گزارش:', ...detail] : []),
+    ...(guess ? ['', `🧭 برداشت: ${untrusted(guess)}`] : [])];
   const kb = [];
   if (state === 'open') kb.push([b('✅ رسیدگی شد', `m:her:${fp}`), b('🔇 بی‌صدا ۷ روز', `m:hem:${fp}:1`)]);
   else if (state === 'muted') kb.push([b('🔔 دوباره نشان بده', `m:hem:${fp}:0`)]);
