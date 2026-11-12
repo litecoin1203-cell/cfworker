@@ -1943,7 +1943,13 @@ section('the exit\'s real country is learned from /me/ip?k= and fills servers wh
   ok((await exitCountries(env))[k].cc === 'NL', 'two in a row do');
   await ask('FR', 'BAD KEY');
   ok(Object.keys(await exitCountries(env)).length === 1, 'a malformed key is ignored');
-  ok(countryOfLink('vless://u@x.example.org:443#%F0%9F%87%AB%F0%9F%87%AE%20Fast', { [serverKey('vless://u@x.example.org:443#a')]: { cc: 'DE' } }) === 'FI', 'a remark that names a country still wins');
+  const tr = 'vless://u@x.example.org:443#%F0%9F%87%B9%F0%9F%87%B7%20TR%201';
+  const kx = serverKey(tr);
+  ok(countryOfLink(tr, { [kx]: { cc: 'DE', n: 1 } }) === 'TR', 'one report does not overrule the remark');
+  ok(countryOfLink(tr, { [kx]: { cc: 'DE', n: 2 } }) === 'DE', 'a confirmed exit country overrules a wrong remark (TR 1 that leaves in Germany)');
+  ok(countryOfLink(tr, { [kx]: { cc: 'DE', n: 3, pending: 'TR' } }) === 'TR', 'not while a different answer is pending');
+  const named = unify([tr], {}, null, { [kx]: { cc: 'DE', n: 2 } }).map((l) => decodeURIComponent(l.split('#')[1]));
+  ok(named[0] === '🇩🇪 DE 1', 'the app sees it as DE: ' + named[0]);
   await env.DB.prepare("DELETE FROM settings WHERE key = 'server_exit_cc'").run();
 }
 
