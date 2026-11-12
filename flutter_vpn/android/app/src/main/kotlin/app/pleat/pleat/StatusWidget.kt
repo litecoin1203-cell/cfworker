@@ -6,8 +6,6 @@ import android.appwidget.AppWidgetProvider
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
-import android.net.VpnService
-import android.os.Build
 import android.os.SystemClock
 import android.view.View
 import android.widget.RemoteViews
@@ -20,11 +18,11 @@ import org.json.JSONObject
  * timer, and a switch. One tap connects or disconnects without opening
  * the app.
  *
- * Connect never opens the app. The service starts straight from the
- * widget with the exit that last worked (the same file Android's always-on
+ * Connect never opens the app. An invisible activity ([WidgetConnect])
+ * starts the service with the exit that last worked (the same file Android's always-on
  * start uses), and when that exit doesn't answer it tries the spare exits
  * the app handed over after its last session, one by one. Without
- * Android's VPN consent, [WidgetConnect] shows only Android's own dialog.
+ * Android's VPN consent, only Android's own dialog shows.
  * Only before the very first connect ever (no exit known yet) does the
  * tap open the app.
  *
@@ -123,19 +121,16 @@ class StatusWidget : AppWidgetProvider() {
         /** An exit to start without the app. */
         private fun hasExit(context: Context) = lastConfig(context).exists()
 
-        /** Android's VPN consent is in hand, so the service can start directly. */
-        private fun consented(context: Context): Boolean = try {
-            VpnService.prepare(context) == null
-        } catch (e: Exception) {
-            false
-        }
-
-        /** The tap that connects: never the app, once an exit is known. */
-        private fun connect(context: Context): PendingIntent = when {
-            !hasExit(context) -> openApp(context)
-            consented(context) -> start(context)
-            else -> askConsent(context)
-        }
+        /**
+         * The tap that connects: never the app, once an exit is known. It
+         * goes through [WidgetConnect], an invisible activity: a tap may
+         * always start an activity, and an activity in front may always
+         * start the VPN service. A foreground service started straight from
+         * a widget can be refused while Pleat isn't running (Android 12+
+         * rules, MIUI's own), and that refusal ended Pleat.
+         */
+        private fun connect(context: Context): PendingIntent =
+            if (hasExit(context)) viaActivity(context) else openApp(context)
 
         private fun views(context: Context): RemoteViews {
             val v = RemoteViews(context.packageName, R.layout.widget_strip)
@@ -201,24 +196,14 @@ class StatusWidget : AppWidgetProvider() {
 
         private const val FLAGS = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
 
-        private fun start(context: Context): PendingIntent {
-            val i = Intent(context, PleatVpnService::class.java).setAction(ACTION_WIDGET_START)
-            // A tap on a widget may start a foreground service from the background.
-            return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                PendingIntent.getForegroundService(context, 40, i, FLAGS)
-            } else {
-                PendingIntent.getService(context, 40, i, FLAGS)
-            }
-        }
-
         private fun disconnect(context: Context): PendingIntent = PendingIntent.getService(
             context, 41,
             Intent(context, PleatVpnService::class.java).setAction(PleatVpnService.ACTION_DISCONNECT),
             FLAGS
         )
 
-        /** Only Android's VPN consent dialog, over the home screen; then the start. */
-        private fun askConsent(context: Context): PendingIntent = PendingIntent.getActivity(
+        /** Invisible; Android's VPN consent dialog only if it is needed; then the start. */
+        private fun viaActivity(context: Context): PendingIntent = PendingIntent.getActivity(
             context, 43,
             Intent(context, WidgetConnect::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION),

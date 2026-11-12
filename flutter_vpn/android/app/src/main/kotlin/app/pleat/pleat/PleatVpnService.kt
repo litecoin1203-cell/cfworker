@@ -139,7 +139,7 @@ class PleatVpnService : VpnService() {
                 val config = lastConfig.takeIf { it.exists() }?.readText()
                 val allowed = try { VpnService.prepare(this) == null } catch (e: Exception) { false }
                 if (config == null || !allowed) {
-                    foreground()
+                    if (!foreground()) return START_NOT_STICKY
                     // "failed": the widget's next tap opens the app, which can ask.
                     stopTunnel("failed")
                     return START_NOT_STICKY
@@ -168,7 +168,7 @@ class PleatVpnService : VpnService() {
         up = false
         upSince = 0
         StatusWidget.upSince = 0
-        foreground()
+        if (!foreground()) return
         val gen = ++generation
         // for a crash report: which exit and protocol, and that it was starting
         val note = exitNoteOf(config)
@@ -471,12 +471,25 @@ class PleatVpnService : VpnService() {
         super.onDestroy()
     }
 
-    private fun foreground() {
+    /**
+     * False when Android refuses the foreground start (Android 12+ from the
+     * background; some phones' own rules): the start is dropped and noted
+     * for the health report, instead of the refusal ending Pleat.
+     */
+    private fun foreground(): Boolean {
         val note = TunnelNote.build(this, up, upSince)
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(TunnelNote.ID, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(TunnelNote.ID, note)
+        return try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(TunnelNote.ID, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(TunnelNote.ID, note)
+            }
+            true
+        } catch (e: Exception) {
+            Health.startRefused(this, e)
+            TunnelHub.set("failed")
+            stopSelf()
+            false
         }
     }
 
