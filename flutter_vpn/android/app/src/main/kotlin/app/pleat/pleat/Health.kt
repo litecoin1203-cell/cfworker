@@ -438,18 +438,25 @@ object Health {
     private fun nativeCrash(app: Context, info: ApplicationExitInfo, d: MutableMap<String, Any>) {
         CrashNotes.SIGNALS[info.status]?.let { d["sig"] = it }
         if (Build.VERSION.SDK_INT >= 31) {
+            // "tomb" says what Android gave, so a report without details tells
+            // "Android kept no tombstone" apart from "Pleat could not read it"
             try {
-                info.traceInputStream?.use { input ->
+                val input = info.traceInputStream
+                if (input == null) {
+                    d["tomb"] = "none"
+                } else input.use {
                     // usually well under 2 MB; a bigger one is read as far as
                     // 4 MB, and the signal and abort message come first
                     val bytes = ByteArray(4 shl 20)
                     var n = 0
                     while (n < bytes.size) {
-                        val r = input.read(bytes, n, bytes.size - n)
+                        val r = it.read(bytes, n, bytes.size - n)
                         if (r < 0) break
                         n += r
                     }
-                    for ((k, v) in CrashNotes.tombstone(bytes.copyOf(n))) {
+                    val notes = CrashNotes.tombstone(CrashNotes.unpack(bytes.copyOf(n)))
+                    d["tomb"] = CrashNotes.tombState(bytes.copyOf(minOf(n, 4)), n, notes.size)
+                    for ((k, v) in notes) {
                         d[k] = when (k) {
                             "frames" -> blankCode(v).take(400)
                             "go" -> blank(v).take(300)
@@ -459,7 +466,7 @@ object Health {
                     }
                 }
             } catch (e: Exception) {
-                // no tombstone kept for this one
+                d["tomb"] = "error ${e.javaClass.simpleName}".take(40)
             }
         }
         val p = prefs(app)
