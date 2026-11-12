@@ -1,17 +1,20 @@
 import 'package:flutter/material.dart';
 
+import '../api/countries.dart';
 import '../design/city_art.dart';
 import '../design/icons.dart';
 import '../design/tokens.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
+import '../state/protect.dart';
+import 'google_location.dart';
+import 'privacy_check.dart';
 import 'shell.dart';
 
-/// Protect is a control surface. The kill switch is the big favourite
-/// card; split tunnel and DNS are spatial cards. Every switch here does
-/// what it shows: kill switch and auto-connect mirror Android's own
-/// always-on flags (only Android can set them, so they open its page);
-/// split tunnel and smart connect change how Pleat connects.
+/// Protect keeps what guards the person, and only that: Always protected
+/// (Android's always-on VPN and lockdown), the Shield, the privacy check,
+/// Google location, and the local network. How Pleat connects (goal,
+/// country, split route, smart connect) lives in Home > Route.
 class ProtectScreen extends StatelessWidget {
   const ProtectScreen({super.key});
 
@@ -30,50 +33,15 @@ class ProtectScreen extends StatelessWidget {
             const SizedBox(height: 4),
             Text(_summary(app), style: PType.small()),
             const SizedBox(height: 20),
-            item(_KillSwitchCard(app: app)),
+            item(_AlwaysCard(app: app)),
             const SizedBox(height: 16),
-            item(_SplitTunnelCard(app: app)),
+            item(_ShieldCard(app: app)),
             const SizedBox(height: 16),
-            item(_DnsCard(engine: app.tunnelAvailable == true)),
+            item(_PrivacyCard(app: app)),
             const SizedBox(height: 16),
-            item(_ProtocolCard(app: app)),
+            item(_GoogleCard(app: app)),
             const SizedBox(height: 16),
-            item(_AutoConnectCard(app: app)),
-            const SizedBox(height: 16),
-            item(
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: _MiniCard(
-                      icon: PIcon.bolt,
-                      title: 'Smart connect',
-                      body: app.smartConnect
-                          ? 'Tests every exit, takes the fastest, moves on if it stops.'
-                          : 'Uses the exit you pick, and stays on it.',
-                      value: app.smartConnect,
-                      onChanged: app.tunnelAvailable == true
-                          ? app.setSmartConnect
-                          : null,
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Transform.translate(
-                      offset: const Offset(0, 22),
-                      child: _MiniCard(
-                        icon: PIcon.lan,
-                        title: 'Local network',
-                        body: app.tunnelAvailable == true
-                            ? 'Printers and routers stay reachable. Always on.'
-                            : 'Needs the tunnel engine. Not in this build.',
-                        fixed: app.tunnelAvailable == true,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-            ),
+            item(_LocalCard(app: app)),
           ],
         ),
       ),
@@ -91,327 +59,568 @@ class ProtectScreen extends StatelessWidget {
   }
 }
 
-class _KillSwitchCard extends StatelessWidget {
-  const _KillSwitchCard({required this.app});
+// ---- shared pieces ---------------------------------------------------------
+
+/// A round tile with an icon: navy when the feature is on.
+class PTile extends StatelessWidget {
+  const PTile(this.icon, {super.key, this.on = false, this.size = 40});
+  final PIcon icon;
+  final bool on;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: size,
+    height: size,
+    decoration: BoxDecoration(
+      color: on ? PColors.navy : PColors.mist,
+      borderRadius: BorderRadius.circular(size * 0.35),
+    ),
+    alignment: Alignment.center,
+    child: PIconView(
+      icon,
+      size: size * 0.5,
+      color: on ? PColors.onDeep : PColors.accentInk,
+    ),
+  );
+}
+
+/// A card's head: tile, title, one line under it, and something at the end.
+class PHead extends StatelessWidget {
+  const PHead({
+    super.key,
+    required this.icon,
+    required this.title,
+    required this.sub,
+    this.on = true,
+    this.trailing,
+  });
+  final PIcon icon;
+  final String title, sub;
+  final bool on;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      PTile(icon, on: on),
+      const SizedBox(width: 12),
+      Expanded(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(title, style: PType.h3().copyWith(fontSize: 16)),
+            const SizedBox(height: 2),
+            Text(sub, style: PType.meta(color: PColors.muted)),
+          ],
+        ),
+      ),
+      if (trailing != null) ...[const SizedBox(width: 8), trailing!],
+    ],
+  );
+}
+
+/// One line inside a card: a lead, two lines of text, and a trailing
+/// widget (a chevron when it opens something).
+class PLine extends StatelessWidget {
+  const PLine({
+    super.key,
+    required this.lead,
+    required this.title,
+    required this.sub,
+    this.trailing,
+    this.onTap,
+  });
+  final Widget lead;
+  final String title, sub;
+  final Widget? trailing;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) => Pressable(
+    onTap: onTap,
+    label: '$title. $sub',
+    radius: 16,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 9, horizontal: 2),
+      child: Row(
+        children: [
+          lead,
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: PType.small(color: PColors.ink)
+                      .copyWith(fontWeight: FontWeight.w700, fontSize: 14),
+                ),
+                const SizedBox(height: 1),
+                Text(sub, style: PType.meta(color: PColors.muted)),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          trailing ??
+              (onTap == null
+                  ? const SizedBox.shrink()
+                  : PIconView(PIcon.chevron, size: 16, color: PColors.muted)),
+        ],
+      ),
+    ),
+  );
+}
+
+Widget pRule() => Divider(height: 10, thickness: 1, color: PColors.mist);
+
+/// A small round mark: a check when it passed, "!" when it didn't.
+class MarkDot extends StatelessWidget {
+  const MarkDot(this.mark, {super.key});
+  final Mark mark;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = switch (mark) {
+      Mark.ok => PColors.safe,
+      Mark.warn => PColors.alert,
+      Mark.note => PColors.accentInk,
+      Mark.none => PColors.muted,
+    };
+    return Container(
+      width: 26,
+      height: 26,
+      decoration: BoxDecoration(
+        color: c.withValues(alpha: 0.14),
+        shape: BoxShape.circle,
+      ),
+      alignment: Alignment.center,
+      child: PIconView(
+        mark == Mark.ok ? PIcon.check : PIcon.info,
+        size: 14,
+        color: c,
+      ),
+    );
+  }
+}
+
+/// A country's flag, as a small glyph.
+Widget flagGlyph(String cc, {double size = 18}) => Text(
+  flagOf(cc),
+  textScaler: TextScaler.noScaling,
+  style: TextStyle(
+    fontSize: size,
+    height: 1,
+    fontFamilyFallback: PType.emojiFallback,
+  ),
+);
+
+String agoText(DateTime at) {
+  final d = DateTime.now().difference(at);
+  if (d.inMinutes < 1) return 'just now';
+  if (d.inMinutes < 60) return '${d.inMinutes} min ago';
+  if (d.inHours < 24) return '${d.inHours} h ago';
+  return '${d.inDays} d ago';
+}
+
+// ---- Always protected ------------------------------------------------------
+
+/// Android's always-on VPN (start with the phone) and its lockdown (the
+/// kill switch). Only Android can set them, so both open its VPN page.
+class _AlwaysCard extends StatelessWidget {
+  const _AlwaysCard({required this.app});
   final AppState app;
 
   @override
   Widget build(BuildContext context) {
-    // Android's kill switch is always-on VPN with "Block connections
-    // without VPN". Only Android can set it, so the card opens that page.
     final engine = app.tunnelAvailable == true;
-    return Pressable(
-      onTap: engine ? app.tunnel.openSystemSettings : null,
-      label: engine
-          ? 'Kill switch, opens Android VPN settings'
-          : 'Kill switch, unavailable in this build',
-      radius: PRadius.card,
-      shadow: true,
-      color: PColors.navy,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(PRadius.card),
-        child: SizedBox(
-          height: 214,
-          child: Stack(
-            children: [
-              // The card's own shards flip with the field.
-              AnimatedPositioned(
-                duration: PMotion.reduced(context)
-                    ? Duration.zero
-                    : PMotion.scene,
-                curve: Curves.easeInOutCubic,
-                right: -40,
-                top: -66,
-                child: ShardChip(color: PColors.blue, width: 90, height: 190),
-              ),
-              AnimatedPositioned(
-                duration: PMotion.reduced(context)
-                    ? Duration.zero
-                    : PMotion.scene,
-                curve: Curves.easeInOutCubic,
-                right: 96,
-                top: -44,
-                child: ShardChip(color: PColors.ice, width: 34, height: 150),
-              ),
-              Padding(
-                padding: const EdgeInsets.fromLTRB(24, 22, 16, 18),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Container(
-                          width: 44,
-                          height: 44,
-                          decoration: BoxDecoration(
-                            color: PColors.onDeep.withValues(alpha: 0.12),
-                            shape: BoxShape.circle,
-                          ),
-                          alignment: Alignment.center,
-                          child: PIconView(
-                            PIcon.lock,
-                            size: 22,
-                            color: PColors.onDeep,
-                          ),
-                        ),
-                        const Spacer(),
-                        PToggle(
-                          value: app.guard?.lockdown ?? false,
-                          onChanged: engine
-                              ? (_) => app.tunnel.openSystemSettings()
-                              : null,
-                          label: 'Kill switch',
-                          onDark: true,
-                        ),
-                      ],
+    final g = app.guard;
+    final open = engine ? app.tunnel.openSystemSettings : null;
+    Widget row(PIcon icon, String title, String sub, bool on) => Pressable(
+      onTap: open,
+      label: '$title, opens Android VPN settings',
+      radius: 16,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 10),
+        child: Row(
+          children: [
+            PIconView(icon, size: 20, color: PColors.onDeep),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title,
+                    style: PType.small(color: PColors.onDeep)
+                        .copyWith(fontWeight: FontWeight.w700, fontSize: 14),
+                  ),
+                  Text(
+                    sub,
+                    style: PType.meta(
+                      color: PColors.onDeep.withValues(alpha: 0.72),
                     ),
-                    const Spacer(),
-                    Text('Kill switch', style: PType.h1(color: PColors.onDeep)),
-                    const SizedBox(height: 6),
-                    UnavailableNote(
-                      !engine
-                          ? 'Not in this build. It is Android’s always-on VPN with lockdown, and it needs the tunnel engine.'
-                          : switch (app.guard) {
-                              (lockdown: true, alwaysOn: _) => 'On. Android blocks every connection that skips the tunnel.',
-                              (alwaysOn: true, lockdown: false) => 'Always-on is set, lockdown is off. Tap to block traffic without the tunnel.',
-                              _ when app.phase == Phase.protected => 'Off. Tap, then turn on Always-on VPN and Block connections without VPN.',
-                              _ => 'Android runs it and shows its state while connected. Tap to open it.',
-                            },
-                      onDark: true,
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
-            ],
-          ),
+            ),
+            PToggle(
+              value: on,
+              onChanged: engine ? (_) => open!() : null,
+              label: title,
+              onDark: true,
+            ),
+          ],
+        ),
+      ),
+    );
+    final d = PMotion.reduced(context) ? Duration.zero : PMotion.scene;
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(PRadius.card),
+      child: ColoredBox(
+        color: PColors.navy,
+        child: Stack(
+          children: [
+            AnimatedPositioned(
+              duration: d,
+              right: -40,
+              top: -66,
+              child: ShardChip(color: PColors.blue, width: 90, height: 150),
+            ),
+            AnimatedPositioned(
+              duration: d,
+              right: 90,
+              top: -50,
+              child: ShardChip(color: PColors.ice, width: 30, height: 110),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(22, 22, 14, 10),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: BoxDecoration(
+                      color: PColors.onDeep.withValues(alpha: 0.12),
+                      shape: BoxShape.circle,
+                    ),
+                    alignment: Alignment.center,
+                    child: PIconView(
+                      PIcon.lock,
+                      size: 22,
+                      color: PColors.onDeep,
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  Text(
+                    'Always protected',
+                    style: PType.h1(color: PColors.onDeep),
+                  ),
+                  const SizedBox(height: 6),
+                  UnavailableNote(
+                    !engine
+                        ? 'Not in this build. It needs the tunnel engine.'
+                        : g == null
+                        ? 'Android shows these while Pleat is connected. Tap to open its VPN page.'
+                        : 'Android keeps Pleat on. Nothing leaves your phone outside the tunnel.',
+                    onDark: true,
+                  ),
+                  const SizedBox(height: 8),
+                  Divider(
+                    height: 1,
+                    color: PColors.onDeep.withValues(alpha: 0.12),
+                  ),
+                  row(
+                    PIcon.shield,
+                    'Kill switch',
+                    g?.lockdown == true
+                        ? 'If the tunnel drops, traffic stops'
+                        : 'Off: turn on “Block connections without VPN”',
+                    g?.lockdown ?? false,
+                  ),
+                  Divider(
+                    height: 1,
+                    color: PColors.onDeep.withValues(alpha: 0.12),
+                  ),
+                  row(
+                    PIcon.power,
+                    'Start with the phone',
+                    g?.alwaysOn == true
+                        ? 'Connects after a restart, before any app'
+                        : 'Off: turn on “Always-on VPN”',
+                    g?.alwaysOn ?? false,
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
-/// Split tunnel by place: Iranian sites and IPs leave directly, the rest
-/// goes through the exit, and QUIC is refused so apps use steadier TCP.
-/// The same rules the Cloud Gold app applies by default.
-class _SplitTunnelCard extends StatelessWidget {
-  const _SplitTunnelCard({required this.app});
+// ---- Shield ---------------------------------------------------------------
+
+class _ShieldCard extends StatelessWidget {
+  const _ShieldCard({required this.app});
   final AppState app;
 
   @override
   Widget build(BuildContext context) {
-    final can = app.tunnelAvailable == true && app.geoAvailable;
-    final on = app.localDirect && can;
+    final engine = app.tunnelAvailable == true;
+    final level = app.shieldLevel;
     final d = PMotion.reduced(context) ? Duration.zero : PMotion.state;
+    const levels = [
+      ('Off', 'Nothing blocked'),
+      ('Safe', 'Malware, phishing'),
+      ('Clean', 'Safe + ads, trackers'),
+    ];
+    final chips = [
+      (PIcon.close, 'Malware', 1),
+      (PIcon.lock, 'Phishing', 1),
+      (PIcon.filter, 'Ads', 2),
+      (PIcon.user, 'Trackers', 2),
+    ];
     return SurfaceCard(
-      padding: const EdgeInsets.fromLTRB(20, 20, 12, 20),
+      padding: const EdgeInsets.fromLTRB(16, 16, 12, 10),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          const PHead(
+            icon: PIcon.shield,
+            title: 'Shield',
+            sub: 'Blocks bad sites before they load. Ads never download, so they cost no plan data.',
+          ),
+          const SizedBox(height: 12),
           Row(
             children: [
-              PIconView(
-                PIcon.split,
-                color: on ? PColors.accentInk : PColors.muted,
-              ),
-              const SizedBox(width: 10),
-              Expanded(child: Text('Split tunnel', style: PType.h3())),
-              PToggle(
-                value: app.localDirect,
-                onChanged: can ? app.setLocalDirect : null,
-                label: 'Local sites direct',
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: Row(
-              children: [
-                for (final (title, sub, lit) in [
-                  (
-                    'Through tunnel',
-                    on ? 'Everything else' : 'Everything',
-                    true,
-                  ),
-                  ('Direct', on ? 'Iranian sites' : 'Nothing', on),
-                ])
-                  Expanded(
+              for (final (n, (title, sub)) in levels.indexed) ...[
+                if (n > 0) const SizedBox(width: 8),
+                Expanded(
+                  child: Pressable(
+                    onTap: engine ? () => app.setShield(n) : null,
+                    label: 'Shield $title: $sub',
+                    selected: n == level,
+                    radius: 18,
+                    color: n == level ? PColors.navy : PColors.field,
                     child: AnimatedContainer(
                       duration: d,
-                      curve: Curves.easeOutCubic,
-                      margin: EdgeInsets.only(
-                        right: title == 'Direct' ? 0 : 10,
-                      ),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: lit ? PColors.mist : PColors.field,
-                        borderRadius: BorderRadius.circular(22),
-                      ),
+                      padding: const EdgeInsets.fromLTRB(10, 10, 8, 11),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
                             title,
-                            style: PType.meta(
-                              color: lit ? PColors.navy : PColors.muted,
-                            ),
+                            style: PType.small(
+                              color: n == level ? PColors.onDeep : PColors.ink,
+                            ).copyWith(fontWeight: FontWeight.w700),
                           ),
                           const SizedBox(height: 2),
-                          AnimatedSwitcher(
-                            duration: d,
-                            child: Text(
-                              sub,
-                              key: ValueKey(sub),
-                              style: PType.small(),
+                          Text(
+                            sub,
+                            style: PType.meta(
+                              color: n == level
+                                  ? PColors.onDeep.withValues(alpha: 0.72)
+                                  : PColors.muted,
                             ),
                           ),
                         ],
                       ),
                     ),
                   ),
+                ),
               ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          Padding(
-            padding: const EdgeInsets.only(right: 8),
-            child: UnavailableNote(
-              !can
-                  ? 'Needs the tunnel engine and its place lists. Not in this build.'
-                  : on
-                  ? 'Iranian sites open fast and spend no plan data. QUIC is off, so apps use steadier TCP.'
-                  : 'Every site goes through the exit.',
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-/// DNS: the server sets no resolver to choose. With the engine, every
-/// lookup goes through the exit.
-class _DnsCard extends StatelessWidget {
-  const _DnsCard({required this.engine});
-  final bool engine;
-
-  @override
-  Widget build(BuildContext context) {
-    return SurfaceCard(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              PIconView(PIcon.dns, color: PColors.muted),
-              const SizedBox(width: 10),
-              Expanded(child: Text('Private DNS', style: PType.h3())),
             ],
           ),
-          const SizedBox(height: 12),
-          UnavailableNote(
-            engine
-                ? 'Every lookup goes through the exit to 1.1.1.1. The server offers no other resolver to pick.'
-                : 'The server doesn’t choose a resolver, and this build has no tunnel engine to set one.',
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: [
+              for (final (icon, name, need) in chips)
+                _Chip(icon: icon, text: name, on: level >= need),
+            ],
           ),
+          const SizedBox(height: 6),
+          pRule(),
+          PLine(
+            lead: PTile(PIcon.user, size: 36),
+            title: 'Adult sites',
+            sub: 'Block them too, for a child’s phone',
+            trailing: PToggle(
+              value: app.blockAdult,
+              onChanged: engine ? app.setBlockAdult : null,
+              label: 'Block adult sites',
+            ),
+          ),
+          if (!engine)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(2, 4, 4, 6),
+              child: UnavailableNote(
+                'Needs the tunnel engine. Not in this build.',
+              ),
+            )
+          else if (!app.geoAvailable && (level >= 2 || app.blockAdult))
+            Padding(
+              padding: const EdgeInsets.fromLTRB(2, 4, 4, 6),
+              child: UnavailableNote(
+                'Ad and adult lists need the place lists, missing in this build. Malware is still blocked.',
+              ),
+            ),
         ],
       ),
     );
   }
 }
 
-class _ProtocolCard extends StatelessWidget {
-  const _ProtocolCard({required this.app});
+class _Chip extends StatelessWidget {
+  const _Chip({required this.icon, required this.text, required this.on});
+  final PIcon icon;
+  final String text;
+  final bool on;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    height: 28,
+    padding: const EdgeInsets.symmetric(horizontal: 9),
+    decoration: BoxDecoration(
+      color: on ? PColors.mist : PColors.field,
+      borderRadius: BorderRadius.circular(PRadius.pill),
+    ),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        PIconView(
+          icon,
+          size: 13,
+          color: on ? PColors.accentInk : PColors.muted,
+        ),
+        const SizedBox(width: 5),
+        Text(
+          text,
+          style: PType.meta(color: on ? PColors.accentInk : PColors.muted)
+              .copyWith(fontWeight: FontWeight.w700),
+        ),
+      ],
+    ),
+  );
+}
+
+// ---- Privacy check ----------------------------------------------------------
+
+class _PrivacyCard extends StatelessWidget {
+  const _PrivacyCard({required this.app});
   final AppState app;
 
   @override
   Widget build(BuildContext context) {
-    final protocols = app.protocols;
-    final current = app.exit?.protocol;
-    final i = current == null ? 0 : protocols.indexOf(current);
-    final d = PMotion.reduced(context) ? Duration.zero : PMotion.state;
+    final r = app.leakReport;
+    final can = app.phase == Phase.protected && app.tunnelAvailable == true;
+    void open() => Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => PrivacyCheckScreen(app: app)),
+    );
+    final site = r?.siteCc;
+    final g = r?.googleCc;
+    Mark of(Iterable<String> titles) {
+      final rows = r!.rows.where((x) => titles.contains(x.title));
+      if (rows.any((x) => x.verdict == Mark.warn)) return Mark.warn;
+      if (rows.any((x) => x.verdict == Mark.ok)) return Mark.ok;
+      return Mark.none;
+    }
+
     return SurfaceCard(
+      onTap: r == null ? null : open,
+      label: 'Privacy check',
+      padding: const EdgeInsets.fromLTRB(16, 16, 12, 14),
       child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            children: [
-              PIconView(PIcon.layers, color: PColors.accentInk),
-              const SizedBox(width: 10),
-              Expanded(child: Text('Protocol', style: PType.h3())),
-            ],
+          PHead(
+            icon: PIcon.search,
+            title: 'Privacy check',
+            sub: r == null
+                ? 'Leak tests, the way sites and Google see you'
+                : '${r.tests} leak tests, the way sites and Google see you',
+            trailing: r == null
+                ? null
+                : _Pill(
+                    r.warnings == 0
+                        ? 'ALL CLEAR'
+                        : '${r.warnings} ${r.warnings == 1 ? 'WARNING' : 'WARNINGS'}',
+                    good: r.warnings == 0,
+                  ),
           ),
-          const SizedBox(height: 14),
-          if (protocols.isEmpty)
-            Text(
-              app.servers.loading
-                  ? 'Loading your exits…'
-                  : 'Protocols come from your exits. None yet.',
-              style: PType.small(),
-            )
-          else
-            Container(
-              height: 52,
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                color: PColors.field,
-                borderRadius: BorderRadius.circular(PRadius.pill),
-              ),
-              child: Stack(
-                children: [
-                  AnimatedAlign(
-                    duration: d,
-                    curve: Curves.easeOutBack,
-                    alignment: Alignment(
-                      protocols.length == 1
-                          ? 0
-                          : -1 + i * 2 / (protocols.length - 1),
-                      0,
+          if (r != null) ...[
+            const SizedBox(height: 6),
+            pRule(),
+            PLine(
+              lead: site == null
+                  ? PTile(PIcon.globe, size: 36)
+                  : SizedBox(
+                      width: 36,
+                      child: Center(child: flagGlyph(site, size: 26)),
                     ),
-                    child: FractionallySizedBox(
-                      widthFactor: 1 / protocols.length,
-                      child: Container(
-                        decoration: BoxDecoration(
-                          color: PColors.blue,
-                          borderRadius: BorderRadius.circular(PRadius.pill),
-                          boxShadow: PShadow.lift,
-                        ),
-                      ),
-                    ),
-                  ),
-                  Row(
-                    children: [
-                      for (final p in protocols)
-                        Expanded(
-                          child: Semantics(
-                            button: true,
-                            selected: p == current,
-                            label: p,
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () => app.chooseProtocol(p),
-                              child: Center(
-                                child: Text(
-                                  p,
-                                  style: PType.small(
-                                    color: p == current
-                                        ? PColors.onAccent
-                                        : PColors.ink,
-                                  ).copyWith(fontWeight: FontWeight.w700),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ],
+              title: site == null
+                  ? 'Sites didn’t answer'
+                  : 'Sites see ${countryName(site)}',
+              sub:
+                  'Your Iran IP is ${of(['Your Iran IP']) == Mark.warn ? 'visible' : 'not visible'}',
+              trailing: MarkDot(of(['Cloudflare', 'Your Iran IP'])),
+            ),
+            PLine(
+              lead: PTile(PIcon.dns, size: 36),
+              title: 'DNS goes through the tunnel',
+              sub: 'Your operator can’t see the sites you open',
+              trailing: MarkDot(
+                of(['Resolver that answered', 'Operator’s DNS']),
               ),
             ),
+            PLine(
+              lead: PTile(PIcon.layers, size: 36),
+              title: 'IPv6 and WebRTC sealed',
+              sub: 'Nothing slips out around the tunnel',
+              trailing: MarkDot(of(['IPv6', 'WebRTC · STUN (UDP)'])),
+            ),
+            PLine(
+              lead: PTile(PIcon.globe, size: 36),
+              title: g == null
+                  ? 'Google didn’t say'
+                  : 'Google sees ${countryName(g)}',
+              sub: 'YouTube, Gemini and Search',
+              trailing: MarkDot(
+                of(['Google · YouTube', 'Google · Gemini', 'Google Search']),
+              ),
+            ),
+          ],
           const SizedBox(height: 10),
-          Text(
-            'Each exit speaks one protocol. Picking one selects the best-rated exit that uses it.',
-            style: PType.small(),
+          PillButton(
+            label: app.leakRunning
+                ? 'Testing…'
+                : (r == null ? 'Run check' : 'Run again'),
+            icon: PIcon.refresh,
+            height: 48,
+            color: r == null ? PColors.blue : PColors.field,
+            textColor: r == null ? PColors.onAccent : PColors.accentInk,
+            onTap: can && !app.leakRunning
+                ? () async {
+                    final done = await app.runLeakCheck();
+                    if (done != null && context.mounted) open();
+                  }
+                : null,
+          ),
+          const SizedBox(height: 8),
+          Center(
+            child: Text(
+              !can
+                  ? 'Connect first: it tests the exit you are on.'
+                  : r == null
+                  ? 'About 20 seconds and 3 MB, through the exit.'
+                  : 'Checked ${agoText(r.at)}${r.ctx.network.isEmpty ? '' : ' on ${r.ctx.network}'}',
+              style: PType.meta(color: PColors.muted),
+              textAlign: TextAlign.center,
+            ),
           ),
         ],
       ),
@@ -419,92 +628,155 @@ class _ProtocolCard extends StatelessWidget {
   }
 }
 
-class _AutoConnectCard extends StatelessWidget {
-  const _AutoConnectCard({required this.app});
+class _Pill extends StatelessWidget {
+  const _Pill(this.text, {required this.good});
+  final String text;
+  final bool good;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = good ? PColors.safe : PColors.alert;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+      decoration: BoxDecoration(
+        color: c.withValues(alpha: 0.14),
+        borderRadius: BorderRadius.circular(PRadius.pill),
+      ),
+      child: Text(
+        text,
+        style: PType.meta(color: c)
+            .copyWith(fontWeight: FontWeight.w800, letterSpacing: 0.6),
+      ),
+    );
+  }
+}
+
+// ---- Google location ------------------------------------------------------
+
+class _GoogleCard extends StatelessWidget {
+  const _GoogleCard({required this.app});
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) {
+    final n = app.googleCounts;
+    final e = app.exit;
+    final g = e == null ? null : app.googleOf(e);
+    void open() => Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => GoogleLocationScreen(app: app)),
+    );
+    return SurfaceCard(
+      padding: const EdgeInsets.fromLTRB(16, 16, 12, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const PHead(
+            icon: PIcon.globe,
+            title: 'Google location',
+            sub: 'Some exits look abroad to every site, but Google still sees Iran. Pleat tests each exit the way Google does.',
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              GoogleStat(n.abroad, 'Google sees abroad', tone: PColors.safe),
+              const SizedBox(width: 8),
+              GoogleStat(n.iran, 'Google sees Iran', tone: PColors.alert),
+              const SizedBox(width: 8),
+              GoogleStat(n.unknown, 'Not tested yet', tone: PColors.muted),
+            ],
+          ),
+          const SizedBox(height: 6),
+          if (e != null) ...[
+            pRule(),
+            PLine(
+              lead: RegionBadge(e, size: 36),
+              title: 'You’re on ${e.label}',
+              sub: g == null
+                  ? (app.googleTesting == e.id
+                        ? 'Testing what Google sees…'
+                        : 'Not tested yet')
+                  : 'Sites see ${e.title} · Google sees ${g.cc == null ? 'unclear' : countryName(g.cc!)}',
+              trailing: g == null
+                  ? null
+                  : MarkDot(
+                      g.iran ? Mark.warn : (g.cc == null ? Mark.none : Mark.ok),
+                    ),
+            ),
+          ],
+          pRule(),
+          PLine(
+            lead: PTile(PIcon.shield, size: 36, on: app.googleClean),
+            title: 'Google-clean exits only',
+            sub: 'Connect and switch only to exits Google sees abroad',
+            trailing: PToggle(
+              value: app.googleClean,
+              onChanged: app.setGoogleClean,
+              label: 'Google-clean exits only',
+            ),
+          ),
+          PLine(
+            lead: PTile(PIcon.route, size: 36),
+            title: 'See every exit',
+            sub: 'Results shared by Pleat users',
+            onTap: open,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// A count tile: green for abroad, red for Iran, grey for untested.
+class GoogleStat extends StatelessWidget {
+  const GoogleStat(this.n, this.text, {super.key, required this.tone});
+  final int n;
+  final String text;
+  final Color tone;
+
+  @override
+  Widget build(BuildContext context) => Expanded(
+    child: Container(
+      padding: const EdgeInsets.fromLTRB(10, 10, 8, 11),
+      decoration: BoxDecoration(
+        color: tone.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('$n', style: PType.h2(color: tone)),
+          const SizedBox(height: 2),
+          Text(
+            text,
+            style: PType.meta(color: tone)
+                .copyWith(fontWeight: FontWeight.w700),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+// ---- Local network ---------------------------------------------------------
+
+class _LocalCard extends StatelessWidget {
+  const _LocalCard({required this.app});
   final AppState app;
 
   @override
   Widget build(BuildContext context) {
     final engine = app.tunnelAvailable == true;
     return SurfaceCard(
-      onTap: engine ? app.tunnel.openSystemSettings : null,
-      label: engine ? 'Auto-connect, opens Android VPN settings' : null,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              PIconView(PIcon.wifi, color: PColors.muted),
-              const SizedBox(width: 10),
-              Expanded(child: Text('Auto-connect', style: PType.h3())),
-              PToggle(
-                value: app.guard?.alwaysOn ?? false,
-                onChanged: engine
-                    ? (_) => app.tunnel.openSystemSettings()
-                    : null,
-                label: 'Auto-connect',
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          UnavailableNote(
-            !engine
-                ? 'Starts the tunnel engine on boot. Not in this build.'
-                : app.guard?.alwaysOn == true
-                ? 'On. Android starts Pleat on boot and reconnects to your last exit.'
-                : 'Android starts Pleat on boot when Always-on VPN is on. Tap to open it.',
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _MiniCard extends StatelessWidget {
-  const _MiniCard({
-    required this.icon,
-    required this.title,
-    required this.body,
-    this.value = false,
-    this.onChanged,
-    this.fixed = false,
-  });
-
-  final PIcon icon;
-  final String title, body;
-  final bool value;
-  final ValueChanged<bool>? onChanged;
-
-  /// Always on and not a choice: a check instead of a switch.
-  final bool fixed;
-
-  @override
-  Widget build(BuildContext context) {
-    final live = fixed || (value && onChanged != null);
-    return SurfaceCard(
-      label: fixed ? '$title, always on' : null,
-      padding: const EdgeInsets.fromLTRB(18, 16, 10, 18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              PIconView(icon, color: live ? PColors.accentInk : PColors.muted),
-              const Spacer(),
-              if (fixed)
-                Padding(
-                  padding: EdgeInsets.all(12),
-                  child: PIconView(PIcon.check, color: PColors.safe),
-                )
-              else
-                PToggle(value: value, onChanged: onChanged, label: title),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Text(title, style: PType.h3()),
-          const SizedBox(height: 4),
-          SizedBox(height: 54, child: UnavailableNote(body)),
-        ],
+      label: 'Local network, always on',
+      padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
+      child: PHead(
+        icon: PIcon.lan,
+        on: false,
+        title: 'Local network',
+        sub: engine
+            ? 'Printers and routers stay reachable'
+            : 'Needs the tunnel engine. Not in this build.',
+        trailing: engine ? const MarkDot(Mark.ok) : null,
       ),
     );
   }

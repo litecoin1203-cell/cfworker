@@ -140,6 +140,9 @@ class FakeApi extends ApiClient {
   /// reports said.
   final List<String> rankKinds = [], reportKinds = [];
 
+  /// What Protect's Google tests sent to POST /net/google.
+  final googleReports = <Map<String, Object?>>[];
+
   dynamic _answer(String m, String path, Map<String, Object?>? body) {
     final q = path.indexOf('?');
     if (q >= 0) {
@@ -339,6 +342,9 @@ class FakeApi extends ApiClient {
           'stored': ((body?['events'] as List?) ?? const []).length,
           'mode': healthMode,
         };
+      case 'POST /net/google':
+        googleReports.add(Map<String, Object?>.from(body ?? const {}));
+        return {'ok': true};
       case 'POST /net/report':
         if (body?['kind'] != null) reportKinds.add('${body!['kind']}');
         reports.addAll(
@@ -512,6 +518,30 @@ class FakeTunnel extends Tunnel {
 
   @override
   Future<bool> metered() async => onMetered;
+
+  /// Protect's Google view per exit and privacy check: what the native
+  /// probe would answer, by a host in the config; nothing by default.
+  final googleViews = <String, Map<String, Object?>>{};
+  final googleTested = <String>[];
+  Map<String, Object?>? leakResult;
+  String? leakConfig;
+
+  @override
+  Future<Map<String, Object?>?> google(String config) async {
+    for (final e in googleViews.entries) {
+      if (config.contains(e.key)) {
+        googleTested.add(e.key);
+        return e.value;
+      }
+    }
+    return null;
+  }
+
+  @override
+  Future<Map<String, Object?>?> leaks(String config, String dns) async {
+    leakConfig = config;
+    return leakResult;
+  }
 
   /// What the phone is on: 'wifi', 'cell', 'other' or ''.
   String kind = '';

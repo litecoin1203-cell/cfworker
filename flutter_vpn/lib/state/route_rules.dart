@@ -1,7 +1,7 @@
 /// The three Route features on Home and the one order they follow, so
 /// they never pull against each other:
 ///
-///  1. An exit picked by hand (Locations, Protect's protocol) wins over
+///  1. An exit picked by hand (Locations) wins over
 ///     everything below; picking a goal or a country on Home lets it go.
 ///  2. Stay in one country decides WHERE: only exits in the chosen country
 ///     are used, the IP stays the same while the exit answers, and another
@@ -12,6 +12,10 @@
 ///     when the exit in use stops.
 ///  4. Split route decides WHAT skips the VPN (Iranian sites, the
 ///     person's own sites, chosen apps). It changes no exit choice.
+///
+/// Protect's Google-clean exits only narrows the pool smart connect uses
+/// inside whatever 2 and 3 chose (exits Google places in Iran are left
+/// out), never the country; if nothing would be left it steps aside.
 library;
 
 import 'dart:convert';

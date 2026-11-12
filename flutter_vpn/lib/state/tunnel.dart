@@ -232,6 +232,51 @@ class Tunnel {
     }
   }
 
+  /// What Google sees of the exit in a test [config] (Protect > Google
+  /// location): the native Probe's fields, or null without an engine or
+  /// when the test could not run.
+  Future<Map<String, Object?>?> google(String config) async {
+    if (!await available()) return null;
+    try {
+      return _map(
+        await _method.invokeMethod<String>('google', {'config': config}),
+      );
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// Protect's privacy check through the session [config]; [dns] is the
+  /// resolver the tun gives apps. Null without an engine.
+  Future<Map<String, Object?>?> leaks(String config, String dns) async {
+    if (!await available()) return null;
+    try {
+      return _map(
+        await _method.invokeMethod<String>('leaks', {
+          'config': config,
+          'dns': dns,
+        }),
+      );
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  static Map<String, Object?>? _map(String? text) {
+    if (text == null) return null;
+    try {
+      final j = jsonDecode(text);
+      return j is Map<String, Object?> ? j : null;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  /// Android's Location page (Google Location Accuracy lives under it).
+  Future<void> openLocationSettings() async {
+    if (await available()) await _method.invokeMethod<void>('locationSettings');
+  }
+
   /// How the phone reaches the internet under the tunnel: 'wifi', 'cell'
   /// (mobile data), 'other', or '' when unknown. The operator comes from
   /// the Worker; together they tell Irancell over Wi-Fi from Irancell

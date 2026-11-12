@@ -30,6 +30,8 @@ class RouteExtras extends StatelessWidget {
           StaggerIn(index: 1, child: _SplitCard(app: app)),
           const SizedBox(height: 14),
           StaggerIn(index: 2, child: _NetworksCard(app: app)),
+          const SizedBox(height: 14),
+          StaggerIn(index: 3, child: _SmartCard(app: app)),
         ],
       ),
     );
@@ -273,6 +275,34 @@ Widget _choice({
     ),
   ),
 );
+
+// ---- Smart connect ---------------------------------------------------------
+
+/// Moved here from Protect: it decides how Pleat connects, not what guards
+/// the person. Off, the exit picked stays in use.
+class _SmartCard extends StatelessWidget {
+  const _SmartCard({required this.app});
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) => SurfaceCard(
+    radius: 24,
+    padding: const EdgeInsets.fromLTRB(16, 16, 12, 16),
+    child: _Head(
+      icon: PIcon.bolt,
+      title: 'Smart connect',
+      sub: app.smartConnect
+          ? 'Tests every exit, takes the fastest, moves on if it stops'
+          : 'Uses the exit you pick, and stays on it',
+      on: app.smartConnect,
+      trailing: PToggle(
+        value: app.smartConnect,
+        onChanged: app.tunnelAvailable == true ? app.setSmartConnect : null,
+        label: 'Smart connect',
+      ),
+    ),
+  );
+}
 
 // ---- Stay in one country -------------------------------------------------
 

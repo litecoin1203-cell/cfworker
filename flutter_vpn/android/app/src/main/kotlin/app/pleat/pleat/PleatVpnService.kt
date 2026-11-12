@@ -289,8 +289,7 @@ class PleatVpnService : VpnService() {
             // sniffer cannot name, which the core refuses so apps fall back to
             // IPv4 at once. The names it answers with may still be IPv6; those
             // reach the exit by name.
-            .addDnsServer("1.1.1.1")
-            .addDnsServer("1.0.0.1")
+            .apply { for (d in dnsOf(config)) addDnsServer(d) }
             .addDisallowedApplication(packageName)
             .apply {
                 for (p in bypass) {
@@ -397,6 +396,22 @@ class PleatVpnService : VpnService() {
         Pair(exit?.optString("k").orEmpty(), exit?.optString("p").orEmpty())
     } catch (e: Exception) {
         Pair("", "")
+    }
+
+    /**
+     * The resolvers under the config's "pleat" key (Protect > Shield picks
+     * Cloudflare's filtering ones), else 1.1.1.1 and 1.0.0.1. IPv4 only, for
+     * the reason above; anything else is ignored.
+     */
+    private fun dnsOf(config: String): List<String> {
+        val ipv4 = Regex("^(25[0-5]|2[0-4]\\d|1?\\d?\\d)(\\.(25[0-5]|2[0-4]\\d|1?\\d?\\d)){3}$")
+        val picked = try {
+            val list = JSONObject(config).optJSONObject("pleat")?.optJSONArray("dns")
+            if (list == null) emptyList() else List(list.length()) { list.optString(it) }.filter { ipv4.matches(it) }
+        } catch (e: Exception) {
+            emptyList()
+        }
+        return picked.take(2).ifEmpty { listOf("1.1.1.1", "1.0.0.1") }
     }
 
     /** Packages under the config's "pleat" key: the apps that skip the VPN. */

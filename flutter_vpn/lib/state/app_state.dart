@@ -15,6 +15,7 @@ import 'diagnose.dart';
 import 'exits.dart';
 import 'health.dart';
 import 'net_cache.dart';
+import 'protect.dart';
 import 'recommend.dart';
 import 'route_mode.dart';
 import 'route_rules.dart';
@@ -536,6 +537,30 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// Iranian sites and IPs go direct, QUIC is refused (see `xrayConfig`).
   bool localDirect = true;
 
+  /// Protect > Shield: 0 off, 1 safe (malware, phishing), 2 clean (also
+  /// ads and trackers); [blockAdult] adds adult sites at any level.
+  int shieldLevel = 0;
+  bool blockAdult = false;
+
+  /// What the tunnel's config gets for the Shield (see [Shield]).
+  Shield get shield =>
+      Shield(level: shieldLevel, adult: blockAdult, lists: geoAvailable);
+
+  /// Protect > Google location: smart connect and its failover skip exits
+  /// Google places in Iran (see [routePool]).
+  bool googleClean = false;
+
+  /// This phone's own Google tests, and the shared ones from /net/rank.
+  GoogleLog googleLog = GoogleLog();
+  Map<String, GoogleView> _googleShared = {};
+
+  /// The Google test running now: the exit's id, or null.
+  String? googleTesting;
+
+  /// Protect > Privacy check: the last run, and whether one runs now.
+  LeakReport? leakReport;
+  bool leakRunning = false;
+
   /// The person picked an exit by hand; the big button then uses it
   /// instead of the smart choice.
   bool pinned = false;
@@ -832,14 +857,28 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// no longer has any (the list changed), every exit, so the button never
   /// has nothing to connect; but never with Stay in one country on, which
   /// asks first instead.
+  ///
+  /// With [googleClean], exits Google places in Iran are left out, inside
+  /// whatever country Route chose; when that would leave none, they stay
+  /// (Route's country is never changed for it).
   List<Exit> get routePool {
     final pool = [
       for (final e in exits)
         if (_inRoute(e, _poolMode, _poolCountry)) e,
     ];
     if (pool.isEmpty && lockActive) return const [];
-    return pool.isEmpty ? exits : pool;
+    final base = pool.isEmpty ? exits : pool;
+    if (!googleClean) return base;
+    final clean = [
+      for (final e in base)
+        if (googleOf(e)?.iran != true) e,
+    ];
+    return clean.isEmpty ? base : clean;
   }
+
+  /// What Google sees of [e]: this phone's fresh test, else the shared one.
+  GoogleView? googleOf(Exit e) =>
+      googleLog.pick(e.id, _googleShared[e.id], DateTime.now());
 
   /// The chosen route has exits on this plan (false shows "not on your
   /// plan" instead of quietly using another protocol).
@@ -1238,6 +1277,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     };
     smartConnect = p.getBool('smartConnect') ?? true;
     localDirect = p.getBool('localDirect') ?? true;
+    shieldLevel = (p.getInt('shield') ?? 0).clamp(0, 2);
+    blockAdult = p.getBool('blockAdult') ?? false;
+    googleClean = p.getBool('googleClean') ?? false;
+    googleLog = GoogleLog.decode(p.getString('googleLog'));
+    leakReport = LeakReport.fromJson(p.getString('leakReport'));
     pinned = p.getBool('pinned') ?? false;
     routeMode = RouteMode.parse(p.getString('routeMode'));
     routeCountry = p.getString('routeCountry') ?? '';
@@ -1265,6 +1309,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     p.setString('theme', theme);
     p.setBool('smartConnect', smartConnect);
     p.setBool('localDirect', localDirect);
+    p.setInt('shield', shieldLevel);
+    p.setBool('blockAdult', blockAdult);
+    p.setBool('googleClean', googleClean);
+    p.setString('googleLog', googleLog.encode());
     p.setBool('pinned', pinned);
     p.setString('routeMode', routeMode.name);
     p.setString('routeCountry', routeCountry);
@@ -1498,6 +1546,13 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       );
       _ranks = ranksFrom(r);
       _rankAt = DateTime.now();
+      final g = r is Map ? r['google'] : null;
+      if (g is Map) {
+        _googleShared = {
+          for (final e in g.entries)
+            '${e.key}': ?GoogleView.fromShared(e.value),
+        };
+      }
       api.tokens.cache('ranks', r);
       final before = _net;
       // The connection type is the phone's own reading; an older Worker
@@ -2621,6 +2676,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         config = xrayConfig(
           target.server.link,
           localDirect: localDirect && geoAvailable,
+          shield: shield,
           api: _detours?.login,
           backups: backups,
           directSites: directSites,
@@ -2695,6 +2751,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           config: xrayConfig(
             e.server.link,
             localDirect: localDirect && geoAvailable,
+            shield: shield,
             directSites: directSites,
             bypassApps: bypassApps,
             exitNote: (k: e.id, p: exitProtos(e.server.link, const [])),
@@ -2845,6 +2902,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _pushNote();
       _sendSpares();
       unawaited(loadExitAddress());
+      unawaited(_googleAfterConnect());
       _noteUp();
       _misses = 0;
       _reported = false;
@@ -3042,6 +3100,182 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     await connect(exitId);
     pinned = wasPinned;
     _save();
+  }
+
+  /// Protect > Shield. A running session takes it at once (same exit).
+  Future<void> setShield(int level) async {
+    update((s) => s.shieldLevel = level.clamp(0, 2));
+    await _reconnectSame();
+  }
+
+  Future<void> setBlockAdult(bool on) async {
+    update((s) => s.blockAdult = on);
+    await _reconnectSame();
+  }
+
+  /// Protect > Google location: only exits Google sees abroad. Changes
+  /// which exits smart connect may take next; a working session stays.
+  void setGoogleClean(bool on) => update((s) => s.googleClean = on);
+
+  Future<void> _reconnectSame() async {
+    if (phase != Phase.protected || exitId == null) return;
+    _logSession();
+    final wasPinned = pinned;
+    await connect(exitId);
+    pinned = wasPinned;
+    _save();
+  }
+
+  // ---- Protect: Google location and the privacy check -----------------
+
+  /// Exits Google sees abroad, in Iran, and not tested by anyone yet.
+  ({int abroad, int iran, int unknown}) get googleCounts {
+    var a = 0, i = 0, u = 0;
+    for (final e in exits) {
+      final g = googleOf(e);
+      if (g == null || (g.cc == null && !g.iran)) {
+        u++;
+      } else if (g.iran) {
+        i++;
+      } else {
+        a++;
+      }
+    }
+    return (abroad: a, iran: i, unknown: u);
+  }
+
+  /// One exit's Google view, through a throw-away core: YouTube's country,
+  /// Gemini, Search. About 1 MB. Shared with other Pleat users by the
+  /// exit's anonymous key (never the account's or the phone's address).
+  Future<GoogleView?> testGoogle(Exit e) async {
+    if (googleTesting != null) return null;
+    final String config;
+    try {
+      config = xrayConfig(e.server.link, forTest: true);
+    } on FormatException {
+      return null;
+    }
+    googleTesting = e.id;
+    notifyListeners();
+    try {
+      final r = await tunnel
+          .google(config)
+          .timeout(const Duration(seconds: 60), onTimeout: () => null);
+      if (r == null) return null;
+      return _keepGoogle(e, r);
+    } finally {
+      googleTesting = null;
+      notifyListeners();
+    }
+  }
+
+  GoogleView? _keepGoogle(Exit e, Map<String, Object?> r) {
+    final v = GoogleView.fromProbe(r, DateTime.now());
+    if (v == null) return null;
+    googleLog.put(e.id, v);
+    _prefs.setString('googleLog', googleLog.encode());
+    unawaited(
+      api
+          .post('/net/google', {
+            'k': e.id,
+            'name': e.label,
+            if (r['cc'] case final String cc when cc.length == 2) 'cc': cc,
+            if (v.cc != null) 'google_cc': v.cc,
+            if (r['gemini'] == true) 'gemini': true,
+            'google_blocked': v.wall,
+          })
+          .then((_) {}, onError: (_) {}),
+    );
+    return v;
+  }
+
+  /// Protect > Google location > Test: every exit nobody tested in the
+  /// last day (this phone, or another Pleat user), best first, one at a
+  /// time; [all] retests every exit. Stops at [_googleRunCap], the
+  /// Worker's daily limit per account.
+  Future<void> testGoogleAll({bool all = false}) async {
+    if (_googleRun) return;
+    _googleRun = true;
+    try {
+      var n = 0;
+      final now = DateTime.now();
+      for (final e in [...ranked]) {
+        if (n >= _googleRunCap || !signedIn) break;
+        final g = googleOf(e);
+        if (!all && g != null && now.difference(g.at) < GoogleLog.fresh) {
+          continue;
+        }
+        await testGoogle(e);
+        n++;
+      }
+    } finally {
+      _googleRun = false;
+      notifyListeners();
+    }
+  }
+
+  bool _googleRun = false;
+  bool get googleRunning => _googleRun;
+  static const _googleRunCap = 30;
+
+  /// Right after connecting on Wi-Fi: the exit in use, when nobody tested
+  /// it in the last day.
+  Future<void> _googleAfterConnect() async {
+    final e = exit;
+    if (e == null) return;
+    final g = googleOf(e);
+    if (g != null && DateTime.now().difference(g.at) < GoogleLog.fresh) return;
+    if (await tunnel.metered()) return;
+    await testGoogle(e);
+  }
+
+  /// Protect > Privacy check: the session's own config (same exit, same
+  /// rules) in a throw-away core, and every leak test through it. Only
+  /// while protected, so it shows what apps get right now.
+  Future<LeakReport?> runLeakCheck() async {
+    final e = exit;
+    if (leakRunning || e == null || phase != Phase.protected) return null;
+    final String config;
+    try {
+      config = xrayConfig(
+        e.server.link,
+        localDirect: localDirect && geoAvailable,
+        shield: shield,
+        directSites: directSites,
+      );
+    } on FormatException {
+      return null;
+    }
+    leakRunning = true;
+    notifyListeners();
+    try {
+      await readGuard();
+      final dns = shield.dns.first;
+      final start = DateTime.now();
+      final r = await tunnel
+          .leaks(config, dns)
+          .timeout(const Duration(seconds: 120), onTimeout: () => null);
+      if (r == null) return null;
+      _keepGoogle(e, r);
+      final report = LeakReport(
+        r,
+        (
+          lockdown: guard?.lockdown ?? false,
+          bypassApps: bypassApps.length,
+          dns: dns,
+          exitLabel: e.label,
+          network: network?.label ?? '',
+        ),
+        DateTime.now(),
+        DateTime.now().difference(start),
+      );
+      leakReport = report;
+      _prefs.setString('leakReport', jsonEncode(report.toJson()));
+      return report;
+    } finally {
+      leakRunning = false;
+      notifyListeners();
+    }
   }
 
   void _stopTimers() {
