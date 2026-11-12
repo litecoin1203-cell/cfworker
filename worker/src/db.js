@@ -56,6 +56,8 @@ export const SETTING_DEFAULTS = {
   wallet_bnb: '',
   wallet_pol: '',
   wallet_algo: '',
+  // the admin bot's hourly Cloudflare alerts (cfmon.js): 1 = on, 0 = off
+  cf_alerts: '1',
 };
 
 export async function getSettings(env) {

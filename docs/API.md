@@ -118,5 +118,5 @@ Each invocation has its own **50 subrequests** and **50 D1 queries** (Free plan)
 | Schedule | Work |
 |---|---|
 | `* * * * *` | `chainwatch.scanAll` (XLM, XRP, TRX, TON, ALGO deposits) → `sync.runSync` (usage ledger, quota/expiry, push desired state, create missing accounts; gets the subrequests the chain scan left) → `telegram.ensureWebhook`; every 15 min (minute % 15 = 7) `panels.refreshHostRules` (which configs are in a panel's Tunnel group) |
-| `*/2 * * * *` | `admin-actions.broadcastTick` (25 messages); every 10 min `appupdate.checkNewBuild` (tells the admin about a new APK on the release) |
-| `30 20 * * *` | daily report to the owner (stats, USD rate, health line) → backup JSON to Telegram → prune `net_*` and `health_events` |
+| `*/2 * * * *` | `admin-actions.broadcastTick` (25 messages); every 10 min `appupdate.checkNewBuild` (tells the admin about a new APK on the release); at minute 0 `cfmon.alertTick` (Cloudflare quota / error alerts, needs `CF_ANALYTICS_TOKEN` for the quota part) |
+| `30 20 * * *` | daily report to the owner (stats, USD rate, health line, ☁️ Cloudflare line) → backup JSON to Telegram → prune `net_*`, `health_events` and `worker_errors` |

@@ -80,7 +80,8 @@ jobs:
         run: npm ci --no-audit --no-fund && npm test && npm run build
 
       - name: Deploy the Worker
-        run: $WRANGLER deploy
+        # the account id is not a secret; the bot's ☁️ section uses it to read Cloudflare's analytics (cfmon.js)
+        run: $WRANGLER deploy --var CF_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID
 
       # Pleat's in-app update reads the private release pleat-latest with a read-only token (fine-grained, this repo
       # only, Contents: Read). It lives in the GitHub secret PLEAT_DL_TOKEN and is copied to the Worker here.

@@ -117,8 +117,13 @@ export function redactUrls(text) {
 }
 
 // One JSON line per error, at error level, so Workers Logs can search and filter it.
+// It is also handed to the error sink (index.js points it at the Worker's own error log, cfmon.js), which never throws.
+let errorSink = null;
+export function setErrorSink(fn) { errorSink = typeof fn === 'function' ? fn : null; }
 export function logError(message, e, extra = {}) {
-  console.error(JSON.stringify({ message, error: redactUrls(e instanceof Error ? e.message : String(e)), stack: redactUrls(e && e.stack), ...extra }));
+  const error = redactUrls(e instanceof Error ? e.message : String(e));
+  console.error(JSON.stringify({ message, error, stack: redactUrls(e && e.stack), ...extra }));
+  if (errorSink) { try { errorSink(String(message), error); } catch (x) { /* the log must not fail the caller */ } }
 }
 
 // ---------------- HMAC-SHA256 ----------------

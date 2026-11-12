@@ -354,6 +354,13 @@ const SCREENS = {
   hlu: async (env, a) => (await import('./health.js')).screenUsers(env, parseInt(a[0], 10) || 0),
   hlv: async (env) => (await import('./health.js')).screenVersions(env),
   he: async (env, a) => (await import('./health.js')).screenEvent(env, a[0]),
+  // ☁️ Cloudflare monitoring (cfmon.js)
+  cf: async (env) => (await import('./cfmon.js')).overview(env),
+  cfh: async (env) => (await import('./cfmon.js')).history(env),
+  cfe: async (env) => (await import('./cfmon.js')).errors(env),
+  cfq: async (env) => (await import('./cfmon.js')).queries(env),
+  cfd: async (env) => (await import('./cfmon.js')).deploys(env),
+  cfk: async (env) => (await import('./cfmon.js')).tokenHelp(env),
 };
 // action routes and how risky they are (see the top of this file)
 const ACTION_RISK = {
@@ -373,6 +380,8 @@ const ACTION_RISK = {
   bcs: 'reversible', bcgo: 'destructive', adr: 'reversible',
   // Pleat health reports
   her: 'reversible', hem: 'reversible', hlm: 'reversible',
+  // Cloudflare monitoring, panel sync by hand
+  cfx: 'reversible', syr: 'reversible', syn: 'reversible',
 };
 // reversible user buttons: route -> [action, args from the button, the screen the card comes back on]
 const USER_TAPS = {
@@ -409,6 +418,9 @@ const USER_TAPS = {
   her: (a) => ['health.resolve', { fp: a[0] }, `he:${a[0]}`],
   hem: (a) => ['health.mute', { fp: a[0], on: a[1] === '1' }, `he:${a[0]}`],
   hlm: (a) => ['health.mode', { mode: a[0] }, 'hl'],
+  // Cloudflare monitoring, panel sync
+  cfx: () => ['cf.errors_clear', {}, 'cfe'],
+  syr: () => ['sync.retry', {}, 'sys.hl'],
 };
 const GiB = 1024 ** 3;
 // money / destructive user buttons: the "are you sure?" question, with what it affects
@@ -549,7 +561,7 @@ export async function checkHealth(base) {
 const NET_TABLE_FA = { net_stats: 'آمار روزانه', net_geo: 'آمار استانی', net_votes: 'رأی کاربران', net_speed_votes: 'رأی سرعت',
   user_net_srv: 'تجربه‌ی هر کاربر', user_net: 'شبکه‌های کاربران', google_probe: 'تست گوگل', google_votes: 'رأی تست گوگل' };
 // where a one-tap setting comes back to
-const SET_BACK = { referral_percent: 'ref', trial_data_gb: 'app', trial_needs_telegram: 'app' };
+const SET_BACK = { referral_percent: 'ref', trial_data_gb: 'app', trial_needs_telegram: 'app', cf_alerts: 'cf' };
 
 // onCallback in telegram.js has already checked that the tap came from the admin in their private chat.
 export async function onMenu(env, cq) {
@@ -775,6 +787,18 @@ export async function onMenu(env, cq) {
     if (!bc) { await ack('این پیام دیگر پیش‌نویس نیست', true); return showScreen(env, cq, 'bc'); }
     await askBroadcast(env, chatId, bc.id, bc.audience);
     return ack('');
+  }
+  if (route === 'syn') { // one panel-sync run now, in this tap's own invocation (its own subrequest budget)
+    const t = await first(env, "SELECT value FROM settings WHERE key = 'sync_manual_at'");
+    if (t && nowSec() - parseInt(t.value, 10) < 60) return ack('یک دقیقه صبر کن؛ همین الان اجرا شد', true);
+    await run(env, `INSERT INTO settings (key, value) VALUES ('sync_manual_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, String(nowSec()));
+    await ack('⏳ همگام‌سازی…');
+    let out = null;
+    try { const { runSync } = await import('./sync.js'); out = await runSync(env, { spent: 6 }); } catch (e) { out = null; }
+    const scr = await renderScreen(env, 'sys.hl');
+    const head = out ? `⚡ همگام‌سازی اجرا شد: ${fa(out.pushed || 0)} تغییر روی پنل، ${fa(out.created || 0)} اکانت ساخته شد، ${fa(out.expired || 0)} اشتراک تمام‌شده بسته شد.`
+      : '❌ همگام‌سازی کامل نشد؛ خطا در «☁️ کلودفلر › 🐞 خطاها» ثبت شد.';
+    return show(env, cq, { text: head + '\n\n' + scr.text, kb: scr.kb });
   }
   if (route === 'undo') {
     const r = await undoAction(env, chatId, int(0));

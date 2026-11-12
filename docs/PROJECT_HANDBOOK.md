@@ -156,8 +156,8 @@ These are not suggestions. Each one exists because something went wrong or Ali s
 ```
 cfworker/
 ├── worker/                      THE BACKEND (active)
-│   ├── src/                     ~10,800 lines, 26 files (see §5)
-│   ├── migrations/              0001 … 0022 (two files share 0015 — harmless, never rename) → docs/DATABASE.md
+│   ├── src/                     ~10,800 lines, 27 files (see §5)
+│   ├── migrations/              0001 … 0023 (two files share 0015 — harmless, never rename) → docs/DATABASE.md
 │   ├── test/run.mjs             the whole test suite (hand-made harness, ~1,450 checks)
 │   ├── test/shim.mjs            D1 on node:sqlite (batch is transactional like D1), fake panels
 │   ├── test/dev_server.mjs      the Worker + a fake panel on http://127.0.0.1:8787 (for Pleat's live test)
@@ -296,6 +296,7 @@ The full list (every route, its auth, handler and limits, plus the admin API and
 | `admin-actions.js` | **every bot and Mini App write**: validate → one D1 batch → audit → undo; broadcasts (`broadcastTick`) |
 | `admin-api.js` | the Mini App admin API: `ROUTES` table `[method, regex, level, handler]`, 15-min admin token, role re-read per request |
 | `health.js` | Pleat health reports: `TYPES` + priorities, `LIMITS` (per-user caps), `scrub`, P1 Telegram alert, location mismatch (`checkExitCountry`), bot screens (🩺 سلامت اپ), crash wording (`crashGuess`), daily line, prune |
+| `cfmon.js` | Admin bot ☁️ Cloudflare monitoring: GraphQL Analytics (`CF_ANALYTICS_TOKEN`), Free-plan `LIMITS`, overview / 7-day / errors / costly queries / deploys / token screens, `alertTick` (hourly), `dailyLine`, `recordError` (the `worker_errors` log fed by `logError`) |
 | `countries.js` | country of a config from its remark/host (`countryOfLink`): flag, English/Persian name, 2-letter token, host label |
 
 ### Auth facts
@@ -468,6 +469,18 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
   `admin-actions.js`.
 - Legacy text commands still work (hidden) via `runAdminCommand`.
 - Known: default plan names come back Persian (the Worker translates them); rename plans in the bot.
+- **☁️ Cloudflare monitoring** (`worker/src/cfmon.js`, home button "☁️ مانیتورینگ کلودفلر"): today's share of the
+  Free plan (Worker requests for the whole account, D1 rows read / written, DB size vs 500 MB) with an end-of-day
+  projection; 24 h errors by outcome, CPU p50/p99 vs 10 ms, CPU rejections, subrequests per request, a "users the
+  Free plan carries" estimate; 7-day table; costliest D1 queries; deploy runs + merged-but-not-deployed PRs + Pleat
+  build; hourly alert (from the `*/2` cron at minute 0, once per problem per UTC day, toggle `cf_alerts`); a line in
+  the nightly report. Cloudflare numbers need the Worker secret **`CF_ANALYTICS_TOKEN`** (Account Analytics: Read;
+  optional Workers Scripts: Read for the live version); `CF_ACCOUNT_ID` is passed by the deploy as a plain var.
+  Without the token the section still shows DB size (D1 `meta.size_after`), the Worker's own error log and cron.
+- **Worker error log**: `logError` also feeds `worker_errors` (migration 0023; one row per kind of error, scrubbed,
+  at most once a minute per kind and 12 writes a minute per isolate, kept 14 days). Bot › ☁️ › 🐞.
+- System › 🩺 health has "⚡ همگام‌سازی همین حالا" (one `runSync` in the tap's invocation, once a minute) and
+  "🔁 تلاش دوباره" for panel accounts stuck after 3+ failed pushes.
 
 ---
 
@@ -878,6 +891,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 80 | 11-12 | Crash reports: the crash's own tunnel state, Go stderr evidence (1.2.42) |
 | 81 | 11-12 | Home Recommended exits as Locations rows with a reason (1.2.45) |
 | 82 | 11-12 | Protect redesign: Shield, Privacy check, Google location (1.2.46) |
+| 84 | 11-12 | Admin bot ☁️ Cloudflare monitoring (Free-plan meters, errors, costly queries, deploys, hourly alert), Worker error log (0023), sync now / retry stuck |
 
 ---
 
