@@ -1,0 +1,17 @@
+initializing core...
+starting core...
+Starting core successfully
+panic: send on closed channel
+
+goroutine 4120 [running]:
+github.com/xtls/xray-core/transport/pipe.(*pipe).WriteMultiBuffer(0x4000a1c2d0, {0x40012e0000, 0x1, 0x1})
+	/home/runner/go/pkg/mod/github.com/xtls/xray-core@v1.260327.1/transport/pipe/impl.go:140 +0x1a8
+github.com/xtls/xray-core/common/buf.copyInternal({0x7a1b2c3d4e, 0x4000b3a000}, {0x7a1b2c3d4f, 0x4000a1c2d0}, 0x4000c1e0f8)
+	/home/runner/go/pkg/mod/github.com/xtls/xray-core@v1.260327.1/common/buf/copy.go:96 +0x1c0
+runtime.goexit({})
+	/opt/go/src/runtime/asm_arm64.s:1268 +0x4
+created by github.com/xtls/xray-core/app/observatory.(*Observer).probe in goroutine 77
+	/home/runner/go/pkg/mod/github.com/xtls/xray-core@v1.260327.1/app/observatory/observer.go:120 +0x2a0
+
+goroutine 1 [chan receive]:
+main.main()

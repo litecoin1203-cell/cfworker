@@ -60,6 +60,45 @@ void main() {
       expect(protoOf('nonsense'), '');
     });
 
+    test('an exit and its backups: protocols only', () {
+      expect(
+        exitProtos(
+          'vless://$_uuid@h.example.com:443?security=reality&type=tcp#DE',
+          ['vmess://abc', 'trojan://pass@t.example.com:443?type=ws#US'],
+        ),
+        'vless/reality/tcp + vmess, trojan/ws',
+      );
+      expect(exitProtos('trojan://p@h.example.com:443#US', []), 'trojan');
+    });
+
+    test('a native crash keeps its library and function names readable, '
+        'never an address', () {
+      final d = cleanDetail({
+        'frames':
+            'libc.so abort | libgojni.so runtime.raise.abi0 | '
+            'libhev-socks5-tunnel.so hev_socks5_session_tcp_splice_long_name',
+        'go':
+            'panic: dial tcp 1.2.3.4:443 de3.example.com @ '
+            'transport/pipe·(*pipe)·WriteMultiBuffer',
+        'abort': 'fdsan: attempted to close file descriptor 87',
+      });
+      expect(
+        d['frames'],
+        'libc.so abort | libgojni.so runtime.raise.abi0 | '
+        'libhev-socks5-tunnel.so hev_socks5_session_tcp_splice_long_name',
+      );
+      expect(
+        d['go'],
+        'panic: dial tcp <ip>:443 <host> @ '
+        'transport/pipe·(*pipe)·WriteMultiBuffer',
+      );
+      expect(d['abort'], 'fdsan: attempted to close file descriptor 87');
+      expect(
+        scrubCode('libgojni.so x via vless://$_uuid@h.example.com 9.9.9.9'),
+        'libgojni.so x via <link> <ip>',
+      );
+    });
+
     test('the phone knows the same types and priorities as the Worker', () {
       final js = File('../worker/src/health.js').readAsStringSync();
       final block = RegExp(r'export const TYPES = \{([^}]*)\}')
@@ -328,6 +367,67 @@ void main() {
         reason: 'only the heavy session',
       );
       expect(api.healthBodies.first['model'], isNotNull);
+    });
+
+    testWidgets('a native crash is filed under the exit the tunnel noted, '
+        'with what the crash said', (tester) async {
+      final (app, api, tunnel) = await boot(tester);
+      // the tunnel tells the service which exit it carries, by its key only
+      await app.connect();
+      final pleat = (jsonDecode(tunnel.started!) as Map)['pleat'] as Map;
+      final exit = pleat['exit'] as Map;
+      expect(exit['k'], app.exitId);
+      expect(exit['p'], isNotEmpty);
+      expect(jsonEncode(pleat), isNot(contains('example.com')));
+      tunnel.emit(TunnelState.up);
+      await tester.pump(const Duration(seconds: 1));
+      tunnel.native = {
+        'exits': [
+          {
+            't': 'crash',
+            'c': 'native',
+            'd': {
+              'reason': 5,
+              'status': 6,
+              'sig': 'SIGABRT',
+              'go': 'panic: send on closed channel @ transport/pipe·Write',
+              'lib': 'libgojni.so',
+              'frames': 'libc.so abort | libgojni.so runtime.raise.abi0',
+              'tunnel': true,
+              'op': 'up',
+              'up_s': 812,
+              'proto': 'vless/reality/tcp',
+              'k': 'abc123def4',
+            },
+          },
+          {
+            't': 'crash',
+            'c': 'native',
+            'd': {'reason': 5, 'status': 6, 'tunnel': true, 'earlier': true},
+          },
+        ],
+      };
+      await app.resumeTunnel();
+      await tester.pump(const Duration(seconds: 1));
+      final crashes = [
+        ...events(api),
+        ...app.health.queued.map((e) => e.toJson()),
+      ].where((e) => e['t'] == 'crash').toList();
+      final now = crashes.firstWhere((e) => e['k'] == 'abc123def4');
+      final d = now['d'] as Map;
+      expect(d.containsKey('k'), isFalse, reason: 'the key is the event key');
+      expect(d['frames'], 'libc.so abort | libgojni.so runtime.raise.abi0');
+      expect(d['go'], startsWith('panic: send on closed channel'));
+      expect(d['up_s'], 812);
+      // an older crash read again names no exit: the one picked now may not be it
+      final earlier = crashes.firstWhere(
+        (e) => (e['d'] as Map)['earlier'] == true,
+      );
+      expect(earlier['k'], isNull);
+      await app.disconnect();
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(seconds: 10));
+      }
     });
 
     testWidgets('Send diagnostics off: nothing is sent and the exit country '

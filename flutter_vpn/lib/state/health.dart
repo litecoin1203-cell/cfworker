@@ -85,6 +85,30 @@ String scrubText(Object? v, [int max = 160]) {
   return s.length > max ? s.substring(0, max) : s;
 }
 
+/// A native crash's library and function names ("libc.so abort |
+/// libgojni.so runtime.raise"): links, ids, e-mails and IPs still go, but a
+/// function name is neither a host nor a key, so it stays readable. The
+/// same rule as the Worker's scrubCode().
+String scrubCode(Object? v, [int max = 400]) {
+  var s = '${v ?? ''}'.replaceAll(RegExp(r'[\x00-\x1f\x7f]'), ' ');
+  s = s
+      .replaceAll(
+        RegExp(r'\b[a-z][a-z0-9+.-]{1,15}://\S+', caseSensitive: false),
+        '<link>',
+      )
+      .replaceAll(
+        RegExp(
+          r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}',
+          caseSensitive: false,
+        ),
+        '<id>',
+      )
+      .replaceAll(RegExp(r'[\w.+-]+@[\w-]+(\.[\w-]+)+'), '<email>')
+      .replaceAll(RegExp(r'\b\d{1,3}(\.\d{1,3}){3}\b'), '<ip>');
+  s = s.replaceAll(RegExp(r'\s+'), ' ').trim();
+  return s.length > max ? s.substring(0, max) : s;
+}
+
 /// Flat facts only (numbers, yes/no, short text), every text scrubbed.
 Map<String, Object> cleanDetail(Map<String, Object?> d) {
   final out = <String, Object>{};
@@ -97,7 +121,9 @@ Map<String, Object> cleanDetail(Map<String, Object?> d) {
     } else if (v is bool) {
       out[k] = v;
     } else if (v is String) {
-      final t = scrubText(v, k == 'trace' ? 400 : 160);
+      final t = k == 'frames'
+          ? scrubCode(v, 400)
+          : scrubText(v, k == 'trace' ? 400 : (k == 'go' ? 300 : 160));
       if (t.isNotEmpty) out[k] = t;
     } else if (v is List) {
       out[k] = [
@@ -118,6 +144,16 @@ Map<String, Object> cleanDetail(Map<String, Object?> d) {
     }
   }
   return out;
+}
+
+/// The protocols a tunnel carries: the picked exit's, then its backups'
+/// (the core may move to one), e.g. "vless/reality/tcp + vmess/none/ws".
+String exitProtos(String link, List<String> backups) {
+  final first = protoOf(link);
+  final rest = [for (final b in backups) protoOf(b)].where((p) => p.isNotEmpty);
+  final all = [first, if (rest.isNotEmpty) rest.join(', ')];
+  final s = all.where((p) => p.isNotEmpty).join(' + ');
+  return s.length > 80 ? s.substring(0, 80) : s;
 }
 
 /// Protocol, security and transport of a share link, e.g.

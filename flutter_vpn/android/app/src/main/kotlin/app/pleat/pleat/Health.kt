@@ -10,6 +10,8 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import android.os.SystemClock
+import android.system.Os
+import android.system.OsConstants
 import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
@@ -27,6 +29,13 @@ import org.json.JSONObject
  *    and how much of it the screen was off. Read from Android's own battery
  *    level at the start and the end; no extra wake-ups.
  *  - The core's reason when a start fails (addresses blanked).
+ *  - For a native crash (the Xray core, the tun, Flutter's engine): what
+ *    the crash itself says (CrashNotes): the signal, libc's abort message,
+ *    the library and functions it died in, and Go's panic line, from
+ *    Android's tombstone (12+) and from the core's own stderr, which is
+ *    kept in a file for that (it went nowhere before). Plus what the tunnel
+ *    was doing then: the exit's protocol, starting / up / stopping, and for
+ *    how long it had been up.
  *
  * Everything is kept in a small private prefs file until the app reads it
  * once (collect), then forgotten. No address, link or key is stored.
@@ -43,6 +52,17 @@ object Health {
     private var installed = false
 
     private fun prefs(ctx: Context) = ctx.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+
+    /**
+     * Code names only (a tombstone's library and function names): links, ids
+     * and addresses still go, but "runtime.raise" or a long C function name
+     * is not a host or a key and stays readable.
+     */
+    fun blankCode(text: String): String = text
+        .replace(Regex("[a-zA-Z][a-zA-Z0-9+.-]{1,15}://\\S+"), "<link>")
+        .replace(Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"), "<id>")
+        .replace(Regex("\\[[0-9a-fA-F:]+\\](:\\d+)?"), "<ip>")
+        .replace(Regex("\\b\\d{1,3}(\\.\\d{1,3}){3}(:\\d+)?\\b"), "<ip>")
 
     /** No server address, IP, UUID or long key in a text that leaves the phone. */
     fun blank(text: String): String = text
@@ -76,6 +96,7 @@ object Health {
         if (installed) return
         installed = true
         val app = ctx.applicationContext
+        captureStderr(app)
         val previous = Thread.getDefaultUncaughtExceptionHandler()
         Thread.setDefaultUncaughtExceptionHandler { thread, e ->
             try {
@@ -100,6 +121,102 @@ object Health {
 
     fun tunnelStopped(ctx: Context) {
         try { marker(ctx).delete() } catch (e: Exception) {}
+    }
+
+    // ---- the core's stderr: Go's crash text ----------------------------------
+
+    private const val STDERR_CAP = 1L shl 20
+
+    private fun stderrFile(ctx: Context) = File(ctx.applicationContext.noBackupFilesDir, "core-stderr.log")
+
+    /**
+     * Go writes why it crashed (an unhandled panic in the core aborts the
+     * whole app) to stderr, which on Android goes nowhere. Pointed at a file
+     * instead; the last process's file is read here first: a Go crash in it
+     * is kept for the next report, then the file starts empty. Only the
+     * core's few start notes and a crash ever land in it (Xray's own log is
+     * stdout, hev's goes to /dev/null).
+     */
+    private fun captureStderr(app: Context) {
+        val file = stderrFile(app)
+        try {
+            if (file.length() > 0) {
+                val text = file.inputStream().use { input ->
+                    val buf = ByteArray(minOf(file.length(), STDERR_CAP).toInt())
+                    var n = 0
+                    while (n < buf.size) {
+                        val r = input.read(buf, n, buf.size - n)
+                        if (r < 0) break
+                        n += r
+                    }
+                    String(buf, 0, n, Charsets.UTF_8)
+                }
+                CrashNotes.goPanic(text)?.let { line ->
+                    prefs(app).edit()
+                        .putString("go_crash", blank(line).take(300))
+                        .putLong("go_crash_at", file.lastModified())
+                        .commit()
+                }
+            }
+        } catch (e: Exception) {
+            // nothing to learn from it
+        }
+        try {
+            val fd = Os.open(
+                file.absolutePath,
+                OsConstants.O_WRONLY or OsConstants.O_CREAT or OsConstants.O_TRUNC or OsConstants.O_APPEND,
+                0x180, // 0600
+            )
+            try {
+                Os.dup2(fd, 2)
+            } finally {
+                Os.close(fd)
+            }
+        } catch (e: Exception) {
+            // stderr stays where it was; only Go's crash line is missed
+        }
+    }
+
+    /** Called at each tunnel start: the file never grows past a megabyte. */
+    fun trimStderr(ctx: Context) {
+        try {
+            if (stderrFile(ctx).length() > STDERR_CAP) Os.ftruncate(java.io.FileDescriptor.err, 0)
+        } catch (e: Exception) {}
+    }
+
+    // ---- what the tunnel was doing ------------------------------------------
+
+    /**
+     * The tunnel's state, kept on disk at each change, so a crash report can
+     * say which exit (its anonymous key), which protocol, and whether it was
+     * starting, up (for how long) or stopping. [key] and [proto] only from
+     * the app's own "pleat" note in the config; never an address.
+     */
+    fun tunnelState(ctx: Context, op: String, key: String? = null, proto: String? = null) {
+        try {
+            val e = prefs(ctx).edit().putString("t_op", op).putLong("t_at", System.currentTimeMillis())
+            if (key != null) e.putString("t_k", key.takeIf { KEY.matches(it) } ?: "")
+            if (proto != null) e.putString("t_p", proto.takeIf { PROTO.matches(it) } ?: "")
+            if (op == "up") e.putLong("t_up", System.currentTimeMillis())
+            e.apply()
+        } catch (e: Exception) {}
+    }
+
+    private val KEY = Regex("^[a-z0-9]{6,16}$")
+    private val PROTO = Regex("^[a-z0-9/ ,+-]{1,80}$")
+
+    /** What the tunnel was doing at [at] (an exit's time), into [d]. */
+    private fun tunnelAt(app: Context, at: Long, d: MutableMap<String, Any>) {
+        val p = prefs(app)
+        val since = p.getLong("t_at", 0L)
+        if (since == 0L || since > at) return // nothing noted before it ended
+        val op = p.getString("t_op", "").orEmpty()
+        if (op.isEmpty()) return
+        d["op"] = op
+        p.getString("t_p", "")?.takeIf { it.isNotEmpty() }?.let { d["proto"] = it }
+        if (op != "off") p.getString("t_k", "")?.takeIf { it.isNotEmpty() }?.let { d["k"] = it }
+        val up = p.getLong("t_up", 0L)
+        if (op == "up" && up in 1..at) d["up_s"] = ((at - up) / 1000).toInt()
     }
 
     // ---- battery over a session ---------------------------------------------
@@ -202,6 +319,7 @@ object Health {
     @Synchronized
     fun collect(ctx: Context): Map<String, Any> {
         val app = ctx.applicationContext
+        install(app)
         val p = prefs(app)
         val exits = mutableListOf<Map<String, Any>>()
         val javaCrash = p.getString("java_crash", null)
@@ -230,7 +348,12 @@ object Health {
                 ))
             }
         } catch (e: Exception) {}
-        p.edit().remove("java_crash").remove("java_crash_at").remove("battery").apply()
+        val goCrash = p.getString("go_crash", null)
+        if (goCrash != null && exits.none { it["c"] == "native" }) {
+            // a Go crash Android named no exit for (below 11, or history gone): still a crash
+            exits.add(mapOf("t" to "crash", "c" to "native", "d" to mapOf("go" to goCrash)))
+        }
+        p.edit().remove("java_crash").remove("java_crash_at").remove("go_crash").remove("go_crash_at").remove("battery").apply()
         return mapOf("exits" to exits, "battery" to battery)
     }
 
@@ -249,8 +372,20 @@ object Health {
                 return false
             }
             val seen = p.getLong("exit_seen", 0L)
+            // Once: native crashes of the last week that were reported before
+            // their tombstone was read (Pleat 1.2.35 to 1.2.37), with what it says now.
+            if (!p.contains("native_back")) {
+                p.edit().putBoolean("native_back", true).apply()
+                val week = System.currentTimeMillis() - 7 * 86400_000L
+                // all Android still keeps, not just the last 8: other exits (a swipe, an update) push it down
+                val kept = try { am?.getHistoricalProcessExitReasons(app.packageName, 0, 0).orEmpty() } catch (e: Exception) { infos }
+                for (info in kept.filter { it.timestamp in week..seen && it.reason == ApplicationExitInfo.REASON_CRASH_NATIVE }) {
+                    val e = exitOf(app, info, null, earlier = true) ?: continue
+                    out.add(e)
+                }
+            }
             for (info in infos.filter { it.timestamp > seen }.sortedBy { it.timestamp }) {
-                val e = exitOf(info, javaCrash) ?: continue
+                val e = exitOf(app, info, javaCrash) ?: continue
                 if (e["c"] == "java" && javaCrash != null) javaUsed = true
                 out.add(e)
             }
@@ -262,16 +397,20 @@ object Health {
     }
 
     @android.annotation.TargetApi(30)
-    private fun exitOf(info: ApplicationExitInfo, javaCrash: String?): Map<String, Any>? {
+    private fun exitOf(app: Context, info: ApplicationExitInfo, javaCrash: String?, earlier: Boolean = false): Map<String, Any>? {
         // the VPN (a foreground service) or the screen was running when the process ended
         val running = info.importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_FOREGROUND_SERVICE
-        val d = mutableMapOf<String, Any>(
+        // most telling first: the Worker drops the last ones when it runs out of room
+        val d = linkedMapOf<String, Any>(
             "reason" to info.reason,
             "status" to info.status,
-            "tunnel" to running,
-            "pss" to (info.pss / 1024).toInt(),
         )
+        if (info.reason == ApplicationExitInfo.REASON_CRASH_NATIVE) nativeCrash(app, info, d)
+        d["tunnel"] = running
+        d["pss"] = (info.pss / 1024).toInt()
         info.description?.let { d["what"] = blank(it).take(120) }
+        tunnelAt(app, info.timestamp, d)
+        if (earlier) d["earlier"] = true
         val (t, c) = when (info.reason) {
             ApplicationExitInfo.REASON_CRASH -> "crash" to "java"
             ApplicationExitInfo.REASON_CRASH_NATIVE -> "crash" to "native"
@@ -288,6 +427,46 @@ object Health {
         if (c == "java" && javaCrash != null) d["trace"] = javaCrash
         if (c == "anr") anrTrace(info)?.let { d["trace"] = it }
         return mapOf("t" to t, "c" to c, "d" to d)
+    }
+
+    /**
+     * What a native crash says about itself: the signal by name, then (12+)
+     * the tombstone's abort message, library, functions and Go panic line,
+     * and Go's own line from stderr when it ended at the same time.
+     */
+    @android.annotation.TargetApi(30)
+    private fun nativeCrash(app: Context, info: ApplicationExitInfo, d: MutableMap<String, Any>) {
+        CrashNotes.SIGNALS[info.status]?.let { d["sig"] = it }
+        if (Build.VERSION.SDK_INT >= 31) {
+            try {
+                info.traceInputStream?.use { input ->
+                    // usually well under 2 MB; a bigger one is read as far as
+                    // 4 MB, and the signal and abort message come first
+                    val bytes = ByteArray(4 shl 20)
+                    var n = 0
+                    while (n < bytes.size) {
+                        val r = input.read(bytes, n, bytes.size - n)
+                        if (r < 0) break
+                        n += r
+                    }
+                    for ((k, v) in CrashNotes.tombstone(bytes.copyOf(n))) {
+                        d[k] = when (k) {
+                            "frames" -> blankCode(v).take(400)
+                            "go" -> blank(v).take(300)
+                            "thread", "lib" -> blankCode(v).take(40)
+                            else -> blank(v).take(160)
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                // no tombstone kept for this one
+            }
+        }
+        val p = prefs(app)
+        val go = p.getString("go_crash", null)
+        val at = p.getLong("go_crash_at", 0L)
+        // the stderr file was last written as the process died
+        if (go != null && Math.abs(at - info.timestamp) < 120_000L) d["go"] = go
     }
 
     /** The main thread's first frames from an ANR report. */

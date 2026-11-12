@@ -31,7 +31,8 @@ const bridgePort = 10810;
 typedef ProxyLogin = ({String user, String pass});
 
 /// Top-level key for Pleat's own settings in a tunnel config (the apps
-/// that skip the VPN). The VPN service reads and removes it.
+/// that skip the VPN, and which exit it is for the health reports). The VPN
+/// service reads and removes it.
 const pleatKey = 'pleat';
 
 Map<String, Object?> _apiInbound(int port, ProxyLogin login) => {
@@ -80,6 +81,10 @@ const _privateCidrs = [
 /// [bypassApps]: Android packages kept out of the tunnel entirely. Not an
 /// Xray setting: it rides along under [pleatKey], and the VPN service
 /// takes it out before the core sees the config.
+///
+/// [exitNote]: the exit's anonymous key and its protocols (backups too),
+/// e.g. "vless/reality/tcp + vmess/none/ws": also under [pleatKey], kept by
+/// the service so a crash report names the exit it happened on.
 String xrayConfig(
   String link, {
   bool localDirect = false,
@@ -88,6 +93,7 @@ String xrayConfig(
   List<String> backups = const [],
   List<String> directSites = const [],
   List<String> bypassApps = const [],
+  ({String k, String p})? exitNote,
 }) {
   final proxy = outboundOf(link);
   final spares = <Map<String, Object?>>[];
@@ -116,7 +122,13 @@ String xrayConfig(
       localDirect ||
       [proxy, ...spares].any((o) => !udpNative.contains(o['protocol']));
   return jsonEncode({
-    if (!forTest && bypassApps.isNotEmpty) pleatKey: {'bypass': bypassApps},
+    if (!forTest && (bypassApps.isNotEmpty || exitNote != null))
+      pleatKey: {
+        if (bypassApps.isNotEmpty) 'bypass': bypassApps,
+        // the exit's anonymous key and protocols, so a crash report can say
+        // which exit the core was carrying; never an address
+        if (exitNote != null) 'exit': {'k': exitNote.k, 'p': exitNote.p},
+      },
     'log': {'loglevel': 'warning'},
     'dns': {
       'servers': [

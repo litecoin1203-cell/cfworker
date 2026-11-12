@@ -4767,6 +4767,24 @@ section('Pleat health reports: priorities, one row per problem, caps, scrubbing,
   await env.DB.prepare('UPDATE health_events SET day = day - 20 WHERE id = ?').bind(cf1.id).run();
   await H.prune(env);
   ok(!(await one('SELECT 1 x FROM health_events WHERE id = ?', cf1.id)) && (await one('SELECT 1 x FROM health_events WHERE id = ?', crash.id)), 'rows older than 14 days are pruned, recent ones stay');
+  // a native crash: Android's codes in words, and what the crash said (Pleat 1.2.38+)
+  await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?').bind(JSON.stringify({ reason: 5, status: 6, tunnel: true, pss: 163, what: 'crash' }), crash.id).run();
+  const oldCrash = await menu.renderScreen(env, `he:${crash.fp}`);
+  ok(oldCrash.text.includes('5 = کرش native') && oldCrash.text.includes('6 = SIGABRT') && oldCrash.text.includes('🧭 برداشت') && oldCrash.text.includes('1.2.38'),
+    'a 1.2.35 crash report reads in words, and says the next version tells more: ' + oldCrash.text);
+  const rich = H.cleanDetail({
+    reason: 5, status: 6, sig: 'SIGABRT', go: 'panic: dial tcp 203.0.113.9:443 de1.secret-host.example.net @ transport/pipe·(*pipe)·WriteMultiBuffer',
+    lib: 'libgojni.so', frames: `libc.so abort | libgojni.so runtime.raise.abi0 | libhev-socks5-tunnel.so hev_socks5_session_tcp_splice_long_name ${SECRET_UUID} 203.0.113.9`,
+    thread: 'pool-4-thread-2', op: 'up', up_s: 812, proto: 'vless/reality/tcp + vmess/ws', tunnel: true, pss: 163, what: 'crash',
+  });
+  ok(rich.frames.includes('runtime.raise.abi0') && rich.frames.includes('hev_socks5_session_tcp_splice_long_name') && rich.go.includes('WriteMultiBuffer')
+    && !/secret-host|203\.0\.113|3f2a9c1e/.test(JSON.stringify(rich)) && Object.keys(rich).length === 13, 'native crash details: function names stay readable, addresses and ids go: ' + JSON.stringify(rich));
+  await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?').bind(JSON.stringify(rich), crash.id).run();
+  const newCrash = await menu.renderScreen(env, `he:${crash.fp}`);
+  ok(newCrash.text.includes('panic هسته (Go)') && newCrash.text.includes('هسته‌ی Xray (کد Go) panic') && newCrash.text.includes('تانل در حال: وصل')
+    && newCrash.text.includes('vless∕reality∕tcp'), 'a 1.2.38 crash names the core, the protocol and the tunnel state: ' + newCrash.text);
+  ok(H.crashGuess({ abort: 'fdsan: attempted to close file descriptor 87' }).includes('fdsan') && H.crashGuess({ lib: 'libhev-socks5-tunnel.so' }).includes('hev')
+    && H.crashGuess({ lib: 'libflutter.so' }).includes('Flutter'), 'the guess follows the abort message and the library');
   // scrub on its own
   ok(H.scrub('lookup de1.example.com on 8.8.8.8:53: no such host') === 'lookup <host> on <ip>:53: no such host', 'scrub: ' + H.scrub('lookup de1.example.com on 8.8.8.8:53: no such host'));
   ok(H.scrub('at 12:30:45 io.flutter.Foo xray_config.dart') === 'at 12:30:45 io.flutter.Foo xray_config.dart', 'scrub keeps times, code and file names');
