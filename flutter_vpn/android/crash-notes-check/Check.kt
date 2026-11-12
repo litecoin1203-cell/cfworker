@@ -38,6 +38,14 @@ fun main(args: Array<String>) {
     check("junk: empty", CrashNotes.tombstone(byteArrayOf(0x7f, 0x7f, 0x7f, -1, -1)).isEmpty() || true, "no throw")
     check("empty: empty", CrashNotes.tombstone(ByteArray(0)).isEmpty(), "{}")
 
+    // gzip'ed tombstones unpack; the state line tells what Android gave
+    val gz = java.io.ByteArrayOutputStream().also { o -> java.util.zip.GZIPOutputStream(o).use { it.write(bytes) } }.toByteArray()
+    check("gzip: unpacked and read", CrashNotes.tombstone(CrashNotes.unpack(gz))["lib"] == "libhev-socks5-tunnel.so", null)
+    check("plain stays plain", CrashNotes.unpack(bytes).contentEquals(bytes), null)
+    check("state: read", CrashNotes.tombState(bytes.copyOf(4), bytes.size, 5) == "5 KB, 5 facts", CrashNotes.tombState(bytes.copyOf(4), bytes.size, 5))
+    check("state: unread shows its first bytes", CrashNotes.tombState(byteArrayOf(0x7b, 0x22, 0x61, 0x22), 2048, 0) == "2 KB, unread 7b226122", null)
+    check("state: empty", CrashNotes.tombState(ByteArray(0), 0, 0) == "empty", null)
+
     val s = CrashNotes.goPanic(File(dir, "go-stderr.txt").readText())
     check("stderr: reason", s?.startsWith("panic: send on closed channel @ ") == true, s)
     check("stderr: first functions, short, runtime left out", s == "panic: send on closed channel @ transport/pipe·(*pipe)·WriteMultiBuffer < common/buf·copyInternal", s)

@@ -4789,6 +4789,10 @@ section('Pleat health reports: priorities, one row per problem, caps, scrubbing,
   const newCrash = await menu.renderScreen(env, `he:${crash.fp}`);
   ok(newCrash.text.includes('panic هسته (Go)') && newCrash.text.includes('هسته‌ی Xray (کد Go) panic') && newCrash.text.includes('تانل در حال: وصل')
     && newCrash.text.includes('vless∕reality∕tcp'), 'a 1.2.38 crash names the core, the protocol and the tunnel state: ' + newCrash.text);
+  ok(H.crashGuess({ reason: 5, status: 6, sig: 'SIGABRT', tunnel: true, earlier: true }).includes('قدیمی') && !H.crashGuess({ reason: 5, status: 6, earlier: true }).includes('این نسخه بیش از این'),
+    'a re-read old crash with no details says Android kept none, not that the version sends too little');
+  await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?').bind(JSON.stringify({ reason: 5, status: 6, sig: 'SIGABRT', tomb: 'none' }), crash.id).run();
+  ok((await menu.renderScreen(env, `he:${crash.fp}`)).text.includes('none = اندروید چیزی نگه نداشته'), 'tomb state in words');
   ok(H.crashGuess({ abort: 'fdsan: attempted to close file descriptor 87' }).includes('fdsan') && H.crashGuess({ lib: 'libhev-socks5-tunnel.so' }).includes('hev')
     && H.crashGuess({ lib: 'libflutter.so' }).includes('Flutter'), 'the guess follows the abort message and the library');
   // scrub on its own

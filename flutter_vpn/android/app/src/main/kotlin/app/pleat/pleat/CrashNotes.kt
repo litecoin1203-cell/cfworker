@@ -37,6 +37,35 @@ object CrashNotes {
 
     // ---- the tombstone ------------------------------------------------------
 
+    /** A gzip'ed trace (some Android builds keep them so) unpacked, at most 8 MB; anything else as it is. */
+    fun unpack(bytes: ByteArray): ByteArray {
+        if (bytes.size < 2 || bytes[0] != 0x1f.toByte() || bytes[1] != 0x8b.toByte()) return bytes
+        return try {
+            java.util.zip.GZIPInputStream(bytes.inputStream()).use { z ->
+                val out = java.io.ByteArrayOutputStream()
+                val buf = ByteArray(64 * 1024)
+                while (out.size() < (8 shl 20)) {
+                    val r = z.read(buf)
+                    if (r < 0) break
+                    out.write(buf, 0, r)
+                }
+                out.toByteArray()
+            }
+        } catch (e: Exception) {
+            bytes
+        }
+    }
+
+    /**
+     * What Android handed over, in a few words: "empty", "120 KB, 6 facts",
+     * or "120 KB, unread 0a1b2c3d" (its first bytes, to see what format it was).
+     */
+    fun tombState(head: ByteArray, size: Int, facts: Int): String = when {
+        size == 0 -> "empty"
+        facts > 0 -> "${(size + 1023) / 1024} KB, $facts facts"
+        else -> "${(size + 1023) / 1024} KB, unread " + head.joinToString("") { "%02x".format(it) }
+    }
+
     /** A tiny protobuf reader: enough to walk the tombstone, never more. */
     private class Pb(val b: ByteArray, var i: Int, val end: Int) {
         fun more() = i < end

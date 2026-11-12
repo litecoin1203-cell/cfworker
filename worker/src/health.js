@@ -56,7 +56,7 @@ const DETAIL_FA = {
   sessions: 'جلسه', ok: 'موفق', fail: 'ناموفق', minutes: 'دقیقه‌ی وصل', moved: 'شبکه عوض شد', status: 'کد', what: 'توضیح اندروید',
   // a native crash (Pleat 1.2.38+): what the crash itself said, and what the tunnel was doing
   sig: 'سیگنال', go: 'panic هسته (Go)', abort: 'پیام abort', cause: 'علت', thread: 'رشته (thread)', lib: 'کتابخانه', frames: 'فریم‌ها',
-  op: 'تانل در حال', up_s: 'ثانیه وصل بود', pss: 'حافظه‌ی اپ (MB)', earlier: 'کرش قبلی، دوباره خوانده شد',
+  op: 'تانل در حال', up_s: 'ثانیه وصل بود', tomb: 'tombstone اندروید', pss: 'حافظه‌ی اپ (MB)', earlier: 'کرش قبلی، دوباره خوانده شد',
 };
 // ApplicationExitInfo.REASON_* (Android 11+): why Android says the process ended
 const EXIT_REASON_FA = {
@@ -75,6 +75,9 @@ function detailValue(k, v, d) {
   if (k === 'status' && d.reason === 5 && SIGNAL_FA[v]) return `${v} = ${SIGNAL_FA[v]}`;
   if (k === 'status' && d.reason === 2 && SIGNAL_FA[v]) return `${v} = ${SIGNAL_FA[v].split(' — ')[0]}`;
   if (k === 'op' && OP_FA[v]) return OP_FA[v];
+  if (k === 'tomb' && v === 'none') return 'none = اندروید چیزی نگه نداشته';
+  if (k === 'tomb' && /^error/.test(String(v))) return `${v} = خواندنش ناموفق بود`;
+  if (k === 'tomb' && /unread/.test(String(v))) return `${v} = بود ولی Pleat نتوانست بخواند`;
   return v;
 }
 // A native crash in one line of plain words, from what the phone sent. Before 1.2.38 only the signal is known.
@@ -86,6 +89,9 @@ export function crashGuess(d) {
   if (/libgojni/.test(d.lib || '')) return 'کرش در هسته‌ی Xray (کتابخانه‌ی Go).';
   if (/libflutter|libapp/.test(d.lib || '')) return 'کرش در موتور نمایش اپ (Flutter)، نه هسته یا سرور.';
   if (abort) return 'کتابخانه‌ی C خودش abort کرد؛ «پیام abort» علت را می‌گوید.';
+  // re-read from Android's history: details only if Android still kept the crash's tombstone
+  if (d.earlier) return 'کرش قدیمی (از قبل از به‌روزرسانی) که دوباره خوانده شد، ولی اندروید جزئیاتش را نگه نداشته بود. علتش از همین گزارش معلوم نمی‌شود؛ کرش بعدی روی 1.2.38+ متن panic، کتابخانه و سرور را می‌آورد.';
+  if (d.tomb === 'none') return 'اندروید برای این کرش tombstone نگه نداشته؛ اگر panic هسته‌ی Go بود، «panic هسته» باید پر باشد و نیست.';
   if (d.reason === 5 && d.status === 6) return 'abort عمدی: یا panic هسته‌ی Go (Xray)، یا fdsan/libc، یا موتور Flutter. این نسخه بیش از این نفرستاده؛ از Pleat 1.2.38 متن panic، کتابخانه و پروتکل هم می‌آید.';
   if (d.reason === 5 && d.status === 11) return 'دسترسی نامعتبر به حافظه در کد native (C)؛ کد Go چنین خطایی را به panic و SIGABRT تبدیل می‌کند.';
   return '';
