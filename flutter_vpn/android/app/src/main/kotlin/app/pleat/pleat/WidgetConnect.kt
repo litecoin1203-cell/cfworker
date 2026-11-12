@@ -15,11 +15,19 @@ class WidgetConnect : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         if (savedInstanceState != null) return
-        val ask = try { VpnService.prepare(this) } catch (e: Exception) { null }
+        WidgetTrail.begin(this)
+        val ask = try {
+            VpnService.prepare(this)
+        } catch (e: Exception) {
+            WidgetTrail.step(this, "prepare_err", e)
+            null
+        }
         if (ask == null) {
+            WidgetTrail.step(this, "consent_ok")
             go()
             finish()
         } else {
+            WidgetTrail.step(this, "consent_ask")
             @Suppress("DEPRECATION")
             startActivityForResult(ask, ASK)
         }
@@ -29,13 +37,21 @@ class WidgetConnect : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         @Suppress("DEPRECATION")
         super.onActivityResult(requestCode, resultCode, data)
+        WidgetTrail.step(this, "consent_result_$resultCode")
         if (requestCode == ASK && resultCode == RESULT_OK) go()
         finish()
     }
 
     private fun go() {
         val i = Intent(this, PleatVpnService::class.java).setAction(StatusWidget.ACTION_WIDGET_START)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
+            WidgetTrail.step(this, "fgs_sent")
+        } catch (e: Exception) {
+            // Android refused even from the front: noted, never a crash
+            WidgetTrail.step(this, "fgs_err", e)
+            Health.startRefused(this, e)
+        }
     }
 
     override fun finish() {

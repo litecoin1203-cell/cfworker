@@ -399,6 +399,8 @@ object Health {
                 tunnelStopped(app)
             }
         }
+        // a widget start that never came up: its steps and Android's raw exit records
+        WidgetTrail.collect(app, exits)
         if (javaCrash != null && !javaUsed) {
             exits.add(mapOf("t" to "crash", "c" to "java", "d" to mapOf("trace" to javaCrash)))
         }
