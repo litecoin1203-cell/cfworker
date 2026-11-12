@@ -5,8 +5,20 @@
 > was fixed, which rules the owner insists on, and what is still open.
 >
 > **Read this first, then read the code.** Every fact here was taken from the code, the git and PR history,
-> the audit documents and the owner's decisions up to **2026-11-08** (main at `9d04f0e`, PR #45). When this
-> file and the code disagree, the code wins; fix this file in the same PR.
+> the audit documents and the owner's decisions up to **2026-11-12** (main at `85e10bf`, PR #82, Pleat 1.2.46+49).
+> When this file and the code disagree, the code wins; fix this file in the same PR.
+>
+> **The doc set** (all in `docs/` unless noted):
+> | File | What it answers |
+> |---|---|
+> | `PROJECT_HANDBOOK.md` (this file) | what the project is, the rules, architecture, features, history, open items, how-tos |
+> | [`API.md`](API.md) | every Worker route (app, admin, webhooks) and every cron job |
+> | [`DATABASE.md`](DATABASE.md) | every D1 table and column, the migration log, settings keys, backups |
+> | [`../AGENTS.md`](../AGENTS.md) | the short rule card an AI coding agent loads automatically (`CLAUDE.md` points to it) |
+> | [`../flutter_vpn/docs/backend-map.md`](../flutter_vpn/docs/backend-map.md) | what each Pleat screen calls on the Worker |
+>
+> A Worker test (`developer docs name every migration and every API route`) fails when a new migration or route
+> is not in `DATABASE.md` / `API.md`, so those two cannot silently go stale.
 >
 > **No secrets live in this file and none may ever be added**: no panel addresses, panel logins, subscription
 > links, UUIDs, keys, tokens, card numbers or wallet addresses.
@@ -48,20 +60,26 @@ Cloudflare's Free plan:
 - **A Cloudflare Worker** (`worker/`, plain JavaScript ESM, zero runtime dependencies) with a **D1** (SQLite)
   database. It is at once:
   - the **API** of the app (`/api/v1/*`),
-  - the **admin Telegram bot** (`/tg` webhook),
+  - the **admin Telegram bot** (`/tg` webhook) and the **Telegram Mini App** (`/app/`, user side + a full admin
+    panel, built from `miniapp/`),
+  - the receiver of Pleat's **automatic health reports** (`/me/health`: crashes, failed exits, drops) that alert
+    the admin in Telegram,
   - the **bank-SMS receiver** that auto-confirms card-to-card payments (`/sms`),
   - the **crypto payment watcher** (cron reads five blockchains) and the NOWPayments IPN receiver,
   - the **control plane** over several third-party **VPN panels** (PasarGuard, Marzban, Rebecca): it creates
     each user's account on every panel, sums usage across panels, and stops/starts accounts on quota or expiry.
 - **Pleat** (`flutter_vpn/`, Flutter + Kotlin) is **the** product app for Android. It logs in to the Worker,
   shows plans, takes payments, downloads the user's configs, and runs the tunnel itself (Xray core +
-  hev-socks5-tunnel inside an Android `VpnService`).
+  hev-socks5-tunnel inside an Android `VpnService`). It also has a home-screen widget, a Route chooser (goal +
+  country), a Protect section (Shield DNS filtering, Privacy check, Google location per exit) and sends health
+  reports.
 - **VPN traffic never touches Cloudflare.** It goes from the phone to the panels' VPN nodes (VLESS
   Reality/TLS/WS/gRPC/XHTTP/HTTPUpgrade, VMess, Trojan, Shadowsocks, WireGuard, Hysteria2).
 
 **The owner** is Ali (GitHub `litecoin1203-cell`). He writes in **Persian**, sends APKs to users by hand, is
-the only admin, and as of 2026-11-07 had **2 users** and **2 panels** (panel 1 = PasarGuard, panel 2 =
-Rebecca 1.8.0). Users are in **Iran**, behind heavy filtering; that fact drives many design choices.
+the only admin, and as of 2026-11-12 had **about 2 users** and **2 panels** (panel 1 = PasarGuard, panel 2 =
+Rebecca 1.8.0). The GitHub repo is **public** (since 2026-11-11, for free Actions minutes): anything committed is
+readable by anyone, so secrets live only in GitHub/Worker secrets. Users are in **Iran**, behind heavy filtering; that fact drives many design choices.
 
 **The old app is retired.** `android/` (v2rayNG 2.2.6 fork + a WebView bridge) and `app-web/` (its Persian
 web UI) are the former "Cloud Gold" app. Nobody uses it (Ali, 2026-11-07). They are still in the repo and are
@@ -77,7 +95,7 @@ These are not suggestions. Each one exists because something went wrong or Ali s
 - **Talk to Ali in Persian.** Docs and code comments are English.
 - **Pleat's UI is English only.** No Persian strings, no RTL, no language picker. Persian text that comes from
   the server is either shown verbatim (plan names, card holder) or mapped to generic English.
-- **The admin bot's text is Persian.**
+- **The admin bot's text is Persian.** The **Telegram Mini App (user and admin) is English, LTR.**
 
 ### The admin bot is buttons only
 - Never ask Ali to type a `/command`. Telegram drops the arguments of a tapped command anyway
@@ -97,15 +115,21 @@ These are not suggestions. Each one exists because something went wrong or Ali s
 - **A new backend file needs Ali's okay** (justify it first). Phase work does not move to the next stage
   without his explicit **«برو»** ("go").
 - Work on a branch, open a PR, let Ali merge. Ali (or Claude on his explicit word) merges.
+- **Who does what (Ali, 2026-11-11):** architecture / engineering work runs on a strong model and opens PRs;
+  operational work (merging, running Deploy, building the Pleat APK, version bumps) runs on a cheaper model in one
+  "integration" thread. Keep merges and deploys off Ali's hands, and never let two threads merge or build the same
+  PR (two Pleat builds both publish to `pleat-latest` and overwrite each other).
 - **Deploy is manual.** Merging to `main` deploys nothing. Say so after every Worker change and tell Ali to run
   "Deploy Cloud Gold server" (and the Pleat workflow for an app change).
 
 ### Secrets and privacy
-- No secrets in code, logs, tests, docs or chat. Never echo panel logins, panel addresses or subscription links.
+- **The repo is public.** No secrets in code, logs, tests, docs or chat. Never echo panel logins, panel addresses or subscription links.
 - No panel URL, name, count or credentials anywhere user-facing (app, logs, bot output to users).
 - Tests use made-up config values, never Ali's real ones.
 - Secret rotation (panel-1 logins, webhook secret, SMS key) is deferred to a **pre-release checklist**.
 - Ali once pasted real panel-2 subscription links in chat; the advice to regenerate that panel account stands.
+- Health reports and crash reports carry **no** share link, UUID, key, server address, IP, e-mail or Wi-Fi name;
+  the app scrubs and the Worker scrubs again (`health.js` `scrub`). Exits are named only by the anonymous server key.
 
 ### Users must not be disturbed
 - Existing users must not be forced to log in again or get a new UUID.
@@ -132,34 +156,45 @@ These are not suggestions. Each one exists because something went wrong or Ali s
 ```
 cfworker/
 ├── worker/                      THE BACKEND (active)
-│   ├── src/                     ~8,600 lines, 23 files (see §5)
-│   ├── migrations/              0001 … 0019 (two files share 0015 — harmless, never rename)
-│   ├── test/run.mjs             the whole test suite (hand-made harness, ~1,070 checks)
+│   ├── src/                     ~10,800 lines, 26 files (see §5)
+│   ├── migrations/              0001 … 0022 (two files share 0015 — harmless, never rename) → docs/DATABASE.md
+│   ├── test/run.mjs             the whole test suite (hand-made harness, ~1,450 checks)
 │   ├── test/shim.mjs            D1 on node:sqlite (batch is transactional like D1), fake panels
 │   ├── test/dev_server.mjs      the Worker + a fake panel on http://127.0.0.1:8787 (for Pleat's live test)
-│   ├── wrangler.jsonc           crons, rate limiters, D1 binding (id filled by the deploy workflow)
+│   ├── wrangler.jsonc           crons, rate limiters, D1 binding (id filled by the deploy workflow), static assets
+│   ├── public/                  built Mini App (gitignored; built from miniapp/ by the deploy)
 │   └── package.json             npm test / npm run coverage (Node 22, --experimental-sqlite)
 ├── flutter_vpn/                 PLEAT, THE APP (active)
 │   ├── lib/api/                 client.dart (HTTP over dart:io, multi-base race), models.dart, countries.dart
-│   ├── lib/state/               app_state.dart (the big ChangeNotifier), tunnel.dart, xray_config.dart,
-│   │                            bridge.dart, exits.dart, net_cache.dart, diagnose.dart, updater.dart
-│   ├── lib/screens/             20 screens (home, locations, profile, plans, checkout, pay_card, pay_coin, …)
-│   ├── lib/design/              tokens.dart (palettes), shard_field, mark, nav, city_art, avatars, …
+│   ├── lib/state/               app_state.dart (the big ChangeNotifier, ~3,500 lines), tunnel.dart,
+│   │                            xray_config.dart, bridge.dart, exits.dart, net_cache.dart, diagnose.dart,
+│   │                            updater.dart, health.dart (health reports), protect.dart (Google/privacy rules),
+│   │                            recommend.dart (why an exit is recommended), route_mode.dart (goal families),
+│   │                            route_rules.dart (stay in country / split / networks), stats_log.dart
+│   ├── lib/screens/             26 screens (home, locations, login, avatar_gate, route_chooser, route_extras,
+│   │                            stats_view, protect, privacy_check, google_location, profile, plans, …)
+│   ├── lib/design/              tokens.dart (palettes), shard_field, mark, nav, city_art, avatars, update_track, …
 │   ├── android/app/src/main/kotlin/app/pleat/pleat/
-│   │                            PleatVpnService, MainActivity, Engine, Bridge, Speed, TunnelHub,
-│   │                            TunnelNote (notification), TProxyService (hev JNI), Updates (installer)
+│   │                            PleatVpnService, MainActivity, Engine, Bridge, Speed, Probe (Protect tests),
+│   │                            TunnelHub, TunnelNote (notification), TProxyService (hev JNI), Updates (installer),
+│   │                            Health + CrashNotes (exit reasons, tombstones), Apps (split-route app list),
+│   │                            StatusWidget + WidgetConnect + WidgetTrail (home-screen widget)
 │   ├── android/compile-hevtun.sh  builds hev-socks5-tunnel with PKGNAME=app/pleat/pleat
-│   ├── test/                    unit/widget tests, live backend test, real-Xray config test
+│   ├── android/crash-notes-check/ JVM check of CrashNotes against Android tombstone protos
+│   ├── test/                    19 files: unit/widget tests, live backend test, real-Xray config test
 │   └── docs/backend-map.md      what every Pleat control calls on the Worker
 │                 parity.md      Pleat vs the old Cloud Gold app, feature by feature (Persian)
+├── miniapp/                     TELEGRAM MINI APP (Preact 10 + esbuild, pinned + lockfile): src/ (user side),
+│                                src/admin/ (admin panel), test/; `npm run build` → worker/public/
 ├── android/  app-web/           RETIRED old Cloud Gold app — do not extend
 ├── design-system/               the old app's "Vault & Hallmark" design docs (historical)
-├── docs/PROJECT_HANDBOOK.md     this file
-├── README.md                    original Persian setup guide (partly outdated: old app, "53 tests")
+├── docs/                        PROJECT_HANDBOOK.md (this file), API.md, DATABASE.md
+├── AGENTS.md, CLAUDE.md         short rule card for AI coding agents
+├── README.md                    original Persian setup guide (partly outdated: old app); links to docs/
 └── .github/workflows/
-    ├── test-worker.yml          Worker tests + coverage on push/PR touching worker/**
-    ├── flutter-vpn.yml          "Pleat Flutter app": format, analyze, test, live test, Xray config test,
-    │                            APK build; manual run publishes to release pleat-latest
+    ├── test-worker.yml          Worker tests + coverage + Mini App tests/build, on PRs touching worker/** or miniapp/**
+    ├── flutter-vpn.yml          "Pleat Flutter app": on PRs: format, analyze, test, live test, Xray config test;
+    │                            manual run (input api_base) also builds the APK and publishes to pleat-latest
     ├── deploy-worker.yml        "Deploy Cloud Gold server": manual only
     ├── android.yml              RETIRED: old app APK
     └── make-key.yml             one-time signing key generator (already used)
@@ -168,8 +203,9 @@ cfworker/
 Outside the repo (only visible inside the Claude project, not on GitHub): `/mnt/project-files/` holds the
 audit state file `engineering-audit/ENGINEERING_AUDIT.md` (phases, findings, measurements; partly Persian),
 proof scripts in `engineering-audit/tools/`, the security audit report, battery study, design previews
-(themes, avatars, notification, plan cards, profile). If you have that folder, read the audit file before
-any audit work.
+(themes, avatars, notification, plan cards, profile, widgets, protect, home-exits), phone-test checklists
+(`engineering-audit/phone-test-checklist.md`, `health-reports/phone-test.md`). If you have that folder, read the
+audit file before any audit work. Its results are summarised in §19 here.
 
 ---
 
@@ -202,6 +238,10 @@ any audit work.
            · NOWPayments (optional) · the admin's phone (SMS forwarder app) · GitHub Releases (APKs)
 ```
 
+Also served by the same Worker (not drawn): the **Telegram Mini App** as static assets at `/app/` with its admin API
+`/api/v1/admin/*` (`admin-api.js`), Pleat's **health reports** `/me/health` (`health.js`), and the 15-minute
+**Tunnel-group host rules** refresh in the per-minute cron. Full route and cron list: [`API.md`](API.md).
+
 Key ideas:
 
 1. **The Worker, not a panel, is the source of truth** for a user's subscription (since PR #4, migration
@@ -218,27 +258,17 @@ Key ideas:
 
 ### Entry points (`src/index.js`)
 
-| Path | Auth | Handler |
-|---|---|---|
-| `GET /health` | none | `{ok:true}`; `?deep=1` also checks D1 and cron age (PR #45) |
-| `GET /mini/probe` | none | Mini App stage 0 probe page (HTML, strict CSP): tests whether a Mini App opens on Iranian networks |
-| `GET /pay/done` | none | return page after gateway payment (old `cloudgold://` deep link) |
-| `POST /sms` | key in `X-SMS-Key` header (was in the URL path until PR #45) | `sms.js` → `settle` |
-| `POST /tg` | `TELEGRAM_WEBHOOK_SECRET` (path + `X-Telegram-Bot-Api-Secret-Token`) + admin role per update | `telegram*.js` |
-| `GET /api/v1/app-config, /plans, /ip` | none | public settings: extra API bases, bridges, announcement |
-| `POST /api/v1/auth/register, login, tg/start, tg/verify, tg/register, refresh` | none; rate limited (IP/login/uid) | `auth.js` |
-| `POST /api/v1/mini/probe` | Telegram `initData` (HMAC with the bot token, ≤ 24 h); rate limited per IP | probe result → admin chat (`account.miniProbeReport`) |
-| `POST /api/v1/payments/nowpayments/ipn` | HMAC-SHA512 | `orders.js` → `settle` |
-| everything else under `/api/v1/` | Bearer access JWT (30 min) + `token_version` + `is_active` | account/orders/netstats/auth |
+The full list (every route, its auth, handler and limits, plus the admin API and the crons) is in
+[`API.md`](API.md). The shape:
 
-Authed app routes: `/me`, `/me/ip`, `/me/packages`, `/me/email`, `/me/avatar`,
-`/me/telegram/start|verify`, `/trial`, `/vpn`, `/vpn/servers`, `/vpn/sub` (old-app format), `/net/report`,
-`/net/rank`, `/net/google`, `/coupons/check`, `/devices`, `/devices/:id`, `/wallet`, `/referral`, `/orders`
-(GET/POST), `/orders/:id/...` (receipt, paid, cancel), `/app/apk` (APK proxy), `/auth/change-password`,
-`/auth/logout-all`.
-
-Routing is hand-written `if` / regex in `route()`. Heavy modules are loaded with `await import()` (this also
-breaks import cycles).
+- `fetch`: `/health`, `/sms` (bank SMS, `X-SMS-Key`), `/tg` (bot webhook, secret in path + header),
+  `/mini/probe`, `/pay/done`, static `/app/*` (Mini App), and `/api/v1/*` → `route()`.
+- `route()`: public routes first (app-config, plans, auth incl. Telegram code and Mini App initData, NOWPayments
+  IPN), then `/admin/*` (handed to `admin-api.js` after `requireAdmin`), then the `authed` list (Bearer access JWT,
+  30 min, + `token_version` + `is_active`). Mini App user tokens are refused on `/vpn*` and `/devices*`.
+- Routing is hand-written `if` / regex. Heavy modules are loaded with `await import()` (this also breaks import
+  cycles and keeps cold-start CPU low).
+- `scheduled`: three crons (every minute, every 2 minutes, daily 20:30 UTC), see `API.md`.
 
 ### Modules
 
@@ -263,7 +293,10 @@ breaks import cycles).
 | `telegram.js` | Telegram client, admin roles, order callbacks, `ensureWebhook`, `sendBackup`, legacy text commands, `buttonize` |
 | `telegram-menu.js` | button menu router, forms (`bot_session`), confirms |
 | `telegram-screens.js` | read-only bot screens |
-| `admin-actions.js` | **every bot write**: validate → one D1 batch → audit → undo; broadcasts (`broadcastTick`) |
+| `admin-actions.js` | **every bot and Mini App write**: validate → one D1 batch → audit → undo; broadcasts (`broadcastTick`) |
+| `admin-api.js` | the Mini App admin API: `ROUTES` table `[method, regex, level, handler]`, 15-min admin token, role re-read per request |
+| `health.js` | Pleat health reports: `TYPES` + priorities, `LIMITS` (per-user caps), `scrub`, P1 Telegram alert, location mismatch (`checkExitCountry`), bot screens (🩺 سلامت اپ), crash wording (`crashGuess`), daily line, prune |
+| `countries.js` | country of a config from its remark/host (`countryOfLink`): flag, English/Persian name, 2-letter token, host label |
 
 ### Auth facts
 - Passwords: PBKDF2-SHA256, **5,000 iterations** over HMAC(SECRET_KEY, password). **Do not raise the
@@ -284,51 +317,40 @@ API_KEY/USERNAME_PREFIX` (panel 1), `PANEL_<id>_CRED` (optional), `NOWPAYMENTS_*
 the deploy from the GitHub secret of the same name).
 
 GitHub secrets: `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `APP_KEYSTORE_BASE64/PASSWORD/ALIAS`,
-`APP_KEY_PASSWORD` (the release signing key — Pleat is signed with it), `PLEAT_BRIDGE`, `PLEAT_DL_TOKEN`.
+`APP_KEY_PASSWORD` (the release signing key "Cloud Gold VPN" — Pleat is signed with it; never change it or installed
+apps can't update), `PLEAT_BRIDGE`, `PLEAT_DL_TOKEN` (a PAT that can read the release). Optional Worker var:
+`PLEAT_REPO` (defaults to this repo).
 Variable: `CG_API_BASE` (API base list for builds).
 
 Since PR #4 the deploy does **not** upload GitHub secrets to the Worker; it only checks that the names exist.
 Changing a Worker secret = Cloudflare dashboard → Worker → Settings → Variables and Secrets.
 
-### Runtime settings (`settings` table, edited from the bot)
-Card number/holder/bank, `card_unique`, `card_auto` (auto/detect/off), `sms_senders`, `sms_key`, coin wallets
-and memos, `coin_auto`, `usd_rate_toman`, `referral_percent`, `min_topup_toman`, `announcement`,
-`app_api_bases` (extra Worker domains pushed to installed apps), `app_bridges` (bridge share links),
-`trial_data_gb`, `trial_needs_telegram`, `app_release` (in-app update announcement), encrypted
-`panel_cred_<id>`, `panel_err_<id>` and more. Defaults are in `db.js` `SETTING_DEFAULTS`.
+### Runtime settings (`settings` table, edited from the bot or the Mini App)
+Card, SMS, crypto wallets, USD rate, referral, announcement, extra API bases (`app_api_bases`), bridges
+(`app_bridges`), trial, in-app update (`app_release`), sealed panel logins (`panel_cred_<id>`), Tunnel-group host
+rules (`panel_hosts_<id>`), learned exit countries (`server_exit_cc`), health report mode (`health_mode`). Defaults
+are in `db.js` `SETTING_DEFAULTS`. The full key list is in [`DATABASE.md`](DATABASE.md#settings-key--value).
 
 ---
 
 ## 6. Database (D1)
 
-About 31 tables. Main ones:
-
-- `users`, `devices`, `tg_logins`, `user_skeys`
-- `plans` (with `archived`), `subscriptions` (one per user), `sub_periods` (package history)
-- `orders` (statuses incl. `settling` claim with a lease, `provisioned_at`, `receipt_upload`), `wallet_tx`
-  (nonce + `UNIQUE(order_id, reason)`; a trigger keeps the wallet ≥ 0), `coupons`, `coupon_uses`
-- `panels` (state machine), `panel_accounts` (`UNIQUE(user_id, panel_id)` and `(panel_id, remote_username)`),
-  `usage_counters`, `sync_cursor`
-- `settings` (key/value for almost everything)
-- bot: `bot_session` (form state, 10 min), `bot_confirm`, `admin_audit` (+ undo), `admins` (roles
-  owner/support/viewer), `broadcasts`, `server_overrides` (hide/rename an exit)
-- network stats: `net_stats`, `net_geo`, `google_probe`, `net_votes`, `google_votes`, `net_speed_votes`,
-  `user_net`, `user_net_srv`
-- `sms_log`
+**Every table and column, the migration log and the settings keys are in [`DATABASE.md`](DATABASE.md).** 33 tables
+in groups: accounts (`users`, `devices`, `tg_logins`, `admins`), money (`plans`, `orders`, `wallet_tx`, `coupons`,
+`coupon_uses`, `sms_log`), control plane (`subscriptions`, `sub_periods`, `panels`, `panel_accounts`,
+`usage_counters`, `sync_cursor`, `server_overrides`), network ranking (`net_*`, `google_*`, `user_net*`,
+`user_skeys`), bot (`bot_session`, `bot_confirm`, `admin_audit`, `broadcasts`), health (`health_events`) and
+`settings`.
 
 Facts to remember:
 - **No foreign keys** anywhere; integrity is in code. A user "delete" is soft (email becomes
-  `deleted+<id>@invalid`).
+  `deleted+<id>@invalid`; panel accounts are switched off and unlinked, never deleted on the panel).
 - `txid` uniqueness is enforced by a single conditional UPDATE in `chainwatch.claimTxid`, not a constraint.
-- Migrations are forward-only, no rollback. Two files are numbered 0015; wrangler sorts by name and it works.
-  **Never rename an applied migration.**
+- Migrations are forward-only and **additive only**. Two files are numbered 0015; wrangler sorts by name and it
+  works. **Never rename an applied migration.** Latest: **0022** (`health_events`).
 - Backup = a daily JSON of 14 tables (no password hashes, sub URLs, panel creds, SMS key or bridges) sent to
-  the admin's Telegram. There is no restore tool; real recovery is D1 Time Travel.
-
-Migration history: 0001 init · 0002 coupons/autobuy · 0003 crypto (own wallets) · 0004 memos · 0005 card SMS ·
-0006 net stats · 0007 geo/Google · 0008 atomic wallet · 0009 order claim · 0010 indexes · 0011 control plane
-(multi-panel) · 0012 security fixes (votes) · 0013 carrier speed · 0014 Telegram login · 0015 profile ·
-0015 receipt upload · 0016 avatar · 0017 per-user network · 0018 admin panel · 0019 admin stats indexes.
+  the admin's Telegram. There is no restore tool; real recovery is D1 Time Travel (the Deploy prints a bookmark
+  before migrating).
 
 ---
 
@@ -350,6 +372,14 @@ same batch as the new period (C5 fix). Remaining time and unused data both carry
 Guards added after audits: max **3 open orders per method** per account (idle card orders > 30 min and stale
 quotes auto-closed; otherwise `429 too_many_open_orders`); an expired crypto quote goes to admin review
 instead of auto-paid; rate limits on orders, receipts, "I paid" and refresh.
+
+Later money fixes (engineering audit, PRs #63–#65, 2026-11-11):
+- **BL-2**: a wallet purchase whose `settle` threw *after* `provision` committed used to refund the wallet too (plan
+  and money both given). Now an order with `provisioned_at` set is marked paid and the error logged.
+- A repeated NOWPayments IPN for a paid order no longer re-notifies the admin; tests cover repeated / foreign /
+  failed / unknown IPNs and a top-up whose wallet no longer covers the plan.
+- **Crypto pricing (#68)**: coin prices per coin from CoinGecko → KuCoin → Coinbase (+ last saved copy); USD/toman
+  from Nobitex `apiv2`, Wallex, Tabdeal, Exir (median). The bot's "💵 قیمت دلار" shows each source's status.
 
 **The SMS amount unit bug (F1)**: Iranian bank SMS show **rials**, prices are **toman** (×10). This was a real
 HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman straight.
@@ -388,6 +418,23 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
   also overrules a remark that names another country (TR 1/TR 7 left via Hetzner/dataforest in DE): confirmed exit >
   remark > unconfirmed exit > host label. The bot's server list marks such servers with 📍.
 - PasarGuard may serve Xray JSON to a v2rayNG user agent; `collectLinks` falls back to `<sub>/links` (PR #9).
+- **Account names (#49)**: new panel accounts are named after the Telegram @username (sanitised for all three
+  panel types); a taken name (409) falls back to `<name>_<user id>`, then `<name>_<random>`; no @username →
+  `tg<numeric id>`; email-only → `cg_<id>_<random>`. Existing accounts are never renamed (Marzban's sub token
+  depends on the name). `usage_counters.online_at` keeps the panel's last-connection time (no extra writes).
+- **Unlink (#55)**: bot › user › 🗂 پنل‌های کاربر › "✂️ جداکردن" removes the link row (optionally switching the
+  account off) so the panel account can be linked to another user. Deleting a user switches every panel account
+  off and frees all links.
+- **Iran-tunnel configs (#56, #60, #61)**: configs from a panel's "Tunnel" group are sent with `tunnel: true` and
+  Pleat shows an **IR TUNNEL** badge. Share links don't say their group, so every 15 min the cron reads PasarGuard
+  groups + hosts into `panel_hosts_<id>` and matches links by address/port/remark. Panel 1's admin gets **403** on
+  `/api/groups` and `/api/hosts` (not sudo), so the Worker instead creates a probe user **`cgtunnel_…` only in the
+  Tunnel group** (`tunnel_probe_<id>`); its configs *are* the tunnel configs. **Never delete that panel user.**
+  Bot diagnostic: 🗂 پنل‌ها › #1 › 🖥 سرورها › "🚇 عیب‌یابی تانل". Fixed and confirmed on Ali's phone 2026-11-11.
+- **Panel tags (#56, #59)**: `/vpn/servers` sends `panel: <n>`; Pleat shows a grey P1/P2 tag to every user.
+- **Dead panels (#58, #62)**: `/me` and `/vpn` wait at most 1.5 s for a live reading (stored numbers otherwise,
+  finished in `waitUntil`); a panel that just failed is remembered by the isolate for 60 s so later requests wait
+  1.5 s, not 5 s; the per-minute "missing accounts" look is skipped for 10 min after a look that found none.
 - Panel 1 is still special in a few places (always in provision, HWID only for panel 1, device removal only on
   panel 1, buying needs `PASARGUARD_URL`). Audit items AD3/P17, not yet fixed.
 - Ali's panels are **https**. Since PR #45 only https panel logins are accepted.
@@ -409,6 +456,16 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
   "📶 تجربه اتصال"), "👥 کاربران و اپراتورهایشان", "📱 اپ Pleat › 📲 نسخه‌ی اپ" (announce / mandatory /
   withdraw an update), panel list with rollout progress.
 - Broadcasts are sent 25 messages per `*/2` cron run (own invocation, own subrequest budget).
+- Screens added since PR #47: "🗂 پنل‌های کاربر" (live per-panel view of one user, with ✂️ unlink) and
+  "🕒 آخرین اتصال" on the user card (#49, #55); 🖥 سرورها per panel with 🚇 tunnel marks, "🚇 عیب‌یابی تانل", ❓ for
+  configs with no country and 📍 where the learned exit country overrules the remark (#60, #67, #76);
+  "💵 قیمت دلار" with price-source status (#68); **"🩺 سلامت اپ"** (health reports: list by priority, one event,
+  resolve / mute / report mode all / P2+ / off, crash details in words) (#73, #77, #79, #80); 📱 اپ Pleat ›
+  🧪 تست Mini App (#50).
+- **Callback routes must be unique**: two screens once shared the prefix `upa` (user panels vs app-update announce)
+  and a tap ran the wrong action (#55). When adding a button, grep the menu for the route string first.
+- Every bot screen also exists in the **Mini App admin panel** (§19 › Telegram Mini App), sharing
+  `admin-actions.js`.
 - Legacy text commands still work (hidden) via `runAdminCommand`.
 - Known: default plan names come back Persian (the Worker translates them); rename plans in the bot.
 
@@ -416,7 +473,7 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.23+26** (`flutter_vpn/pubspec.yaml`). PR #46 (open) = 1.2.24.
+Version on main: **1.2.46+49** (`flutter_vpn/pubspec.yaml`), APK built and on `pleat-latest`.
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
 Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLibXrayLite tag **v26.7.5**
 (Xray 26.6.27 inside), hev-socks5-tunnel commit `67dfba56`.
@@ -432,7 +489,8 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
 - Profile: mandatory verified Telegram username + optional backup Gmail; one line "Data and days · X GB left · N
   days left" that opens a bottom sheet with pleats (data), day dots and package history; long emails always fit
   one line (`FitLine`). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
-- Home "Now" shows country + city + exit IP (from `/me/ip`, through the tunnel) instead of a timer.
+- Home has three tabs: **Now** (country + city + exit IP from `/me/ip` through the tunnel, and Recommended exits),
+  **Route** (how and where to connect) and **Stats**. See "Home tabs" below.
 - Notification "Pleat card" (`TunnelNote.kt`): flag tile, Protected dot, place · timer (system Chronometer),
   Disconnect + Change location. Colours follow the phone's night mode.
 
@@ -448,7 +506,19 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
    on and the exit is not pinned, the core runs a `leastPing` balancer with 2 backups (failover inside the
    core, 1.2.22). Switching exits hands over the tun without tearing it down (no leak), a failed try keeps the
    tun 20 s.
-5. Split tunnel option: Iranian sites/IPs direct (geo files from Loyalsoldier, fetched in CI), QUIC blocked.
+5. Smart connect, its backups and failover only use exits that match the **Route** choice (goal family and
+   country, §Home tabs) and say so instead of silently switching protocol.
+6. Iran split (now Home › Route › Split route): Iranian sites/IPs direct (geo files from Loyalsoldier, fetched in
+   CI), plus the person's own sites and chosen Android apps (`addDisallowedApplication`). QUIC blocked.
+
+**Routing rules that must hold (learned the hard way, PR #46 → #48):**
+- `domainStrategy` stays **AsIs** (1.2.24 used IPIfNonMatch; the core then resolved every name, the start check's
+  own address matched the IPv6 rule and **no exit connected at all**).
+- Any rule meant for the phone's traffic (block `::/0`, Shield, split, ads) must carry **`inboundTag: ['socks']`**,
+  or it also hits the core's own start check / connection check.
+- The core's DNS uses `queryStrategy: UseIPv4`; the tun offers only IPv4 resolvers. "Google opens, Telegram
+  doesn't" (or the reverse) on one exit = an IPv6 black hole on that exit.
+- None of this can be run in the cloud container (no Xray on Android there); it is proven only on Ali's phone.
 
 ### Reaching the Worker from filtered Iran (PR #30, 1.2.12 — the key resilience design)
 - **Root cause found**: Pleat excluded itself from its own tunnel (as v2rayNG does), so signup/login/receipts/
@@ -478,7 +548,81 @@ The workflow uploads per-ABI APKs `pleat-<ver>-<build>-<abi>.apk` to the private
 (keeps the last 3; `pleat.apk` = arm64). The Worker reads the release with `PLEAT_DL_TOKEN` and proxies a
 resumable download; the app checks SHA-256 and hands it to Android's installer (`Updates.kt`). Ali announces /
 forces / withdraws from the bot. **No chunking** (Ali refused KV/R2 splitting). Installed build =
-`versionCode % 1000`. The install step was **not tested on a real phone** at the time of writing.
+`versionCode % 1000`. The app only offers the version Ali **announces** in the bot, so a test APK on the release
+does not reach users by itself.
+- Update UI (#69, design "N2 Live track"): one notification from announcement to installer with a Download /
+  Check / Install track (Android 16+: the system `ProgressStyle`; Android 7–15: a custom view), Stop / Later from
+  the shade; the Home card and update sheet use the same track (`UpdateTrack`, `UpdateCopy`).
+
+### Sign-in and profile (PRs #53, #54, #66, #70)
+- One sheet with **Sign in / Create account** tabs; login = email or Telegram @username + password. Quick tiles:
+  Telegram (6-digit bot code: six boxes, auto-verify, clipboard "Fill" chip, 30 s resend) and Gmail (only focuses
+  the email field; one-tap Google needs an OAuth client that does not exist).
+- `ApiError.offline` (Worker never reached) shows a neutral "No connection to Pleat" card; only a real
+  `bad_credentials` marks fields red. The screen warms the route (address race, bridge) as it opens.
+- A few working exits are kept through sign-out so the bridge can still open on a filtered line.
+- **AvatarGate** (1.2.30): a new account must pick one of the 14 Folk characters before the app opens (no skip).
+  The Telegram profile photo is not used anywhere.
+- App version is a signature at the end of Profile (Pleat mark, "Up to date · checked …", Check for updates).
+  Long-press the version to send a test health report. Night mode toggle placement: **leave it as it is** (Ali
+  rejected three alternatives).
+
+### Home tabs (PRs #71, #74, #75, #81)
+- **Route** (design D): goal cards **Auto / Stealth / Speed / Classic** + a location bar with a country sheet. Each
+  exit's family is read from its own link on the phone (`route_mode.dart`): REALITY / XHTTP = Stealth, WireGuard /
+  Hysteria2 / QUIC = Speed, the rest Classic. Under it (`route_extras.dart`, order of precedence in
+  `route_rules.dart`): **Stay in one country** (stable IP; asks in a popup before leaving the country; an accepted
+  switch lasts 1 h), **Split route** (Iranian sites, own sites, chosen apps bypass; warns about Android's "Block
+  connections without VPN"), **Your networks** (remembers the goal per network). Smart connect lives here too.
+  An exit picked by hand in Locations wins over everything.
+- **Stats** (phone-local, no server writes, `stats_log.dart`): Data pace, Hardest hours (failed connects by
+  weekday/hour on this network), What works here (this phone vs all Pleat users on the operator).
+- **Now › Recommended exits** (only under Now since #74): the same rows Locations draws (flag + speed ring, P1/P2,
+  IR TUNNEL, protocol, ping, CONNECT) plus one blue line per exit saying **why** (`recommend.dart`: fastest here,
+  strong for N people, worked for you before, …; never invented), and a "Tested on … · RE-TEST" footer.
+- Locations rows show **P1/P2** tags and the slanted **IR TUNNEL** badge (#56, #59).
+
+### Protect (PR #82, 1.2.46, layout B)
+- **Always protected**: kill switch + start with the phone (both open Android's always-on VPN page).
+- **Shield**: Off / Safe (malware + phishing via Cloudflare `1.1.1.2`) / Clean (+ ads and trackers via
+  `geosite:category-ads-all`, incl. Iranian ad networks), plus an **Adult sites** toggle (`1.1.1.3` +
+  `geosite:category-porn`). Rules carry `inboundTag socks` and sit before Iran-direct.
+- **Privacy check**: 16 tests through a throw-away core of the session's own config (`Probe.kt`): Cloudflare,
+  YouTube country, Gemini, Search wall, two IP databases, exit network, home IP, DNS resolver/operator/ECS, IPv6,
+  WebRTC STUN, kill switch, bypass apps, location, time zone/SIM.
+- **Google location**: what country Google sees per exit (YouTube `INNERTUBE_CONTEXT_GL`, Gemini, Search), shared
+  between users through the existing `/net/google` + `/net/rank`; a **"Google-clean exits only"** filter narrows
+  smart connect inside the Route country (never empties the pool).
+- Split tunnel and Protocol cards were removed from Protect (Route covers them).
+- **Not yet proven on a phone**: YouTube/Gemini indicators, STUN over SOCKS UDP, whoami via 1.1.1.2.
+
+### Home-screen widget (PR #78, 1.2.39 → 1.2.44)
+- 4×1 **Status strip** (`StatusWidget.kt`): flag, place, IP, session timer, one switch; connects or disconnects
+  without opening the app. The app hands the service up to **three spare exits** (same Route choice) after each
+  session; a widget start tries them natively and remembers the one that answers.
+- A widget connect always goes through the invisible `WidgetConnect` activity (Android 12+/MIUI refuse a
+  foreground-service start from the background); it shows only Android's VPN consent dialog when needed.
+- `WidgetTrail.kt` writes every step (tap, consent, service, foreground, tun, engine, core, hev, probe) to disk; a
+  start that never reached "up" is reported on the next launch as `crash · widget`.
+- **Open**: with the app fully closed, starts failed between core and hev (`start_err`, no process crash). 1.2.44
+  loads the core + tun library on the service's main thread in `onCreate`, as the app does. **Not yet confirmed on
+  Ali's phone**; if it still fails, the trail names the error.
+
+### Health reports and crash capture (PRs #73, #77, #79, #80)
+- `lib/state/health.dart` queues problems on the phone (survive a crash), folds repeats with a count, and sends
+  batches to `POST /me/health`: critical within ~1 min, high every ≤ 10 min, rest every 6 h. Profile has a
+  **Send diagnostics** switch (off → also `&h=0` on `/me/ip`).
+- Types and priority (`health.js` `TYPES`): P1 `crash`, `killed`, `no_exit` (instant Telegram alert); P2
+  `connect_fail`, `drop`, `silent`, `unsupported`, `loc_mismatch`, `exit_iran` (last two seen only by the Worker);
+  P3 `battery`, `slow_connect`, `api_down`, `update_fail`, `app_error`; P4 `daily`.
+- Payload: app version, Android version, phone model, network kind, carrier, protocol, anonymous exit key — never
+  a link, UUID, key, address or IP.
+- Native crashes (`Health.kt`, `CrashNotes.kt`): Android's exit reason/status in words (e.g. reason 5 = native
+  crash, 6 = SIGABRT), the tombstone (Android 12+ protobuf; signal, abort message, thread, library, top frames,
+  Go panic line), `tomb` state (none / read / unread / error), Go's stderr captured to a file (quiet at the crash =
+  not a Go panic), and the tunnel state *before* the crash (the service keeps its last 8 state changes).
+- Known blind spot: `Health.kt` `exitOf()` drops processes Android killed or force-stopped while showing nothing,
+  so some failures send no report (the widget trail exists for that reason).
 
 ### Diagnostics
 Profile → **Connection check**: tests every exit (own native 10 s budget per test since 1.2.21), shows cause /
@@ -486,7 +630,9 @@ fix / advice (`diagnose.dart`), "Copy report" (real app version), and **"Test al
 (debug log, hosts blanked). This is the tool that ends arguments — use it.
 
 ### State and code notes
-- `AppState` (~2,260 lines, ChangeNotifier) is a god object; `profile.dart` ~1,640 lines. Known, not refactored.
+- `AppState` (~3,500 lines, ChangeNotifier) is a god object; `login.dart` ~1,780 and `profile.dart` ~1,670 lines.
+  Known, not refactored. New logic goes into a plain-Dart file under `lib/state/` (testable without Flutter), as
+  `route_rules.dart`, `recommend.dart`, `protect.dart` and `health.dart` do.
 - `ApiClient` signs out only on refresh 401/403 (not on any error; fixed 1.2.20).
 - Tokens, device id, account cache and configs live in `flutter_secure_storage` (Keystore). `allowBackup=false`.
 - X-HWID / device headers identical to the old app (panel 1 has an hwid limit).
@@ -525,18 +671,24 @@ flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1
 ### Workflows
 | Workflow | Trigger | Notes |
 |---|---|---|
-| **Test Cloud Gold server** (`test-worker.yml`) | push/PR on `worker/**` | coverage gate |
-| **Pleat Flutter app** (`flutter-vpn.yml`) | push/PR + manual (`api_base` input) | format, analyze, test, live test, `xray -test` of generated configs with the **exact** app core (built from libv2ray buildinfo), APK build, APK check. Manual run → publishes to release `pleat-latest`. ~18 min. |
-| **Deploy Cloud Gold server** (`deploy-worker.yml`) | **manual only** | tests → secret names check → find/create D1 → apply migrations → deploy → copy `PLEAT_DL_TOKEN` |
+| **Test Cloud Gold server** (`test-worker.yml`) | PR on `worker/**` or `miniapp/**` + manual | Worker tests with coverage gate (≥ 80 % lines), Mini App tests + build |
+| **Pleat Flutter app** (`flutter-vpn.yml`) | PR on `flutter_vpn/**` + manual (`api_base` input) | PR: format, analyze, test, live test against the local Worker, `xray -test` of generated configs. **Manual run only**: NDK + hev + Xray core, configs checked with the **exact** app core (built from libv2ray buildinfo), APK build, APK check, publish to release `pleat-latest`. ~18 min. |
+| **Deploy Cloud Gold server** (`deploy-worker.yml`) | **manual only** | tests → Cloudflare login check → secret names check → find/create D1 → **print the D1 Time Travel bookmark** → apply migrations → build the Mini App → deploy (wrangler pinned **4.158.0**) → copy `PLEAT_DL_TOKEN` |
+
+Since #57 nothing runs twice (only the PR, not also the push) and a newer push cancels the running PR check. The
+repo is public, so Actions minutes are effectively free; that ended the 2026-11-09 outage when the monthly free
+minutes ran out.
 
 - CI download hardening (PR #42): Actions cache of every download, Xray from `ghcr.io/xtls/xray-core` as a
   fallback, jsDelivr mirror for geo files, Gradle prefetched with retries, Google's Maven Central mirror via an
   init script. If a run still fails on a 504, just re-run it.
 - `XRAY_LIB_TAG` (v26.7.5) is AndroidLibXrayLite's tag; Xray-core has no release by that name.
 - Pleat APK download link for Ali: release `pleat-latest`, asset `pleat.apk`. Ali sends it to users by hand.
-- After a merge that touches `worker/`: tell Ali to run **Deploy Cloud Gold server**. After a merge touching
-  `flutter_vpn/`: run **Pleat Flutter app** from `main` (with `api_base`). Last known deploy: run #37
-  (2026-11-08, after PR #41); check whether #44/#45 were deployed before assuming.
+- After a merge that touches `worker/` or `miniapp/`: run **Deploy Cloud Gold server**. After a merge touching
+  `flutter_vpn/`: run **Pleat Flutter app** from `main` (with `api_base`). Build one APK at a time.
+- State on 2026-11-12: the last Worker change (#80) is deployed (Deploy run 62), so production = `main`; #81 and
+  #82 were app-only and their APK (1.2.46) is built. Check the Actions tab before assuming this still holds.
+- If a Pleat build fails on a 504 while downloading Xray/geo files, just re-run it.
 
 ---
 
@@ -550,6 +702,8 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | **50 subrequests** per invocation | panel calls, Telegram, explorers all count; budget the cron |
 | **50 D1 queries per invocation** (a batch = 1) | the 51st fails. Batch reads and writes. Test suite enforces it. |
 | **~100k D1 writes/day** | the old cron wrote 2 rows per user per minute even when idle → cap hit at ~35 users (PR #41: writes only on change). A phone that keeps the VPN on still changes its counter every minute, so the cap was still ~33 always-on users; the engineering-audit phase 6 PR spreads those writes (`LEDGER_EVERY` = 10 min in `sync.js`, never for big changes, near-quota, panel resets or a user coming online): 100 always-on users went from 295k to 33k rows/day (measured). Stored "online now" therefore means seen in the last 13 min (`STORED_ONLINE_SEC`); the bot's live card is exact. |
+| **~5M D1 rows read/day** | every per-minute query must use an index (0021 fixed a full scan of `subscriptions`) |
+| **100k Worker requests/day** | roughly 200–500 active users; Workers Paid ($5/month, 10M/day) for thousands |
 | Rate limiting is per Cloudflare location and fail-open | do not rely on it as a security boundary |
 
 ---
@@ -607,7 +761,34 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 - Audit phase 4 (security) and phase 5 (VPN network). PR #44 exit IP through tunnel, no leak while switching,
   core failover (1.2.22). PR #45 fixes all open phase 1–5 findings, SOCKS login, trial needs Telegram (1.2.23).
   Ali's 1.2.23 report: 17/30 exits OK on device; the SOCKS login works.
-- PR #46 (open): 1.2.24, Google opens on an exit without IPv6.
+- PR #46: 1.2.24, a site resolved to IPv6 is reached through the exit. It broke every exit (see §10 routing
+  rules); PR #47 added this handbook; PR #48 (1.2.25) fixed the regression the same day.
+
+**2026-11-09 — Telegram Mini App, new sign-in, panel housekeeping.**
+- PR #49 panel accounts named after the Telegram @username; per-panel bot screen with last connection (0020).
+- PR #50 Mini App stage 0 probe (it opens in Iran only with a VPN on); PR #51 stage 1 (sign in with Telegram, Home);
+  PR #52 full **admin panel** in the Mini App, English, Pleat's design.
+- PR #53 (1.2.26) new sign-in / sign-up / Telegram code screens; PR #54 (1.2.27) dead line ≠ wrong password.
+- PR #55 unlink panel accounts; PR #56 IR TUNNEL badge and P1/P2 panel tags.
+- The monthly free Actions minutes ran out → PR #57 (2026-11-11) halves CI usage; the repo was later made public.
+
+**2026-11-11 — engineering audit phases 6–15, Ali's five tasks.**
+- PR #58 spread usage writes (100 always-on users: 295k → 33k rows/day). PR #59 P1/P2 tags for everyone.
+  PR #60/#61 Iran-tunnel diagnostic and the `cgtunnel_` probe user (panel 1's admin gets 403 on groups/hosts).
+- PR #62 index 0021, dead-panel memory, pinned wrangler + restore point. PR #63 money-path tests, GitHub call
+  deadlines. PR #64 early renewal carries unused data over. PR #65 BL-2, shared cron subrequest budget, no repeat
+  IPN notices. **Audit complete** (scorecard in §19).
+- Ali's five tasks: PR #66 (1.2.30) mandatory avatar; PR #69 (1.2.31) update "live track" + PR #70 (1.2.32)
+  version signature; PR #68 crypto prices; PR #71 (1.2.33) Route goal cards; PR #67 + #72 (1.2.34) exit country
+  from names/codes/hosts and learned from `/me/ip?k=`.
+- PR #73 (1.2.35) automatic health reports (0022).
+
+**2026-11-12 — Home, crash capture, widget, Protect.**
+- PR #74 (1.2.36) Recommended exits only under Now; PR #75 (1.2.37) Route rules + Stats.
+- PR #76 a confirmed exit country overrules the remark (TR 1 / TR 7 really exit in DE).
+- PR #77 (1.2.38), #79 (1.2.40), #80 (1.2.42) native crash details for the DE 3 SIGABRT investigation.
+- PR #78 (merged as 1.2.44) Status-strip widget. PR #81 (1.2.45) Recommended exits as Locations rows with a reason.
+  PR #82 (1.2.46) Protect redesign.
 
 ---
 
@@ -660,7 +841,43 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 43 | 11-08 | No false timeouts in Connection check (1.2.21) |
 | 44 | 11-08 | No leak while switching exits, core failover (1.2.22) |
 | 45 | 11-08 | All open audit findings of phases 1–5, SOCKS login, trial needs Telegram (1.2.23) |
-| 46 | open | Google on an exit without IPv6 (1.2.24) |
+| 46 | 11-08 | IPv6 sites through the exit (1.2.24) — broke every exit, fixed by #48 |
+| 47 | 11-08 | Docs: this handbook |
+| 48 | 11-08 | Fix: nothing connected in 1.2.24 (AsIs, rules scoped to `inboundTag socks`) (1.2.25) |
+| 49 | 11-09 | Panel accounts named after @username; per-panel user screen, last connection (migration 0020) |
+| 50 | 11-09 | Mini App stage 0 probe |
+| 51 | 11-09 | Mini App stage 1: Telegram sign-in, Home |
+| 52 | 11-09 | Mini App admin panel (English, every bot feature) |
+| 53 | 11-09 | New sign-in / sign-up / Telegram code screens (1.2.26) |
+| 54 | 11-09 | Dead line ≠ wrong password; route warmed on the sign-in screen (1.2.27) |
+| 55 | 11-09 | Unlink panel accounts; delete frees every link; `upa` route collision fixed |
+| 56 | 11-09 | IR TUNNEL badge + P1/P2 tags (1.2.27) |
+| 57 | 11-11 | CI spends fewer Actions minutes; APK only on manual run (1.2.28) |
+| 58 | 11-11 | Spread cron usage writes; `/me` waits ≤ 1.5 s on a dead panel |
+| 59 | 11-11 | P1/P2 tag for every user (1.2.29) |
+| 60 | 11-11 | Bot: Iran-tunnel diagnostic, 🚇 marks |
+| 61 | 11-11 | Tunnel configs via the `cgtunnel_` probe user when groups/hosts give 403 |
+| 62 | 11-11 | Audit 6/8/12/13: index 0021, dead-panel memory, pinned wrangler, restore point |
+| 63 | 11-11 | Audit 7/11: money-path tests, GitHub call deadlines |
+| 64 | 11-11 | Early renewal carries unused data over |
+| 65 | 11-11 | Audit 14: BL-2, shared cron subrequest budget, no repeat IPN notices |
+| 66 | 11-11 | Mandatory avatar on first sign-in; Telegram photo removed (1.2.30) |
+| 67 | 11-11 | Country from names / codes / host when the remark has no flag |
+| 68 | 11-11 | Crypto payment: working coin and USD price sources |
+| 69 | 11-11 | Update notification + Home card as a live track (1.2.31) |
+| 70 | 11-11 | App version as a signature at the end of Profile (1.2.32) |
+| 71 | 11-11 | Home Route tab: goal cards + location bar (1.2.33) |
+| 72 | 11-11 | Learn each exit's real country from the app (1.2.34) |
+| 73 | 11-11 | Automatic health reports (1.2.35, migration 0022) |
+| 74 | 11-12 | Recommended exits only under Now (1.2.36) |
+| 75 | 11-12 | Route rules + Stats (1.2.37) |
+| 76 | 11-12 | Confirmed exit country overrules the remark |
+| 77 | 11-12 | Native crash details (1.2.38) |
+| 78 | 11-12 | Status-strip home-screen widget (1.2.39 → 1.2.44) |
+| 79 | 11-12 | Crash reports say whether Android kept a tombstone (1.2.40) |
+| 80 | 11-12 | Crash reports: the crash's own tunnel state, Go stderr evidence (1.2.42) |
+| 81 | 11-12 | Home Recommended exits as Locations rows with a reason (1.2.45) |
+| 82 | 11-12 | Protect redesign: Shield, Privacy check, Google location (1.2.46) |
 
 ---
 
@@ -681,6 +898,8 @@ Grouped by area. "Proven" means reproduced or measured.
 | C5 crash between `provision` and `provisioned_at` → double renewal | same batch — #41 |
 | **S1** (proven) 99 open card orders by one account broke card buying for everyone for 36 h | 3 open orders per method, auto-close stale — #45 |
 | S2 40 open coin orders starved cron auto-confirm; S3 expired quote auto-paid | same cap; stale quote → admin — #45 |
+| **BL-2** (reproduced in a test) wallet order refunded although the plan was already on the panels | an order with `provisioned_at` is marked paid — #65 |
+| Repeated NOWPayments IPN re-notified the admin | no repeat notice — #65 |
 | **Crypto orders failed with `price_unavailable`** (proven 2026-11-11 from a non-Iran server): the coin-price fallback CryptoCompare answers 401 "API key required", so any CoinGecko rate-limit left no price; of the 5 USD/toman exchanges only Wallex still answered abroad (`api.nobitex.ir` no DNS, Tabdeal ticker 404, Bitpin/Ramzinex 403) | coin prices merged per coin from CoinGecko → KuCoin → Coinbase (+ saved copy per coin); USD rate from Nobitex `apiv2`, Wallex depth, Tabdeal depth, Exir (single-market endpoints, small JSON for the 10 ms CPU limit); bot "💵 قیمت دلار" also shows the coin price sources |
 
 ### Backend robustness
@@ -697,6 +916,13 @@ Grouped by area. "Proven" means reproduced or measured.
 | New panel had no accounts for existing users | on-demand + background create — #24 |
 | Linking a second panel account restarted the period (lost usage) | merge into same period — #37 |
 | Rebecca `0 B / ∞` placeholder row shown as a server | dropped in `unify` — #29 |
+| (measured) always-on phones still wrote ~2 rows/user/min → 100 users = 295k rows/day (cap 100k) | `LEDGER_EVERY` 10 min → 33k/day — #58 |
+| per-minute expiry check scanned all subscriptions (rows-read budget) | index 0021 — #62 |
+| AD5 chain scan + sync shared 50 subrequests but sync budgeted 44 for itself | `scanAll` reports its spend, `runSync` shrinks — #65 |
+| appupdate GitHub calls had no timeout | 10 s deadline, 503 `update_unavailable` — #63 |
+| Panel 1 admin gets 403 on `/api/groups` and `/api/hosts` → no IR TUNNEL marks | `cgtunnel_` probe user in the Tunnel group — #61 |
+| "Unknown country" for remarks without a flag emoji | names / codes / host labels (`countries.js`) — #67; learned exit country — #72, #76 |
+| Bot: 🗂 پنل‌های کاربر ran the app-update announce (shared route `upa`) | route renamed `m:uac` — #55 |
 
 ### App and tunnel
 | Problem | Fix |
@@ -717,13 +943,19 @@ Grouped by area. "Proven" means reproduced or measured.
 | Exit IP on Home showed the local IP (raced tunnel vs open line) | tunnel first, `/me/ip` tunnel-only — #44 |
 | S7 core SOCKS 127.0.0.1:10808 had no auth (any app could use it) | random login per install (Kotlin + hev) — #45, **proven on Ali's phone** |
 | P11 `allowBackup` default true | false — #45 |
-| Google not opening while Telegram works on some exits | [guess] IPv6 black hole (tun routes `::/0`, exit has no IPv6) — #46 open; Ali was asked to compare ipv4.google.com vs ipv6.google.com |
+| Google not opening while Telegram works on some exits | IPv6 black hole (tun routes `::/0`, exit has no IPv6) — #46 |
+| **1.2.24: no exit connected at all** (proven) — IPIfNonMatch resolved the start check's host to IPv6, which the new block rule refused | AsIs, phone-only rules scoped to `inboundTag socks`, IPv4 DNS — #48 |
+| A dead line showed as "wrong password / wrong code" | `ApiError.offline` → neutral connection card — #54 |
+| Native crash (SIGABRT) reports carried only the signal | tombstone + Go stderr + tunnel state in the report — #77, #79, #80 (root cause still open, §19) |
+| Widget: start from a fully closed app refused by Android 12+/MIUI | invisible `WidgetConnect` activity — #78 (1.2.42) |
+| Widget: cold start fails between core and hev (`start_err`) | [guess] preload core + hev in `onCreate` — #78 (1.2.44), **unconfirmed** |
 
 ### CI
 | Problem | Fix |
 |---|---|
 | Artifact storage full | APKs to release `pleat-latest` — #23 |
 | GitHub release downloads 504 for hours (Xray, geo, Gradle, Maven) | cache + mirrors for every download in one go — #42 |
+| Free Actions minutes ran out (2026-11-09) | no double runs, APK only on manual run — #57; repo made public |
 
 ---
 
@@ -742,6 +974,9 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - **DE 1 / NL 1 (REALITY)**: TCP timeout / no server hello.
 - **GB 1 / TR 1 / US 1 (REALITY + Vision)**: auth and inner TLS succeed, the HTTP answer never comes after
   Vision switches to direct → server side ([guess]: old node core, or egress problem).
+- **TR 1 / TR 7** are named Turkey on the panel but leave through German hosting (Hetzner, dataforest); since #76
+  the Worker lists them as DE. Ali may want to fix the remarks.
+- The app forces WireGuard MTU 1280 (links say 1420); that is the proven fix for DE 7 / DE 10.
 
 ---
 
@@ -750,6 +985,7 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - **WireGuard domain-endpoint DNS deadlock** (PR #28): the core's MeasureOutboundDelay keeps only
   outbound/dispatcher/log, so DNS changes were irrelevant to the check. The real fix was MTU 1280.
 - **WebSocket h2 ALPN** causing closed pipes (PR #28): not the cause; closed pipes are server-side (§16).
+- **The "No server connected · DE" alerts** from the DE 3 user are not crashes: DE exits fail on that Wi-Fi.
 - In general: **no more theory patches** for failing exits. Ask Ali for "Test alone + copy core log" traces
   and fix only on evidence.
 
@@ -766,21 +1002,35 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - In-app self-linking of panel accounts by subscription link (bot-only).
 - Committing large binaries to the repo to dodge CI downloads.
 - Persian text, RTL or a language picker in Pleat.
+- Moving the Night mode toggle (Ali rejected all three placements) — leave it where it is.
+- Recommended exits on Home's Route or Stats tabs (only under Now).
 
 ---
 
 ## 19. Open items and known gaps
 
-### Waiting on Ali
-- PR #46 (1.2.24, IPv6) — result of the ipv4/ipv6 Google test, merge, build.
-- Deploy the Worker if #44/#45 were not deployed yet; confirm with `/health?deep=1`.
+### Waiting on Ali (no code pending, as of 2026-11-12)
+- **Phone test Pleat 1.2.33 → 1.2.46**: avatar gate, update live track on MIUI, version signature, Route cards and
+  rules, Stats, a health report (long-press the version), detailed crash view in the bot, **widget cold start**
+  (connect once in the app first to seed the spare exits; 1.2.44 fix unconfirmed), Recommended exits under Now,
+  **Protect** (Shield, Privacy check while connected, Google location › Test). Checklists in the project files:
+  `engineering-audit/phone-test-checklist.md`, `health-reports/phone-test.md`.
+- Connect once to each exit with an unknown country so the Worker learns it (bot: 🖥 سرورها shows ❓ for those).
+- Bot "💵 قیمت دلار": confirm the crypto price sources answer live.
+- One day after a Deploy: check D1 rows written / rows read charts in the Cloudflare dashboard (the audit's
+  measurements were on the test shim, not real D1).
 - Fix the server-side exits in §16.
-- In-app update install step: first real-phone test.
-- The old `/credit <email> <amount> <note>` manual wallet top-up idea (offered, awaiting a yes) — if built, it
-  must be a bot button flow, not a typed command.
+- The `/credit <email> <amount> <note>` manual wallet top-up idea (offered, awaiting a yes) — if built, it must be a
+  bot button flow, not a typed command.
 - PR #21 is most likely superseded by #22; check and close it.
 
-### Telegram Mini App (stage 1 built)
+### Open investigation: native crash on DE 3
+One user (Xiaomi, Android 12) had 5 native SIGABRT crashes (reason 5 / status 6) in a week, each with the tunnel
+connected. Root cause **unproven**: the old reports carried only the signal. #77/#79/#80 now capture tombstone,
+Go stderr and the tunnel state; waiting for a **fresh** crash report from 1.2.42+. Suggested diagnostic: try a
+non-DE country (e.g. NL) on that phone.
+
+### Telegram Mini App (user stage 1 + full admin panel built, PRs #50–#52)
 - Stage 0 result (Ali's phone, 2026-11-08): with only Telegram's proxy the Mini App did **not** open; it opens with a
   VPN on. Ali chose to build it anyway, for users who have a VPN on (e.g. Pleat connected). The probe stays at
   `/mini/probe` (bot: 📱 اپ Pleat › 🧪 تست Mini App).
@@ -814,24 +1064,27 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - The bot's refusals are Persian; `miniapp/src/admin/errors.js` translates them, and `englishSummary` in `fmt.js` the
   admin log. `miniapp/test/admin.test.js` fails when a new bot refusal, action or setting has no English text.
 
-### Engineering audit
-15 phases (discovery → architecture → code → security → VPN → DB → API → performance → UX → mobile → testing →
-devops → business logic → repair → validation). **Phases 1–5 done**, their findings fixed in #41/#44/#45.
-**Phase 6 (database) needs Ali's «برو».** The state file lives in the project files
-(`engineering-audit/ENGINEERING_AUDIT.md`); update it every phase.
+### Engineering audit (complete, 2026-11-11)
+All 15 phases (discovery → architecture → code → security → VPN → DB → API → performance → UX → mobile →
+testing → devops → business logic → repair → validation) are done; fixes landed in #41, #44, #45, #58, #62–#65.
+The full state file is `engineering-audit/ENGINEERING_AUDIT.md` in the project files (partly Persian, 25 sections).
 
-Still open from phases 1–5 (need a decision or can't be done in code now):
-S6 SMS sender trust (needs the bank's real SMS format) · S10 backup has PII in clear · S11 refresh rotation ·
-S15 email not verified · AD3/P17 panel 1 still special · AD4/P3 real device limit · AD5 split the cron ·
-AD6 no staging · P8 migration numbering (never rename) · P13 supply chain pinning (no lockfile, `wrangler@4`
-floating, actions by tag, geo from `latest`) · P15 backup/restore · P18 very large files · P20 outdated README ·
-N6 exit domain resolved by the operator's DNS · N7 `allowInsecure=1` from the panel is honoured.
+Scorecard (§25 of the audit, 10 = production-ready at scale): architecture 7 · code quality 7 · security 7.5 ·
+database / Free-plan scale 8 · user-path performance 7.5 · money logic 8.5 · tests 8 · DevOps 6 · UX/mobile
+unscored (phone-only).
+
+**Decisions still open (Ali's call, no code until he decides):** S6 trust in the SMS sender · S10 backup
+encryption / PII in backups · S11 refresh-token rotation (changes the app, needs a phone test) · S15 email
+verification · AD3/P17 panel 1 still special (always in provision, HWID, device removal, buying needs
+`PASARGUARD_URL`) · AD4 real device limit · AD6 staging (second Cloudflare account or separate D1) · P13 pin
+actions to SHAs. Also open: N6 exit domain resolved by the operator's DNS · N7 `allowInsecure=1` from the panel is
+honoured · P20 outdated README · Gmail one-tap sign-in (needs a Google OAuth client).
 
 ### Follow-ups (non-critical)
-Split `telegram.js`, a `confirmPayment` use case, a notify port, compat-date bump, delete `android/`,
+PBKDF2 iterations (only with a CPU budget), split `telegram.js`, a `confirmPayment` use case, a notify port,
+compat-date bump (`2025-09-01`), delete `android/`,
 `app-web/`, `android.yml` and the old-app compatibility paths (`centralApp`, `sub_url`, `/vpn/sub`,
-`/pay/done` with `cloudgold://`). Not built: per-session byte usage, Google/Gemini probe in Pleat, Cloudflare
-clean-IP/SNI tricks, a domestic relay for intranet-only periods, Hiddify adapter.
+`/pay/done` with `cloudgold://`). Not built: per-session byte usage, Cloudflare clean-IP/SNI tricks, a domestic relay for intranet-only periods, Hiddify adapter.
 
 ---
 
@@ -839,10 +1092,19 @@ clean-IP/SNI tricks, a domestic relay for intranet-only periods, Hiddify adapter
 
 **Add a Worker endpoint.** Add the route in `index.js` `route()` (authed paths go in the `authed` list), put
 the logic in the module that owns the data, count D1 queries (batch!), add tests in `test/run.mjs` (the
-50-query guard runs automatically), update `flutter_vpn/docs/backend-map.md` if the app uses it.
+50-query guard runs automatically), **add it to `docs/API.md`** (a test fails otherwise), update
+`flutter_vpn/docs/backend-map.md` if the app uses it.
+
+**Add an admin (Mini App) endpoint.** One row in `admin-api.js` `ROUTES` with the lowest role that may use it;
+writes go through `POST /admin/action` → `admin-actions.runAction`, not a new route. Add the English label /
+refusal text in `miniapp/src/admin/errors.js` / `fmt.js` (the Mini App test fails otherwise) and the row in
+`docs/API.md`.
 
 **Add a DB column/table.** New file `worker/migrations/00NN_name.sql`, additive only, explain it in a header
-comment. Tell Ali the Deploy will apply it.
+comment, **add it to `docs/DATABASE.md`** (a test fails otherwise). Run Deploy to apply it.
+
+**Add a health-report type.** Add it to `TYPES` (priority) and `TYPE_FA` in `health.js`, emit it from
+`lib/state/health.dart`, scrub any new detail field on both sides, add a test (the suite checks scrubbing and caps).
 
 **Add a bot feature.** Read screen in `telegram-screens.js`, writes in `admin-actions.js` (validate → one batch
 → audit → undo), wire buttons in `telegram-menu.js`. Persian text, buttons only, pick the right risk level.
@@ -862,7 +1124,11 @@ own core version.
 core log. Classify as app-side or server-side (§16) before writing code.
 
 **Report to Ali.** Persian, short, lead with the result, say proven vs guessed, give the PR link and the exact
-workflow(s) he must run.
+workflow(s) that must run.
+
+**Keep these docs current.** Any PR that changes a fact here (new PR, migration, route, setting, rule from Ali,
+version) updates this handbook, `API.md` or `DATABASE.md` in the same PR: add the PR to §13 and §14, bump the
+version in §10, move finished items out of §19.
 
 ---
 
@@ -884,6 +1150,15 @@ workflow(s) he must run.
   links (panel unreachable, creds, non-2xx or empty sub). The bot's panel test shows login / create / config count.
 - The cloud container's proxy blocks non-443 ports and often github.com; you cannot test panels directly.
 - Shim query counts are not real D1; confirm on Cloudflare logs after deploy when it matters.
+- Two Pleat builds that both publish to `pleat-latest` overwrite each other; build one at a time.
+- Kotlin can't be compiled in the container (no Android SDK); a quick check is `kotlinc` against an
+  `android.jar`, the real compiler is the manual Pleat workflow. A Kotlin error shows up only there.
+- **Never delete the `cgtunnel_…` user on panel 1**: the IR TUNNEL marks depend on it.
+- Bot callback routes are plain strings; a duplicate prefix runs the wrong screen (the `upa` bug).
+- `Health.kt` drops exit records for processes Android killed or force-stopped silently; a missing report is not
+  proof that nothing happened.
+- Routing rules for phone traffic need `inboundTag: ['socks']` (§10), or the core's own checks are blocked too.
+- Manual edits on a panel (limits, expiry, enable) are overwritten by the sync job; use the bot.
 
 ---
 
@@ -901,4 +1176,12 @@ workflow(s) he must run.
 | **Pleats and dots** | the profile's usage visual: slanted pleats = data, dots = days |
 | **Pleat card** | the designed VPN notification |
 | **«برو»** | "go" — Ali's explicit approval to start the next stage |
+| **IR TUNNEL** | a config from a panel's "Tunnel" group (an Iran-side relay); Pleat shows a slanted badge |
+| **P1 / P2** | which panel a config comes from |
+| **Route goal** | Auto / Stealth / Speed / Classic on Home › Route; each exit's family is read from its link |
+| **Shield** | Protect's DNS filtering: Off / Safe / Clean (+ adult sites) |
+| **Health report** | an automatic problem report from Pleat to `/me/health`; P1 alerts the admin at once |
+| **Status strip** | the 4×1 home-screen widget |
+| **Server key** | anonymous FNV-1a hash of `type\|host\|port` that names an exit without its address |
+| **Integration thread** | the cheaper-model thread that merges, deploys and builds |
 | **toman / rial** | Iranian currency; 1 toman = 10 rial. Prices are toman, bank SMS are rial |

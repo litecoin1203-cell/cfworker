@@ -4802,6 +4802,26 @@ section('Pleat health reports: priorities, one row per problem, caps, scrubbing,
   await env.DB.prepare("DELETE FROM settings WHERE key IN ('health_mode', 'health_mute')").run();
 }
 
+section('developer docs name every migration and every API route');
+{
+  // docs/DATABASE.md and docs/API.md are what a new developer (or AI) reads first; a migration or route they
+  // do not mention is a route or table nobody knows about. Fix the doc in the same PR.
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const rel = (p) => new URL(p, import.meta.url);
+  const dbDoc = readFileSync(rel('../../docs/DATABASE.md'), 'utf8');
+  const apiDoc = readFileSync(rel('../../docs/API.md'), 'utf8');
+  const migs = readdirSync(rel('../migrations/')).filter((f) => f.endsWith('.sql')).map((f) => f.replace(/\.sql$/, ''));
+  const noMig = migs.filter((m) => !dbDoc.includes(m));
+  ok(migs.length >= 22 && !noMig.length, 'docs/DATABASE.md names every migration; missing: ' + noMig.join(', '));
+  const idx = readFileSync(rel('../src/index.js'), 'utf8');
+  const authed = [...(idx.match(/const authed = \[([\s\S]*?)\];/) || ['', ''])[1].matchAll(/'([^']+)'/g)].map((x) => x[1]);
+  const adm = readFileSync(rel('../src/admin-api.js'), 'utf8');
+  const admin = [...adm.matchAll(/\['(?:GET|POST|DELETE)', \/\^(.*?)\$\//g)].map((x) => x[1].replace(/\\\//g, '/').replace(/\(\\d\{1,12\}\)/g, ':id'));
+  const named = (p) => new RegExp('[` ]' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '`').test(apiDoc);
+  const noApi = [...authed, ...admin].filter((p) => !named(p));
+  ok(authed.length > 20 && admin.length > 30 && !noApi.length, 'docs/API.md names every app and admin route; missing: ' + noApi.join(', '));
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
