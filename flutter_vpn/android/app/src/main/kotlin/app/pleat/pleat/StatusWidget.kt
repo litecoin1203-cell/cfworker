@@ -38,6 +38,9 @@ class StatusWidget : AppWidgetProvider() {
         manager.updateAppWidget(ids, views(context))
     }
 
+    /** An exit a widget start tries when the one before doesn't answer. */
+    data class Spare(val config: String, val flag: String, val place: String)
+
     companion object {
         const val ACTION_WIDGET_START = "app.pleat.WIDGET_START"
         private const val PREFS = "pleat_widget"
@@ -88,9 +91,6 @@ class StatusWidget : AppWidgetProvider() {
         fun lastConfig(context: Context) = File(context.noBackupFilesDir, "last-config.json")
 
         private fun sparesFile(context: Context) = File(context.noBackupFilesDir, "widget-spares.json")
-
-        /** An exit a widget start tries when the one before doesn't answer. */
-        data class Spare(val config: String, val flag: String, val place: String)
 
         /** From the app, after each session comes up: the next best exits. */
         fun saveSpares(context: Context, list: List<Map<String, Any?>>) {
