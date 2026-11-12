@@ -15,6 +15,7 @@ import 'diagnose.dart';
 import 'exits.dart';
 import 'health.dart';
 import 'net_cache.dart';
+import 'recommend.dart';
 import 'route_mode.dart';
 import 'route_rules.dart';
 import 'stats_log.dart';
@@ -750,6 +751,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (picked.isNotEmpty) return picked;
     return ranked.where((e) => e.id != current).take(recommendCount).toList();
   }
+
+  /// [recommended], each with the one reason Home shows under it.
+  List<Pick> get recommendedPicks => explainPicks(
+    recommended,
+    current: exit,
+    net: network,
+    saved: saved,
+    worked: {
+      for (final s in sessions)
+        if (s.minutes >= workedMinutes) s.exitId,
+    },
+  );
 
   /// The goals this plan can serve: a mode shows only when at least one
   /// exit belongs to it; Auto always.

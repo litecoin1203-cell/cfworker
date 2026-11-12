@@ -91,6 +91,19 @@ void main() {
   ) async {
     await _boot(tester, {'onboarded': true});
     expect(find.text('Recommended exits'), findsOneWidget);
+    // Locations' own rows, with the test line under them.
+    await tester.dragUntilVisible(
+      find.text('RE-TEST'),
+      find.byType(Scrollable).first,
+      const Offset(0, -200),
+    );
+    expect(find.text('CONNECT'), findsWidgets);
+    expect(
+      find.textContaining(RegExp('Tested|Not tested|Testing')),
+      findsWidgets,
+    );
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, 2000));
+    await tester.pump(const Duration(milliseconds: 400));
     await tester.tap(find.text('Route'));
     await tester.pump(const Duration(milliseconds: 800));
     expect(find.text('Recommended exits'), findsNothing);
@@ -454,9 +467,12 @@ void main() {
         ..speedTested.clear();
       api.reports.clear();
       await tester.tap(
-        find.byWidgetPredicate(
-          (w) => w is Pressable && w.label == 'Test DE 1 now',
-        ),
+        find
+            .byWidgetPredicate(
+              (w) => w is Pressable && w.label == 'Test DE 1 now',
+              // Home's Recommended exits, kept alive behind, has the same row
+            )
+            .hitTestable(),
       );
       for (var i = 0; i < 5; i++) {
         await tester.pump(const Duration(milliseconds: 100));

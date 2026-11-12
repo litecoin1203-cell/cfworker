@@ -300,7 +300,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
                                 ),
                                 index: i + 2,
                                 child: rest[i].length == 1
-                                    ? _ExitRow(
+                                    ? ExitRow(
                                         exit: rest[i].first,
                                         selected: _on(app, rest[i].first),
                                         onOpen: () => _open(rest[i].first),
@@ -464,7 +464,7 @@ class _CountryGroupState extends State<_CountryGroup> {
                   child: Column(
                     children: [
                       for (final e in widget.exits)
-                        _ExitRow(
+                        ExitRow(
                           exit: e,
                           sub: true,
                           selected: widget.isOn(e),
@@ -481,13 +481,18 @@ class _CountryGroupState extends State<_CountryGroup> {
   }
 }
 
-class _ExitRow extends StatelessWidget {
-  const _ExitRow({
+/// One exit as Locations lists it; Home's Recommended exits reuses it so
+/// both read the same.
+class ExitRow extends StatelessWidget {
+  const ExitRow({
+    super.key,
     required this.exit,
     required this.selected,
     required this.onOpen,
     required this.onSelect,
     this.sub = false,
+    this.reason,
+    this.reasonIcon,
   });
   final Exit exit;
   final bool selected;
@@ -495,6 +500,10 @@ class _ExitRow extends StatelessWidget {
   /// Inside a country group: the row names the exit, not the country.
   final bool sub;
   final VoidCallback onOpen, onSelect;
+
+  /// Why Home suggests this exit; drawn in place of the network verdict.
+  final String? reason;
+  final PIcon? reasonIcon;
 
   @override
   Widget build(BuildContext context) {
@@ -504,7 +513,8 @@ class _ExitRow extends StatelessWidget {
       label:
           'Open ${exit.title}, ${exit.label}'
           '${exit.server.tunnel ? ', Iran tunnel' : ''}'
-          '${exit.server.panel > 0 ? ', panel ${exit.server.panel}' : ''}',
+          '${exit.server.panel > 0 ? ', panel ${exit.server.panel}' : ''}'
+          '${reason != null ? ', $reason' : ''}',
       radius: 20,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
@@ -555,7 +565,30 @@ class _ExitRow extends StatelessWidget {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  if (exit.verdictOn(net) != null) ...[
+                  if (reason != null) ...[
+                    const SizedBox(height: 3),
+                    Row(
+                      children: [
+                        if (reasonIcon != null) ...[
+                          PIconView(
+                            reasonIcon!,
+                            size: 14,
+                            color: PColors.accentInk,
+                          ),
+                          const SizedBox(width: 5),
+                        ],
+                        Flexible(
+                          child: Text(
+                            reason!,
+                            style: PType.meta(color: PColors.accentInk)
+                                .copyWith(fontWeight: FontWeight.w700),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ] else if (exit.verdictOn(net) != null) ...[
                     const SizedBox(height: 3),
                     Text(
                       exit.verdictOn(net)!,

@@ -11,8 +11,10 @@ import '../design/tunnel_route.dart';
 import '../design/update_track.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
+import '../state/recommend.dart';
 import '../state/updater.dart';
 import 'location_detail.dart';
+import 'locations.dart';
 import 'profile.dart';
 import 'route_chooser.dart';
 import 'route_extras.dart';
@@ -140,38 +142,118 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: ServersState(app: app),
                 )
               else
-                SizedBox(
-                  height: 168,
-                  child: ListView.separated(
-                    scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
-                    itemCount: recommended.length,
-                    separatorBuilder: (_, _) => const SizedBox(width: 14),
-                    itemBuilder: (context, i) {
-                      final e = recommended[i];
-                      return StaggerIn(
-                        index: i,
-                        child: SizedBox(
-                          width: 210,
-                          child: MediaCard(
-                            exit: e,
-                            height: 150,
-                            onOpen: () => Navigator.of(context).push(
-                              TunnelRoute(
-                                builder: (_) => LocationDetail(exitId: e.id),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 12),
+                  child: SurfaceCard(
+                    padding: const EdgeInsets.fromLTRB(0, 8, 0, 4),
+                    child: Column(
+                      children: [
+                        for (final (i, p) in app.recommendedPicks.indexed)
+                          StaggerIn(
+                            index: i,
+                            child: ExitRow(
+                              exit: p.exit,
+                              selected: false,
+                              reason: p.text,
+                              reasonIcon: _whyIcon(p.why),
+                              onOpen: () => Navigator.of(context).push(
+                                TunnelRoute(
+                                  builder: (_) =>
+                                      LocationDetail(exitId: p.exit.id),
+                                ),
                               ),
+                              onSelect: () => app.connect(p.exit.id),
                             ),
-                            tabLabel: 'Go',
-                            onTab: () => app.connect(e.id),
                           ),
-                        ),
-                      );
-                    },
+                        _Tested(app: app),
+                      ],
+                    ),
                   ),
                 ),
             ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+PIcon? _whyIcon(PickWhy? w) => switch (w) {
+  PickWhy.fastest => PIcon.bolt,
+  PickWhy.sameCountry => PIcon.pin,
+  PickWhy.crowd => PIcon.user,
+  PickWhy.hd => PIcon.play,
+  PickWhy.worked => PIcon.check,
+  PickWhy.saved => PIcon.bookmark,
+  PickWhy.answers => PIcon.wifi,
+  null => null,
+};
+
+/// Under Recommended exits: which network the picks were measured on and
+/// when, and a way to measure again.
+class _Tested extends StatelessWidget {
+  const _Tested({required this.app});
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) {
+    final at = app.testedAt;
+    final on = app.network == null ? '' : ' on ${app.network!.label}';
+    final line = app.testing
+        ? 'Testing exits$on'
+        : at == null
+        ? 'Not tested$on yet'
+        : 'Tested$on  ·  ${ago(DateTime.now().difference(at))}';
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
+      child: Column(
+        children: [
+          Container(height: 1, color: PColors.field),
+          Row(
+            children: [
+              PIconView(PIcon.wifi, size: 15, color: PColors.muted),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  line,
+                  style: PType.small(color: PColors.muted),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              Pressable(
+                onTap: app.testing ? null : () => app.testAll(),
+                label: 'Test exits again',
+                radius: PRadius.pill,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 12,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      PIconView(
+                        PIcon.refresh,
+                        size: 14,
+                        color: app.testing ? PColors.muted : PColors.accentInk,
+                      ),
+                      const SizedBox(width: 5),
+                      Text(
+                        'RE-TEST',
+                        style: PType.button(
+                          color: app.testing
+                              ? PColors.muted
+                              : PColors.accentInk,
+                        ).copyWith(fontSize: 11),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
       ),
     );
   }
