@@ -189,7 +189,7 @@ export function Problem({ p, nav }) {
             {detail.length ? (
               <>
                 <Section title="Last report" />
-                <div class="card tight det">{detail.map(([k, v]) => <KV k={DETAIL[k] || k}>{detailValue(k, v, e.detail)}</KV>)}</div>
+                <div class="card tight det">{detail.map(([k, v]) => <KV k={DETAIL[k] || k}>{detailValue(k, v, e.detail, e.names || {})}</KV>)}</div>
               </>
             ) : null}
             {e.exit_key ? <div style={{ marginTop: '12px' }}><List><Row icon="server" title="Every problem on this server" onClick={() => nav.push('reportList', { server: e.exit_key, title: e.exit_name })} chevron /></List></div> : null}

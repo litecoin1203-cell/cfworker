@@ -122,3 +122,12 @@ test('the monitoring screens are in English only', () => {
     assert.ok(!/[؀-ۿ]/.test(src), f + ' has Persian text');
   }
 });
+
+test('a "no server connected" report names each server and why', async () => {
+  const L = await import('../src/admin/labels.js');
+  const names = { kde1: 'DE1', knl2: 'NL2' };
+  const why = [{ k: 'kde1', c: 'refused' }, { k: 'knl2', c: 'timeout' }, { k: 'kx', c: 'ok' }, { k: 'ky', c: 'untested' }];
+  assert.equal(L.detailValue('why', why, {}, names), 'DE1: server refused | NL2: no answer | kx: answered | ky: not tested');
+  assert.equal(L.detailValue('tried', ['kde1', 'kz'], {}, names), 'DE1, kz');
+  assert.equal(L.detailValue('tried', ['kde1'], {}), 'kde1');
+});

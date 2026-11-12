@@ -430,6 +430,32 @@ void main() {
       }
     });
 
+    testWidgets('none answered: the report says why each exit was left out', (
+      tester,
+    ) async {
+      final (app, api, tunnel) = await boot(tester);
+      tunnel
+        ..pings = {}
+        ..errors = {'de1.example.com': 'dial tcp <ip>:443: connection refused'};
+      // the exits are tested on this network first (as on opening the app)
+      await app.testAll();
+      await app.connect();
+      for (var i = 0; i < 6; i++) {
+        await tester.pump(const Duration(seconds: 10));
+      }
+      final all = [...events(api), ...app.health.queued.map((e) => e.toJson())];
+      final none = all.firstWhere((e) => e['t'] == 'no_exit');
+      final why = ((none['d'] as Map)['why'] as List).cast<Map>();
+      expect(why, isNotEmpty);
+      expect(why.map((w) => w['c']), containsAll(['refused', 'timeout']));
+      expect(why.every((w) => '${w['k']}'.isNotEmpty), isTrue);
+      expect(jsonEncode(none), isNot(contains('example.com')));
+      await app.disconnect();
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(seconds: 10));
+      }
+    });
+
     testWidgets('Send diagnostics off: nothing is sent and the exit country '
         'is not reported', (tester) async {
       final (app, api, tunnel) = await boot(tester);

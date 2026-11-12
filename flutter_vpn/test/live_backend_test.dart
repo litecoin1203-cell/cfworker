@@ -134,7 +134,10 @@ void main() {
       );
       final body = await (await rq.close()).transform(utf8.decoder).join();
       c.close();
-      return RegExp(r'<code>(\d{6})</code>').firstMatch(body)!.group(1)!;
+      // the code sits in <tg-spoiler> since the code-message redesign (older: <code>)
+      return RegExp(r'<(?:code|tg-spoiler)>(\d{6})</(?:code|tg-spoiler)>')
+          .firstMatch(body)!
+          .group(1)!;
     }
 
     await expectLater(

@@ -70,6 +70,7 @@ export const DETAIL = {
   tried: 'Tried', bridge: 'Bridge', stage: 'Stage', expected: 'Expected country', actual: 'Real country', misses: 'Missed pings',
   sessions: 'Sessions', ok: 'Succeeded', fail: 'Failed', minutes: 'Minutes connected', moved: 'Network changed', status: 'Code', what: 'Android says',
   sig: 'Signal', go: 'Core panic (Go)', abort: 'Abort message', cause: 'Cause', thread: 'Thread', lib: 'Library', frames: 'Frames',
+  why: 'Each server', age: 'Seconds since the last test', exits: 'Servers on this route', country: 'Country',
   op: 'Tunnel was', up_s: 'Seconds connected', tomb: 'Android tombstone', stderr: 'Core stderr', pss: 'App memory (MB)', earlier: 'Earlier crash, read again',
 };
 // ApplicationExitInfo.REASON_* (Android 11+)
@@ -100,7 +101,11 @@ export const CRASH = {
 };
 
 // a value in words where the phone sends a number or a code word
-export function detailValue(k, v, d) {
+// how each server of a "no server connected" report did in the last test
+const WHY = { ok: 'answered', untested: 'not tested' };
+export function detailValue(k, v, d, names = {}) {
+  if (k === 'tried' && Array.isArray(v)) return v.map((x) => names[x] || x).join(', ');
+  if (k === 'why' && Array.isArray(v)) return v.map((x) => (x && x.k ? `${names[x.k] || x.k}: ${WHY[x.c] || CAUSE[x.c] || x.c}` : x)).join(' | ');
   if (k === 'reason' && EXIT_REASON[v] !== undefined) return `${v} = ${EXIT_REASON[v]}`;
   if (k === 'status' && d.reason === 5 && SIGNAL[v]) return `${v} = ${SIGNAL[v]}`;
   if (k === 'status' && d.reason === 2 && SIGNAL[v]) return `${v} = ${SIGNAL[v].split(':')[0]}`;

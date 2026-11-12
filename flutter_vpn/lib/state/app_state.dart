@@ -233,8 +233,24 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         'route': routeMode.name,
         'country': routeCountry,
         'tried': [
-          for (final id in _tried.take(6)) {'k': id},
+          for (final id in _triedAll.take(6)) {'k': id},
         ],
+        // why each exit of the route was left out: its last test on this
+        // network ("timeout", "refused", "tls" ...), so support sees which
+        // server failed and how, not only that none answered
+        'why': [
+          for (final e in routePool.take(6))
+            {
+              'k': e.id,
+              'c': e.measured == null
+                  ? 'untested'
+                  : e.unreachable
+                  ? diagnose(e.failure).cause.name
+                  : 'ok',
+            },
+        ],
+        if (testedAt != null)
+          'age': DateTime.now().difference(testedAt!).inSeconds,
         'exits': routePool.length,
         'net': network?.kind ?? '',
         'smart': smartConnect,
@@ -707,6 +723,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   int _attempt = 0;
   Timer? _watch, _pulse;
   final List<String> _tried = [];
+
+  /// Every exit really tried in this connect, kept across the resync (which
+  /// clears [_tried] to try again), so a "none answered" report lists them.
+  final List<String> _triedAll = [];
   bool _resynced = false;
   int _misses = 0;
 
@@ -2591,6 +2611,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
     if (!failover) {
       _tried.clear();
+      _triedAll.clear();
       _resynced = false;
       _attemptAt = DateTime.now();
     }
@@ -2669,6 +2690,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         return _fail(servers.error ?? 'No exits on your plan yet.');
       }
       _tried.add(target.id);
+      if (!_triedAll.contains(target.id)) _triedAll.add(target.id);
       geoAvailable = await tunnel.hasGeo();
       final String config;
       try {
