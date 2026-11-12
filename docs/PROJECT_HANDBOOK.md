@@ -479,8 +479,13 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
   Without the token the section still shows DB size (D1 `meta.size_after`), the Worker's own error log and cron.
 - **Worker error log**: `logError` also feeds `worker_errors` (migration 0023; one row per kind of error, scrubbed,
   at most once a minute per kind and 12 writes a minute per isolate, kept 14 days). Bot › ☁️ › 🐞.
-- System › 🩺 health has "⚡ همگام‌سازی همین حالا" (one `runSync` in the tap's invocation, once a minute) and
+- System › 🩺 health has "⚡ همگام‌سازی همین حالا" (`sync.manualSync`: one `runSync` in the tap's invocation, once a minute; shared with the Mini App's `POST /admin/sync`) and
   "🔁 تلاش دوباره" for panel accounts stuck after 3+ failed pushes.
+- **Screens are drawn from data functions** (PR #85): `cfmon.js` `overviewData / historyData / errorsData /
+  queriesData / deploysData / tokenState`, `health.js` `summaryData / problemsData / serversData / usersData /
+  versionsData / problemData` (+ `crashKind`), `telegram-screens.js` `tunnelDiagData / netServerData`. The bot words
+  them in Persian; `admin-api.js` hands the same data to the Mini App, which words the codes in English
+  (`miniapp/src/admin/labels.js`). Add a field to the data function, not to the screen, so both faces get it.
 
 ---
 
@@ -802,6 +807,8 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 - PR #77 (1.2.38), #79 (1.2.40), #80 (1.2.42) native crash details for the DE 3 SIGABRT investigation.
 - PR #78 (merged as 1.2.44) Status-strip widget. PR #81 (1.2.45) Recommended exits as Locations rows with a reason.
   PR #82 (1.2.46) Protect redesign.
+- PR #84 admin bot ☁️ Cloudflare monitoring; PR #85 the admin Mini App catches up with every bot screen added since
+  #52, with the Cloudflare part as a visual dashboard.
 
 ---
 
@@ -892,6 +899,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 81 | 11-12 | Home Recommended exits as Locations rows with a reason (1.2.45) |
 | 82 | 11-12 | Protect redesign: Shield, Privacy check, Google location (1.2.46) |
 | 84 | 11-12 | Admin bot ☁️ Cloudflare monitoring (Free-plan meters, errors, costly queries, deploys, hourly alert), Worker error log (0023), sync now / retry stuck |
+| 85 | 11-12 | Admin Mini App back to full bot parity: visual Cloudflare dashboard, app health reports, sync now / retry, tunnel diagnostic, server page, server on every carrier; bot screens drawn from shared data functions |
 
 ---
 
@@ -1070,6 +1078,18 @@ non-DE country (e.g. NL) on that phone.
   view), plans, coupons, referral, payments (card, SMS, crypto wallets, dollar price), SMS log, panels (+servers,
   rollout, drain, groups, login), Pleat app (announcement, domains, bridges, trial, releases), network/carriers,
   broadcast, stats, system (backup, health, admin log with undo, admins, every setting).
+- **Full parity again (PR #85, 2026-11-12)**: what the bot gained after #52 is now in the Mini App too —
+  **Cloudflare monitoring** as a visual dashboard (`monitor.jsx` + hand-drawn SVG `charts.jsx`: quota rings with the
+  end-of-day projection, requests per hour with errors stacked, CPU p99 line against the 10 ms cap, how requests
+  ended, a capacity gauge, 7-day columns per cap, costliest queries as share bars, deploys + merged-not-deployed,
+  token setup, the Worker error log with clear, hourly alerts toggle); **App health reports** (`reports.jsx`: per
+  priority with a 7-day stacked chart, by server, by user, versions and phones, one problem with users/phones/last
+  report/native-crash reading, handled / mute 7 days / what the app sends); **System health** sync now + retry stuck;
+  panel servers with the tunnel mark, panel-name-vs-real-exit country and unknown-country remark, a server page
+  (show/hide, name, network stats, health reports, history), the **Iran-tunnel diagnostic** (re-read = owner); one
+  server on every carrier + Google's view; user card → that user's health reports. Not carried over on purpose: the
+  bot's "🧪 تست Mini App" probe (it tests whether the Mini App opens, meaningless from inside it), "❓ راهنما" (bot
+  help text), "send waiting receipts as photos" (the Mini App shows receipts inline), and hidden legacy text commands.
 - **Design = Pleat's own language, not just its colours** (the first version copied only the colours and looked
   broken): Plus Jakarta Sans shipped with the page (`build.mjs` copies it from `@fontsource`; Google Fonts is filtered
   in Iran; CSP `font-src 'self'`), Vazirmatn only for Persian names, line icons (`miniapp/src/icons.jsx`), hero

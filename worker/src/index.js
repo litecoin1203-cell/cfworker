@@ -218,7 +218,7 @@ async function route(request, env, p, ctx) {
     }
     const admin = await adm.requireAdmin(env, request);
     // panel tests, the dollar price and the backup reach other servers: the same per-IP limit as a sign-in
-    if (m === 'POST' && /^\/admin\/(panels(\/\d+\/(cred|test))?|backup)$/.test(p)) await rateLimit(env, 'RL_LOGIN', 'admin-op:' + admin.tgId);
+    if (m === 'POST' && /^\/admin\/(panels(\/\d+\/(cred|test|tunnel))?|backup|sync)$/.test(p)) await rateLimit(env, 'RL_LOGIN', 'admin-op:' + admin.tgId);
     const res = await adm.route(env, request, p, new URL(request.url), admin, () => body(request));
     if (res) return res;
     return json({ detail: { code: 'not_found', message: 'Not found.' } }, 404);

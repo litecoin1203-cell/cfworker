@@ -96,16 +96,23 @@ other servers (panel test/cred, backup, add panel) are rate-limited per admin.
 | `GET /admin/plans`, `/admin/coupons`, `/admin/coupons/:id/uses`, `/admin/referral` | viewer | sales setup |
 | `GET /admin/payments`, `/admin/sms` | viewer | payment methods, SMS log |
 | `GET /admin/sms/setup`, `/admin/rate` | owner | SMS key setup, USD rate + source status |
-| `GET /admin/panels`, `/admin/panels/:id`, `/admin/panels/:id/servers` | viewer | panels, rollout, exits |
+| `GET /admin/panels`, `/admin/panels/:id`, `/admin/panels/:id/servers` | viewer | panels, rollout, exits (with tunnel mark, panel-name vs real-exit country, unknown-country remark) |
+| `GET /admin/panels/:id/tunnel` | viewer | Iran-tunnel diagnostic (`telegram-screens.tunnelDiagData`, same as the bot's 🚇) |
 | `GET /admin/app`, `/admin/app/domains/test` | viewer | Pleat settings, domain reachability |
 | `GET /admin/net`, `/admin/net/users` | viewer | operator ranking, users' networks |
+| `GET /admin/net/server` | viewer | `?key=` one server on every carrier + Google's view (`telegram-screens.netServerData`) |
 | `GET /admin/stats`, `/admin/broadcasts`, `/admin/broadcasts/:id` | viewer | stats, broadcasts |
 | `GET /admin/health`, `/admin/audit` | viewer | system health, admin log |
 | `GET /admin/settings`, `/admin/admins` | owner | every setting (secrets masked), admins |
+| `GET /admin/reports`, `/admin/reports/servers`, `/admin/reports/users`, `/admin/reports/versions` | viewer | Pleat health reports: summary (per priority, 7-day chart, mode), by server, by user, versions (`health.js` *Data) |
+| `GET /admin/reports/problems`, `/admin/reports/problem` | viewer | `?prio=`/`?server=`/`?user=` problem list; `?fp=` one problem (users, versions, last report, native-crash reading code) |
+| `GET /admin/cf`, `/admin/cf/history`, `/admin/cf/errors`, `/admin/cf/queries`, `/admin/cf/deploys`, `/admin/cf/token` | viewer | ☁️ Cloudflare monitoring as data (`cfmon.js` *Data): quota, 24 h by hour, capacity, 7 days, errors, costly queries, deploys, token state (never the token) |
 | `POST /admin/action` | support (per-action roles) | `{name, args, confirm}` → `admin-actions.runAction` (same validation, audit, 10-min undo as the bot; money/destructive need `confirm: true`) |
 | `POST /admin/undo` | support | undo an audit row |
 | `POST /admin/users`, `/admin/users/:id/password` | owner | create user, set password |
 | `POST /admin/panels`, `/admin/panels/:id/cred`, `/admin/panels/:id/test` | owner | add panel, panel login, test |
+| `POST /admin/panels/:id/tunnel` | owner | read the panel's tunnel groups/hosts again and store them |
+| `POST /admin/sync` | owner | one panel sync now (`sync.manualSync`, shared with the bot's ⚡; once a minute, else 429) |
 | `POST /admin/backup` | owner | send the backup to the admin's Telegram |
 
 The Mini App's English labels for every action / refusal / setting live in `miniapp/src/admin/errors.js` and

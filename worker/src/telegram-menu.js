@@ -789,15 +789,14 @@ export async function onMenu(env, cq) {
     return ack('');
   }
   if (route === 'syn') { // one panel-sync run now, in this tap's own invocation (its own subrequest budget)
+    const { manualSync } = await import('./sync.js');
     const t = await first(env, "SELECT value FROM settings WHERE key = 'sync_manual_at'");
     if (t && nowSec() - parseInt(t.value, 10) < 60) return ack('یک دقیقه صبر کن؛ همین الان اجرا شد', true);
-    await run(env, `INSERT INTO settings (key, value) VALUES ('sync_manual_at', ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`, String(nowSec()));
     await ack('⏳ همگام‌سازی…');
-    let out = null;
-    try { const { runSync } = await import('./sync.js'); out = await runSync(env, { spent: 6 }); } catch (e) { out = null; }
+    const out = await manualSync(env);
     const scr = await renderScreen(env, 'sys.hl');
-    const head = out ? `⚡ همگام‌سازی اجرا شد: ${fa(out.pushed || 0)} تغییر روی پنل، ${fa(out.created || 0)} اکانت ساخته شد، ${fa(out.expired || 0)} اشتراک تمام‌شده بسته شد.`
-      : '❌ همگام‌سازی کامل نشد؛ خطا در «☁️ کلودفلر › 🐞 خطاها» ثبت شد.';
+    const head = out.ok ? `⚡ همگام‌سازی اجرا شد: ${fa(out.pushed)} تغییر روی پنل، ${fa(out.created)} اکانت ساخته شد، ${fa(out.expired)} اشتراک تمام‌شده بسته شد.`
+      : out.wait ? 'یک دقیقه صبر کن؛ همین الان اجرا شد' : '❌ همگام‌سازی کامل نشد؛ خطا در «☁️ کلودفلر › 🐞 خطاها» ثبت شد.';
     return show(env, cq, { text: head + '\n\n' + scr.text, kb: scr.kb });
   }
   if (route === 'undo') {

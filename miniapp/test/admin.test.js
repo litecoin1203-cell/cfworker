@@ -89,3 +89,36 @@ test('admin log summaries come out in English', async () => {
   assert.equal(englishSummary('+50,000 ت · 0 → 50,000 · یادداشت'), '+50,000 toman · 0 → 50,000');
   assert.equal(englishSummary('sending → stopped'), 'sending → stopped');
 });
+
+test('every monitoring code the Worker sends has English words', async () => {
+  const L = await import('../src/admin/labels.js');
+  const health = worker('health.js'), cfmon = worker('cfmon.js');
+  const keysOf = (src, name) => {
+    const i = src.indexOf(`const ${name} = {`) >= 0 ? src.indexOf(`const ${name} = {`) : src.indexOf(`export const ${name} = {`);
+    assert.ok(i >= 0, 'found ' + name);
+    const body = src.slice(src.indexOf('{', i) + 1, src.indexOf('};', i));
+    return [...body.matchAll(/(?:^|[\s,{])'?([A-Za-z_0-9]+)'?\s*:/g)].map((m) => m[1]);
+  };
+  for (const k of keysOf(health, 'TYPES')) assert.ok(L.TYPE[k], 'report type ' + k);
+  for (const k of keysOf(health, 'CAUSE_FA')) assert.ok(L.CAUSE[k], 'cause ' + k);
+  for (const k of keysOf(health, 'DETAIL_FA')) assert.ok(L.DETAIL[k], 'detail ' + k);
+  for (const k of keysOf(health, 'CRASH_FA')) assert.ok(L.CRASH[k], 'crash reading ' + k);
+  for (const k of keysOf(health, 'EXIT_REASON_FA')) assert.ok(L.EXIT_REASON[k], 'exit reason ' + k);
+  for (const k of keysOf(health, 'MODE_FA')) assert.ok(L.MODE[k], 'mode ' + k);
+  for (const k of keysOf(cfmon, 'STATUS_FA')) assert.ok(L.CF_STATUS[k], 'request status ' + k);
+  for (const m of cfmon.matchAll(/code: '([a-z_]+)'/g)) assert.ok(L.CF_ERROR[m[1]] || ['no_answer'].includes(m[1]), 'Cloudflare error code ' + m[1]);
+  assert.equal(L.problemTitle({ type: 'loc_mismatch', cause: 'DE>TR' }), 'Location mismatch · DE → TR');
+  assert.equal(L.detailValue('reason', 5, {}), '5 = native crash (core / C / Go library)');
+  assert.equal(L.cfError({ code: 'cf', detail: 'not authorized' }), 'Cloudflare said: not authorized');
+  assert.equal(L.quotaTone(86), 'bad');
+  assert.equal(L.pctText(0.4), '<1%');
+  assert.equal(L.bytes(50 * 1024 ** 2), '50.0 MB');
+  assert.equal(L.span(5 * 3600 + 12 * 60), '5 h 12 min');
+});
+
+test('the monitoring screens are in English only', () => {
+  for (const f of ['monitor.jsx', 'reports.jsx', 'charts.jsx', 'labels.js', 'infra.jsx']) {
+    const src = readFileSync(new URL('../src/admin/' + f, import.meta.url), 'utf8');
+    assert.ok(!/[؀-ۿ]/.test(src), f + ' has Persian text');
+  }
+});

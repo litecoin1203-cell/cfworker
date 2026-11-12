@@ -857,15 +857,29 @@ export async function panelServerList(env, id) {
 }
 
 // Why configs are (not) marked as Iran tunnel: what the Worker can read on the panel, step by step.
-export async function panelTunnelDiag(env, id, reread = false) {
-  const { getPanel, adapterFor, refreshHostRules, hostRulesFor } = await import('./panels.js');
+export async function tunnelDiagData(env, id, reread = false) {
+  const { getPanel, adapterFor, refreshHostRules } = await import('./panels.js');
   const p = await getPanel(env, id);
-  if (!p) return { text: crumb('🗂 پنل‌ها', '🚇 تانل') + '\n\nپنل پیدا نشد.', kb: [nav('pa')] };
+  if (!p) return null;
   let d = null, err = '';
   try { d = await (await adapterFor(env, p)).tunnelDiag(); } catch (e) { err = e.message || 'error'; }
   if (reread && d) { try { await refreshHostRules(env, p.id, true); } catch (e) { /* shown below by the stored age */ } }
   const row = await first(env, 'SELECT value FROM settings WHERE key = ?', `panel_hosts_${p.id}`);
   let stored = null; try { stored = row ? JSON.parse(row.value) : null; } catch (e) { /* none */ }
+  const pr = (await first(env, 'SELECT value FROM settings WHERE key = ?', `tunnel_probe_${p.id}`).catch(() => null))?.value;
+  let probe = null; try { probe = pr ? JSON.parse(pr) : null; } catch (e) { /* none */ }
+  return {
+    panel: { id: p.id, label: p.label }, error: d ? null : err, diag: d,
+    probe: probe ? { ok: !!probe.sub, error: probe.sub ? null : probe.error || null } : null,
+    stored: stored ? { rules: (stored.rules || []).length, tunnel_rules: (stored.rules || []).filter((r) => r.t).length, at: stored.at || 0 } : null,
+  };
+}
+
+// Why configs are (not) marked as Iran tunnel: what the Worker can read on the panel, step by step.
+export async function panelTunnelDiag(env, id, reread = false) {
+  const t = await tunnelDiagData(env, id, reread);
+  if (!t) return { text: crumb('🗂 پنل‌ها', '🚇 تانل') + '\n\nپنل پیدا نشد.', kb: [nav('pa')] };
+  const p = t.panel, d = t.diag, err = t.error, stored = t.stored, probe = t.probe;
   const st = (n) => (n === 200 ? '✅ ۲۰۰' : n ? `❌ ${n}` : '❌ بدون پاسخ');
   const lines = [crumb('🗂 پنل‌ها', `#${p.id}`, '🚇 عیب‌یابی تانل'), ''];
   if (!d) lines.push(`پنل خوانده نشد: ${err}`);
@@ -879,14 +893,12 @@ export async function panelTunnelDiag(env, id, reread = false) {
     if (d.hostsStatus !== 200) lines.push('   ⚠️ بدون هاست‌ها نمی‌شود کانفیگ را به گروه وصل کرد.');
     lines.push(`۴. هاست‌های تانل: ${fa(d.tunnelHosts)}`);
   }
-  const pr = (await first(env, 'SELECT value FROM settings WHERE key = ?', `tunnel_probe_${p.id}`).catch(() => null))?.value;
-  let probe = null; try { probe = pr ? JSON.parse(pr) : null; } catch (e) { /* none */ }
   if (d && d.kind === 'pasarguard' && (d.groupsStatus !== 200 || d.hostsStatus !== 200)) {
-    lines.push('', probe && probe.sub ? '🧪 روش جایگزین: یک کاربر آزمایشی (cgtunnel_…) فقط در گروه Tunnel روی پنل ساخته شده و کانفیگ‌هایش «تانل» حساب می‌شوند. آن را پاک نکن.'
+    lines.push('', probe && probe.ok ? '🧪 روش جایگزین: یک کاربر آزمایشی (cgtunnel_…) فقط در گروه Tunnel روی پنل ساخته شده و کانفیگ‌هایش «تانل» حساب می‌شوند. آن را پاک نکن.'
       : probe && probe.error === 'no_group' ? '🧪 روش جایگزین: گروهی با نام Tunnel در لیست ساده پیدا نشد.'
         : probe && probe.error ? `🧪 روش جایگزین ناموفق بود (${probe.error}): ادمین پنل اجازه‌ی ساخت کاربر در گروه Tunnel را ندارد.` : '🧪 روش جایگزین: با «دوباره بخوان» یک کاربر آزمایشی فقط در گروه Tunnel ساخته می‌شود.');
   }
-  lines.push('', stored ? `ذخیره‌شده در Worker: ${fa((stored.rules || []).length)} قاعده (${fa((stored.rules || []).filter((r) => r.t).length)} تانل) · ${fa(Math.round((Date.now() / 1000 - (stored.at || 0)) / 60))} دقیقه پیش` : 'هنوز چیزی ذخیره نشده (Worker هر ۱۵ دقیقه می‌خواند).');
+  lines.push('', stored ? `ذخیره‌شده در Worker: ${fa(stored.rules)} قاعده (${fa(stored.tunnel_rules)} تانل) · ${fa(Math.round((Date.now() / 1000 - stored.at) / 60))} دقیقه پیش` : 'هنوز چیزی ذخیره نشده (Worker هر ۱۵ دقیقه می‌خواند).');
   lines.push('در لیست 🖥 سرورها، سرورهای تانل با 🚇 علامت می‌خورند.');
   return { text: lines.join('\n'), kb: [[b('🔄 دوباره بخوان و ذخیره کن', `m:ptn:${p.id}:1`)], [b('🖥 سرورها', `m:srvs:${p.id}`)], nav(`pp:${p.id}`)] };
 }
@@ -951,23 +963,31 @@ export async function carrier(env, asn) {
   };
 }
 
-// one server on every operator, and how Google sees it
-export async function netServer(env, key) {
+// one server on every operator, and how Google sees it (3 days); null when the key is not a server key
+export async function netServerData(env, key) {
   const { SKEY_RE } = await import('./admin-actions.js');
-  if (!SKEY_RE.test(String(key || ''))) return { text: crumb('📶 شبکه', 'سرور') + '\n\nپیدا نشد.', kb: [nav('nc')] };
+  if (!SKEY_RE.test(String(key || ''))) return null;
   const { carrierSummary } = await import('./netstats.js');
   const rows = [];
   let name = '';
   for (const n of await carrierSummary(env)) {
     const i = n.servers.findIndex((s) => s.k === key);
-    if (i >= 0) { rows.push({ isp: n.isp, rank: i + 1, of: n.servers.length, s: n.servers[i] }); name = name || n.servers[i].name; }
+    if (i >= 0) { rows.push({ isp: n.isp, asn: n.asn, rank: i + 1, of: n.servers.length, s: n.servers[i] }); name = name || n.servers[i].name; }
   }
   const g = await first(env, `SELECT SUM(tests) t, SUM(gemini_ok) g, SUM(google_ir) ir, SUM(google_wall) w, MAX(name) name
     FROM google_probe WHERE skey = ? AND day >= ?`, key, Math.floor(nowSec() / 86400) - 2);
-  name = name || (g && g.name) || 'سرور';
-  const gl = g && g.t ? (g.ir / g.t >= 0.5 ? '🔴 گوگل آن را «ایران» می‌بیند' : g.w / g.t >= 0.5 ? '🟠 گوگل IP را مشکوک می‌داند' : g.g / g.t < 0.5 ? '🟡 گوگل سالم، Gemini نه' : '🟢 گوگل و Gemini سالم') + ` · ${fa(g.t)} تست` : 'هنوز تست گوگل ندارد.';
+  const google = g && g.t ? { tests: g.t, status: g.ir / g.t >= 0.5 ? 'iran' : g.w / g.t >= 0.5 ? 'flagged' : g.g / g.t < 0.5 ? 'no_gemini' : 'google' } : null;
+  return { key, name: name || (g && g.name) || '', carriers: rows, google };
+}
+
+export async function netServer(env, key) {
+  const d = await netServerData(env, key);
+  if (!d) return { text: crumb('📶 شبکه', 'سرور') + '\n\nپیدا نشد.', kb: [nav('nc')] };
+  const name = d.name || 'سرور';
+  const GL = { iran: '🔴 گوگل آن را «ایران» می‌بیند', flagged: '🟠 گوگل IP را مشکوک می‌داند', no_gemini: '🟡 گوگل سالم، Gemini نه', google: '🟢 گوگل و Gemini سالم' };
+  const gl = d.google ? `${GL[d.google.status]} · ${fa(d.google.tests)} تست` : 'هنوز تست گوگل ندارد.';
   return {
-    text: [crumb('📶 شبکه', name), '', `📊 ${name}`, '', ...(rows.length ? rows.map((r) => `▪️ ${r.isp}: رتبه ${fa(r.rank)} از ${fa(r.of)} — ${srvLine(r.s).split(' — ')[1]}`) : ['در ۳ روز اخیر روی هیچ اپراتوری تست نشده.']),
+    text: [crumb('📶 شبکه', name), '', `📊 ${name}`, '', ...(d.carriers.length ? d.carriers.map((r) => `▪️ ${r.isp}: رتبه ${fa(r.rank)} از ${fa(r.of)} — ${srvLine(r.s).split(' — ')[1]}`) : ['در ۳ روز اخیر روی هیچ اپراتوری تست نشده.']),
       '', `🔎 ${gl}`].join('\n'),
     kb: [[b('🧹 پاک کردن آمار این سرور', `m:nrs:s:${key}`)], nav('nc')],
   };
