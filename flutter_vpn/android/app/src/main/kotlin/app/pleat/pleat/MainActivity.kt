@@ -132,6 +132,14 @@ class MainActivity : FlutterActivity() {
                         result.success(null)
                     }
                     // Signed out: the widget can't start the old account's exit.
+                    // Exits a widget start tries after the last one (StatusWidget).
+                    "spares" -> {
+                        @Suppress("UNCHECKED_CAST")
+                        val list = (call.argument<List<Any?>>("list") ?: emptyList())
+                            .mapNotNull { it as? Map<String, Any?> }
+                        StatusWidget.saveSpares(this, list)
+                        result.success(null)
+                    }
                     "forget" -> {
                         StatusWidget.forget(this)
                         result.success(null)

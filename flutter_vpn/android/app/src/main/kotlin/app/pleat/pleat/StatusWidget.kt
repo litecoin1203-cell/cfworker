@@ -12,16 +12,21 @@ import android.os.SystemClock
 import android.view.View
 import android.widget.RemoteViews
 import java.io.File
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * The 4×1 "Status strip" home-screen widget: flag, place, IP and session
  * timer, and a switch. One tap connects or disconnects without opening
  * the app.
  *
- * Connect reuses the last exit's config (the same file Android's
- * always-on start uses), so the service starts straight from the widget.
- * When that can't work (no exit used yet, or Android's VPN permission is
- * not granted to Pleat right now) the tap opens the app, which connects.
+ * Connect never opens the app. The service starts straight from the
+ * widget with the exit that last worked (the same file Android's always-on
+ * start uses), and when that exit doesn't answer it tries the spare exits
+ * the app handed over after its last session, one by one. Without
+ * Android's VPN consent, [WidgetConnect] shows only Android's own dialog.
+ * Only before the very first connect ever (no exit known yet) does the
+ * tap open the app.
  *
  * The widget is redrawn only when the tunnel's state or the exit's details
  * change; the timer is a Chronometer Android counts itself. Colours come
@@ -76,16 +81,60 @@ class StatusWidget : AppWidgetProvider() {
         fun forget(context: Context) {
             context.applicationContext.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().clear().apply()
             try { lastConfig(context).delete() } catch (e: Exception) {}
+            try { sparesFile(context).delete() } catch (e: Exception) {}
             refresh(context)
         }
 
         fun lastConfig(context: Context) = File(context.noBackupFilesDir, "last-config.json")
 
-        /** A tap can start the tunnel by itself: an exit to reuse and Android's consent in hand. */
-        private fun canStart(context: Context): Boolean = try {
-            lastConfig(context).exists() && VpnService.prepare(context) == null
+        private fun sparesFile(context: Context) = File(context.noBackupFilesDir, "widget-spares.json")
+
+        /** An exit a widget start tries when the one before doesn't answer. */
+        data class Spare(val config: String, val flag: String, val place: String)
+
+        /** From the app, after each session comes up: the next best exits. */
+        fun saveSpares(context: Context, list: List<Map<String, Any?>>) {
+            val arr = JSONArray()
+            for (m in list) {
+                val config = m["config"] as? String ?: continue
+                arr.put(
+                    JSONObject()
+                        .put("config", config)
+                        .put("flag", m["flag"] as? String ?: "")
+                        .put("place", m["place"] as? String ?: "")
+                )
+            }
+            try { sparesFile(context).writeText(arr.toString()) } catch (e: Exception) {}
+        }
+
+        fun spares(context: Context): List<Spare> = try {
+            val f = sparesFile(context)
+            if (!f.exists()) emptyList() else {
+                val arr = JSONArray(f.readText())
+                List(arr.length()) { i ->
+                    val o = arr.getJSONObject(i)
+                    Spare(o.optString("config"), o.optString("flag"), o.optString("place"))
+                }.filter { it.config.isNotEmpty() }
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+
+        /** An exit to start without the app. */
+        private fun hasExit(context: Context) = lastConfig(context).exists()
+
+        /** Android's VPN consent is in hand, so the service can start directly. */
+        private fun consented(context: Context): Boolean = try {
+            VpnService.prepare(context) == null
         } catch (e: Exception) {
             false
+        }
+
+        /** The tap that connects: never the app, once an exit is known. */
+        private fun connect(context: Context): PendingIntent = when {
+            !hasExit(context) -> openApp(context)
+            consented(context) -> start(context)
+            else -> askConsent(context)
         }
 
         private fun views(context: Context): RemoteViews {
@@ -133,10 +182,10 @@ class StatusWidget : AppWidgetProvider() {
                 "failed" -> {
                     face(false)
                     v.setTextViewText(R.id.widget_title, "Couldn’t connect")
-                    line("Tap to open Pleat")
+                    line("Tap to try again")
                     v.setInt(R.id.widget_switch, "setBackgroundResource", R.drawable.widget_switch_off)
-                    v.setContentDescription(R.id.widget_switch, "Not connected. Tap to open Pleat")
-                    v.setOnClickPendingIntent(R.id.widget_root, openApp(context))
+                    v.setContentDescription(R.id.widget_switch, "Not connected. Tap to try again")
+                    v.setOnClickPendingIntent(R.id.widget_root, connect(context))
                 }
                 else -> {
                     face(false)
@@ -144,10 +193,7 @@ class StatusWidget : AppWidgetProvider() {
                     line(if (place.isNotEmpty()) "Tap to connect · $place" else "Tap to connect")
                     v.setInt(R.id.widget_switch, "setBackgroundResource", R.drawable.widget_switch_off)
                     v.setContentDescription(R.id.widget_switch, "Not connected. Tap to connect")
-                    v.setOnClickPendingIntent(
-                        R.id.widget_root,
-                        if (canStart(context)) start(context) else openApp(context)
-                    )
+                    v.setOnClickPendingIntent(R.id.widget_root, connect(context))
                 }
             }
             return v
@@ -171,7 +217,15 @@ class StatusWidget : AppWidgetProvider() {
             FLAGS
         )
 
-        /** The app opens and connects (first time: Android asks for the VPN permission there). */
+        /** Only Android's VPN consent dialog, over the home screen; then the start. */
+        private fun askConsent(context: Context): PendingIntent = PendingIntent.getActivity(
+            context, 43,
+            Intent(context, WidgetConnect::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION),
+            FLAGS
+        )
+
+        /** Before the first connect ever: the app opens and connects. */
         private fun openApp(context: Context): PendingIntent = PendingIntent.getActivity(
             context, 42,
             Intent(context, MainActivity::class.java)
