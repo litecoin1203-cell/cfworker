@@ -76,6 +76,37 @@ class Tunnel {
     }
   }
 
+  /// Sign-out: the home-screen widget forgets the last exit, so it can't
+  /// start the old account's tunnel.
+  Future<void> forget() async {
+    try {
+      await _method.invokeMethod<void>('forget');
+    } on MissingPluginException {
+      // No native side.
+    } on PlatformException {
+      // An older native side.
+    }
+  }
+
+  /// Exits the service tries in turn when a widget start's exit doesn't
+  /// answer, so the widget never has to open the app. English text only.
+  Future<void> spares(
+    List<({String config, String flag, String place})> list,
+  ) async {
+    try {
+      await _method.invokeMethod<void>('spares', {
+        'list': [
+          for (final e in list)
+            {'config': e.config, 'flag': e.flag, 'place': e.place},
+        ],
+      });
+    } on MissingPluginException {
+      // No native side.
+    } on PlatformException {
+      // An older native side.
+    }
+  }
+
   Future<void> stop() async {
     if (await available()) await _method.invokeMethod<void>('stop');
   }

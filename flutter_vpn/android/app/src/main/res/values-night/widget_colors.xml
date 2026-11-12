@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="widget_surface">#FF0B1424</color>
+    <color name="widget_track">#FF16233A</color>
+    <color name="widget_track_line">#FF1B2A42</color>
+    <color name="widget_thumb_off">#FF3A4860</color>
+    <color name="widget_mark_back">#FFE8EEF7</color>
+    <color name="widget_mark_fold">#FF18447A</color>
+</resources>

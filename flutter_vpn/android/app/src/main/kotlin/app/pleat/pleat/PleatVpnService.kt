@@ -59,6 +59,23 @@ class PleatVpnService : VpnService() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        TunnelHub.app = applicationContext
+        WidgetTrail.step(this, "svc_create")
+        // The same loading, on the main thread, the app does when it opens
+        // (MainActivity.engineError). Started from the widget with Pleat
+        // closed, the service was the first to load the core and the tun
+        // library, from its worker thread, and every start then failed
+        // between the core and the tun (widget trail: core, start_err).
+        // That this loading order is the cause is suspected, not proven;
+        // the trail now names the error either way.
+        try {
+            Class.forName("libv2ray.Libv2ray")
+            System.loadLibrary("hev-socks5-tunnel")
+            Engine.init(this)
+            WidgetTrail.step(this, "preload")
+        } catch (e: Throwable) {
+            WidgetTrail.step(this, "preload_err", e)
+        }
         Health.install(this)
     }
 
@@ -114,9 +131,10 @@ class PleatVpnService : VpnService() {
     private var generation = 0
 
     /** Last config, kept out of backups, for Android's always-on start. */
-    private val lastConfig get() = File(noBackupFilesDir, "last-config.json")
+    private val lastConfig get() = StatusWidget.lastConfig(this)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        WidgetTrail.step(this, "cmd_" + (intent?.action?.substringAfterLast('.') ?: "system"))
         when (intent?.action) {
             ACTION_STOP -> {
                 stopTunnel("down")
@@ -131,6 +149,23 @@ class PleatVpnService : VpnService() {
                 lastConfig.writeText(config)
                 begin(config)
             }
+            StatusWidget.ACTION_WIDGET_START -> {
+                // The home-screen widget: the last exit again, without the app.
+                // Started as a foreground service, so the card goes up first
+                // whatever happens next.
+                val config = lastConfig.takeIf { it.exists() }?.readText()
+                val allowed = try { VpnService.prepare(this) == null } catch (e: Exception) { false }
+                if (config == null || !allowed) {
+                    WidgetTrail.step(this, if (config == null) "no_config" else "no_consent")
+                    if (!foreground()) return START_NOT_STICKY
+                    // "failed": the widget's next tap opens the app, which can ask.
+                    stopTunnel("failed")
+                    return START_NOT_STICKY
+                }
+                TunnelNote.info = StatusWidget.lastInfo(this)
+                begin(config)
+                spares.addAll(StatusWidget.spares(this))
+            }
             else -> {
                 // Started by the system (always-on VPN): reuse the last exit.
                 val config = lastConfig.takeIf { it.exists() }?.readText()
@@ -138,16 +173,20 @@ class PleatVpnService : VpnService() {
                     stopTunnel("down")
                     return START_NOT_STICKY
                 }
+                if (TunnelNote.info.place.isEmpty()) TunnelNote.info = StatusWidget.lastInfo(this)
                 begin(config)
             }
         }
         return START_STICKY
     }
 
-    private fun begin(config: String) {
+    /** [keep]: a widget start's spare; otherwise any spares left are dropped. */
+    private fun begin(config: String, keep: Boolean = false) {
+        if (!keep) spares.clear()
         up = false
         upSince = 0
-        foreground()
+        StatusWidget.upSince = 0
+        if (!foreground()) return
         val gen = ++generation
         // for a crash report: which exit and protocol, and that it was starting
         val note = exitNoteOf(config)
@@ -169,6 +208,7 @@ class PleatVpnService : VpnService() {
                 start(config)
                 probe { gen == generation }
             } catch (e: Throwable) {
+                WidgetTrail.step(this, "start_err", e)
                 Health.startFailed(e)
                 false
             } finally {
@@ -183,11 +223,15 @@ class PleatVpnService : VpnService() {
                 }
             }
             if (gen != generation) return@execute
+            WidgetTrail.step(this, if (ok) "up" else "probe_fail")
             if (ok) {
+                // The exit that answered is the one the widget starts next.
+                try { lastConfig.writeText(config) } catch (e: Exception) {}
                 // for the health reports: a marker of a running tunnel, and the session's battery
                 Health.tunnelUp(this)
                 Health.tunnelState(this, "up")
                 Health.sessionStart(this)
+                StatusWidget.upSince = System.currentTimeMillis()
                 TunnelHub.set("up")
                 main.post {
                     if (gen != generation) return@post
@@ -195,15 +239,38 @@ class PleatVpnService : VpnService() {
                     upSince = System.currentTimeMillis()
                     redraw()
                 }
-            } else if (tun != null) {
-                // The tun stays, blocking: the app either tries the next exit
-                // (another begin, which takes this tun over) or stops. If
-                // neither comes (the app isn't running, an always-on start),
-                // it is closed after a while as before.
-                TunnelHub.set("failed")
-                main.postDelayed({ if (gen == generation) stopTunnel("failed") }, FAILED_HOLD_MS)
-            } else stopTunnel("failed")
+            } else {
+                val held = tun != null
+                main.post {
+                    if (gen != generation) return@post
+                    // A widget start: the next spare exit, here, without the app.
+                    val spare = spares.removeFirstOrNull()
+                    if (spare != null) {
+                        trySpare(spare)
+                        return@post
+                    }
+                    if (held) {
+                        // The tun stays, blocking: the app either tries the next exit
+                        // (another begin, which takes this tun over) or stops. If
+                        // neither comes (the app isn't running, an always-on start),
+                        // it is closed after a while as before.
+                        TunnelHub.set("failed")
+                        main.postDelayed({ if (gen == generation) stopTunnel("failed") }, FAILED_HOLD_MS)
+                    } else stopTunnel("failed")
+                }
+            }
         }
+    }
+
+    /** Main thread only: what a widget start tries after its first exit. */
+    private val spares = ArrayDeque<StatusWidget.Spare>()
+
+    /** The exit that answers becomes the widget's first choice next time. */
+    private fun trySpare(spare: StatusWidget.Spare) {
+        WidgetTrail.step(this, "spare")
+        TunnelNote.info = TunnelNote.Info(flag = spare.flag, place = spare.place)
+        StatusWidget.remember(this, spare.flag, spare.place)
+        begin(spare.config, keep = true)
     }
 
     private fun start(config: String) {
@@ -235,6 +302,7 @@ class PleatVpnService : VpnService() {
             .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) setMetered(false) }
             .establish() ?: error("VPN permission revoked")
         tun = iface
+        WidgetTrail.step(this, "tun")
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && !watching) {
             try {
                 connectivity.requestNetwork(
@@ -257,6 +325,7 @@ class PleatVpnService : VpnService() {
         val locked = lockSocks(config, user, pass)
 
         Engine.init(this)
+        WidgetTrail.step(this, "engine")
         val c = Libv2ray.newCoreController(object : CoreCallbackHandler {
             override fun startup(): Long = 0
             override fun shutdown(): Long = 0
@@ -264,6 +333,7 @@ class PleatVpnService : VpnService() {
         })
         core = c
         c.startLoop(locked, 0)
+        WidgetTrail.step(this, "core")
         if (!c.isRunning) error("core did not start")
         running = c
 
@@ -288,6 +358,7 @@ class PleatVpnService : VpnService() {
             """.trimIndent() + "\n"
         )
         TProxyService.TProxyStartService(yaml.absolutePath, iface.fd)
+        WidgetTrail.step(this, "hev")
         hevRunning = true
     }
 
@@ -377,6 +448,7 @@ class PleatVpnService : VpnService() {
     }
 
     private fun stopTunnel(state: String) {
+        WidgetTrail.step(this, "stop_$state")
         val gen = ++generation
         Health.tunnelState(this, "stopping")
         ops.execute {
@@ -403,11 +475,13 @@ class PleatVpnService : VpnService() {
     private var upSince = 0L
 
     override fun onRevoke() {
+        WidgetTrail.step(this, "revoke")
         // Another VPN took over, or the person turned Pleat off in Settings.
         stopTunnel("down")
     }
 
     override fun onDestroy() {
+        WidgetTrail.step(this, "destroy")
         instance = null
         generation++
         val wasUp = TunnelHub.state == "up"
@@ -425,12 +499,27 @@ class PleatVpnService : VpnService() {
         super.onDestroy()
     }
 
-    private fun foreground() {
+    /**
+     * False when Android refuses the foreground start (Android 12+ from the
+     * background; some phones' own rules): the start is dropped and noted
+     * for the health report, instead of the refusal ending Pleat.
+     */
+    private fun foreground(): Boolean {
         val note = TunnelNote.build(this, up, upSince)
-        if (Build.VERSION.SDK_INT >= 34) {
-            startForeground(TunnelNote.ID, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-        } else {
-            startForeground(TunnelNote.ID, note)
+        return try {
+            if (Build.VERSION.SDK_INT >= 34) {
+                startForeground(TunnelNote.ID, note, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
+            } else {
+                startForeground(TunnelNote.ID, note)
+            }
+            WidgetTrail.step(this, "fg_ok")
+            true
+        } catch (e: Exception) {
+            WidgetTrail.step(this, "fg_err", e)
+            Health.startRefused(this, e)
+            TunnelHub.set("failed")
+            stopSelf()
+            false
         }
     }
 

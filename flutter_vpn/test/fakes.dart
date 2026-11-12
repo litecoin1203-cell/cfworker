@@ -413,6 +413,20 @@ class FakeTunnel extends Tunnel {
   @override
   Future<void> stop() async => stopped = true;
 
+  /// Sign-out told the widget to forget the last exit.
+  bool forgot = false;
+
+  @override
+  Future<void> forget() async => forgot = true;
+
+  /// What the app last handed the service for widget starts.
+  List<({String config, String flag, String place})> spareList = [];
+
+  @override
+  Future<void> spares(
+    List<({String config, String flag, String place})> list,
+  ) async => spareList = list;
+
   /// What Android noted since the last launch (read once), and the core's
   /// reason for a failed start.
   Map<String, dynamic> native = {};
