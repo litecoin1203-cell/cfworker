@@ -1,6 +1,7 @@
 // Cloud Gold store on Cloudflare Workers. One Worker serves the app API, the NOWPayments webhook
 // and the Telegram admin bot. State lives in D1 (env.DB).
-import { json, err, ApiError, safeEqual, logError, rateLimit } from './util.js';
+import { json, err, ApiError, safeEqual, logError, rateLimit, setErrorSink } from './util.js';
+import { recordError } from './cfmon.js';
 import { first, run, insert } from './db.js';
 import * as auth from './auth.js';
 import * as account from './account.js';
@@ -41,6 +42,7 @@ function payDonePage(cancelled) {
 export default {
   // daily: backup file + short report to the admin's Telegram (cron in wrangler.jsonc)
   async scheduled(event, env, ctx) {
+    setErrorSink((m, e) => recordError(env, m, e)); // errors also go to the bot's ☁️ section
     // every minute: crypto deposits on the blockchain, one slice of the panel usage sync (quota and expiry
     // stops), and the Telegram webhook kept pointed at this Worker
     // every 2 minutes, on its own invocation (its own subrequest budget): one page of the broadcast being sent
@@ -48,6 +50,10 @@ export default {
       ctx.waitUntil((async () => {
         try { const { broadcastTick } = await import('./admin-actions.js'); await broadcastTick(env); } catch (e) { logError('broadcast failed', e); }
         // a new Pleat build on the release: told to the admin once (GitHub is asked every 10 minutes)
+        // Cloudflare quota / error alerts, once an hour (cfmon.js): a few GraphQL calls, nothing written unless it alerts
+        if (new Date().getUTCMinutes() < 2) {
+          try { const { alertTick } = await import('./cfmon.js'); await alertTick(env, (t, kb) => notifyAdmin(env, t, kb)); } catch (e) { logError('cloudflare alert check failed', e); }
+        }
         if (new Date().getUTCMinutes() % 10 < 2) {
           try { const { checkNewBuild } = await import('./appupdate.js'); await checkNewBuild(env, (t, kb) => notifyAdmin(env, t, kb)); } catch (e) { logError('app build check failed', e); }
         }
@@ -72,16 +78,20 @@ export default {
       if (!env.TELEGRAM_CHAT_ID) return;
       let rate = '';
       try { const { usdRateInfo } = await import('./usdrate.js'); const ri = await usdRateInfo(env, { force: true }); rate = ri.rate ? `\n💵 دلار: ${ri.rate.toLocaleString('en-US')} تومان (${ri.from === 'live' ? 'زنده' : ri.from === 'saved' ? 'ذخیره‌شده' : 'دستی'})` : '\n⚠️ قیمت دلار از صرافی‌ها دریافت نشد → /rate'; } catch (e) { logError('daily usd rate failed', e); }
+      let cf = '';
+      try { const { dailyLine } = await import('./cfmon.js'); cf = '\n' + (await dailyLine(env)); } catch (e) { logError('daily cloudflare line failed', e); }
       let health = '';
       try { const { dailyLine } = await import('./health.js'); health = '\n' + (await dailyLine(env)); } catch (e) { logError('daily health line failed', e); }
-      try { await notifyAdmin(env, '🌙 گزارش روزانه\n' + (await statsText(env)) + rate + health); } catch (e) { logError('daily report failed', e); }
+      try { await notifyAdmin(env, '🌙 گزارش روزانه\n' + (await statsText(env)) + rate + health + cf); } catch (e) { logError('daily report failed', e); }
       try { await sendBackup(env); } catch (e) { logError('daily backup failed', e); }
       try { const { prune } = await import('./netstats.js'); await prune(env); } catch (e) { logError('net stats prune failed', e); }
       try { const { prune } = await import('./health.js'); await prune(env); } catch (e) { logError('health prune failed', e); }
+      try { const { pruneErrors } = await import('./cfmon.js'); await pruneErrors(env); } catch (e) { logError('worker error prune failed', e); }
     })());
   },
 
   async fetch(request, env, ctx) {
+    setErrorSink((m, e) => recordError(env, m, e));
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const url = new URL(request.url);
     const path = url.pathname;

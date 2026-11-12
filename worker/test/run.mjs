@@ -2437,7 +2437,9 @@ const STAGE3_ACTIONS = ['order.approve', 'order.reject', 'order.cancel', 'order.
 const STAGE4_ACTIONS = ['panel.rename', 'panel.enable', 'server.hide', 'server.rename', 'app.list', 'net.reset', 'app.release'];
 // Pleat health reports: exercised in their own section near the end
 const HEALTH_ACTIONS = ['health.resolve', 'health.mute', 'health.mode'];
-const STAGE5_ACTIONS = ['broadcast.create', 'broadcast.start', 'broadcast.stop', 'admin.add', 'admin.remove', ...HEALTH_ACTIONS];
+// Cloudflare monitoring + panel sync by hand: exercised in their own section at the end
+const CF_ACTIONS = ['cf.errors_clear', 'sync.retry'];
+const STAGE5_ACTIONS = ['broadcast.create', 'broadcast.start', 'broadcast.stop', 'admin.add', 'admin.remove', ...HEALTH_ACTIONS, ...CF_ACTIONS];
 section('admin panel stage 1: routes, screens, undo, forms, audit, query budget');
 {
   const menu = await import('../src/telegram-menu.js');
@@ -3950,7 +3952,7 @@ section('admin panel stage 5: broadcast, stats, system, roles, security');
 
   // every stage 5 action has written an audit row
   const logged = new Set((await rows('SELECT DISTINCT action FROM admin_audit')).map((r) => r.action));
-  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !HEALTH_ACTIONS.includes(x));
+  const missing = Object.keys(acts.ACTIONS).filter((x) => !logged.has(x) && !HEALTH_ACTIONS.includes(x) && !CF_ACTIONS.includes(x));
   ok(!missing.length, 'every admin action, stage 5 included, has written an audit row: missing ' + missing.join(','));
   await exec("DELETE FROM settings WHERE key IN ('sms_key', 'app_bridges', 'panel_cred_9')");
 }
@@ -4820,6 +4822,178 @@ section('developer docs name every migration and every API route');
   const named = (p) => new RegExp('[` ]' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '`').test(apiDoc);
   const noApi = [...authed, ...admin].filter((p) => !named(p));
   ok(authed.length > 20 && admin.length > 30 && !noApi.length, 'docs/API.md names every app and admin route; missing: ' + noApi.join(', '));
+}
+
+section('admin bot: ☁️ Cloudflare monitoring (quota, errors, queries, deploys, alerts) and panel sync by hand');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const CF = await import('../src/cfmon.js');
+  const { logError } = await import('../src/util.js');
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const one = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const tick = () => new Promise((r) => setTimeout(r, 30));
+  const tap = async (data) => { await tgWebhook({ callback_query: { id: 'cf' + data, data, from: { id: 12345 }, message: { chat: { id: 12345, type: 'private' }, message_id: 9, text: 'x' } } }); await tick(); };
+  const SCREENS = ['cf', 'cfh', 'cfe', 'cfq', 'cfd', 'cfk'];
+  const TOKEN = 'cf-token-value-should-never-show-0123456789';
+  const checkScreens = async (label) => {
+    const bad = [];
+    for (const d of SCREENS) {
+      const sc = await menu.renderScreen(env, d);
+      const last = flat([sc.kb[sc.kb.length - 1]]);
+      if (!String(sc.text).startsWith('🏠 منو › ☁️ کلودفلر') || !last.includes('m:home') || /(^|\n)\s*\//.test(sc.text) || sc.text.includes(TOKEN) || sc.text.length > 4000
+        || flat(sc.kb).some((x) => !menu.routeOf(x))) bad.push(d);
+    }
+    ok(!bad.length, `${label}: every ☁️ screen has crumbs, back + home, working buttons, no typed command, no token, fits one message: ` + bad.join(','));
+  };
+
+  // fakes for Cloudflare's API and GitHub, around the shim's fetch
+  const now = Math.floor(Date.now() / 1000), t0 = now - (now % 86400);
+  const hourIso = (t) => new Date((t - (t % 3600)) * 1000).toISOString().replace('.000Z', 'Z');
+  const cfState = { gqlCalls: 0, auth: [], workers: [], d1: [], storage: [], queries: [], gqlError: null, deps: 403 };
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const json = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
+    if (url === 'https://api.cloudflare.com/client/v4/graphql') {
+      cfState.gqlCalls++; cfState.auth.push(init.headers.authorization);
+      if (cfState.gqlError) return json({ data: null, errors: [{ message: cfState.gqlError }] });
+      const q = JSON.parse(init.body).query;
+      const acc = {};
+      if (q.includes('workersInvocationsAdaptive')) acc.workersInvocationsAdaptive = cfState.workers;
+      if (q.includes('d1AnalyticsAdaptiveGroups')) { acc.d1AnalyticsAdaptiveGroups = cfState.d1; acc.d1StorageAdaptiveGroups = cfState.storage; }
+      if (q.includes('d1QueriesAdaptiveGroups')) acc.d1QueriesAdaptiveGroups = cfState.queries;
+      return json({ data: { viewer: { accounts: [acc] } }, errors: null });
+    }
+    if (url.includes('/workers/scripts/cloudgold/deployments')) return cfState.deps === 200
+      ? json({ success: true, result: { deployments: [{ id: 'd1', created_on: new Date((now - 3600) * 1000).toISOString() }] } }) : json({ success: false }, cfState.deps);
+    if (url.startsWith('https://api.github.com/repos/litecoin1203-cell/cfworker/actions/workflows/deploy-worker.yml/runs')) return json({ workflow_runs: [
+      { run_number: 64, status: 'in_progress', conclusion: null, created_at: new Date((now - 120) * 1000).toISOString(), head_sha: 'ccccccc1' },
+      { run_number: 63, status: 'completed', conclusion: 'success', created_at: new Date((now - 7200) * 1000).toISOString(), head_sha: 'bbbbbbb1' },
+      { run_number: 62, status: 'completed', conclusion: 'failure', created_at: new Date((now - 9000) * 1000).toISOString(), head_sha: 'aaaaaaa1' }] });
+    if (url.startsWith('https://api.github.com/repos/litecoin1203-cell/cfworker/actions/workflows/flutter-vpn.yml/runs')) return json({ workflow_runs: [{ run_number: 90, status: 'completed', conclusion: 'success', created_at: new Date((now - 4000) * 1000).toISOString() }] });
+    if (url.startsWith('https://api.github.com/repos/litecoin1203-cell/cfworker/compare/bbbbbbb1...main')) return json({ ahead_by: 3, commits: [
+      { commit: { message: 'Pleat 1.2.47: something' } }, { commit: { message: 'Merge pull request #83 from x/y\n\nbody' } }, { commit: { message: 'Merge pull request #84 from x/z' } }] });
+    if (url.startsWith('https://api.cloudflare.com/') || url.startsWith('https://api.github.com/')) return json({ message: 'unexpected' }, 404);
+    return realFetch(input, init);
+  };
+  try {
+    // ---- no token: what the Worker knows by itself, and how to get the rest ----
+    delete env.CF_ANALYTICS_TOKEN; delete env.CF_ACCOUNT_ID; CF.clearCache();
+    const home = await menu.renderScreen(env, 'home');
+    ok(flat(home.kb).includes('m:cf'), 'the bot home has the ☁️ Cloudflare button');
+    const ov0 = await menu.renderScreen(env, 'cf');
+    ok(ov0.text.includes('توکن ندارد') && ov0.text.includes('راه‌اندازی توکن') && ov0.text.includes('کرون هر دقیقه') && cfState.gqlCalls === 0,
+      'without a token the overview shows what the Worker knows, says what is missing, and calls no API: ' + ov0.text.slice(0, 400));
+    const k0 = await menu.renderScreen(env, 'cfk');
+    ok(k0.text.includes('CF_ANALYTICS_TOKEN') && k0.text.includes('Account Analytics') && k0.text.includes('Read'), 'the token screen names the secret and the one permission it needs');
+    await checkScreens('no token');
+
+    // ---- the Worker's own error log: scrubbed, one row per kind, throttled ----
+    await env.DB.prepare('DELETE FROM worker_errors').run();
+    logError('panel sync failed', new Error('connect to de1.secret-host.example.net 203.0.113.9 failed after 42 ms'));
+    await tick();
+    const e1 = await one('SELECT * FROM worker_errors');
+    ok(e1 && e1.count === 1 && e1.message === 'panel sync failed' && !/secret-host|203\.0\.113/.test(e1.detail), 'logError lands in worker_errors, scrubbed: ' + JSON.stringify(e1));
+    logError('panel sync failed', new Error('connect to de1.secret-host.example.net 203.0.113.9 failed after 77 ms'));
+    await tick();
+    ok((await one('SELECT COUNT(*) c, MAX(count) n FROM worker_errors')).n === 1, 'the same kind of error again within a minute is not written again (throttled)');
+    ok(CF.errorFp('a 12', 'x 5') === CF.errorFp('a 99', 'x 7'), 'numbers do not make a new kind of error');
+    const er = await menu.renderScreen(env, 'cfe');
+    ok(er.text.includes('panel sync failed') && flat(er.kb).includes('m:cfx'), 'the errors screen lists it with a clear button');
+
+    // ---- with a token: the Free plan meters, projections, CPU, capacity ----
+    env.CF_ANALYTICS_TOKEN = TOKEN; env.CF_ACCOUNT_ID = 'a'.repeat(32); CF.clearCache();
+    const hNow = now - (now % 3600);
+    cfState.workers = [
+      { sum: { requests: 60000, errors: 0, subrequests: 90000 }, quantiles: { cpuTimeP50: 2.1, cpuTimeP99: 8.4 }, dimensions: { datetimeHour: hourIso(Math.max(t0, hNow - 3600)), scriptName: 'cloudgold', status: 'success' } },
+      { sum: { requests: 600, errors: 600, subrequests: 0 }, quantiles: { cpuTimeP50: 10.5, cpuTimeP99: 12.2 }, dimensions: { datetimeHour: hourIso(hNow), scriptName: 'cloudgold', status: 'exceededCpu' } },
+      { sum: { requests: 900, errors: 0, subrequests: 0 }, quantiles: { cpuTimeP50: 1, cpuTimeP99: 2 }, dimensions: { datetimeHour: hourIso(Math.max(t0, hNow - 3600)), scriptName: 'other-script', status: 'success' } },
+      { sum: { requests: 40000, errors: 10, subrequests: 1000 }, quantiles: { cpuTimeP50: 2, cpuTimeP99: 5 }, dimensions: { datetimeHour: hourIso(t0 - 5 * 3600), scriptName: 'cloudgold', status: 'success' } },
+    ];
+    const today = new Date(now * 1000).toISOString().slice(0, 10), weekAgo = new Date((t0 - 6 * 86400) * 1000).toISOString().slice(0, 10);
+    cfState.d1 = [{ sum: { readQueries: 1000, writeQueries: 500, rowsRead: 900000, rowsWritten: 85000 }, dimensions: { date: today, databaseId: 'db1' } }];
+    cfState.storage = [{ max: { databaseSizeBytes: 50 * 1024 ** 2 }, dimensions: { date: today, databaseId: 'db1' } }, { max: { databaseSizeBytes: 40 * 1024 ** 2 }, dimensions: { date: weekAgo, databaseId: 'db1' } }];
+    cfState.queries = [
+      { sum: { rowsRead: 800000, rowsWritten: 0, queryDurationMs: 500 }, avg: { queryDurationMs: 0.5 }, dimensions: { query: 'SELECT * FROM panel_accounts WHERE dirty = ?' } },
+      { sum: { rowsRead: 1000, rowsWritten: 70000, queryDurationMs: 300 }, avg: { queryDurationMs: 0.3 }, dimensions: { query: 'UPDATE subscriptions SET used_bytes = ? WHERE user_id = ?' } },
+    ];
+    const ov = await menu.renderScreen(env, 'cf');
+    ok(/درخواست ورکر: 62k از 100k/.test(ov.text) && ov.text.includes('سهم cloudgold') && /🔴 نوشتن D1 \(ردیف\): 85k از 100k \(85٪\)/.test(ov.text) && ov.text.includes('خواندن D1'),
+      'the overview meters requests (whole account) and D1 rows against the Free plan: ' + ov.text);
+    ok(ov.text.includes('50.0 MB') && ov.text.includes('+10.0 MB') && ov.text.includes('بیش از ۱۰ms CPU') === false && ov.text.includes('ردشده به‌خاطر CPU/منابع: 600'),
+      'database size with its weekly growth, and CPU rejections: ' + ov.text);
+    ok(cfState.auth.every((a) => a === 'Bearer ' + TOKEN) && !ov.text.includes(TOKEN), 'the token goes only in the Authorization header');
+    const calls1 = cfState.gqlCalls;
+    await menu.renderScreen(env, 'cf');
+    ok(cfState.gqlCalls === calls1, 'a second look within a minute costs no new Cloudflare call');
+    const ers = await menu.renderScreen(env, 'cfe');
+    ok(ers.text.includes('بیش از ۱۰ms CPU') && ers.text.includes('✅ موفق'), 'the errors screen breaks the last 24 hours down by outcome');
+    const qs = await menu.renderScreen(env, 'cfq');
+    ok(qs.text.includes('panel_accounts WHERE dirty') && qs.text.includes('UPDATE subscriptions') && qs.text.includes('≈1,000'), 'the costly-queries screen names the top readers and writers: ' + qs.text.slice(0, 500));
+    const hs = await menu.renderScreen(env, 'cfh');
+    ok(hs.text.includes('(امروز)') && hs.text.split("\n").filter((l) => /^[🟢🟡🔴] \d\d-\d\d/u.test(l)).length === 7, 'the 7-day screen has one line a day: ' + hs.text);
+    const dp = await menu.renderScreen(env, 'cfd');
+    ok(dp.text.includes('⏳ #64') && dp.text.includes('✅ #63') && dp.text.includes('❌ #62') && dp.text.includes('3 کامیت') && dp.text.includes('#83 #84') && dp.text.includes('Workers Scripts: Read')
+      && dp.text.includes('✅ #90') && dp.kb.flat().some((x) => x.url && x.url.includes('/actions')), 'deploys: runs, merged-but-not-deployed PRs, the Pleat build, a link: ' + dp.text);
+    cfState.deps = 200; CF.clearCache();
+    ok((await menu.renderScreen(env, 'cfd')).text.includes('نسخه‌ی در حال اجرا روی کلودفلر'), 'with Workers Scripts: Read the live version shows');
+    await checkScreens('with a token');
+
+    // ---- Cloudflare says no: the screens still answer and say why ----
+    cfState.gqlError = 'not authorized for that account'; CF.clearCache();
+    const ovE = await menu.renderScreen(env, 'cf');
+    ok(ovE.text.includes('❌ Cloudflare: not authorized') && ovE.text.includes('حجم دیتابیس'), 'a GraphQL error is shown on the line it breaks; the rest still shows');
+    ok((await menu.renderScreen(env, 'cfk')).text.includes('توکن هست ولی کار نمی‌کند'), 'the token screen says the token does not work');
+    await checkScreens('Cloudflare error');
+    cfState.gqlError = null; CF.clearCache();
+
+    // ---- alerts: once a day per problem, off with one tap ----
+    await env.DB.prepare("DELETE FROM settings WHERE key IN ('cf_alerts', 'cf_alert_state')").run();
+    const sent = [];
+    const notify = async (t, kb) => sent.push({ t, kb });
+    const a1 = await CF.alertTick(env, notify);
+    ok(a1.sent >= 1 && sent.length === 1 && sent[0].t.includes('نوشتن D1') && sent[0].t.includes('خطای تازه') && flat(sent[0].kb.inline_keyboard).includes('m:cf'), 'the hourly check warns about D1 writes at 85% and a new error: ' + (sent[0] && sent[0].t));
+    CF.clearCache();
+    ok((await CF.alertTick(env, notify)).sent === 0 && sent.length === 1, 'the same problems are not told twice the same day');
+    await tap('m:ss:cf_alerts:0');
+    ok((await one("SELECT value FROM settings WHERE key = 'cf_alerts'")).value === '0', 'the overview button turns the alerts off');
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'cf_alert_state'").run();
+    ok((await CF.alertTick(env, notify)).sent === 0, 'alerts off: nothing is sent');
+    await tap('m:ss:cf_alerts:1');
+    // the hourly check runs from the */2 cron at minute 0 only
+    const line = await CF.dailyLine(env);
+    ok(line.includes('☁️ کلودفلر امروز') && line.includes('نوشتن D1 85٪'), 'the nightly report line: ' + line);
+
+    // ---- buttons: clear the error list, retry stuck panel accounts, sync now ----
+    await tap('m:cfx');
+    ok(!(await one('SELECT COUNT(*) c FROM worker_errors')).c && (await one("SELECT 1 x FROM admin_audit WHERE action = 'cf.errors_clear'")), 'the clear button empties the error list (audited)');
+    const hl = await menu.renderScreen(env, 'sys.hl');
+    ok(flat(hl.kb).includes('m:syn') && flat(hl.kb).includes('m:cf'), 'the system health screen has "sync now" and the ☁️ button');
+    const pa = await one('SELECT id FROM panel_accounts ORDER BY id LIMIT 1');
+    if (pa) await env.DB.prepare('UPDATE panel_accounts SET dirty = 1, attempts = 5 WHERE id = ?').bind(pa.id).run();
+    ok(!pa || flat((await menu.renderScreen(env, 'sys.hl')).kb).includes('m:syr'), 'stuck accounts bring the retry button');
+    await tap('m:syr');
+    ok(!pa || (await one('SELECT attempts FROM panel_accounts WHERE id = ?', pa.id)).attempts < 3, 'retry puts stuck accounts back at the front of the queue');
+    ok(await one("SELECT 1 x FROM admin_audit WHERE action = 'sync.retry'"), 'retry is audited');
+    const n0 = fakes.tg.calls.length;
+    await tap('m:syn');
+    const edited = fakes.tg.calls.slice(n0).find((c) => c.method === 'editMessageText');
+    ok(edited && String(edited.body.text).startsWith('⚡ همگام‌سازی اجرا شد'), 'sync now runs one panel sync and says what it did: ' + (edited && edited.body.text.slice(0, 120)));
+    const n1 = fakes.tg.calls.length;
+    await tap('m:syn');
+    ok(fakes.tg.calls.slice(n1).some((c) => c.method === 'answerCallbackQuery' && String(c.body.text || '').includes('یک دقیقه صبر')), 'a second "sync now" within a minute is refused');
+    // roles: a viewer sees the screens but cannot press the buttons that change something
+    ok(menu.allowedTap('viewer', 'm:cf') && menu.allowedTap('viewer', 'm:cfd') && !menu.allowedTap('viewer', 'm:cfx') && !menu.allowedTap('viewer', 'm:syn') && !menu.allowedTap('support', 'm:cf'),
+      'viewer: ☁️ screens yes, clear / sync no; support: not this section');
+    // the nightly cron carries the ☁️ line
+    const n2 = fakes.tg.calls.length;
+    await worker.scheduled({ cron: '30 20 * * *' }, env, ctx); await drain();
+    ok(fakes.tg.calls.slice(n2).some((c) => c.method === 'sendMessage' && String(c.body.text).includes('☁️ کلودفلر')), 'the daily report has the ☁️ line');
+  } finally {
+    globalThis.fetch = realFetch;
+    delete env.CF_ANALYTICS_TOKEN; delete env.CF_ACCOUNT_ID; CF.clearCache();
+  }
 }
 
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');

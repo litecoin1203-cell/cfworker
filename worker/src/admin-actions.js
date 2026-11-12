@@ -1177,6 +1177,25 @@ Object.assign(ACTIONS, {
 
 // What a non-owner may write, checked again here under the router: support approves and rejects receipts only.
 const ROLE_ACTIONS = { support: new Set(['order.approve', 'order.reject']), viewer: new Set() };
+// ---------------- the Worker's error log, panel sync by hand ----------------
+Object.assign(ACTIONS, {
+  'cf.errors_clear': {
+    risk: 'reversible', target: 'cf',
+    async apply(env) {
+      const n = (await run(env, 'DELETE FROM worker_errors')).meta.changes || 0;
+      return { targetId: 'errors', summary: `${fa(n)} ردیف`, text: `🧹 لیست خطاها پاک شد (${fa(n)} نوع). خطاهای بعدی دوباره ثبت می‌شوند.` };
+    },
+  },
+  // panel accounts that failed 3+ times wait for the next change; this lets the sync try them again now
+  'sync.retry': {
+    risk: 'reversible', target: 'sync',
+    async apply(env) {
+      const n = (await run(env, 'UPDATE panel_accounts SET attempts = 0 WHERE dirty = 1 AND attempts >= 3')).meta.changes || 0;
+      return { targetId: 'retry', summary: `${fa(n)} اکانت`, text: n ? `🔁 ${fa(n)} اکانت به اول صف برگشت؛ همگام‌سازی بعدی (حداکثر یک دقیقه) امتحانشان می‌کند.` : 'اکانت گیرکرده‌ای نیست ✅' };
+    },
+  },
+});
+
 async function actorAllowed(env, actor, name) {
   if (String(actor) === String(env.TELEGRAM_CHAT_ID || '')) return true;
   const r = await first(env, 'SELECT role FROM admins WHERE tg_id = ?', String(actor));

@@ -57,7 +57,7 @@ export async function home(env) {
       [b('💳 روش‌های پرداخت', 'm:pay'), b('📱 اپ Pleat', 'm:app')],
       [b('📶 شبکه و رتبه‌بندی', 'm:net'), b('📣 پیام همگانی', 'm:bc')],
       [b('📊 آمار', 'm:st'), b('🛡 سیستم', 'm:sys')],
-      [b('🩺 سلامت اپ (گزارش گوشی‌ها)', 'm:hl')],
+      [b('🩺 سلامت اپ (گزارش گوشی‌ها)', 'm:hl'), b('☁️ مانیتورینگ کلودفلر', 'm:cf')],
     ],
   };
 }
@@ -666,6 +666,7 @@ export const SET_CHOICES = {
   usd_rate_toman: ['0'],
   trial_data_gb: ['0', '1', '2', '5'],
   trial_needs_telegram: ['1', '0'],
+  cf_alerts: ['1', '0'],
 };
 export async function paySettings(env) {
   const s = await getSettings(env);
@@ -693,7 +694,7 @@ export async function paySettings(env) {
 export const KEY_FA = {
   card_number: 'شماره کارت', card_holder: 'نام صاحب کارت', card_bank: 'بانک', usdt_rate_toman: 'قیمت تتر (قدیمی)',
   referral_percent: 'درصد پاداش دعوت', pg_group_ids: 'گروه‌های پنل', support_url: 'لینک پشتیبانی', min_topup_toman: 'حداقل شارژ',
-  announcement: 'اطلاعیه‌ی اپ', trial_data_gb: 'حجم تست رایگان (0 = مثل پلن)', trial_needs_telegram: 'تست فقط با تلگرام تأییدشده', usd_rate_toman: 'قیمت دستی دلار (0 = خودکار)',
+  announcement: 'اطلاعیه‌ی اپ', trial_data_gb: 'حجم تست رایگان (0 = مثل پلن)', trial_needs_telegram: 'تست فقط با تلگرام تأییدشده', cf_alerts: 'هشدار خودکار کلودفلر (1 = روشن)', usd_rate_toman: 'قیمت دستی دلار (0 = خودکار)',
   coin_minutes: 'مهلت پرداخت ارز (دقیقه)', card_unique: 'مبلغ یکتا (1 روشن، 0 خاموش)', card_auto: 'تأیید پیامکی کارت',
   sms_senders: 'فرستنده‌های بانکی', sms_key: 'کلید آدرس پیامک', coin_auto: 'تأیید ارز دیجیتال',
   app_api_bases: 'دامنه‌های اضافه‌ی اپ (ضد فیلتر)', app_bridges: 'لینک‌های پل اپ (ضد فیلتر)',
@@ -1085,7 +1086,9 @@ export async function health(env) {
     `در صف تغییر روی پنل: ${fa(c.dirty)}${c.stuck ? ` (⚠️ ${fa(c.stuck)} تا بعد از ۳ تلاش هنوز نشده)` : ''}`,
     `اکانت با خطای آخر: ${fa(c.errs)} · پنلی که ساخت اکانت را رد می‌کند: ${fa(c.perr)}`,
     '', `📣 پیام همگانی در حال ارسال: ${fa(c.bc)}`];
-  return { text: lines.join('\n'), kb: [[b('🔄 به‌روزرسانی', 'm:sys.hl'), ...(c.perr || c.errs ? [b('🗂 پنل‌ها', 'm:pa')] : [])], nav('sys')] };
+  return { text: lines.join('\n'), kb: [[b('🔄 به‌روزرسانی', 'm:sys.hl'), ...(c.perr || c.errs ? [b('🗂 پنل‌ها', 'm:pa')] : [])],
+    [b('⚡ همگام‌سازی همین حالا', 'm:syn'), ...(c.stuck ? [b(`🔁 تلاش دوباره (${fa(c.stuck)})`, 'm:syr')] : [])],
+    [b('☁️ مانیتورینگ کلودفلر', 'm:cf')], nav('sys')] };
 }
 
 export async function admins(env) {
@@ -1100,7 +1103,7 @@ export async function admins(env) {
   };
 }
 
-const TARGET_FA = { plan: '📦 پلن', panel: '🗂 پنل', setting: '⚙️', user: '👤 کاربر', coupon: '🏷 کد', order: '🧾 سفارش', server: '🖥 سرور', net: '📶 آمار شبکه', broadcast: '📣 پیام همگانی', admin: '👥 مدیر' };
+const TARGET_FA = { plan: '📦 پلن', panel: '🗂 پنل', setting: '⚙️', user: '👤 کاربر', coupon: '🏷 کد', order: '🧾 سفارش', server: '🖥 سرور', net: '📶 آمار شبکه', broadcast: '📣 پیام همگانی', admin: '👥 مدیر', cf: '☁️ کلودفلر', sync: '🔄 همگام‌سازی' };
 const when = (t) => new Date(t * 1000).toISOString().slice(5, 16).replace('T', ' ');
 
 function logScreen(pg, title, route, back, owner = '') {

@@ -50,6 +50,7 @@ workflow). 33 tables, 1 trigger. All times are **unix seconds** unless a column 
 | 0020_panel_online | `usage_counters.online_at` (last connection per panel account; written with the usage write, no extra writes) — PR #49 |
 | 0021_expiry_index | index `subscriptions(state, expires_at)` — the per-minute expiry check was a full scan — PR #62 |
 | 0022_health | `health_events` (Pleat's automatic health reports) — PR #73 |
+| 0023_worker_errors | `worker_errors` (the Worker's own error log for the bot's ☁️ Cloudflare section) — PR #84 |
 
 ## Tables
 
@@ -115,6 +116,11 @@ Server key = FNV-1a of `type|host|port` (`netstats.serverKey`, same in Pleat). I
 `state` open / resolved / muted. Rows kept 14 days (resolved: 3), pruned by the daily cron. Per-user daily caps are in
 `health.js` `LIMITS`.
 
+### Worker error log (0023, PR #84)
+`worker_errors`: one row per kind of error (`fp` = message + error text with numbers taken out). `logError` feeds it
+through `cfmon.recordError`: scrubbed (no host, IP, email, key), written at most once a minute per kind and 12 times a
+minute per isolate; a repeat only raises `count`. Kept 14 days (daily cron). Shown in the bot › ☁️ › 🐞.
+
 ### `settings` (key / value)
 Almost all runtime configuration. Defaults in `worker/src/db.js` `SETTING_DEFAULTS`; edited from the bot or the Mini App.
 
@@ -123,6 +129,7 @@ Almost all runtime configuration. Defaults in `worker/src/db.js` `SETTING_DEFAUL
   `min_topup_toman`.
 - App: `announcement`, `support_url`, `app_api_bases` (extra Worker domains), `app_bridges` (bridge links),
   `trial_data_gb`, `trial_needs_telegram`, `app_release` (in-app update announcement).
+- Monitoring: `cf_alerts` (1/0, hourly Cloudflare alerts), `cf_alert_state` (what was already told today), `sync_manual_at` (last "sync now" tap).
 - Panels: `panel_cred_<id>` (AES-GCM sealed login, never in backups), `panel_err_<id>` (refused creates),
   `panel_hosts_<id>` (Tunnel-group host rules, refreshed every 15 min), `tunnel_probe_<id>` (the `cgtunnel_…` probe
   user used when the panel admin gets 403 on groups/hosts — **do not delete that panel user**), `server_exit_cc`
