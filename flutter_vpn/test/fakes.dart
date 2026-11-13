@@ -419,6 +419,18 @@ class FakeTunnel extends Tunnel {
   @override
   Future<void> stop() async => stopped = true;
 
+  /// Battery limits and maker, as Android would say; null: not told.
+  ({bool exempt, bool xiaomi})? keepState;
+  int exemptAsks = 0;
+  int autostartOpens = 0;
+
+  @override
+  Future<({bool exempt, bool xiaomi})?> keepAlive() async => keepState;
+  @override
+  Future<void> askBatteryExempt() async => exemptAsks++;
+  @override
+  Future<void> openAutostart() async => autostartOpens++;
+
   /// Sign-out told the widget to forget the last exit.
   bool forgot = false;
 

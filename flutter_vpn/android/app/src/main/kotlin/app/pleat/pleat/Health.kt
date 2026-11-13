@@ -256,6 +256,12 @@ object Health {
                 .put("k", key?.takeIf { KEY.matches(it) } ?: if (key == null) last?.optString("k").orEmpty() else "")
                 .put("p", proto?.takeIf { PROTO.matches(it) } ?: if (proto == null) last?.optString("p").orEmpty() else "")
                 .put("up", if (op == "up") now else if (op == "starting") 0L else last?.optLong("up") ?: 0L)
+                // whether Android could close it to save battery, and whether
+                // it is the always-on VPN (Android starts that one again)
+                .put("opt", !KeepAlive.exempt(ctx))
+            if (ctx is android.net.VpnService && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                one.put("aon", ctx.isAlwaysOn)
+            }
             log.put(one)
             while (log.length() > STATE_LOG) log.remove(0)
             p.edit().putString("t_log", log.toString()).apply()
@@ -289,6 +295,8 @@ object Health {
         if (op != "off") st.optString("k").takeIf { it.isNotEmpty() }?.let { d["k"] = it }
         val up = st.optLong("up")
         if (op == "up" && up in 1..at) d["up_s"] = ((at - up) / 1000).toInt()
+        if (st.has("opt")) d["opt"] = st.optBoolean("opt")
+        if (st.has("aon")) d["aon"] = st.optBoolean("aon")
     }
 
     // ---- battery over a session ---------------------------------------------

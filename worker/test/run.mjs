@@ -4804,6 +4804,18 @@ section('Pleat health reports: priorities, one row per problem, caps, scrubbing,
   const atText = (await menu.renderScreen(env, `he:${crash.fp}`)).text;
   ok(atText.includes('نشانی‌ها در کتابخانه: libgojni.so+0x10b30f8') && atText.includes('همان پروسه stderr را ضبط نکرده بود') && atText.includes('لاگ داخل tombstone')
     && atText.includes('«نشانی‌ها»'), 'a 1.2.50 crash shows the offsets and asks for them: ' + atText);
+  // Android closing a running VPN is no crash: the phone's cleaner, its battery limits, or a kill from outside
+  ok(H.killKind({ reason: 13, status: 0, what: 'OneKeyClean', opt: true }) === 'cleaner' && H.killKind({ reason: 2, status: 9, opt: true }) === 'battery_limit'
+    && H.killKind({ reason: 2, status: 9, opt: false }) === 'sigkill' && H.killKind({ reason: 13, status: 0 }) === '', 'kill readings');
+  const row = await env.DB.prepare('SELECT user_id, day FROM health_events WHERE id = ?').bind(crash.id).first();
+  const kfp = H.fingerprint('killed', 'kabc12345', 'other');
+  await env.DB.prepare(`INSERT INTO health_events (user_id, day, fp, prio, type, exit_key, exit_name, cause, count, first_at, last_at, app_ver, os, model, net, isp, detail)
+    VALUES (?, ?, ?, 1, 'killed', 'kabc12345', 'TR 5', 'other', 2, ?, ?, '1.2.51', 'Android 16', '24117RN76G', 'cell', 'Netlen', ?)`)
+    .bind(row.user_id, row.day, kfp, Math.floor(Date.now() / 1000) - 600, Math.floor(Date.now() / 1000) - 60,
+      JSON.stringify(H.cleanDetail({ reason: 13, status: 0, tunnel: true, pss: 109, what: 'OneKeyClean', op: 'up', proto: 'vless/tls/ws', up_s: 672, opt: true, aon: false }))).run();
+  const killText = (await menu.renderScreen(env, `he:${kfp}`)).text;
+  ok(killText.includes('🧭 برداشت: کرش نیست: پاک‌کننده‌ی گوشی') && killText.includes('Always-on روشن: نه') && killText.includes('بهینه‌سازی باتری روشن: بله'),
+    'a cleaner kill reads as no crash, with the battery and always-on state: ' + killText);
   // "none answered": the servers by name, each with why it was left out
   await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?')
     .bind(JSON.stringify(H.cleanDetail({ route: 'auto', country: 'DE', tried: [{ k: kDE }], why: [{ k: kDE, c: 'refused' }, { k: kNL, c: 'timeout' }, { k: 'kunknown1', c: 'ok' }], age: 42 })), crash.id).run();

@@ -367,6 +367,38 @@ void main() {
       return (state, api);
     }
 
+    testWidgets('Stay running asks for no battery limits; a Xiaomi gets '
+        'Autostart and the Recents lock', (tester) async {
+      final tunnel = FakeTunnel()..keepState = (exempt: false, xiaomi: true);
+      final (app, _) = await boot(tester, tunnel);
+      // main() reads it at launch (resumeTunnel); this harness skips main()
+      await app.readKeep();
+      await tester.tap(find.text('Protect'));
+      await tester.pump(const Duration(milliseconds: 800));
+      expect(find.text('Stay running'), findsOneWidget);
+      expect(
+        find.text('Off: Android may close Pleat to save battery'),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('Stay running'));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(tunnel.exemptAsks, 1);
+      expect(find.text('Autostart and Recents lock'), findsOneWidget);
+      await tester.tap(find.text('Autostart and Recents lock'));
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(tunnel.autostartOpens, 1);
+
+      // back from Android's page with the limits lifted, on another maker
+      tunnel.keepState = (exempt: true, xiaomi: false);
+      await app.readKeep();
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        find.text('No battery limits: Android leaves Pleat on'),
+        findsOneWidget,
+      );
+      expect(find.text('Autostart and Recents lock'), findsNothing);
+    });
+
     testWidgets('Shield reaches the tunnel; the check and Google tests run', (
       tester,
     ) async {

@@ -71,7 +71,7 @@ export const DETAIL = {
   sessions: 'Sessions', ok: 'Succeeded', fail: 'Failed', minutes: 'Minutes connected', moved: 'Network changed', status: 'Code', what: 'Android says',
   sig: 'Signal', go: 'Core panic (Go)', abort: 'Abort message', cause: 'Cause', thread: 'Thread', lib: 'Library', frames: 'Frames',
   why: 'Each server', age: 'Seconds since the last test', exits: 'Servers on this route', country: 'Country',
-  addr: 'Addresses in the library', logs: 'Log inside the tombstone',
+  addr: 'Addresses in the library', logs: 'Log inside the tombstone', aon: 'Always-on VPN on',
   op: 'Tunnel was', up_s: 'Seconds connected', tomb: 'Android tombstone', stderr: 'Core stderr', pss: 'App memory (MB)', earlier: 'Earlier crash, read again',
 };
 // ApplicationExitInfo.REASON_* (Android 11+)
@@ -99,6 +99,9 @@ export const CRASH = {
   no_tombstone: 'Android kept no tombstone for this crash; if it were a Go core panic, "Core panic" would be filled in, and it is not.',
   sigabrt: 'Deliberate abort: a Go core (Xray) panic, fdsan/libc, or Flutter. This app version sent no more; from Pleat 1.2.38 the panic text, library and protocol come too.',
   sigsegv: 'Invalid memory access in native (C) code; Go code turns such an error into a panic and SIGABRT.',
+  cleaner: 'Not a crash: the phone\'s cleaner (Xiaomi OneKeyClean, or Clear all in Recents) closed the app. User: Protect › Stay running (no battery limits), Autostart on, lock Pleat in Recents, Always-on VPN on.',
+  battery_limit: 'Not a crash: Android closed the VPN under battery limits. User: Protect › Stay running (no battery limits).',
+  sigkill: 'Not a crash: the process was killed from outside (SIGKILL), usually the phone maker\'s battery manager or cleaner; low memory would read reason 3. Same steps: Stay running and Always-on.',
 };
 
 // a value in words where the phone sends a number or a code word

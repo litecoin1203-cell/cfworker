@@ -360,6 +360,15 @@ class MainActivity : FlutterActivity() {
                         startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
                         result.success(null)
                     }
+                    "keepAlive" -> result.success(mapOf("exempt" to KeepAlive.exempt(this), "xiaomi" to KeepAlive.xiaomi()))
+                    "askExempt" -> {
+                        KeepAlive.askExempt(this)
+                        result.success(null)
+                    }
+                    "autostart" -> {
+                        KeepAlive.openAutostart(this)
+                        result.success(null)
+                    }
                     else -> result.notImplemented()
                 }
             }

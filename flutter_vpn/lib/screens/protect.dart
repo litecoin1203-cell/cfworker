@@ -227,6 +227,8 @@ String agoText(DateTime at) {
 
 /// Android's always-on VPN (start with the phone) and its lockdown (the
 /// kill switch). Only Android can set them, so both open its VPN page.
+/// "Stay running" asks Android not to close Pleat to save battery; on a
+/// Xiaomi, Autostart and a lock in Recents keep its cleaner off Pleat too.
 class _AlwaysCard extends StatelessWidget {
   const _AlwaysCard({required this.app});
   final AppState app;
@@ -236,9 +238,18 @@ class _AlwaysCard extends StatelessWidget {
     final engine = app.tunnelAvailable == true;
     final g = app.guard;
     final open = engine ? app.tunnel.openSystemSettings : null;
-    Widget row(PIcon icon, String title, String sub, bool on) => Pressable(
-      onTap: open,
-      label: '$title, opens Android VPN settings',
+    final keep = app.keep;
+    // on: a switch's state; null: a page to open (no state Android tells)
+    Widget row(
+      PIcon icon,
+      String title,
+      String sub,
+      bool? on, {
+      VoidCallback? tap,
+      String where = 'Android VPN settings',
+    }) => Pressable(
+      onTap: tap ?? open,
+      label: '$title, opens $where',
       radius: 16,
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 10),
@@ -264,12 +275,22 @@ class _AlwaysCard extends StatelessWidget {
                 ],
               ),
             ),
-            PToggle(
-              value: on,
-              onChanged: engine ? (_) => open!() : null,
-              label: title,
-              onDark: true,
-            ),
+            if (on != null)
+              PToggle(
+                value: on,
+                onChanged: engine ? (_) => (tap ?? open)!() : null,
+                label: title,
+                onDark: true,
+              )
+            else
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: PIconView(
+                  PIcon.chevron,
+                  size: 18,
+                  color: PColors.onDeep.withValues(alpha: 0.72),
+                ),
+              ),
           ],
         ),
       ),
@@ -351,6 +372,36 @@ class _AlwaysCard extends StatelessWidget {
                         : 'Off: turn on “Always-on VPN”',
                     g?.alwaysOn ?? false,
                   ),
+                  if (keep != null) ...[
+                    Divider(
+                      height: 1,
+                      color: PColors.onDeep.withValues(alpha: 0.12),
+                    ),
+                    row(
+                      PIcon.bolt,
+                      'Stay running',
+                      keep.exempt
+                          ? 'No battery limits: Android leaves Pleat on'
+                          : 'Off: Android may close Pleat to save battery',
+                      keep.exempt,
+                      tap: app.tunnel.askBatteryExempt,
+                      where: 'Android battery settings',
+                    ),
+                  ],
+                  if (keep?.xiaomi == true) ...[
+                    Divider(
+                      height: 1,
+                      color: PColors.onDeep.withValues(alpha: 0.12),
+                    ),
+                    row(
+                      PIcon.lock,
+                      'Autostart and Recents lock',
+                      'Turn on Autostart, then lock Pleat in Recents so “Clear all” leaves it',
+                      null,
+                      tap: app.tunnel.openAutostart,
+                      where: 'Xiaomi Autostart settings',
+                    ),
+                  ],
                 ],
               ),
             ),

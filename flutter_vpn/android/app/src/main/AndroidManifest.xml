@@ -12,6 +12,8 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- Android 16: the update download as a Live Update (status-bar chip). -->
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
+    <!-- Protect › Stay running: Android's own "run without battery limits?" question (KeepAlive.kt). -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <application
         android:allowBackup="false"
         android:fullBackupContent="false"
