@@ -83,7 +83,12 @@ void main() {
       await tester.scrollUntilVisible(
         find.text('Night mode'),
         200,
-        scrollable: find.byType(Scrollable).last,
+        // the vertical list: the Plans shelf scrolls sideways
+        scrollable: find
+            .byWidgetPredicate(
+              (w) => w is Scrollable && w.axisDirection == AxisDirection.down,
+            )
+            .last,
       );
       await pumpFor(tester, 5);
       await tester.tap(night);

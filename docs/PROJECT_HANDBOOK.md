@@ -491,7 +491,7 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.47+50** (`flutter_vpn/pubspec.yaml`), APK built and on `pleat-latest`.
+Version on main: **1.2.47+50** (`flutter_vpn/pubspec.yaml`), APK built and on `pleat-latest`. PR #88 (open) is 1.2.48+51.
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
 Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLibXrayLite tag **v26.7.5**
 (Xray 26.6.27 inside), hev-socks5-tunnel commit `67dfba56`.
@@ -504,9 +504,14 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
   `test/theme_test.dart`. Every colour comes from `PColors` (palette-driven) — never hardcode colours.
 - Plans: Ali sells **monthly data-volume plans**; the **big number is the GB** (∞ for no cap), days on a small
   line (`planBig`/`planUnit` in `screens/store_kit.dart`). Bot lists also lead with GB.
-- Profile: mandatory verified Telegram username + optional backup Gmail; one line "Data and days · X GB left · N
-  days left" that opens a bottom sheet with pleats (data), day dots and package history; long emails always fit
-  one line (`FitLine`). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
+- Profile: mandatory verified Telegram username + optional backup Gmail, then the **Plans shelf** (1.2.48, Ali's
+  pick B): the running plan in navy ("YOURS", or RENEW when stopped) and every plan on sale side by side, each with
+  BUY / TRY; long emails always fit one line (`FitLine`).
+- Activity (1.2.48, Ali's pick C "Account hub", `screens/activity.dart` + `screens/plan_usage.dart`): plan card
+  with a data-left ring, end date, devices, used, PACKAGES (bottom sheet with pleats = data, day dots, package
+  history; moved here from Profile) and RENEW (same plan at checkout if still on sale, else Plans); the last 3
+  sessions + "See all"; "Your privacy": history only on this phone, **Keep history** (30 days, off = nothing
+  logged, also stops the connect tries behind Stats) and Clear history now (sessions + connect tries). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
 - Home has three tabs: **Now** (country + city + exit IP from `/me/ip` through the tunnel, and Recommended exits),
   **Route** (how and where to connect) and **Stats**. See "Home tabs" below.
 - Notification "Pleat card" (`TunnelNote.kt`): flag tile, Protected dot, place · timer (system Chronometer),
@@ -811,6 +816,10 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
   #52, with the Cloudflare part as a visual dashboard.
 - PR #86 the Telegram sign-in / verify code message: "security code" card, code hidden under a spoiler, "didn't ask?" note.
 
+**2026-11-13 — Activity and Plans.**
+- PR #88 (1.2.48) Activity becomes the account hub (data and days moved there from Profile, recent sessions,
+  keep/clear history); Profile gets the Plans shelf. Locations redesign previews (4 options) await Ali's pick.
+
 ---
 
 ## 14. PR index
@@ -902,6 +911,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 84 | 11-12 | Admin bot ☁️ Cloudflare monitoring (Free-plan meters, errors, costly queries, deploys, hourly alert), Worker error log (0023), sync now / retry stuck |
 | 85 | 11-12 | Admin Mini App back to full bot parity: visual Cloudflare dashboard, app health reports, sync now / retry, tunnel diagnostic, server page, server on every carrier; bot screens drawn from shared data functions |
 | 86 | 11-12 | Telegram code message redesign (Worker only): code under a spoiler, 5-minute line, "didn't ask?" quote |
+| 88 | 11-13 | Activity account hub (data and days, sessions, keep/clear history) + Profile Plans shelf (1.2.48) |
 
 ---
 
@@ -1032,6 +1042,10 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 ---
 
 ## 19. Open items and known gaps
+
+- **Pleat 1.2.48 (PR #88) phone test**: Activity hub (ring, PACKAGES sheet, RENEW, Keep history off/on, Clear
+  history), Profile Plans shelf (BUY opens checkout, stopped plan shows RENEW). Locations redesign: 4 previews in
+  `/mnt/project-files/loc-activity/` wait for Ali's pick.
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
 - **Phone test Pleat 1.2.33 → 1.2.46**: avatar gate, update live track on MIUI, version signature, Route cards and
