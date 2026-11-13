@@ -71,6 +71,7 @@ export const DETAIL = {
   sessions: 'Sessions', ok: 'Succeeded', fail: 'Failed', minutes: 'Minutes connected', moved: 'Network changed', status: 'Code', what: 'Android says',
   sig: 'Signal', go: 'Core panic (Go)', abort: 'Abort message', cause: 'Cause', thread: 'Thread', lib: 'Library', frames: 'Frames',
   why: 'Each server', age: 'Seconds since the last test', exits: 'Servers on this route', country: 'Country',
+  addr: 'Addresses in the library', logs: 'Log inside the tombstone',
   op: 'Tunnel was', up_s: 'Seconds connected', tomb: 'Android tombstone', stderr: 'Core stderr', pss: 'App memory (MB)', earlier: 'Earlier crash, read again',
 };
 // ApplicationExitInfo.REASON_* (Android 11+)
@@ -90,10 +91,10 @@ export const CRASH = {
   go_panic: 'The Xray core (Go code) panicked; its text is under "Core panic". Check "Protocol" to see whether it is tied to a server.',
   fdsan: 'A file descriptor was closed twice (fdsan): an app bug in closing the tun or a socket, not the server.',
   hev: 'Crash in the tunnel layer (hev-socks5-tunnel), not the Xray core.',
-  xray_lib: 'Crash in the Xray core (Go library).',
+  xray_lib: 'Crash in the Xray core (Go library). "Addresses" (1.2.50+) name the exact Go function; send that line.',
   flutter: 'Crash in the app\'s display engine (Flutter), not the core or the server.',
   c_abort: 'A C library aborted by itself; "Abort message" says why.',
-  not_go: 'Not a Go core panic: Go writes to stderr before every panic and wrote nothing this time. The source must be fdsan/libc, the tunnel layer (hev) or Flutter.',
+  not_go: 'Probably not a Go core panic: Go writes to stderr before every panic and wrote nothing. (Up to 1.2.49 this "quiet" could come from another process; from 1.2.50 only the crashed process counts.)',
   earlier: 'An older crash (from before an update) read again, but Android did not keep its details. The next crash on 1.2.38+ brings the panic text, library and server.',
   no_tombstone: 'Android kept no tombstone for this crash; if it were a Go core panic, "Core panic" would be filled in, and it is not.',
   sigabrt: 'Deliberate abort: a Go core (Xray) panic, fdsan/libc, or Flutter. This app version sent no more; from Pleat 1.2.38 the panic text, library and protocol come too.',
@@ -111,6 +112,7 @@ export function detailValue(k, v, d, names = {}) {
   if (k === 'status' && d.reason === 2 && SIGNAL[v]) return `${v} = ${SIGNAL[v].split(':')[0]}`;
   if (k === 'op' && OP[v]) return OP[v];
   if (k === 'stderr' && /^quiet/.test(String(v))) return `${v} (the Go core wrote nothing)`;
+  if (k === 'stderr' && /^not captured in that/.test(String(v))) return `${v} (that process never captured stderr)`;
   if (k === 'stderr' && /^not captured/.test(String(v))) return `${v} (was not captured)`;
   if (k === 'tomb' && v === 'none') return 'none (Android kept nothing)';
   if (k === 'tomb' && /^error/.test(String(v))) return `${v} (reading it failed)`;

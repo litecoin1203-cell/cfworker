@@ -81,7 +81,9 @@ void main() {
             'panic: dial tcp 1.2.3.4:443 de3.example.com @ '
             'transport/pipe·(*pipe)·WriteMultiBuffer',
         'abort': 'fdsan: attempted to close file descriptor 87',
+        'addr': 'libgojni.so+0x10b30f8 < +0x108c040 < +0x108bfa0',
       });
+      expect(d['addr'], 'libgojni.so+0x10b30f8 < +0x108c040 < +0x108bfa0');
       expect(
         d['frames'],
         'libc.so abort | libgojni.so runtime.raise.abi0 | '
