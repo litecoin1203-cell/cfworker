@@ -59,6 +59,7 @@ const DETAIL_FA = {
   sessions: 'جلسه', ok: 'موفق', fail: 'ناموفق', minutes: 'دقیقه‌ی وصل', moved: 'شبکه عوض شد', status: 'کد', what: 'توضیح اندروید',
   // a native crash (Pleat 1.2.38+): what the crash itself said, and what the tunnel was doing
   sig: 'سیگنال', go: 'panic هسته (Go)', abort: 'پیام abort', cause: 'علت', thread: 'رشته (thread)', lib: 'کتابخانه', frames: 'فریم‌ها',
+  addr: 'نشانی‌ها در کتابخانه', logs: 'لاگ داخل tombstone',
   op: 'تانل در حال', up_s: 'ثانیه وصل بود', tomb: 'tombstone اندروید', stderr: 'stderr هسته', pss: 'حافظه‌ی اپ (MB)', earlier: 'کرش قبلی، دوباره خوانده شد',
 };
 // ApplicationExitInfo.REASON_* (Android 11+): why Android says the process ended
@@ -79,6 +80,7 @@ function detailValue(k, v, d) {
   if (k === 'status' && d.reason === 2 && SIGNAL_FA[v]) return `${v} = ${SIGNAL_FA[v].split(' — ')[0]}`;
   if (k === 'op' && OP_FA[v]) return OP_FA[v];
   if (k === 'stderr' && /^quiet/.test(String(v))) return `${v} = هسته‌ی Go چیزی ننوشت`;
+  if (k === 'stderr' && /^not captured in that/.test(String(v))) return `${v} = همان پروسه stderr را ضبط نکرده بود`;
   if (k === 'stderr' && /^not captured/.test(String(v))) return `${v} = ضبط نشده بود`;
   if (k === 'tomb' && v === 'none') return 'none = اندروید چیزی نگه نداشته';
   if (k === 'tomb' && /^error/.test(String(v))) return `${v} = خواندنش ناموفق بود`;
@@ -108,10 +110,10 @@ const CRASH_FA = {
   go_panic: 'هسته‌ی Xray (کد Go) panic کرد؛ متنش در «panic هسته» است. ربطش به سرور/پروتکل را از «پروتکل» ببین.',
   fdsan: 'یک fd دوبار بسته شد (fdsan) — باگ سمت اپ در بستن tun/سوکت، نه سرور.',
   hev: 'کرش در لایه‌ی تانل (hev-socks5-tunnel)، نه هسته‌ی Xray.',
-  xray_lib: 'کرش در هسته‌ی Xray (کتابخانه‌ی Go).',
+  xray_lib: 'کرش در هسته‌ی Xray (کتابخانه‌ی Go). «نشانی‌ها» (از 1.2.50) دقیقاً می‌گوید کدام تابع Go؛ آن خط را بفرست.',
   flutter: 'کرش در موتور نمایش اپ (Flutter)، نه هسته یا سرور.',
   c_abort: 'کتابخانه‌ی C خودش abort کرد؛ «پیام abort» علت را می‌گوید.',
-  not_go: 'panic هسته‌ی Go نبوده: Go پیش از هر panic در stderr می‌نویسد و این بار چیزی ننوشت. منبع باید fdsan/libc، لایه‌ی تانل (hev)، یا موتور Flutter باشد.',
+  not_go: 'احتمالاً panic هسته‌ی Go نبوده: Go پیش از هر panic در stderr می‌نویسد و چیزی ننوشت. (تا 1.2.49 این «quiet» ممکن بود از پروسه‌ی دیگری باشد؛ از 1.2.50 فقط همان پروسه حساب می‌شود.)',
   earlier: 'کرش قدیمی (از قبل از به‌روزرسانی) که دوباره خوانده شد، ولی اندروید جزئیاتش را نگه نداشته بود. علتش از همین گزارش معلوم نمی‌شود؛ کرش بعدی روی 1.2.38+ متن panic، کتابخانه و سرور را می‌آورد.',
   no_tombstone: 'اندروید برای این کرش tombstone نگه نداشته؛ اگر panic هسته‌ی Go بود، «panic هسته» باید پر باشد و نیست.',
   sigabrt: 'abort عمدی: یا panic هسته‌ی Go (Xray)، یا fdsan/libc، یا موتور Flutter. این نسخه بیش از این نفرستاده؛ از Pleat 1.2.38 متن panic، کتابخانه و پروتکل هم می‌آید.',
@@ -179,7 +181,7 @@ export function cleanDetail(d) {
     if (typeof v === 'number' && Number.isFinite(v)) out[k] = Math.round(v * 100) / 100;
     else if (typeof v === 'boolean') out[k] = v;
     else if (typeof v === 'string') {
-      const t = k === 'frames' ? scrubCode(v, 400) : scrub(v, k === 'trace' ? 400 : k === 'go' ? 300 : 160);
+      const t = k === 'frames' || k === 'addr' ? scrubCode(v, 400) : scrub(v, k === 'trace' ? 400 : k === 'go' ? 300 : 160);
       if (t) out[k] = t;
     }
     else if (Array.isArray(v)) out[k] = v.slice(0, 6).map((x) => (x && typeof x === 'object' ? cleanFlat(x) : scrub(x, 32)));

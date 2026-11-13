@@ -491,7 +491,7 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.48+51** (`flutter_vpn/pubspec.yaml`); APK for 1.2.48 pending. PR #89 (open) is 1.2.49+52.
+Version on main: **1.2.49+52** (`flutter_vpn/pubspec.yaml`). PR #90 (open) is 1.2.50+53.
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
 Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLibXrayLite tag **v26.7.5**
 (Xray 26.6.27 inside), hev-socks5-tunnel commit `67dfba56`.
@@ -650,6 +650,14 @@ does not reach users by itself.
   crash, 6 = SIGABRT), the tombstone (Android 12+ protobuf; signal, abort message, thread, library, top frames,
   Go panic line), `tomb` state (none / read / unread / error), Go's stderr captured to a file (quiet at the crash =
   not a Go panic), and the tunnel state *before* the crash (the service keeps its last 8 state changes).
+  Since 1.2.50 also: who sent the signal (`from itself` = abort()/Go's own crash; another pid/uid = something killed
+  it), whether the crashing thread was main, `addr` (offsets inside the crashing library: pc, lr, then Go's frame
+  pointer chain from the stack copy, because Android cannot unwind Go code), `logs` (how many log lines the tombstone
+  carried), and stderr is matched to the crashed process's own pid (before, a process that never captured stderr
+  still read "quiet").
+- Naming an `addr` offset: download `libv2ray.aar` of the same tag, take `jni/arm64-v8a/libgojni.so`, and look the
+  offset up in its `.gopclntab` (Go's `debug/gosym`; it survives stripping). For v26.7.5 the Go text starts at
+  `.text` + 0x60 (calibrated on `runtime.raise`, whose `tgkill` syscall sits at 0x10b30f4).
 - Known blind spot: `Health.kt` `exitOf()` drops processes Android killed or force-stopped while showing nothing,
   so some failures send no report (the widget trail exists for that reason).
 
@@ -826,6 +834,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 - PR #88 (1.2.48) Activity becomes the account hub (data and days moved there from Profile, recent sessions,
   keep/clear history); Profile gets the Plans shelf.
 - PR #89 (1.2.49) Locations country list: Fastest-for-you bar, filter chips, regions, health pips, Not answering.
+- PR #90 (1.2.50) native crash: the code offsets inside the core, the signal's sender, stderr per process.
 
 ---
 
@@ -920,6 +929,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 86 | 11-12 | Telegram code message redesign (Worker only): code under a spoiler, 5-minute line, "didn't ask?" quote |
 | 88 | 11-13 | Activity account hub (data and days, sessions, keep/clear history) + Profile Plans shelf (1.2.48) |
 | 89 | 11-13 | Locations country list: Fastest for you, chips, regions, health pips, Not answering (1.2.49) |
+| 90 | 11-13 | Native crash: offsets inside the core (pc, lr, Go frame chain), signal sender, stderr matched per process (1.2.50) |
 
 ---
 
@@ -1075,6 +1085,14 @@ One user (Xiaomi, Android 12) had 5 native SIGABRT crashes (reason 5 / status 6)
 connected. Root cause **unproven**: the old reports carried only the signal. #77/#79/#80 now capture tombstone,
 Go stderr and the tunnel state; waiting for a **fresh** crash report from 1.2.42+. Suggested diagnostic: try a
 non-DE country (e.g. NL) on that phone.
+
+2026-11-13, first detailed one (1.2.49, TR 3, tunnel up): SIGABRT (SI_TKILL), thread `app.pleat.pleat`, one frame
+`libgojni.so ?`, tombstone read, stderr "quiet". Proven: the signal was raised by code inside libgojni.so (the Xray
+core): a libc `abort()` (fdsan, Flutter, ART) would put libc as frame 0. In this build of the library only Go's
+`runtime.raise` sends SIGABRT that way, and Go's fatal paths print first, so "quiet" contradicts it. Not proven:
+whether the stderr capture covered that process (before 1.2.50 it took any process's capture). Thread names do not
+mean main: Go's threads inherit the name of the thread that loaded the core. 1.2.50 sends the offsets (`addr`)
+and the sender, which name the Go function.
 
 ### Open investigation: "No server connected · DE" (2026-11-12)
 17 reports in 12 h from the same phone model (two accounts), route Auto + country DE, 5 DE exits, sometimes

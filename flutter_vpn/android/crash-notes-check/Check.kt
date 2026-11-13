@@ -16,24 +16,35 @@ fun main(args: Array<String>) {
     val dir = File(args.firstOrNull() ?: ".")
 
     val f = CrashNotes.tombstone(File(dir, "tombstone-fdsan.pb").readBytes())
-    check("fdsan: signal", f["sig"] == "SIGABRT (SI_TKILL)", f["sig"])
+    check("fdsan: signal, sent by the process itself", f["sig"] == "SIGABRT (SI_TKILL) from itself", f["sig"])
     check("fdsan: abort message", f["abort"]?.startsWith("fdsan: attempted to close file descriptor 87") == true, f["abort"])
     check("fdsan: crashing thread (tid 4377, not the first)", f["thread"] == "pool-4-thread-2", f["thread"])
     check("fdsan: culprit library is ours, past libc", f["lib"] == "libhev-socks5-tunnel.so", f["lib"])
     check("fdsan: frames", f["frames"]?.startsWith("libc.so abort | libc.so android_fdsan_close_with_tag | libhev-socks5-tunnel.so hev_tunnel_close") == true, f["frames"])
     check("fdsan: no go line", f["go"] == null, f["go"])
-    check("fdsan: nothing but known keys", f.keys.all { it in setOf("sig", "abort", "cause", "thread", "lib", "frames", "go") }, f.keys)
+    check("fdsan: nothing but known keys", f.keys.all { it in setOf("sig", "abort", "cause", "thread", "lib", "frames", "addr", "logs", "go") }, f.keys)
 
     val g = CrashNotes.tombstone(File(dir, "tombstone-go.pb").readBytes())
     check("go: no abort message", g["abort"] == null, g["abort"])
     check("go: Go panic line from the log", g["go"]?.startsWith("panic: runtime error: invalid memory address or nil pointer dereference") == true, g["go"])
     check("go: first Go function", g["go"]?.contains("vless/outbound·(*Handler)·Process·func3") == true, g["go"])
     check("go: other log lines (an address) not taken", g.values.none { it.contains("1.2.3.4") }, g)
+    check("go: the log is counted", g["logs"] == "8 lines", g["logs"])
+    check("fdsan: unwound frames as offsets", f["addr"] == "libc.so+0x1234 < +0x1234 < libhev-socks5-tunnel.so < libhev-socks5-tunnel.so", f["addr"])
+
+    // Go's own crash(): frame 0 in libgojni.so, nothing unwound past it, the
+    // callers from lr and the frame-pointer chain in the stack copy
+    val j = CrashNotes.tombstone(File(dir, "tombstone-gojni.pb").readBytes())
+    check("gojni: main thread named", j["thread"] == "app.pleat.pleat (main)", j["thread"])
+    check("gojni: from itself", j["sig"] == "SIGABRT (SI_TKILL) from itself", j["sig"])
+    check("gojni: the library", j["lib"] == "libgojni.so", j["lib"])
+    check("gojni: pc, lr, then the fp chain until it ends", j["addr"] == "libgojni.so+0x10b30f8 < +0x108c040 < +0x108bfa0 < +0x1063a10 < +0x1c3d000", j["addr"])
+    check("gojni: no address of the process leaks (only offsets)", j.values.none { it.contains("7a0") || it.contains("7ff0") }, j)
 
     // cut-off and junk input never throw
     val bytes = File(dir, "tombstone-fdsan.pb").readBytes()
     val cut = CrashNotes.tombstone(bytes.copyOf(bytes.size / 3))
-    check("cut tombstone: keeps what came first", cut["sig"] == "SIGABRT (SI_TKILL)", cut)
+    check("cut tombstone: keeps what came first", cut["sig"]?.startsWith("SIGABRT (SI_TKILL)") == true, cut)
     check("cut tombstone: never another thread as the crashing one", cut["thread"] == null || cut["thread"] == "pool-4-thread-2", cut["thread"])
     check("junk: empty", CrashNotes.tombstone(byteArrayOf(0x7f, 0x7f, 0x7f, -1, -1)).isEmpty() || true, "no throw")
     check("empty: empty", CrashNotes.tombstone(ByteArray(0)).isEmpty(), "{}")
@@ -42,7 +53,7 @@ fun main(args: Array<String>) {
     val gz = java.io.ByteArrayOutputStream().also { o -> java.util.zip.GZIPOutputStream(o).use { it.write(bytes) } }.toByteArray()
     check("gzip: unpacked and read", CrashNotes.tombstone(CrashNotes.unpack(gz))["lib"] == "libhev-socks5-tunnel.so", null)
     check("plain stays plain", CrashNotes.unpack(bytes).contentEquals(bytes), null)
-    check("state: read", CrashNotes.tombState(bytes.copyOf(4), bytes.size, 5) == "5 KB, 5 facts", CrashNotes.tombState(bytes.copyOf(4), bytes.size, 5))
+    check("state: read", CrashNotes.tombState(bytes.copyOf(4), 5000, 5) == "5 KB, 5 facts", CrashNotes.tombState(bytes.copyOf(4), 5000, 5))
     check("state: unread shows its first bytes", CrashNotes.tombState(byteArrayOf(0x7b, 0x22, 0x61, 0x22), 2048, 0) == "2 KB, unread 7b226122", null)
     check("state: empty", CrashNotes.tombState(ByteArray(0), 0, 0) == "empty", null)
 

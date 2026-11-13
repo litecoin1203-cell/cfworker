@@ -121,7 +121,7 @@ Map<String, Object> cleanDetail(Map<String, Object?> d) {
     } else if (v is bool) {
       out[k] = v;
     } else if (v is String) {
-      final t = k == 'frames'
+      final t = k == 'frames' || k == 'addr'
           ? scrubCode(v, 400)
           : scrubText(v, k == 'trace' ? 400 : (k == 'go' ? 300 : 160));
       if (t.isNotEmpty) out[k] = t;

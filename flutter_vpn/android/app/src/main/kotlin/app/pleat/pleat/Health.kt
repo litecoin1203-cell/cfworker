@@ -155,8 +155,13 @@ object Health {
      */
     private fun captureStderr(app: Context) {
         val file = stderrFile(app)
+        // the process that wrote the file: a crash report matches its own
+        // process (ApplicationExitInfo.getPid), never a later one's capture
+        val writer = prefs(app).getInt("se_pid", -1)
         try {
-            if (file.length() > 0) {
+            if (file.length() == 0L && writer > 0) {
+                ring(app, "se_files", JSONObject().put("at", file.lastModified()).put("tail", "").put("pid", writer).put("size", 0))
+            } else if (file.length() > 0) {
                 val text = file.inputStream().use { input ->
                     val buf = ByteArray(minOf(file.length(), STDERR_CAP).toInt())
                     var n = 0
@@ -176,7 +181,7 @@ object Health {
                 // what the last process left, for a crash that had no Go line:
                 // written as it died (something else) or quiet (not a Go panic)
                 val tail = text.lineSequence().map { it.trim() }.lastOrNull { it.isNotEmpty() }.orEmpty()
-                ring(app, "se_files", JSONObject().put("at", file.lastModified()).put("tail", blank(tail).take(120)))
+                ring(app, "se_files", JSONObject().put("at", file.lastModified()).put("tail", blank(tail).take(120)).put("pid", writer).put("size", text.length))
             }
         } catch (e: Exception) {
             // nothing to learn from it
@@ -192,10 +197,12 @@ object Health {
             } finally {
                 Os.close(fd)
             }
-            ring(app, "se_caps", JSONObject().put("at", System.currentTimeMillis()).put("cap", "ok"))
+            prefs(app).edit().putInt("se_pid", android.os.Process.myPid()).commit()
+            ring(app, "se_caps", JSONObject().put("at", System.currentTimeMillis()).put("cap", "ok").put("pid", android.os.Process.myPid()))
         } catch (e: Exception) {
             // stderr stays where it was; only Go's crash line is missed
-            ring(app, "se_caps", JSONObject().put("at", System.currentTimeMillis()).put("cap", "fail ${e.javaClass.simpleName}"))
+            prefs(app).edit().putInt("se_pid", -1).commit()
+            ring(app, "se_caps", JSONObject().put("at", System.currentTimeMillis()).put("cap", "fail ${e.javaClass.simpleName}").put("pid", android.os.Process.myPid()))
         }
     }
 
@@ -526,6 +533,7 @@ object Health {
                     for ((k, v) in notes) {
                         d[k] = when (k) {
                             "frames" -> blankCode(v).take(400)
+                            "addr" -> blankCode(v).take(200)
                             "go" -> blank(v).take(300)
                             "thread", "lib" -> blankCode(v).take(40)
                             else -> blank(v).take(160)
@@ -545,17 +553,27 @@ object Health {
         } else {
             // No Go line: say what stderr showed, so "not a Go panic" (Go
             // always writes there first) is told apart from "not captured".
-            val t = info.timestamp
-            // the capture of the process that died: the last one started before it
-            val cap = entries(app, "se_caps").lastOrNull { it.optLong("at") <= t }?.optString("cap").orEmpty()
-            val written = entries(app, "se_files").lastOrNull { Math.abs(it.optLong("at") - t) < 120_000L }
-            d["stderr"] = when {
-                cap.isEmpty() -> "not captured"
-                cap != "ok" -> cap
-                written != null -> "written at the crash: " + written.optString("tail")
-                else -> "quiet at the crash"
-            }.take(160)
+            d["stderr"] = stderrAt(entries(app, "se_caps"), entries(app, "se_files"), info.pid, info.timestamp)
         }
+    }
+
+    /**
+     * What the core's stderr showed when process [pid] died at [t]. Only
+     * that process's own capture counts: before 1.2.50 the last capture of
+     * any process was taken, so a process that never captured (started by
+     * the widget, say) still read "quiet".
+     */
+    fun stderrAt(caps: List<JSONObject>, files: List<JSONObject>, pid: Int, t: Long): String {
+        val cap = caps.lastOrNull { it.optInt("pid", -1) == pid }?.optString("cap")
+            ?: return "not captured in that process"
+        if (cap != "ok") return cap.take(160)
+        val file = files.lastOrNull { it.optInt("pid", -1) == pid } ?: return "captured, file not read yet"
+        val ago = (t - file.optLong("at")) / 1000
+        return when {
+            Math.abs(ago) < 120 -> "written at the crash: " + file.optString("tail")
+            file.optInt("size", -1) == 0 -> "quiet at the crash (nothing written)"
+            else -> "quiet at the crash (last write ${ago}s before: " + file.optString("tail") + ")"
+        }.take(160)
     }
 
     /** The main thread's first frames from an ANR report. */

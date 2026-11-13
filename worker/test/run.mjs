@@ -4796,6 +4796,14 @@ section('Pleat health reports: priorities, one row per problem, caps, scrubbing,
   await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?').bind(JSON.stringify({ reason: 5, status: 6, sig: 'SIGABRT', tomb: 'none' }), crash.id).run();
   ok((await menu.renderScreen(env, `he:${crash.fp}`)).text.includes('none = اندروید چیزی نگه نداشته'), 'tomb state in words');
   ok(H.crashGuess({ reason: 5, status: 6, stderr: 'quiet at the crash', tomb: 'none' }).includes('panic هسته‌ی Go نبوده'), 'a quiet stderr rules out a Go panic');
+  // 1.2.50: the offsets inside the core and who sent the signal, kept as code; stderr of that very process
+  const at = H.cleanDetail({ reason: 5, status: 6, sig: 'SIGABRT (SI_TKILL) from itself', lib: 'libgojni.so', thread: 'app.pleat.pleat (main)',
+    addr: 'libgojni.so+0x10b30f8 < +0x108c040 < +0x108bfa0', logs: '312 lines', stderr: 'not captured in that process' });
+  ok(at.addr === 'libgojni.so+0x10b30f8 < +0x108c040 < +0x108bfa0' && at.thread === 'app.pleat.pleat (main)', 'core offsets kept whole: ' + JSON.stringify(at));
+  await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?').bind(JSON.stringify(at), crash.id).run();
+  const atText = (await menu.renderScreen(env, `he:${crash.fp}`)).text;
+  ok(atText.includes('نشانی‌ها در کتابخانه: libgojni.so+0x10b30f8') && atText.includes('همان پروسه stderr را ضبط نکرده بود') && atText.includes('لاگ داخل tombstone')
+    && atText.includes('«نشانی‌ها»'), 'a 1.2.50 crash shows the offsets and asks for them: ' + atText);
   // "none answered": the servers by name, each with why it was left out
   await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?')
     .bind(JSON.stringify(H.cleanDetail({ route: 'auto', country: 'DE', tried: [{ k: kDE }], why: [{ k: kDE, c: 'refused' }, { k: kNL, c: 'timeout' }, { k: 'kunknown1', c: 'ok' }], age: 42 })), crash.id).run();
