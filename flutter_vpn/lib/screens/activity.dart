@@ -7,29 +7,21 @@ import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
 import 'location_detail.dart';
+import 'plan_usage.dart';
 import 'shell.dart';
+import 'states.dart';
 
-/// Activity reads as a log: the plan's real usage first, then editorial
-/// headlines for sessions that really ran on this phone (the backend keeps
-/// no history), and a meta line of duration and protocol.
-class ActivityScreen extends StatefulWidget {
+/// Activity (Ali's pick C, "Account hub"): the plan with its data and days
+/// (moved here from Profile), the last sessions on this phone, and what
+/// Pleat keeps about them. The backend keeps no session history.
+class ActivityScreen extends StatelessWidget {
   const ActivityScreen({super.key});
-
-  @override
-  State<ActivityScreen> createState() => _ActivityScreenState();
-}
-
-class _ActivityScreenState extends State<ActivityScreen> {
-  bool _saved = false;
-
-  void _reconnect(AppState app, String id) {
-    app.connect(id);
-    app.setTab(0);
-  }
 
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
+    final live = app.phase == Phase.protected && app.exit != null;
+    final recent = app.sessions.take(live ? 2 : 3).toList();
     return SafeArea(
       bottom: false,
       child: ParallaxScroll(
@@ -38,393 +30,435 @@ class _ActivityScreenState extends State<ActivityScreen> {
           children: [
             Text('Activity', style: PType.h1()),
             const SizedBox(height: 14),
-            _Switch(
-              saved: _saved,
-              onChanged: (v) => setState(() => _saved = v),
-            ),
-            const SizedBox(height: 18),
-            if (!_saved) ..._sessions(app) else ..._savedList(app),
-          ],
-        ),
-      ),
-    );
-  }
-
-  List<Widget> _sessions(AppState app) {
-    final out = <Widget>[_UsageCard(app: app), const SizedBox(height: 12)];
-    var i = 0;
-    if (app.phase == Phase.protected && app.exit != null) {
-      out.add(
-        StaggerIn(
-          index: i++,
-          child: _LogEntry(
-            city: app.exit!.title,
-            time: 'Live',
-            meta:
-                '${app.elapsed.inMinutes} min  ·  ${app.exit!.label}  ·  ${app.exit!.protocol}',
-            live: true,
-            onTap: () => app.setTab(0),
-          ),
-        ),
-      );
-    }
-    if (app.sessions.isEmpty && app.phase != Phase.protected) {
-      out.add(
-        SurfaceCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('No sessions yet', style: PType.h3()),
-              const SizedBox(height: 6),
-              Text(
-                'Sessions are logged here, on this phone, once a tunnel really runs. The server keeps no session history.',
-                style: PType.small(),
-              ),
-            ],
-          ),
-        ),
-      );
-    }
-    String? lastDay;
-    for (final s in app.sessions) {
-      final day = _day(s.start);
-      if (day != lastDay) {
-        out.add(
-          Padding(
-            padding: const EdgeInsets.only(top: 14, bottom: 8),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: PColors.surface,
-                  borderRadius: BorderRadius.circular(PRadius.pill),
-                ),
-                child: Text(day, style: PType.meta(color: PColors.ink)),
-              ),
-            ),
-          ),
-        );
-        lastDay = day;
-      }
-      final e = app.exitById(s.exitId);
-      out.add(
-        StaggerIn(
-          index: i++,
-          child: _LogEntry(
-            city: s.title,
-            time: _time(s.start),
-            meta: '${s.minutes} min  ·  ${s.protocol}',
-            onTap: e == null
-                ? () {}
-                : () => Navigator.of(context).push(
-                    TunnelRoute(builder: (_) => LocationDetail(exitId: e.id)),
-                  ),
-            onReconnect: e == null ? null : () => _reconnect(app, e.id),
-          ),
-        ),
-      );
-    }
-    return out;
-  }
-
-  List<Widget> _savedList(AppState app) {
-    final saved = app.exits.where((e) => app.saved.contains(e.id)).toList();
-    if (saved.isEmpty) {
-      return [
-        SurfaceCard(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('Nothing saved yet', style: PType.h3()),
-              const SizedBox(height: 6),
-              Text(
-                'Open an exit and tap the bookmark. Saved exits stay on this phone.',
-                style: PType.small(),
-              ),
-              const SizedBox(height: 14),
-              PillButton(
-                label: 'Browse locations',
-                onTap: () => app.setTab(2),
-                expand: false,
-                height: 46,
-              ),
-            ],
-          ),
-        ),
-      ];
-    }
-    return [
-      for (var i = 0; i < saved.length; i++)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 14),
-          child: StaggerIn(
-            index: i,
-            child: MediaCard(
-              exit: saved[i],
-              height: 160,
-              onOpen: () => Navigator.of(context).push(
-                TunnelRoute(
-                  builder: (_) => LocationDetail(exitId: saved[i].id),
-                ),
-              ),
-              tabLabel: 'Reconnect',
-              onTab: () => _reconnect(app, saved[i].id),
-            ),
-          ),
-        ),
-    ];
-  }
-
-  static const _months = [
-    'Jan',
-    'Feb',
-    'Mar',
-    'Apr',
-    'May',
-    'Jun',
-    'Jul',
-    'Aug',
-    'Sep',
-    'Oct',
-    'Nov',
-    'Dec',
-  ];
-  static const _days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-
-  String _day(DateTime d) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final that = DateTime(d.year, d.month, d.day);
-    final diff = today.difference(that).inDays;
-    if (diff == 0) return 'Today';
-    if (diff == 1) return 'Yesterday';
-    return '${_days[d.weekday - 1]} ${d.day} ${_months[d.month - 1]}';
-  }
-
-  String _time(DateTime d) =>
-      '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';
-}
-
-/// The signed-in account's plan and usage, straight from `/me`.
-class _UsageCard extends StatelessWidget {
-  const _UsageCard({required this.app});
-  final AppState app;
-
-  @override
-  Widget build(BuildContext context) {
-    final s = app.subscription;
-    final gb = (s?.usedBytes ?? 0) / 1e9;
-    return SurfaceCard(
-      padding: const EdgeInsets.fromLTRB(20, 18, 10, 18),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  s == null ? 'Usage' : s.planName,
-                  style: PType.h3(),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              RoundIcon(
-                PIcon.refresh,
-                onTap: app.me.loading ? () {} : app.loadMe,
-                label: 'Refresh usage',
-                color: PColors.blue,
-                background: PColors.mist,
-              ),
-            ],
-          ),
-          const SizedBox(height: 4),
-          if (s == null)
-            Text(
-              app.me.error ??
-                  (app.me.loading ? 'Loading your plan…' : 'No plan yet.'),
-              style: PType.small(),
-            )
-          else ...[
-            Text.rich(
-              TextSpan(
-                children: [
-                  TextSpan(
-                    text: gb.toStringAsFixed(gb < 10 ? 2 : 1),
-                    style: PType.h1().copyWith(fontSize: 34),
-                  ),
-                  TextSpan(
-                    text: s.unlimitedData
-                        ? '  GB used, no cap'
-                        : '  of ${(s.dataLimitBytes / 1e9).toStringAsFixed(0)} GB',
-                    style: PType.small(),
-                  ),
-                ],
-              ),
+            StaggerIn(index: 0, child: PlanHub(app: app)),
+            const SizedBox(height: 24),
+            _Head(
+              'Recent sessions',
+              action: app.sessions.length > recent.length ? 'See all' : null,
+              onAction: () =>
+                  Navigator.of(context)
+                      .push(FadeRoute(builder: (_) => const SessionsScreen())),
             ),
             const SizedBox(height: 10),
-            Padding(
-              padding: const EdgeInsets.only(right: 10),
-              child: UsageBar(percent: s.usedPercent ?? 0, height: 8),
+            StaggerIn(
+              index: 1,
+              child: SurfaceCard(
+                padding: const EdgeInsets.fromLTRB(16, 6, 10, 6),
+                child: !live && recent.isEmpty
+                    ? Padding(
+                        padding: const EdgeInsets.fromLTRB(4, 12, 4, 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text('No sessions yet', style: PType.h3()),
+                            const SizedBox(height: 4),
+                            Text(
+                              app.keepHistory
+                                  ? 'Sessions show here, on this phone, once a tunnel really runs.'
+                                  : 'Keep history is off, so nothing is logged.',
+                              style: PType.small(),
+                            ),
+                          ],
+                        ),
+                      )
+                    : Column(
+                        children: [
+                          if (live) _SessionRow.live(app, first: true),
+                          for (var i = 0; i < recent.length; i++)
+                            _SessionRow(app, recent[i], first: !live && i == 0),
+                        ],
+                      ),
+              ),
             ),
-            const SizedBox(height: 8),
-            Text(
-              [
-                s.statusLine,
-                s.unlimitedTime
-                    ? 'no end date'
-                    : '${s.daysLeft ?? 0} days left',
-                '${s.deviceLimit} devices',
-              ].join('  ·  '),
-              style: PType.meta(),
-            ),
+            const SizedBox(height: 24),
+            const _Head('Your privacy'),
+            const SizedBox(height: 10),
+            StaggerIn(index: 2, child: _Privacy(app: app)),
           ],
-        ],
+        ),
       ),
     );
   }
 }
 
-class _Switch extends StatelessWidget {
-  const _Switch({required this.saved, required this.onChanged});
-  final bool saved;
-  final ValueChanged<bool> onChanged;
+class _Head extends StatelessWidget {
+  const _Head(this.title, {this.action, this.onAction});
+  final String title;
+  final String? action;
+  final VoidCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) => Row(
+    children: [
+      Expanded(child: Text(title, style: PType.h3())),
+      if (action != null)
+        Pressable(
+          onTap: onAction,
+          label: action!,
+          radius: PRadius.pill,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            child: Text(
+              action!,
+              style: PType.small(color: PColors.accentInk)
+                  .copyWith(fontWeight: FontWeight.w800),
+            ),
+          ),
+        ),
+    ],
+  );
+}
+
+/// One session: flag, "Germany · DE 1", when, how long and the protocol;
+/// Reconnect on the right (LIVE for the one running now).
+class _SessionRow extends StatelessWidget {
+  _SessionRow(this.app, Session s, {required this.first})
+    : title = s.title,
+      exitId = s.exitId,
+      when = '${_day(s.start)} ${_time(s.start)}',
+      minutes = s.minutes,
+      protocol = s.protocol,
+      live = false;
+
+  _SessionRow.live(this.app, {required this.first})
+    : title = app.exit!.title,
+      exitId = app.exit!.id,
+      when = 'Now',
+      minutes = app.elapsed.inMinutes,
+      protocol = app.exit!.protocol,
+      live = true;
+
+  final AppState app;
+  final String title, exitId, when, protocol;
+  final int minutes;
+  final bool first, live;
 
   @override
   Widget build(BuildContext context) {
-    Widget tab(bool v, PIcon icon, String label) => Expanded(
+    final e = app.exitById(exitId);
+    final name = e == null ? title : '$title · ${e.label}';
+    final meta = [when, _dur(minutes), protocol].join('  ·  ');
+    return Container(
+      decoration: BoxDecoration(
+        border: first
+            ? null
+            : Border(top: BorderSide(color: PColors.field, width: 1.2)),
+      ),
       child: Pressable(
-        onTap: () => onChanged(v),
-        label: label,
-        selected: saved == v,
+        onTap: live
+            ? () => app.setTab(0)
+            : e == null
+            ? null
+            : () => Navigator.of(
+                context,
+              ).push(TunnelRoute(builder: (_) => LocationDetail(exitId: e.id))),
+        label: 'Session in $name',
         radius: 16,
-        child: SizedBox(
-          height: 48,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 10),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              PIconView(
-                icon,
-                size: 20,
-                color: saved == v ? PColors.accentInk : PColors.ink,
+              e == null
+                  ? Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: PColors.mist,
+                        shape: BoxShape.circle,
+                      ),
+                      alignment: Alignment.center,
+                      child: PIconView(
+                        PIcon.pin,
+                        size: 20,
+                        color: PColors.accentInk,
+                      ),
+                    )
+                  : RegionBadge(e, size: 40),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      name,
+                      style: PType.h3().copyWith(fontSize: 15),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      meta,
+                      style: PType.meta(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(width: 8),
-              Text(
-                label,
-                style: PType.small(
-                  color: saved == v ? PColors.accentInk : PColors.ink,
-                ).copyWith(fontWeight: FontWeight.w700),
-              ),
+              if (live)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: SoftChip('LIVE', color: PColors.safe),
+                )
+              else if (e != null)
+                RoundIcon(
+                  PIcon.refresh,
+                  onTap: () {
+                    app.connect(e.id);
+                    app.setTab(0);
+                  },
+                  label: 'Reconnect to $name',
+                  color: PColors.accentInk,
+                  background: PColors.mist,
+                ),
             ],
           ),
         ),
       ),
     );
-    return SurfaceCard(
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      radius: 24,
-      child: Stack(
-        children: [
-          Row(
-            children: [
-              tab(false, PIcon.pulse, 'Sessions'),
-              tab(true, PIcon.bookmark, 'Saved'),
-            ],
-          ),
-          AnimatedAlign(
-            duration: PMotion.reduced(context) ? Duration.zero : PMotion.quick,
-            curve: Curves.easeOutBack,
-            alignment: saved ? Alignment.bottomRight : Alignment.bottomLeft,
-            child: FractionallySizedBox(
-              widthFactor: 0.5,
-              child: Container(
-                height: 3,
-                margin: const EdgeInsets.symmetric(horizontal: 28),
-                decoration: BoxDecoration(
-                  color: PColors.blue,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
   }
 }
 
-class _LogEntry extends StatelessWidget {
-  const _LogEntry({
-    required this.city,
-    required this.time,
-    required this.meta,
-    required this.onTap,
-    this.onReconnect,
-    this.live = false,
-  });
+/// What Pleat keeps about sessions, and the two controls over it.
+class _Privacy extends StatelessWidget {
+  const _Privacy({required this.app});
+  final AppState app;
 
-  final String city, time, meta;
-  final VoidCallback onTap;
-  final VoidCallback? onReconnect;
-  final bool live;
+  Future<void> _clear(BuildContext context) async {
+    final ok = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: PColors.scrim,
+      builder: (context) => Container(
+        decoration: BoxDecoration(
+          color: PColors.surface,
+          borderRadius: BorderRadius.vertical(
+            top: Radius.circular(PRadius.sheet),
+          ),
+        ),
+        padding: EdgeInsets.fromLTRB(
+          24,
+          22,
+          24,
+          24 + MediaQuery.paddingOf(context).bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Clear history?', style: PType.h2()),
+            const SizedBox(height: 8),
+            Text(
+              'Sessions and connect tries on this phone are deleted. Stats starts again. Your plan and saved exits stay.',
+              style: PType.small(),
+            ),
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Expanded(
+                  child: PillButton(
+                    label: 'Keep',
+                    onTap: () => Navigator.of(context).pop(false),
+                    color: PColors.field,
+                    textColor: PColors.ink,
+                    height: 48,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: PillButton(
+                    label: 'Clear',
+                    onTap: () => Navigator.of(context).pop(true),
+                    height: 48,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok == true) {
+      app.clearHistory();
+      if (context.mounted) showNote(context, 'History cleared.');
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: SurfaceCard(
-        onTap: onTap,
-        label: 'Session in $city',
-        padding: const EdgeInsets.fromLTRB(20, 16, 10, 16),
+    Widget row(
+      PIcon icon,
+      String title,
+      String body, {
+      Widget? trailing,
+      VoidCallback? onTap,
+      Color? iconColor,
+      bool first = false,
+    }) {
+      final inner = Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
         child: Row(
           children: [
+            PIconView(icon, color: iconColor ?? PColors.accentInk),
+            const SizedBox(width: 14),
             Expanded(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Row(
-                    children: [
-                      if (live) ...[
-                        Container(
-                          width: 8,
-                          height: 8,
-                          decoration: BoxDecoration(
-                            color: PColors.safe,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const SizedBox(width: 6),
-                      ],
-                      Text(
-                        time,
-                        style: PType.meta(
-                          color: live ? PColors.safe : PColors.muted,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 4),
-                  Text(city, style: PType.h2().copyWith(fontSize: 24)),
-                  const SizedBox(height: 4),
-                  Text(meta, style: PType.meta(color: PColors.ink)),
+                  Text(title, style: PType.h3().copyWith(fontSize: 15)),
+                  const SizedBox(height: 2),
+                  Text(body, style: PType.small()),
                 ],
               ),
             ),
-            if (onReconnect != null)
-              RoundIcon(
-                PIcon.refresh,
-                onTap: onReconnect!,
-                label: 'Reconnect to $city',
-                color: PColors.blue,
-                background: PColors.mist,
+            if (trailing != null) ...[const SizedBox(width: 8), trailing],
+          ],
+        ),
+      );
+      return Container(
+        decoration: BoxDecoration(
+          border: first
+              ? null
+              : Border(top: BorderSide(color: PColors.field, width: 1.2)),
+        ),
+        child: onTap == null
+            ? inner
+            : Pressable(onTap: onTap, label: title, radius: 16, child: inner),
+      );
+    }
+
+    return SurfaceCard(
+      padding: const EdgeInsets.fromLTRB(20, 4, 12, 4),
+      child: Column(
+        children: [
+          row(
+            PIcon.lock,
+            'History stays on this phone',
+            'Pleat servers keep no session log.',
+            first: true,
+          ),
+          row(
+            PIcon.clock,
+            'Keep history',
+            app.keepHistory
+                ? '${AppState.historyDays} days, then it deletes itself.'
+                : 'Off. Nothing is logged.',
+            trailing: PToggle(
+              value: app.keepHistory,
+              onChanged: app.setKeepHistory,
+              label: 'Keep history',
+            ),
+          ),
+          row(
+            PIcon.close,
+            'Clear history now',
+            'Sessions and connect tries on this phone.',
+            iconColor: PColors.alert,
+            onTap: () => _clear(context),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Every session kept on this phone, by day.
+class SessionsScreen extends StatelessWidget {
+  const SessionsScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final app = AppScope.of(context);
+    final rows = <Widget>[];
+    String? lastDay;
+    final day = <Widget>[];
+    void flush() {
+      if (day.isEmpty) return;
+      rows.add(
+        SurfaceCard(
+          padding: const EdgeInsets.fromLTRB(16, 6, 10, 6),
+          child: Column(children: List.of(day)),
+        ),
+      );
+      day.clear();
+    }
+
+    for (final s in app.sessions) {
+      final d = _day(s.start);
+      if (d != lastDay) {
+        flush();
+        rows.add(
+          Padding(
+            padding: const EdgeInsets.only(top: 16, bottom: 8),
+            child: Text(d, style: PType.meta(color: PColors.ink)),
+          ),
+        );
+        lastDay = d;
+      }
+      day.add(_SessionRow(app, s, first: day.isEmpty));
+    }
+    flush();
+    return Scaffold(
+      backgroundColor: PColors.ground,
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
+          children: [
+            Align(
+              alignment: Alignment.centerLeft,
+              child: RoundIcon(
+                PIcon.back,
+                onTap: () => Navigator.of(context).pop(),
+                label: 'Back',
               ),
+            ),
+            const SizedBox(height: 12),
+            Text('Sessions', style: PType.h1()),
+            const SizedBox(height: 4),
+            Text(
+              'Kept on this phone for ${AppState.historyDays} days.',
+              style: PType.small(),
+            ),
+            ...rows,
           ],
         ),
       ),
     );
   }
 }
+
+String _dur(int minutes) {
+  if (minutes < 60) return '$minutes min';
+  final m = minutes % 60;
+  return m == 0 ? '${minutes ~/ 60} h' : '${minutes ~/ 60} h $m';
+}
+
+const _months = [
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
+const _days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+String _day(DateTime d) {
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final that = DateTime(d.year, d.month, d.day);
+  final diff = today.difference(that).inDays;
+  if (diff == 0) return 'Today';
+  if (diff == 1) return 'Yesterday';
+  return '${_days[d.weekday - 1]} ${d.day} ${_months[d.month - 1]}';
+}
+
+String _time(DateTime d) =>
+    '${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}';

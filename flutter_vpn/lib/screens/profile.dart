@@ -18,15 +18,16 @@ import '../state/app_state.dart';
 import 'avatar_gate.dart';
 import 'check.dart';
 import 'login.dart';
-import 'plans.dart';
+import 'checkout.dart';
+import 'plan_usage.dart';
 import 'store_kit.dart';
 import 'wallet.dart';
 import 'states.dart';
 
 /// Profile, opened from the avatar or the name on Home. From the top: who
-/// the person is (Telegram first, required; Gmail second, optional), what
-/// is left on the plan (animated), every package they've had, then the
-/// account rows. Sign out clears the tokens and returns to Login.
+/// the person is (Telegram first, required; Gmail second, optional), the
+/// Plans shelf (the running plan and the plans on sale), then the account
+/// rows. Data, days and packages live in Activity. Sign out clears the tokens and returns to Login.
 class ProfileScreen extends StatefulWidget {
   const ProfileScreen({super.key});
 
@@ -40,8 +41,8 @@ class _ProfileScreenState extends State<ProfileScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final app = AppScope.read(context);
-      app.loadPackages();
+      // the Plans shelf shows the store's current prices
+      AppScope.read(context).loadPublic();
     });
   }
 
@@ -62,7 +63,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
         child: SafeArea(
           child: RefreshIndicator(
             color: PColors.accentInk,
-            onRefresh: () => Future.wait([app.loadMe(), app.loadPackages()]),
+            onRefresh: () => Future.wait([app.loadMe(), app.loadPublic()]),
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
               children: [
@@ -133,7 +134,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                               ),
                               if (tgVerified) ...[
                                 const SizedBox(width: 8),
-                                _Chip('VERIFIED', color: PColors.safe),
+                                SoftChip('VERIFIED', color: PColors.safe),
                               ],
                             ],
                           ),
@@ -160,7 +161,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
                   ),
                   const SizedBox(height: 14),
                 ],
-                _UsageCard(app: app),
+                _PlansShelf(app: app),
                 const SizedBox(height: 14),
                 SurfaceCard(
                   padding: const EdgeInsets.fromLTRB(20, 8, 10, 8),
@@ -766,34 +767,7 @@ Future<void> _changePassword(BuildContext context) async {
 }
 
 // ---------------------------------------------------------------------------
-// Identity, usage and packages
-
-const _gib = 1073741824; // the Worker counts plans in GiB: "50 GB" is 50 × 2^30
-
-String _gb(int bytes) {
-  final v = bytes / _gib;
-  return v >= 100 ? v.toStringAsFixed(0) : v.toStringAsFixed(1);
-}
-
-const _months = [
-  'Jan',
-  'Feb',
-  'Mar',
-  'Apr',
-  'May',
-  'Jun',
-  'Jul',
-  'Aug',
-  'Sep',
-  'Oct',
-  'Nov',
-  'Dec',
-];
-
-String _day(DateTime d, {bool year = true}) {
-  final l = d.toLocal();
-  return '${_months[l.month - 1]} ${l.day}${year ? ', ${l.year}' : ''}';
-}
+// Identity
 
 /// The person's picture: the Pleat character they picked (the Telegram
 /// photo is never used), else the initial. [nudge] puts a blue dot on it while Telegram isn't
@@ -857,23 +831,6 @@ class Avatar extends StatelessWidget {
     style: size >= 64
         ? PType.h1(color: PColors.onDeep)
         : PType.h2(color: PColors.onDeep),
-  );
-}
-
-class _Chip extends StatelessWidget {
-  const _Chip(this.text, {Color? color}) : _color = color;
-  final String text;
-  final Color? _color;
-  Color get color => _color ?? PColors.blue;
-
-  @override
-  Widget build(BuildContext context) => Container(
-    padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-    decoration: BoxDecoration(
-      color: color.withValues(alpha: 0.12),
-      borderRadius: BorderRadius.circular(PRadius.pill),
-    ),
-    child: Text(text, style: PType.tab(color: color)),
   );
 }
 
@@ -1152,513 +1109,264 @@ Future<void> _avatarSheet(BuildContext context) async {
   if (saved == true && context.mounted) showNote(context, 'Avatar saved.');
 }
 
-/// 3. The plan, in one compact card: its name and state, and one line
-/// with what is left. Tapping that line opens a sheet from below with the
-/// data, the days and every package, so the profile itself stays short.
-class _UsageCard extends StatelessWidget {
-  const _UsageCard({required this.app});
+/// 3. Plans (Ali's pick B, "shop shelf"): the running plan first, in navy,
+/// then every plan on sale side by side, each with its own button. Data,
+/// days and packages moved to Activity.
+class _PlansShelf extends StatelessWidget {
+  const _PlansShelf({required this.app});
   final AppState app;
 
   @override
   Widget build(BuildContext context) {
     final sub = app.subscription;
-    void plans() =>
-        Navigator.of(context)
-            .push(FadeRoute(builder: (_) => const PlansScreen()));
-    if (sub == null) {
-      return SurfaceCard(
-        onTap: plans,
-        label: 'Plans',
-        child: Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    app.me.loading ? 'Loading your plan…' : 'No plan yet',
-                    style: PType.h3(),
-                  ),
-                  const SizedBox(height: 2),
-                  Text(
-                    app.me.value?.trialAvailable ?? false
-                        ? 'Free trial available'
-                        : 'See plans',
-                    style: PType.small(),
-                  ),
-                ],
-              ),
-            ),
-            PIconView(PIcon.chevron, color: PColors.muted),
-          ],
+    final me = app.me.value;
+    final running = runningPlanInfo(app);
+    final others = [
+      for (final p in app.plans.value ?? const <PlanInfo>[])
+        if (sub == null || p.name != sub.planName) p,
+    ];
+    final cards = <Widget>[
+      if (sub != null)
+        _ShelfCard(
+          deep: true,
+          name: sub.planName.isEmpty ? 'Your plan' : sub.planName,
+          badge: sub.active ? null : sub.statusLine.toUpperCase(),
+          // the plan's own size ("50 GB") when it is on sale, else what
+          // the panel counts
+          big: running != null
+              ? planBig(running)
+              : (sub.unlimitedData ? '∞' : gbText(sub.dataLimitBytes)),
+          unit: sub.unlimitedData ? 'no cap' : 'GB',
+          line: sub.unlimitedTime || (sub.periodDays ?? 0) <= 0
+              ? 'No end date'
+              : '${sub.periodDays} days',
+          devices: sub.deviceLimit,
+          price: running == null ? null : _short(running.priceToman),
+          action: sub.active ? 'YOURS' : 'RENEW',
+          done: sub.active,
+          onTap: sub.active ? null : () => renewPlan(context, app),
         ),
-      );
-    }
-    final left = sub.unlimitedData
-        ? 0
-        : (sub.dataLimitBytes - sub.usedBytes).clamp(0, sub.dataLimitBytes);
-    final dataFrac = sub.unlimitedData
-        ? 1.0
-        : (sub.dataLimitBytes == 0 ? 0.0 : left / sub.dataLimitBytes);
-    final days = sub.daysLeft ?? 0;
-    final period = (sub.periodDays ?? 0) > 0 ? sub.periodDays! : 30;
-    final stopped = !sub.active;
-    Widget detail() => _PleatsAndDots(
-      dataFrac: dataFrac,
-      leftGb: sub.unlimitedData ? null : left / _gib,
-      limitGb: sub.dataLimitBytes / _gib,
-      days: sub.unlimitedTime ? null : days,
-      period: period,
-      ends: sub.expiresAt,
-      reduce: app.reduceMotion || PMotion.reduced(context),
-      muted: stopped,
-    );
-    final summary = [
-      sub.unlimitedData ? 'No data cap' : '${_gb(left)} GB left',
-      sub.unlimitedTime ? 'no end date' : '$days days left',
-    ].join('  ·  ');
-    // Data, days and every package, in a sheet from below (Ali's pick).
-    // It follows the app, so packages that arrive late still show.
-    void openIt() => showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      barrierColor: PColors.scrim,
-      isScrollControlled: true,
-      builder: (context) => ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * 0.88,
-        ),
-        child: Container(
-          decoration: BoxDecoration(
-            color: PColors.surface,
-            borderRadius: BorderRadius.vertical(
-              top: Radius.circular(PRadius.sheet),
-            ),
-          ),
-          child: ListenableBuilder(
-            listenable: app,
-            builder: (context, _) => SingleChildScrollView(
-              padding: const EdgeInsets.fromLTRB(24, 14, 24, 28),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Center(
-                    child: Container(
-                      width: 40,
-                      height: 4,
-                      decoration: BoxDecoration(
-                        color: PColors.mist,
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    sub.planName.isEmpty ? 'Your plan' : sub.planName,
-                    style: PType.h2(),
-                  ),
-                  const SizedBox(height: 18),
-                  detail(),
-                  const SizedBox(height: 22),
-                  Divider(height: 1, thickness: 1.2, color: PColors.field),
-                  const SizedBox(height: 16),
-                  _Packages(app: app, bare: true),
-                ],
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-
+      for (final p in others)
+        () {
+          final trial = p.trialDays > 0 && (me?.trialAvailable ?? false);
+          return _ShelfCard(
+            deep: false,
+            name: p.name,
+            badge: p.savePercent > 0
+                ? 'SAVE ${p.savePercent}%'
+                : (p.badge.isEmpty ? null : p.badge.toUpperCase()),
+            big: planBig(p),
+            unit: p.dataLimitGb > 0 ? 'GB' : 'no cap',
+            line:
+                '${trial ? p.trialDays : p.durationDays} days${trial ? ' free' : ''}',
+            devices: p.deviceLimit,
+            price: trial ? 'Free trial' : _short(p.priceToman),
+            action: trial ? 'TRY' : 'BUY',
+            onTap: me == null
+                ? null
+                : trial
+                ? () => openPlans(context)
+                : () => openCheckout(context, plan: p),
+          );
+        }(),
+    ];
     return SurfaceCard(
-      padding: const EdgeInsets.fromLTRB(20, 16, 12, 12),
+      padding: const EdgeInsets.fromLTRB(20, 16, 0, 16),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  sub.planName.isEmpty ? 'Your plan' : sub.planName,
-                  style: PType.h3(),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              _Chip(
-                sub.statusLine.toUpperCase(),
-                color: stopped ? PColors.alert : PColors.safe,
-              ),
-              const SizedBox(width: 8),
-              _RowAction(stopped ? 'RENEW' : 'PLANS', onTap: plans),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Pressable(
-            onTap: openIt,
-            label: 'Data and days left',
-            radius: 20,
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(0, 10, 8, 6),
-              child: Row(
-                children: [
-                  PIconView(PIcon.chart, color: PColors.accentInk),
-                  const SizedBox(width: 14),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: Row(
+              children: [
+                Expanded(child: Text('Plans', style: PType.h3())),
+                Pressable(
+                  onTap: () => openPlans(context),
+                  label: 'All plans',
+                  radius: PRadius.pill,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 6,
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
                       children: [
                         Text(
-                          'Data and days',
-                          style: PType.h3().copyWith(fontSize: 15),
+                          'All plans',
+                          style: PType.small(color: PColors.accentInk)
+                              .copyWith(fontWeight: FontWeight.w800),
                         ),
-                        const SizedBox(height: 2),
-                        Text(summary, style: PType.small()),
+                        PIconView(
+                          PIcon.chevron,
+                          size: 16,
+                          color: PColors.accentInk,
+                        ),
                       ],
                     ),
                   ),
-                  PIconView(PIcon.chevron, color: PColors.muted),
-                ],
-              ),
+                ),
+              ],
             ),
           ),
+          const SizedBox(height: 12),
+          if (cards.isEmpty)
+            Padding(
+              padding: const EdgeInsets.only(right: 20, bottom: 4),
+              child: Text(
+                app.plans.loading
+                    ? 'Loading plans…'
+                    : (app.plans.error ?? 'No plans on sale right now.'),
+                style: PType.small(),
+              ),
+            )
+          else
+            SizedBox(
+              height: 204,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.only(right: 20),
+                itemCount: cards.length,
+                separatorBuilder: (_, _) => const SizedBox(width: 10),
+                itemBuilder: (_, i) => cards[i],
+              ),
+            ),
         ],
       ),
     );
   }
+
+  /// 189000 → "189,000 T": the card is narrow, the full word is on checkout.
+  static String _short(int v) => '${grouped(v)} T';
 }
 
-/// Data and days, the way Ali picked (style 4): slanted pleats rise for
-/// the data left, and each day of the package is a dot (navy = still
-/// ahead). Numbers count up with them; Reduce motion shows the end state.
-class _PleatsAndDots extends StatefulWidget {
-  const _PleatsAndDots({
-    required this.dataFrac,
-    required this.leftGb,
-    required this.limitGb,
-    required this.days,
-    required this.period,
-    required this.ends,
-    required this.reduce,
-    required this.muted,
+class _ShelfCard extends StatelessWidget {
+  const _ShelfCard({
+    required this.deep,
+    required this.name,
+    required this.badge,
+    required this.big,
+    required this.unit,
+    required this.line,
+    required this.devices,
+    required this.price,
+    required this.action,
+    required this.onTap,
+    this.done = false,
   });
-  final double dataFrac, limitGb;
-
-  /// null = no data cap / no end date.
-  final double? leftGb;
-  final int? days;
-  final int period;
-  final DateTime? ends;
-  final bool reduce, muted;
-
-  @override
-  State<_PleatsAndDots> createState() => _PleatsAndDotsState();
-}
-
-class _PleatsAndDotsState extends State<_PleatsAndDots>
-    with SingleTickerProviderStateMixin {
-  static const _pleats = 20;
-  static const _maxDots = 60;
-  late final _c = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 1800),
-  );
-
-  @override
-  void initState() {
-    super.initState();
-    widget.reduce ? _c.value = 1 : _c.forward();
-  }
-
-  @override
-  void didUpdateWidget(_PleatsAndDots old) {
-    super.didUpdateWidget(old);
-    if (old.dataFrac != widget.dataFrac || old.days != widget.days) {
-      widget.reduce ? _c.value = 1 : _c.forward(from: 0);
-    }
-  }
-
-  @override
-  void dispose() {
-    _c.dispose();
-    super.dispose();
-  }
-
-  /// 0..1 progress of one item that starts at [start] (0..1 of the run)
-  /// and takes [span] of it.
-  double _at(double start, double span) =>
-      ((_c.value - start) / span).clamp(0.0, 1.0);
+  final bool deep, done;
+  final String name, big, unit, line, action;
+  final int devices;
+  final String? badge, price;
+  final VoidCallback? onTap;
 
   @override
   Widget build(BuildContext context) {
-    final w = widget;
-    // a long package gets one dot per few days, so the grid stays small
-    final perDot = (w.period / _maxDots).ceil().clamp(1, 1 << 20);
-    final dots = (w.period / perDot).ceil();
-    final aheadDots = w.days == null ? dots : (w.days! / perDot).ceil();
-    final lit = (w.dataFrac * _pleats).round();
-    final blue = w.muted ? PColors.muted : PColors.blue;
-    final deep = w.muted ? PColors.muted : PColors.pressed;
-    final navy = w.muted ? PColors.ice : PColors.navy;
-    return Semantics(
-      label: [
-        w.leftGb == null
-            ? 'No data cap'
-            : '${w.leftGb!.toStringAsFixed(1)} GB left of ${w.limitGb.toStringAsFixed(0)}',
-        w.days == null ? 'no end date' : '${w.days} of ${w.period} days left',
-      ].join(', '),
-      excludeSemantics: true,
-      child: AnimatedBuilder(
-        animation: _c,
-        builder: (context, _) {
-          final count = Curves.easeOutCubic.transform(_at(0, 0.8));
-          return Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _bigRow(
-                'DATA LEFT',
-                w.leftGb == null ? '∞' : (w.leftGb! * count).toStringAsFixed(1),
-                w.leftGb == null ? '' : ' GB',
-                w.leftGb == null
-                    ? 'No data cap'
-                    : 'of ${w.limitGb.toStringAsFixed(0)} GB',
-              ),
-              const SizedBox(height: 14),
-              SizedBox(
-                height: 60,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  children: [
-                    for (var i = 0; i < _pleats; i++) ...[
-                      if (i > 0) const SizedBox(width: 5),
-                      Expanded(
-                        child: Transform(
-                          alignment: Alignment.bottomCenter,
-                          transform: Matrix4.skewX(-0.21)
-                            ..scaleByDouble(
-                              1,
-                              i < lit
-                                  ? 0.35 +
-                                        0.65 *
-                                            Curves.easeOutBack.transform(
-                                              _at(i * 0.025, 0.3),
-                                            )
-                                  : 0.35,
-                              1,
-                              1,
-                            ),
-                          child: DecoratedBox(
-                            decoration: BoxDecoration(
-                              color: i < lit && _at(i * 0.025, 0.3) > 0
-                                  ? (i.isOdd ? blue : deep)
-                                  : PColors.mist,
-                              borderRadius: BorderRadius.circular(6),
-                            ),
-                            child: const SizedBox.expand(),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-              const SizedBox(height: 18),
-              Divider(height: 1, thickness: 1.2, color: PColors.field),
-              const SizedBox(height: 16),
-              _bigRow(
-                'DAYS LEFT',
-                w.days == null ? '∞' : '${(w.days! * count).round()}',
-                w.days == null ? '' : ' of ${w.period}',
-                w.days == null || w.ends == null
-                    ? 'No end date'
-                    : 'Ends ${_day(w.ends!, year: false)}',
-              ),
-              const SizedBox(height: 14),
-              LayoutBuilder(
-                builder: (context, box) {
-                  const cols = 10, gap = 7.0;
-                  final size = (box.maxWidth - gap * (cols - 1)) / cols;
-                  return Wrap(
-                    spacing: gap,
-                    runSpacing: gap,
-                    children: [
-                      for (var i = 0; i < dots; i++)
-                        () {
-                          final t = _at(0.15 + i * (0.5 / dots), 0.25);
-                          final ahead = i >= dots - aheadDots;
-                          return Transform.scale(
-                            scale: 0.4 + 0.6 * Curves.easeOutBack.transform(t),
-                            child: Container(
-                              width: size,
-                              height: size,
-                              decoration: BoxDecoration(
-                                shape: BoxShape.circle,
-                                color: t == 0
-                                    ? PColors.field
-                                    : (ahead ? navy : PColors.mist),
-                              ),
-                            ),
-                          );
-                        }(),
-                    ],
-                  );
-                },
-              ),
-              if (perDot > 1) ...[
-                const SizedBox(height: 8),
-                Text('Each dot is $perDot days.', style: PType.meta()),
-              ],
-            ],
-          );
-        },
+    final ink = deep ? PColors.onDeep : PColors.ink;
+    final soft = deep ? PColors.onDeep.withValues(alpha: 0.82) : PColors.muted;
+    return Container(
+      // narrow enough that the third card peeks: the shelf scrolls
+      width: 138,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: deep ? PColors.navy : PColors.field,
+        borderRadius: BorderRadius.circular(22),
       ),
-    );
-  }
-
-  Widget _bigRow(String label, String number, String unit, String side) => Row(
-    crossAxisAlignment: CrossAxisAlignment.end,
-    children: [
-      Expanded(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(label, style: PType.tab()),
-            const SizedBox(height: 8),
-            Text.rich(
-              TextSpan(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            name,
+            style: PType.small(color: ink)
+                .copyWith(fontWeight: FontWeight.w800),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          const SizedBox(height: 4),
+          SizedBox(
+            height: 20,
+            child: badge == null
+                ? null
+                : Align(
+                    alignment: Alignment.centerLeft,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 2,
+                      ),
+                      decoration: BoxDecoration(
+                        color: deep
+                            ? PColors.onDeep.withValues(alpha: 0.18)
+                            : PColors.navy,
+                        borderRadius: BorderRadius.circular(PRadius.pill),
+                      ),
+                      child: Text(
+                        badge!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: PType.tab(color: PColors.onDeep),
+                      ),
+                    ),
+                  ),
+          ),
+          const SizedBox(height: 2),
+          Text.rich(
+            TextSpan(
+              children: [
+                TextSpan(
+                  text: big,
+                  style: PType.display(28, color: ink),
+                ),
+                TextSpan(
+                  text: ' $unit',
+                  style: PType.meta(color: soft),
+                ),
+              ],
+            ),
+            maxLines: 1,
+          ),
+          for (final t in [line, '$devices device${devices == 1 ? '' : 's'}'])
+            Text(
+              t,
+              style: PType.meta(color: soft),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          const Spacer(),
+          if (price != null)
+            Text(
+              price!,
+              style: PType.small(color: ink)
+                  .copyWith(fontWeight: FontWeight.w800),
+              maxLines: 1,
+            ),
+          const SizedBox(height: 8),
+          Pressable(
+            onTap: onTap,
+            label: '$action $name',
+            radius: PRadius.pill,
+            color: deep
+                ? PColors.onDeep.withValues(alpha: 0.16)
+                : PColors.surface,
+            child: SizedBox(
+              height: 36,
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  TextSpan(text: number, style: PType.display(44)),
-                  TextSpan(
-                    text: unit,
-                    style: PType.body(color: PColors.muted)
-                        .copyWith(fontSize: 18, fontWeight: FontWeight.w600),
+                  if (done) ...[
+                    PIconView(PIcon.check, size: 14, color: ink),
+                    const SizedBox(width: 4),
+                  ],
+                  Text(
+                    action,
+                    style: PType.button(
+                      color: deep
+                          ? PColors.onDeep
+                          : (onTap == null ? PColors.muted : PColors.accentInk),
+                    ),
                   ),
                 ],
               ),
-            ),
-          ],
-        ),
-      ),
-      Text(side, style: PType.meta()),
-    ],
-  );
-}
-
-/// 4. Every package, newest first: when it was bought and when it started.
-class _Packages extends StatelessWidget {
-  const _Packages({required this.app, this.bare = false});
-  final AppState app;
-
-  /// Inside the Data and days sheet: no card of its own.
-  final bool bare;
-
-  @override
-  Widget build(BuildContext context) {
-    final list = app.packages.value ?? const <Package>[];
-    final body = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Expanded(child: Text('Packages', style: PType.h3())),
-            if (list.isNotEmpty) Text('${list.length}', style: PType.meta()),
-          ],
-        ),
-        if (list.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 10),
-            child: Text(
-              app.packages.loading
-                  ? 'Loading your packages…'
-                  : (app.packages.error ?? 'No packages yet.'),
-              style: PType.small(),
-            ),
-          ),
-        for (var i = 0; i < list.length; i++)
-          StaggerIn(
-            index: i,
-            child: _PackageRow(p: list[i], first: i == 0),
-          ),
-      ],
-    );
-    if (bare) return body;
-    return SurfaceCard(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 10),
-      child: body,
-    );
-  }
-}
-
-class _PackageRow extends StatelessWidget {
-  const _PackageRow({required this.p, required this.first});
-  final Package p;
-  final bool first;
-
-  @override
-  Widget build(BuildContext context) {
-    final dates = [
-      if (p.purchasedAt != null)
-        'Bought ${_day(p.purchasedAt!, year: p.activatedAt == null)}',
-      if (p.activatedAt != null) 'Activated ${_day(p.activatedAt!)}',
-    ].join('  ·  ');
-    final facts = [
-      if (p.source != 'order') p.sourceLabel,
-      p.dataLimitBytes > 0 ? '${_gb(p.dataLimitBytes)} GB' : 'No data cap',
-      if (p.amountToman != null && p.amountToman! > 0) toman(p.amountToman!),
-    ].join('  ·  ');
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 11),
-      decoration: BoxDecoration(
-        border: first
-            ? null
-            : Border(top: BorderSide(color: PColors.field, width: 1.2)),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Container(
-            width: 42,
-            height: 42,
-            decoration: BoxDecoration(
-              color: p.current ? PColors.blue : PColors.mist,
-              shape: BoxShape.circle,
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              p.days == null ? '∞' : '${p.days}d',
-              style: PType.meta(
-                color: p.current ? PColors.onAccent : PColors.accentInk,
-              ).copyWith(fontWeight: FontWeight.w700),
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        p.name,
-                        style: PType.h3().copyWith(fontSize: 15),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    _Chip(
-                      p.stateLabel.toUpperCase(),
-                      color: p.current ? PColors.safe : PColors.muted,
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 3),
-                Text(dates, style: PType.small()),
-                const SizedBox(height: 1),
-                Text(facts, style: PType.meta()),
-              ],
             ),
           ),
         ],

@@ -889,41 +889,32 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
     }
     expect(find.byType(ProfileScreen), findsOneWidget);
-    expect(api.calls, contains('GET /me/packages'));
+    expect(api.calls, contains('GET /plans'));
     expect(find.text('Verify your Telegram'), findsOneWidget);
     expect(find.text('ali@example.com'), findsWidgets);
-    expect(find.text('Packages'), findsNothing); // not on the profile any more
-    // one compact line on the profile: 50 GB in the fake = 46.6 GiB,
-    // 41 GB used -> 8.4 GiB left
-    expect(find.text('8.4 GB left  ·  12 days left'), findsOneWidget);
-    expect(find.text('12 of 30'), findsNothing);
-    // tapping it slides the pleats and dots up in a sheet
-    await tester.tap(find.text('Data and days'));
-    for (var i = 0; i < 25; i++) {
-      await tester.pump(const Duration(milliseconds: 100));
-    }
-    expect(find.text('8.4 GB'), findsOneWidget);
-    expect(find.text('12 of 30'), findsOneWidget);
-    // packages live in the sheet too, under data and days
-    await tester.dragUntilVisible(
-      find.text('Free trial  ·  5.0 GB'),
-      find.byType(SingleChildScrollView).last,
-      const Offset(0, -200),
-    );
-    expect(find.text('Free trial  ·  5.0 GB'), findsOneWidget);
-    expect(
-      find.textContaining('Bought Nov 22  ·  Activated Nov 22, 2026'),
-      findsOneWidget,
-    );
-    expect(find.text('RUNNING'), findsOneWidget);
-    await tester.tapAt(const Offset(20, 20)); // outside the sheet closes it
-    for (var i = 0; i < 10; i++) {
-      await tester.pump(const Duration(milliseconds: 100));
-    }
-    expect(find.text('12 of 30'), findsNothing);
+    // Data and days moved to Activity; Profile has the Plans shelf
+    expect(find.text('Packages'), findsNothing);
+    expect(find.text('Data and days'), findsNothing);
+    expect(find.text('Plans'), findsOneWidget);
+    expect(find.text('All plans'), findsOneWidget);
+    // the running plan first (not on sale any more: no price), then the store
+    expect(find.text('Monthly test'), findsOneWidget);
+    expect(find.text('YOURS'), findsOneWidget);
+    expect(find.text('Annual'), findsOneWidget);
+    expect(find.text('459,000 T'), findsOneWidget);
+    expect(find.text('BUY'), findsOneWidget);
 
     // verify Telegram with the bot's code
-    await tester.scrollUntilVisible(find.text('VERIFY'), -200);
+    final page = find
+        .byWidgetPredicate(
+          (w) => w is Scrollable && w.axisDirection == AxisDirection.down,
+        )
+        .last;
+    await tester.scrollUntilVisible(
+      find.text('VERIFY'),
+      -200,
+      scrollable: page,
+    );
     await tester.tap(find.text('VERIFY'));
     for (var i = 0; i < 10; i++) {
       await tester.pump(const Duration(milliseconds: 100));
@@ -941,10 +932,68 @@ void main() {
     }
     expect(app.me.value!.telegramVerified, isTrue);
     expect(find.byType(ProfileScreen), findsOneWidget);
-    await tester.scrollUntilVisible(find.text('VERIFIED'), -200);
+    await tester.scrollUntilVisible(
+      find.text('VERIFIED'),
+      -200,
+      scrollable: page,
+    );
     expect(find.text('VERIFIED'), findsOneWidget);
     expect(find.text('Telegram  @ali_vpn'), findsOneWidget);
     expect(find.text('Backup login · optional'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('Activity: plan ring, data and days sheet, privacy', (
+    tester,
+  ) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, tunnel: FakeTunnel());
+    app.sessions.add(
+      Session(
+        exitId: 'gone',
+        title: 'Germany',
+        start: DateTime.now().subtract(const Duration(hours: 2)),
+        minutes: 72,
+        protocol: 'VLESS',
+      ),
+    );
+    app.setTab(3);
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    // 50 GB in the fake = 46.6 GiB, 41 GB used -> 8.4 GiB left
+    expect(find.text('8.4'), findsOneWidget);
+    expect(find.text('GB left'), findsOneWidget);
+    expect(find.text('Monthly test'), findsOneWidget);
+    expect(find.text('up to 2'), findsOneWidget);
+    expect(find.text('Germany'), findsOneWidget);
+    expect(find.textContaining('1 h 12'), findsOneWidget);
+    // Packages opens the pleats, the dots and every package
+    await tester.tap(find.text('PACKAGES'));
+    expect(api.calls, contains('GET /me/packages'));
+    for (var i = 0; i < 25; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('12 of 30'), findsOneWidget);
+    expect(find.text('DAYS LEFT'), findsOneWidget);
+    await tester.dragUntilVisible(
+      find.text('RUNNING'),
+      find.byType(SingleChildScrollView).last,
+      const Offset(0, -200),
+    );
+    expect(find.text('RUNNING'), findsOneWidget);
+    await tester.tapAt(const Offset(20, 20));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    // Keep history off: what was kept goes, nothing new is logged
+    await tester.scrollUntilVisible(find.text('Keep history'), 200);
+    await tester.tap(find.bySemanticsLabel('Keep history'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(app.keepHistory, isFalse);
+    expect(app.sessions, isEmpty);
+    expect(find.text('Off. Nothing is logged.'), findsOneWidget);
     await tester.pump(const Duration(seconds: 3));
   });
 

@@ -191,7 +191,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   /// The core's reason for a failed exit, read once from the service.
   void _noteFail(Exit e, String type) {
-    if (type == 'connect_fail' || type == 'silent') {
+    if (keepHistory && (type == 'connect_fail' || type == 'silent')) {
       connectLog.add(_net, Try(DateTime.now(), false, e.family));
     }
     final started = _attemptAt;
@@ -265,7 +265,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (n != null && !pinned) {
       netRoutes.note(_net, n.label, routeMode, ok: true);
     }
-    connectLog.add(_net, Try(DateTime.now(), true, e.family));
+    if (keepHistory) connectLog.add(_net, Try(DateTime.now(), true, e.family));
     _save();
     final proto = protoOf(e.server.link);
     health.count(proto: proto, ok: true);
@@ -625,6 +625,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   ConnectLog connectLog = ConnectLog();
   Set<String> saved = {};
   List<Session> sessions = [];
+
+  /// Activity > Your privacy: sessions are kept on this phone for
+  /// [historyDays] and then delete themselves. Off: nothing is logged.
+  bool keepHistory = true;
+  static const historyDays = 30;
   String noticesSeen = '';
 
   // ---- from the backend -----------------------------------------------
@@ -1316,9 +1321,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     exitId = p.getString('exit');
     saved = (p.getStringList('saved') ?? const []).toSet();
     noticesSeen = p.getString('noticesSeen') ?? '';
+    keepHistory = p.getBool('keepHistory') ?? true;
     sessions = (p.getStringList('sessions') ?? const [])
         .map((s) => Session.fromJson(jsonDecode(s) as Map<String, dynamic>))
         .toList();
+    _pruneSessions();
     _cache = NetCache.decode(_prefs.getString('netcache'));
   }
 
@@ -1347,6 +1354,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     exitId == null ? p.remove('exit') : p.setString('exit', exitId!);
     p.setStringList('saved', saved.toList());
     p.setString('noticesSeen', noticesSeen);
+    p.setBool('keepHistory', keepHistory);
     p.setStringList(
       'sessions',
       sessions.map((s) => jsonEncode(s.toJson())).toList(),
@@ -3439,10 +3447,32 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// Drops sessions older than [historyDays].
+  void _pruneSessions() {
+    final edge = DateTime.now().subtract(const Duration(days: historyDays));
+    sessions.removeWhere((s) => s.start.isBefore(edge));
+  }
+
+  /// Activity > Keep history. Turning it off also clears what was kept.
+  void setKeepHistory(bool on) => update((s) {
+    s.keepHistory = on;
+    if (!on) s._clearHistory();
+  });
+
+  /// Activity > Clear history now: the session log and the connect tries
+  /// behind Stats. Plan usage comes from the server and is not touched.
+  void clearHistory() => update((s) => s._clearHistory());
+
+  void _clearHistory() {
+    sessions.clear();
+    connectLog = ConnectLog();
+  }
+
   void _logSession() {
     final e = exit;
     if (connectedAt == null || e == null) return;
     health.count(minutes: (elapsed.inSeconds / 60).ceil());
+    if (!keepHistory) return;
     sessions.insert(
       0,
       Session(
@@ -3454,6 +3484,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       ),
     );
     if (sessions.length > 200) sessions.removeRange(200, sessions.length);
+    _pruneSessions();
   }
 
   @override
