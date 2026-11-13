@@ -139,10 +139,13 @@ void main() {
     final (app, _) = await _boot(tester, {'onboarded': true});
     app.setTab(2);
     await tester.pump(const Duration(milliseconds: 800));
+    // the fastest-for-you bar, regions, and each country once
+    expect(find.text('FASTEST FOR YOU NOW'), findsOneWidget);
+    expect(find.textContaining('EUROPE'), findsOneWidget);
     // Germany has two exits: one row that opens into DE 1 and DE 2.
-    expect(find.text('2 servers  ·  VLESS'), findsOneWidget);
+    expect(find.textContaining('2 servers'), findsOneWidget);
     expect(find.text('DE 2'), findsNothing);
-    await tester.tap(find.text('2 servers  ·  VLESS'));
+    await tester.tap(find.textContaining('2 servers'));
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('DE 2'), findsOneWidget);
     expect(find.text('CONNECT'), findsWidgets);
@@ -159,6 +162,58 @@ void main() {
     expect(app.tab, 0);
     expect(app.exit?.label, 'DE 2');
     await tester.pump(const Duration(seconds: 2));
+  });
+
+  testWidgets('Locations: dead countries fold away; the tunnel chip filters', (
+    tester,
+  ) async {
+    FakeApi.extraServers = [
+      {
+        'index': 3,
+        'name': 'FI 1',
+        'country_code': 'FI',
+        'protocol': 'vless',
+        'link': 'vless://u@fi1.example.com:443?type=tcp#x',
+        'tunnel': true,
+      },
+    ];
+    addTearDown(() => FakeApi.extraServers = []);
+    final (app, _) = await _boot(tester, {'onboarded': true});
+    app.setTab(2);
+    await tester.pump(const Duration(milliseconds: 800));
+    // NL 1 got no answer on this network: Netherlands leaves the list
+    app.update((s) {
+      s.exits.firstWhere((e) => e.label == 'NL 1')
+        ..measured = -1
+        ..failure = 'timeout';
+    });
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.textContaining('Not answering'), findsOneWidget);
+    expect(find.text('Netherlands'), findsNothing);
+    await tester.scrollUntilVisible(
+      find.textContaining('tap to see why'),
+      200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.textContaining('tap to see why'));
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.text('No answer: timeout'), findsOneWidget);
+    // the IR Tunnel chip shows only tunnel exits
+    await tester.scrollUntilVisible(
+      find.text('IR Tunnel'),
+      -200,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('IR Tunnel'));
+    await tester.pump(const Duration(milliseconds: 600));
+    expect(app.category, Category.tunnel);
+    expect(find.text('Finland'), findsOneWidget);
+    expect(find.text('Germany'), findsNothing);
+    app.setCategory(Category.all);
+    app.setTab(0); // leaving Locations stops its tests
+    for (var i = 0; i < 40; i++) {
+      await tester.pump(const Duration(milliseconds: 250));
+    }
   });
 
   testWidgets('Locations marks Iran-tunnel configs, and the panel for admins', (
@@ -185,7 +240,7 @@ void main() {
     expect(de1.server.tunnel, isFalse);
     app.setTab(2);
     await tester.pump(const Duration(milliseconds: 800));
-    await tester.tap(find.text('2 servers  ·  VLESS'));
+    await tester.tap(find.textContaining('2 servers'));
     await tester.pump(const Duration(milliseconds: 400));
     // one tunnel badge and one panel tag: DE 1 has neither
     expect(find.text('IR TUNNEL'), findsOneWidget);

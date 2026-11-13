@@ -6,7 +6,8 @@ import 'route_mode.dart';
 
 /// Locations filters. Every one is computed from server data or from what
 /// this phone did; none is a made-up tag.
-enum Category { all, fastest, saved, recent }
+/// Locations filter chips (1.2.49: Best became the "Fastest for you" bar).
+enum Category { all, stealth, tunnel, saved, recent }
 
 /// Painted scene mood for an exit's generated "photo".
 enum SceneTone { dawn, day, dusk, night }

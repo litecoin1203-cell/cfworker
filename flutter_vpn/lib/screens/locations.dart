@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../api/countries.dart';
 import '../design/city_art.dart';
 import '../design/icons.dart';
 import '../design/tokens.dart';
@@ -7,20 +8,16 @@ import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
 import '../state/exits.dart';
+import '../state/route_mode.dart';
 import 'location_detail.dart';
 import 'shell.dart';
 import 'states.dart';
 
-const _categories = [
-  (Category.all, PIcon.grid, 'All'),
-  (Category.fastest, PIcon.bolt, 'Best'),
-  (Category.saved, PIcon.bookmark, 'Saved'),
-  (Category.recent, PIcon.clock, 'Recent'),
-];
-
-/// Locations break the reference's Partners grid: the first city is an
-/// oversized card that ignores the column and slides 16px under the next
-/// one; everything after is a dense list.
+/// Locations (Ali's pick A, "Country list"): the fastest exit for this
+/// network on top, filter chips, then every country once, grouped by
+/// region. A country's CONNECT takes its best server; a country with more
+/// than one opens into its servers. Countries where nothing answers on
+/// this network fold into one row at the end, with each server's reason.
 class LocationsScreen extends StatefulWidget {
   const LocationsScreen({super.key});
 
@@ -30,6 +27,7 @@ class LocationsScreen extends StatefulWidget {
 
 class _LocationsScreenState extends State<LocationsScreen> {
   String _query = '';
+  bool _deadOpen = false;
 
   @override
   void initState() {
@@ -49,15 +47,16 @@ class _LocationsScreenState extends State<LocationsScreen> {
     super.deactivate();
   }
 
-  /// Every list is the backend's: All in the Worker's order, Best by what
-  /// this phone and people on this network measured, Saved and Recent from this phone.
+  /// The chip's slice of the Worker's list, then the search.
   List<Exit> _filtered(AppState app) {
     Iterable<Exit> list = app.exits;
     switch (app.category) {
       case Category.all:
         break;
-      case Category.fastest:
-        list = app.best;
+      case Category.stealth:
+        list = list.where((e) => e.family == RouteMode.stealth);
+      case Category.tunnel:
+        list = list.where((e) => e.server.tunnel);
       case Category.saved:
         list = list.where((e) => app.saved.contains(e.id));
       case Category.recent:
@@ -82,35 +81,30 @@ class _LocationsScreenState extends State<LocationsScreen> {
   String _emptyLine(AppState app) {
     if (_query.trim().isNotEmpty) return 'No exit matches “$_query”';
     return switch (app.category) {
-      Category.fastest =>
-        'No results on ${app.network?.label ?? 'your network'} yet',
+      Category.stealth => 'No Stealth exits on your plan',
+      Category.tunnel => 'No IR Tunnel exits on your plan',
       Category.saved => 'Nothing saved yet',
       Category.recent => 'No sessions on this phone yet',
       Category.all => 'No exits',
     };
   }
 
-  /// Connect to [e] and show Home, where the connection plays out. The exit
-  /// already up (or coming up) just shows Home.
-  void _connect(Exit e) {
+  /// Connect to [e] (or let smart connect pick when null) and show Home,
+  /// where the connection plays out.
+  void _connect(Exit? e) {
     final app = AppScope.read(context);
-    if (!_on(app, e)) app.connect(e.id);
+    if (e == null) {
+      if (!app.busy && app.phase != Phase.protected) app.connect();
+    } else if (!_on(app, e)) {
+      app.connect(e.id);
+    }
     app.setTab(0);
   }
 
   static bool _on(AppState app, Exit e) =>
       app.exit?.id == e.id && (app.busy || app.phase == Phase.protected);
 
-  /// Exits grouped by country, in list order (best first in each).
-  static List<List<Exit>> _byCountry(List<Exit> list) {
-    final by = <String, List<Exit>>{};
-    for (final e in list) {
-      by.putIfAbsent(e.code.isEmpty ? e.title : e.code, () => []).add(e);
-    }
-    return by.values.toList();
-  }
-
-  /// "On Irancell · Tested 25 min ago · Pull or tap a flag to test".
+  /// "On Irancell · Tested 25 min ago · Pull to re-test".
   static String _statusLine(AppState app) {
     final at = app.testedAt;
     return [
@@ -119,7 +113,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
         'Testing exits'
       else if (at != null)
         'Tested ${ago(DateTime.now().difference(at))}',
-      'Pull or tap a flag to test',
+      'Pull to re-test',
     ].join('  ·  ');
   }
 
@@ -131,15 +125,28 @@ class _LocationsScreenState extends State<LocationsScreen> {
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
     final list = _filtered(app);
-    // One entry per country: the first two countries get the big cards
-    // (their best exit); the list holds the other countries, and every
-    // country with more than one exit opens into its exits.
-    final groups = _byCountry(list);
-    final heroes = [for (final g in groups.take(2)) g.first];
-    final rest = [
-      for (var i = 0; i < groups.length; i++)
-        if (i >= 2 || groups[i].length > 1) groups[i],
+    final groups = groupCountries(list);
+    final alive = [
+      for (final g in groups)
+        if (!g.every((e) => e.unreachable)) g,
     ];
+    final dead = [
+      for (final g in groups)
+        if (g.every((e) => e.unreachable)) g,
+    ];
+    final regions = groupRegions(alive);
+    final fastest = fastestExit(app);
+    final stealth = app.exits.where((e) => e.family == RouteMode.stealth);
+    final tunnels = app.exits.where((e) => e.server.tunnel);
+    final chips = [
+      (Category.all, PIcon.grid, 'All', null),
+      (Category.stealth, PIcon.shield, 'Stealth', stealth.length),
+      if (tunnels.isNotEmpty)
+        (Category.tunnel, PIcon.tunnel, 'IR Tunnel', tunnels.length),
+      (Category.saved, PIcon.bookmark, 'Saved', null),
+      (Category.recent, PIcon.clock, 'Recent', null),
+    ];
+    var stagger = 0;
     return SafeArea(
       bottom: false,
       child: ParallaxScroll(
@@ -181,24 +188,35 @@ class _LocationsScreenState extends State<LocationsScreen> {
                         hint: 'Search countries or codes',
                         onChanged: (v) => setState(() => _query = v),
                       ),
+                      if (app.exits.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        _FastestBar(
+                          exit: fastest,
+                          on: fastest != null && _on(app, fastest),
+                          onConnect: () => _connect(fastest),
+                        ),
+                      ],
                     ],
                   ),
                 ),
               ),
               SliverToBoxAdapter(
-                child: Container(
-                  margin: const EdgeInsets.only(top: 18),
-                  height: 86,
+                child: SizedBox(
+                  height: 60,
                   child: ListView(
                     scrollDirection: Axis.horizontal,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    padding: const EdgeInsets.fromLTRB(20, 12, 12, 6),
                     children: [
-                      for (final (c, icon, label) in _categories)
-                        _CategoryChip(
-                          icon: icon,
-                          label: label,
-                          active: app.category == c,
-                          onTap: () => app.setCategory(c),
+                      for (final (c, icon, label, count) in chips)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: _FilterChip(
+                            icon: icon,
+                            label: label,
+                            count: count,
+                            active: app.category == c,
+                            onTap: () => app.setCategory(c),
+                          ),
                         ),
                     ],
                   ),
@@ -207,14 +225,14 @@ class _LocationsScreenState extends State<LocationsScreen> {
               if (app.exits.isEmpty)
                 SliverToBoxAdapter(
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 30, 20, 0),
+                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
                     child: ServersState(app: app),
                   ),
                 )
               else if (list.isEmpty)
                 SliverToBoxAdapter(
                   child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 40, 20, 0),
+                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 0),
                     child: SurfaceCard(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -231,95 +249,297 @@ class _LocationsScreenState extends State<LocationsScreen> {
                       ),
                     ),
                   ),
-                )
-              else ...[
-                // Oversized first city: bleeds past the right gutter.
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(20, 10, 0, 0),
-                    child: Transform.translate(
-                      offset: const Offset(24, 0),
-                      child: StaggerIn(
-                        key: ValueKey('big-${heroes[0].id}'),
-                        index: 0,
-                        child: MediaCard(
-                          exit: heroes[0],
-                          height: 248,
-                          big: true,
-                          note: heroes[0].verdictOn(app.network),
-                          onBadge: () => app.testOne(heroes[0].id),
-                          onOpen: () => _open(heroes[0]),
-                          tabLabel: _on(app, heroes[0])
-                              ? 'Connected'
-                              : 'Connect',
-                          tabActive: _on(app, heroes[0]),
-                          onTab: () => _connect(heroes[0]),
-                        ),
-                      ),
-                    ),
-                  ),
                 ),
-                if (heroes.length > 1)
-                  SliverToBoxAdapter(
-                    // Second card is inset off the column and rides 16px over the first.
-                    child: Transform.translate(
-                      offset: const Offset(0, -16),
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(72, 0, 20, 0),
-                        child: StaggerIn(
-                          key: ValueKey('second-${heroes[1].id}'),
-                          index: 1,
-                          child: MediaCard(
-                            exit: heroes[1],
-                            height: 150,
-                            note: heroes[1].verdictOn(app.network),
-                            onBadge: () => app.testOne(heroes[1].id),
-                            onOpen: () => _open(heroes[1]),
-                            tabLabel: _on(app, heroes[1])
-                                ? 'Connected'
-                                : 'Connect',
-                            tabActive: _on(app, heroes[1]),
-                            onTab: () => _connect(heroes[1]),
+              if (list.isNotEmpty)
+                SliverPadding(
+                  padding: const EdgeInsets.fromLTRB(20, 4, 20, 140),
+                  sliver: SliverList.list(
+                    children: [
+                      for (var r = 0; r < regions.length; r++) ...[
+                        _RegionHead(
+                          region: regions[r].$1,
+                          countries: regions[r].$2.length,
+                          legend: r == 0,
+                        ),
+                        StaggerIn(
+                          key: ValueKey(
+                            'region-${app.category}-${regions[r].$1.name}',
+                          ),
+                          index: stagger++,
+                          child: SurfaceCard(
+                            padding: const EdgeInsets.symmetric(vertical: 6),
+                            child: Column(
+                              children: [
+                                for (final g in regions[r].$2)
+                                  _CountryRow(
+                                    key: ValueKey(
+                                      'c-${g.first.code}-${g.first.title}',
+                                    ),
+                                    exits: g,
+                                    best: bestOf(g),
+                                    isOn: (e) => _on(app, e),
+                                    onOpen: _open,
+                                    onConnect: _connect,
+                                  ),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                    ),
-                  ),
-                if (rest.isNotEmpty)
-                  SliverPadding(
-                    padding: const EdgeInsets.fromLTRB(20, 4, 20, 140),
-                    sliver: SliverToBoxAdapter(
-                      child: SurfaceCard(
-                        padding: const EdgeInsets.symmetric(vertical: 8),
-                        child: Column(
-                          children: [
-                            for (var i = 0; i < rest.length; i++)
-                              StaggerIn(
-                                key: ValueKey(
-                                  'row-${app.category}-${rest[i].first.code}-${rest[i].first.id}',
-                                ),
-                                index: i + 2,
-                                child: rest[i].length == 1
-                                    ? ExitRow(
-                                        exit: rest[i].first,
-                                        selected: _on(app, rest[i].first),
-                                        onOpen: () => _open(rest[i].first),
-                                        onSelect: () => _connect(rest[i].first),
-                                      )
-                                    : _CountryGroup(
-                                        exits: rest[i],
-                                        isOn: (e) => _on(app, e),
-                                        onOpen: _open,
-                                        onConnect: _connect,
-                                      ),
-                              ),
-                          ],
+                        const SizedBox(height: 4),
+                      ],
+                      if (dead.isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        _NotAnswering(
+                          groups: dead,
+                          network: app.network?.label,
+                          open: _deadOpen,
+                          onToggle: () =>
+                              setState(() => _deadOpen = !_deadOpen),
+                          isOn: (e) => _on(app, e),
+                          onOpen: _open,
+                          onConnect: _connect,
                         ),
+                      ],
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Exits grouped by country, in list order.
+List<List<Exit>> groupCountries(List<Exit> list) {
+  final by = <String, List<Exit>>{};
+  for (final e in list) {
+    by.putIfAbsent(e.code.isEmpty ? e.title : e.code, () => []).add(e);
+  }
+  return by.values.toList();
+}
+
+/// A country's best server: the strongest that answers on this network,
+/// else the first the Worker lists.
+Exit bestOf(List<Exit> g) {
+  Exit? top;
+  for (final e in g) {
+    if (e.unreachable) continue;
+    if (top == null || e.smartScore > top.smartScore) top = e;
+  }
+  return top ?? g.first;
+}
+
+/// Countries under their regions. Regions and the countries in them go
+/// best first; with nothing measured yet, the region order and the
+/// Worker's order (the sort is stable).
+List<(Region, List<List<Exit>>)> groupRegions(List<List<Exit>> countries) {
+  final by = <Region, List<List<Exit>>>{};
+  for (final g in countries) {
+    by.putIfAbsent(regionOf(g.first.code), () => []).add(g);
+  }
+  double score(List<Exit> g) => bestOf(g).smartScore;
+  final out = [
+    for (final r in Region.values)
+      if (by[r] != null) (r, by[r]!),
+  ];
+  for (final (_, gs) in out) {
+    mergeSort(gs, compare: (a, b) => score(b).compareTo(score(a)));
+  }
+  mergeSort(
+    out,
+    compare: (a, b) => score(b.$2.first).compareTo(score(a.$2.first)),
+  );
+  return out;
+}
+
+/// Stable insertion sort: equal scores keep the Worker's order.
+void mergeSort<T>(List<T> list, {required int Function(T, T) compare}) {
+  for (var i = 1; i < list.length; i++) {
+    final x = list[i];
+    var j = i - 1;
+    while (j >= 0 && compare(list[j], x) > 0) {
+      list[j + 1] = list[j];
+      j--;
+    }
+    list[j + 1] = x;
+  }
+}
+
+/// The exit "Fastest for you now" offers: the best this phone or people on
+/// this network measured that answers; null until anything is measured
+/// (the bar then lets smart connect pick).
+Exit? fastestExit(AppState app) {
+  for (final e in app.best) {
+    if (!e.unreachable) return e;
+  }
+  return null;
+}
+
+/// Green: answered. Red: answered slowly or people here say weak.
+/// Grey: not tested yet. Faint: no answer.
+enum Health { good, slow, untested, dead }
+
+Health healthOf(Exit e) {
+  if (e.unreachable) return Health.dead;
+  final p = e.ping;
+  if (p == null && e.verdict == null) return Health.untested;
+  if ((p != null && p >= 400) ||
+      e.verdict == Verdict.weak ||
+      e.speed == Speed.slow) {
+    return Health.slow;
+  }
+  return Health.good;
+}
+
+class _FastestBar extends StatelessWidget {
+  const _FastestBar({
+    required this.exit,
+    required this.on,
+    required this.onConnect,
+  });
+  final Exit? exit;
+  final bool on;
+  final VoidCallback onConnect;
+
+  @override
+  Widget build(BuildContext context) {
+    final e = exit;
+    final title = e == null ? 'Smart connect' : '${e.title} · ${e.label}';
+    final side = e == null
+        ? 'Pleat picks for this network'
+        : (e.ping == null ? e.protocol : '${e.protocol} · ${e.ping} ms');
+    return Semantics(
+      container: true,
+      label: 'Fastest for you now: $title',
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(16, 12, 10, 12),
+        decoration: BoxDecoration(
+          color: PColors.navy,
+          borderRadius: BorderRadius.circular(24),
+        ),
+        child: Row(
+          children: [
+            PIconView(PIcon.bolt, size: 22, color: PColors.onDeep),
+            const SizedBox(width: 12),
+            Expanded(
+              child: ExcludeSemantics(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'FASTEST FOR YOU NOW',
+                      style: PType.tab(
+                        color: PColors.onDeep.withValues(alpha: 0.82),
                       ),
                     ),
-                  )
-                else
-                  const SliverToBoxAdapter(child: SizedBox(height: 140)),
+                    const SizedBox(height: 3),
+                    Text(
+                      title,
+                      style: PType.h3(color: PColors.onDeep)
+                          .copyWith(fontSize: 16),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    Text(
+                      side,
+                      style: PType.meta(
+                        color: PColors.onDeep.withValues(alpha: 0.82),
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Pressable(
+              onTap: onConnect,
+              label: on ? '$title connected' : 'Connect to $title',
+              selected: on,
+              radius: PRadius.pill,
+              color: on ? PColors.blue : PColors.onDeep,
+              child: SizedBox(
+                height: 42,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Center(
+                    child: on
+                        ? PIconView(
+                            PIcon.check,
+                            size: 18,
+                            color: PColors.onAccent,
+                          )
+                        : Text(
+                            'CONNECT',
+                            style: PType.button(
+                              color: PColors.current.isDark
+                                  ? PColors.ground
+                                  : PColors.navy,
+                            ).copyWith(fontSize: 11),
+                          ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FilterChip extends StatelessWidget {
+  const _FilterChip({
+    required this.icon,
+    required this.label,
+    required this.count,
+    required this.active,
+    required this.onTap,
+  });
+  final PIcon icon;
+  final String label;
+  final int? count;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final fg = active ? PColors.onAccent : PColors.ink;
+    return Pressable(
+      onTap: onTap,
+      label: count == null ? label : '$label, $count',
+      selected: active,
+      radius: PRadius.pill,
+      color: active
+          ? (PColors.current.isDark ? PColors.blue : PColors.navy)
+          : PColors.surface,
+      child: SizedBox(
+        height: 40,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              PIconView(icon, size: 17, color: fg),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: PType.small(color: fg)
+                    .copyWith(fontWeight: FontWeight.w700),
+              ),
+              if (count != null) ...[
+                const SizedBox(width: 6),
+                Text(
+                  '$count',
+                  style: PType.meta(
+                    color: active
+                        ? PColors.onAccent.withValues(alpha: 0.85)
+                        : PColors.muted,
+                  ),
+                ),
               ],
             ],
           ),
@@ -329,126 +549,200 @@ class _LocationsScreenState extends State<LocationsScreen> {
   }
 }
 
-class _CategoryChip extends StatelessWidget {
-  const _CategoryChip({
-    required this.icon,
-    required this.label,
-    required this.active,
-    required this.onTap,
+class _RegionHead extends StatelessWidget {
+  const _RegionHead({
+    required this.region,
+    required this.countries,
+    required this.legend,
   });
-  final PIcon icon;
-  final String label;
-  final bool active;
-  final VoidCallback onTap;
+  final Region region;
+  final int countries;
+  final bool legend;
 
   @override
-  Widget build(BuildContext context) {
-    final color = active ? PColors.blue : PColors.muted;
-    return Pressable(
-      onTap: onTap,
-      label: label,
-      selected: active,
-      radius: 20,
-      child: SizedBox(
-        width: 76,
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            AnimatedContainer(
-              duration: PMotion.quick,
-              width: 48,
-              height: 48,
-              decoration: BoxDecoration(
-                color: active ? PColors.surface : Colors.transparent,
-                shape: BoxShape.circle,
-                boxShadow: active ? PShadow.soft() : null,
-              ),
-              alignment: Alignment.center,
-              child: PIconView(
-                icon,
-                size: 24,
-                color: active ? PColors.accentInk : PColors.ink,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(label.toUpperCase(), style: PType.tab(color: color)),
-          ],
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.fromLTRB(6, 14, 6, 8),
+    child: Row(
+      children: [
+        Expanded(
+          child: Text(
+            '${region.title.toUpperCase()}  ·  $countries '
+            '${countries == 1 ? 'COUNTRY' : 'COUNTRIES'}',
+            style: PType.tab(color: PColors.ink),
+          ),
         ),
-      ),
-    );
-  }
+        if (legend)
+          ExcludeSemantics(
+            child: Text('WORKS HERE', style: PType.tab(color: PColors.ink)),
+          ),
+      ],
+    ),
+  );
 }
 
-/// A country with several exits: one row that opens into its exits, so
-/// the person picks which one.
-class _CountryGroup extends StatefulWidget {
-  const _CountryGroup({
+/// One pip per server, slanted like the shards: does it work here?
+class _Pips extends StatelessWidget {
+  const _Pips(this.exits);
+  final List<Exit> exits;
+
+  @override
+  Widget build(BuildContext context) => ExcludeSemantics(
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        for (final e in exits.take(8))
+          Padding(
+            padding: const EdgeInsets.only(right: 3),
+            child: Transform(
+              transform: Matrix4.skewX(-0.25),
+              alignment: Alignment.center,
+              child: Container(
+                width: 9,
+                height: 9,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(2),
+                  color: switch (healthOf(e)) {
+                    Health.good => PColors.safe,
+                    Health.slow => PColors.alert,
+                    Health.untested => PColors.mist,
+                    Health.dead => PColors.muted.withValues(alpha: 0.35),
+                  },
+                ),
+              ),
+            ),
+          ),
+      ],
+    ),
+  );
+}
+
+/// A country once: its best server's badge, "4 servers · best 95 ms" with
+/// a pip per server, CONNECT to the best, and its servers below when open.
+class _CountryRow extends StatefulWidget {
+  const _CountryRow({
+    super.key,
     required this.exits,
+    required this.best,
     required this.isOn,
     required this.onOpen,
     required this.onConnect,
   });
   final List<Exit> exits;
+  final Exit best;
   final bool Function(Exit) isOn;
   final void Function(Exit) onOpen, onConnect;
 
   @override
-  State<_CountryGroup> createState() => _CountryGroupState();
+  State<_CountryRow> createState() => _CountryRowState();
 }
 
-class _CountryGroupState extends State<_CountryGroup> {
+class _CountryRowState extends State<_CountryRow> {
   bool? _open;
 
   @override
   Widget build(BuildContext context) {
-    final first = widget.exits.first;
-    final anyOn = widget.exits.any(widget.isOn);
-    final open = _open ?? anyOn;
-    final kinds = {for (final e in widget.exits) e.protocol}.join(', ');
+    final w = widget;
+    final many = w.exits.length > 1;
+    final on = w.exits.where(w.isOn).firstOrNull;
+    final open = many && (_open ?? on != null);
+    final kinds = {for (final e in w.exits) e.protocol}.join(', ');
+    final ping = w.best.unreachable ? null : w.best.ping;
+    final working = w.exits.where((e) => !e.unreachable).length;
+    final meta = [
+      many ? '${w.exits.length} servers' : w.best.label,
+      // a group's protocols show on its server rows; one line stays short
+      if (!many || ping == null) kinds,
+      if (w.best.pingTesting)
+        'testing'
+      else if (ping != null)
+        many ? 'best $ping ms' : '$ping ms',
+    ].join('  ·  ');
     return Column(
       children: [
         Pressable(
-          onTap: () => setState(() => _open = !open),
-          label:
-              '${first.title}, ${widget.exits.length} servers, ${open ? 'collapse' : 'expand'}',
+          onTap: many
+              ? () => setState(() => _open = !open)
+              : () => w.onOpen(w.best),
+          label: many
+              ? '${w.best.title}, ${w.exits.length} servers, $working answer, '
+                    '${open ? 'collapse' : 'expand'}'
+              : 'Open ${w.best.title}, ${w.best.label}',
           radius: 20,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(14, 10, 18, 10),
+            padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
             child: Row(
               children: [
-                RegionBadge(first),
+                Pressable(
+                  onTap: () => AppScope.read(context).testOne(w.best.id),
+                  label: 'Test ${w.best.label} now',
+                  radius: PRadius.pill,
+                  child: SpeedBadge(w.best, size: 44),
+                ),
                 const SizedBox(width: 14),
                 Expanded(
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        first.title,
+                        w.best.title,
                         style: PType.h3().copyWith(fontSize: 16),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
                       const SizedBox(height: 4),
                       Text(
-                        '${widget.exits.length} servers  ·  $kinds',
+                        meta,
                         style: PType.meta(
-                          color: anyOn ? PColors.accentInk : PColors.ink,
+                          color: on != null ? PColors.accentInk : PColors.ink,
                         ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
+                      const SizedBox(height: 5),
+                      _Pips(w.exits),
                     ],
                   ),
                 ),
-                AnimatedRotation(
-                  turns: open ? 0.25 : 0,
-                  duration: const Duration(milliseconds: 220),
-                  curve: Curves.easeOutCubic,
-                  child: PIconView(
-                    PIcon.chevron,
-                    size: 20,
-                    color: PColors.muted,
+                const SizedBox(width: 6),
+                Pressable(
+                  onTap: () => w.onConnect(on ?? w.best),
+                  label: on != null
+                      ? '${w.best.title} connected'
+                      : 'Connect to ${w.best.title}, ${w.best.label}',
+                  selected: on != null,
+                  radius: PRadius.pill,
+                  color: on != null ? PColors.blue : PColors.field,
+                  child: SizedBox(
+                    height: 40,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      child: Center(
+                        child: Text(
+                          on != null ? 'ON' : 'CONNECT',
+                          style: PType.button(
+                            color: on != null ? PColors.onAccent : PColors.ink,
+                          ).copyWith(fontSize: 11),
+                        ),
+                      ),
+                    ),
                   ),
+                ),
+                SizedBox(
+                  width: 26,
+                  child: many
+                      ? ExcludeSemantics(
+                          child: AnimatedRotation(
+                            turns: open ? 0.25 : 0,
+                            duration: const Duration(milliseconds: 220),
+                            curve: Curves.easeOutCubic,
+                            child: PIconView(
+                              PIcon.chevron,
+                              size: 20,
+                              color: PColors.muted,
+                            ),
+                          ),
+                        )
+                      : null,
                 ),
               ],
             ),
@@ -459,17 +753,27 @@ class _CountryGroupState extends State<_CountryGroup> {
           curve: Curves.easeOutCubic,
           alignment: Alignment.topCenter,
           child: open
-              ? Padding(
-                  padding: const EdgeInsets.only(left: 22),
+              ? Container(
+                  margin: const EdgeInsets.fromLTRB(26, 0, 10, 8),
+                  decoration: BoxDecoration(
+                    color: PColors.field,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
                   child: Column(
                     children: [
-                      for (final e in widget.exits)
-                        ExitRow(
-                          exit: e,
-                          sub: true,
-                          selected: widget.isOn(e),
-                          onOpen: () => widget.onOpen(e),
-                          onSelect: () => widget.onConnect(e),
+                      for (final e in w.exits)
+                        Opacity(
+                          opacity: e.unreachable ? 0.6 : 1,
+                          child: ExitRow(
+                            exit: e,
+                            sub: true,
+                            selected: w.isOn(e),
+                            onOpen: () => w.onOpen(e),
+                            onSelect: () => w.onConnect(e),
+                            reason: e.unreachable && e.failure != null
+                                ? 'No answer: ${e.failure}'
+                                : null,
+                          ),
                         ),
                     ],
                   ),
@@ -477,6 +781,101 @@ class _CountryGroupState extends State<_CountryGroup> {
               : const SizedBox(width: double.infinity),
         ),
       ],
+    );
+  }
+}
+
+/// Countries where no server answered on this network: one row that
+/// opens into each server and the core's reason.
+class _NotAnswering extends StatelessWidget {
+  const _NotAnswering({
+    required this.groups,
+    required this.network,
+    required this.open,
+    required this.onToggle,
+    required this.isOn,
+    required this.onOpen,
+    required this.onConnect,
+  });
+  final List<List<Exit>> groups;
+  final String? network;
+  final bool open;
+  final VoidCallback onToggle;
+  final bool Function(Exit) isOn;
+  final void Function(Exit) onOpen, onConnect;
+
+  @override
+  Widget build(BuildContext context) {
+    final n = groups.fold<int>(0, (a, g) => a + g.length);
+    final title = network == null
+        ? 'Not answering here'
+        : 'Not answering on $network';
+    final line =
+        '$n server${n == 1 ? '' : 's'} in ${groups.length} '
+        '${groups.length == 1 ? 'country' : 'countries'}  ·  '
+        '${open ? 'tap to hide' : 'tap to see why'}';
+    return SurfaceCard(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        children: [
+          Pressable(
+            onTap: onToggle,
+            label: '$title, $n servers, ${open ? 'collapse' : 'expand'}',
+            radius: 20,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 12, 14, 12),
+              child: Row(
+                children: [
+                  PIconView(PIcon.info, size: 22, color: PColors.alert),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(title, style: PType.h3().copyWith(fontSize: 15)),
+                        const SizedBox(height: 2),
+                        Text(line, style: PType.meta()),
+                      ],
+                    ),
+                  ),
+                  AnimatedRotation(
+                    turns: open ? 0.25 : 0,
+                    duration: const Duration(milliseconds: 220),
+                    child: PIconView(
+                      PIcon.chevron,
+                      size: 20,
+                      color: PColors.muted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          AnimatedSize(
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeOutCubic,
+            alignment: Alignment.topCenter,
+            child: open
+                ? Column(
+                    children: [
+                      for (final g in groups)
+                        for (final e in g)
+                          ExitRow(
+                            exit: e,
+                            selected: isOn(e),
+                            onOpen: () => onOpen(e),
+                            onSelect: () => onConnect(e),
+                            reason: e.failure == null
+                                ? 'No answer on the last test'
+                                : 'No answer: ${e.failure}',
+                            reasonIcon: PIcon.info,
+                          ),
+                    ],
+                  )
+                : const SizedBox(width: double.infinity),
+          ),
+        ],
+      ),
     );
   }
 }
