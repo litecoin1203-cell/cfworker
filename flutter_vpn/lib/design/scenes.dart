@@ -84,7 +84,8 @@ abstract final class Layouts {
 /// The selected category reshapes the colour mix, never the palette.
 List<Color> mixFor(Category c) => switch (c) {
   Category.all => [PColors.mist, PColors.navy, PColors.blue, PColors.ice],
-  Category.fastest => [PColors.ice, PColors.blue, PColors.blue, PColors.ice],
+  Category.stealth => [PColors.ice, PColors.blue, PColors.blue, PColors.ice],
+  Category.tunnel => [PColors.navy, PColors.blue, PColors.ice, PColors.mist],
   Category.saved => [PColors.mist, PColors.ice, PColors.blue, PColors.mist],
   Category.recent => [PColors.ice, PColors.navy, PColors.mist, PColors.blue],
 };

@@ -491,7 +491,7 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.47+50** (`flutter_vpn/pubspec.yaml`), APK built and on `pleat-latest`. PR #88 (open) is 1.2.48+51.
+Version on main: **1.2.48+51** (`flutter_vpn/pubspec.yaml`); APK for 1.2.48 pending. PR #89 (open) is 1.2.49+52.
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
 Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLibXrayLite tag **v26.7.5**
 (Xray 26.6.27 inside), hev-socks5-tunnel commit `67dfba56`.
@@ -512,6 +512,12 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
   history; moved here from Profile) and RENEW (same plan at checkout if still on sale, else Plans); the last 3
   sessions + "See all"; "Your privacy": history only on this phone, **Keep history** (30 days, off = nothing
   logged, also stops the connect tries behind Stats) and Clear history now (sessions + connect tries). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
+- Locations (1.2.49, Ali's pick A "Country list", `screens/locations.dart`): navy **Fastest for you now** bar
+  (best of `app.best` that answers; smart connect until anything is measured), filter chips All / Stealth /
+  IR Tunnel / Saved / Recent (`Category`), countries grouped by region (`regionOf` in `api/countries.dart`), best
+  first. A country row = its best server's badge, "N servers · best X ms", one pip per server (green answered,
+  red slow/weak, grey untested), CONNECT = best server, chevron opens its servers (`ExitRow`). Countries where
+  nothing answers on this network fold into "Not answering on <net>" with the core's reason per server.
 - Home has three tabs: **Now** (country + city + exit IP from `/me/ip` through the tunnel, and Recommended exits),
   **Route** (how and where to connect) and **Stats**. See "Home tabs" below.
 - Notification "Pleat card" (`TunnelNote.kt`): flag tile, Protected dot, place · timer (system Chronometer),
@@ -818,7 +824,8 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 
 **2026-11-13 — Activity and Plans.**
 - PR #88 (1.2.48) Activity becomes the account hub (data and days moved there from Profile, recent sessions,
-  keep/clear history); Profile gets the Plans shelf. Locations redesign previews (4 options) await Ali's pick.
+  keep/clear history); Profile gets the Plans shelf.
+- PR #89 (1.2.49) Locations country list: Fastest-for-you bar, filter chips, regions, health pips, Not answering.
 
 ---
 
@@ -912,6 +919,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 85 | 11-12 | Admin Mini App back to full bot parity: visual Cloudflare dashboard, app health reports, sync now / retry, tunnel diagnostic, server page, server on every carrier; bot screens drawn from shared data functions |
 | 86 | 11-12 | Telegram code message redesign (Worker only): code under a spoiler, 5-minute line, "didn't ask?" quote |
 | 88 | 11-13 | Activity account hub (data and days, sessions, keep/clear history) + Profile Plans shelf (1.2.48) |
+| 89 | 11-13 | Locations country list: Fastest for you, chips, regions, health pips, Not answering (1.2.49) |
 
 ---
 
@@ -1044,8 +1052,8 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 ## 19. Open items and known gaps
 
 - **Pleat 1.2.48 (PR #88) phone test**: Activity hub (ring, PACKAGES sheet, RENEW, Keep history off/on, Clear
-  history), Profile Plans shelf (BUY opens checkout, stopped plan shows RENEW). Locations redesign: 4 previews in
-  `/mnt/project-files/loc-activity/` wait for Ali's pick.
+  history), Profile Plans shelf (BUY opens checkout, stopped plan shows RENEW). **1.2.49 (PR #89)**: Locations
+  country list (Fastest bar, chips, regions, pips, Not answering).
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
 - **Phone test Pleat 1.2.33 → 1.2.46**: avatar gate, update live track on MIUI, version signature, Route cards and
