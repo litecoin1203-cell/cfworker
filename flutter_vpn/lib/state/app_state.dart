@@ -514,6 +514,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (s != AppLifecycleState.resumed) return;
     _foreground = true;
     flushReceipts();
+    // back from Android's battery or Autostart page, maybe
+    readKeep();
     if (phase == Phase.protected) {
       readGuard();
       // Back on screen: check the exit now instead of when the next,
@@ -723,6 +725,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Android's always-on / lockdown flags, read while the tunnel runs.
   ({bool alwaysOn, bool lockdown})? guard;
+
+  /// Whether Android may close Pleat to save battery (exempt: it may not),
+  /// and whether it's a Xiaomi phone; read on start and on every return.
+  ({bool exempt, bool xiaomi})? keep;
+
+  Future<void> readKeep() async {
+    keep = await tunnel.keepAlive();
+    notifyListeners();
+  }
+
   bool testing = false;
   DateTime? testedAt;
   int _attempt = 0;
@@ -3375,6 +3387,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (tunnelAvailable!) {
       geoAvailable = await tunnel.hasGeo();
       await _readNativeHealth();
+      keep = await tunnel.keepAlive();
     }
     notifyListeners();
     // Always listening: the home-screen widget can start or stop the

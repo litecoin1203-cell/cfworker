@@ -59,7 +59,7 @@ const DETAIL_FA = {
   sessions: 'جلسه', ok: 'موفق', fail: 'ناموفق', minutes: 'دقیقه‌ی وصل', moved: 'شبکه عوض شد', status: 'کد', what: 'توضیح اندروید',
   // a native crash (Pleat 1.2.38+): what the crash itself said, and what the tunnel was doing
   sig: 'سیگنال', go: 'panic هسته (Go)', abort: 'پیام abort', cause: 'علت', thread: 'رشته (thread)', lib: 'کتابخانه', frames: 'فریم‌ها',
-  addr: 'نشانی‌ها در کتابخانه', logs: 'لاگ داخل tombstone',
+  addr: 'نشانی‌ها در کتابخانه', logs: 'لاگ داخل tombstone', aon: 'Always-on روشن',
   op: 'تانل در حال', up_s: 'ثانیه وصل بود', tomb: 'tombstone اندروید', stderr: 'stderr هسته', pss: 'حافظه‌ی اپ (MB)', earlier: 'کرش قبلی، دوباره خوانده شد',
 };
 // ApplicationExitInfo.REASON_* (Android 11+): why Android says the process ended
@@ -118,8 +118,18 @@ const CRASH_FA = {
   no_tombstone: 'اندروید برای این کرش tombstone نگه نداشته؛ اگر panic هسته‌ی Go بود، «panic هسته» باید پر باشد و نیست.',
   sigabrt: 'abort عمدی: یا panic هسته‌ی Go (Xray)، یا fdsan/libc، یا موتور Flutter. این نسخه بیش از این نفرستاده؛ از Pleat 1.2.38 متن panic، کتابخانه و پروتکل هم می‌آید.',
   sigsegv: 'دسترسی نامعتبر به حافظه در کد native (C)؛ کد Go چنین خطایی را به panic و SIGABRT تبدیل می‌کند.',
+  cleaner: 'کرش نیست: پاک‌کننده‌ی گوشی (مثل OneKeyClean شیائومی یا «پاک کردن همه» در Recents) اپ را بست. کاربر: Protect › «Stay running» (باتری بدون محدودیت)، Autostart روشن، Pleat را در Recents قفل کند، Always-on VPN روشن.',
+  battery_limit: 'کرش نیست: اندروید با محدودیت باتری روشن، VPN را بست. کاربر: Protect › «Stay running» را بزند (باتری بدون محدودیت).',
+  sigkill: 'کرش نیست: پروسه از بیرون کشته شد (SIGKILL). معمولاً مدیر باتری یا پاک‌کننده‌ی سازنده‌ی گوشی؛ کمبود حافظه دلیل ۳ می‌شد. همان قدم‌های «Stay running» و Always-on.',
 };
 export const crashGuess = (d) => CRASH_FA[crashKind(d)] || '';
+// Android closing a running VPN (not a crash): the phone's cleaner, its battery limits, or a kill from outside
+export function killKind(d) {
+  if (/clean/i.test(String(d.what || ''))) return 'cleaner';
+  if (d.opt === true) return 'battery_limit';
+  if (d.reason === 2 && d.status === 9) return 'sigkill';
+  return '';
+}
 
 // the same 8 hex for the same problem on every phone, so the bot can group them
 export function fingerprint(type, k, c) {
@@ -496,7 +506,7 @@ export async function problemData(env, fp) {
     total: rows.reduce((a, r) => a + r.count, 0), first: Math.min(...rows.map((r) => r.first_at)), last: top.last_at,
     users: users.map((r) => ({ id: r.user_id, name: r.email || r.tg_id ? whoOf({ ...r, id: r.user_id }) : null })),
     apps: set((r) => r.app_ver), os: set((r) => r.os), models: set((r) => r.model), isps: set((r) => r.isp), nets: set((r) => r.net),
-    detail: d, names, crash: top.type === 'crash' && top.cause === 'native' ? crashKind(d) || null : null,
+    detail: d, names, crash: top.type === 'crash' && top.cause === 'native' ? crashKind(d) || null : top.type === 'killed' ? killKind(d) || null : null,
   };
 }
 

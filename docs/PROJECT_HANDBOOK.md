@@ -491,7 +491,7 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.49+52** (`flutter_vpn/pubspec.yaml`). PR #90 (open) is 1.2.50+53.
+Version on main: **1.2.50+53** (`flutter_vpn/pubspec.yaml`). PR #91 (open) is 1.2.51+54.
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
 Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLibXrayLite tag **v26.7.5**
 (Xray 26.6.27 inside), hev-socks5-tunnel commit `67dfba56`.
@@ -658,6 +658,12 @@ does not reach users by itself.
 - Naming an `addr` offset: download `libv2ray.aar` of the same tag, take `jni/arm64-v8a/libgojni.so`, and look the
   offset up in its `.gopclntab` (Go's `debug/gosym`; it survives stripping). For v26.7.5 the Go text starts at
   `.text` + 0x60 (calibrated on `runtime.raise`, whose `tgkill` syscall sits at 0x10b30f4).
+- Android closing a running VPN ("🪓 اندروید VPN را بست") is not a crash. Since 1.2.51 the report carries `opt`
+  (battery limits on) and `aon` (always-on VPN), and the bot reads it: `what` = OneKeyClean → Xiaomi's cleaner;
+  `opt` on → battery limits; reason 2 / status 9 → SIGKILL from outside (low memory is reason 3). The fix is on the
+  phone: Protect › Always protected › **Stay running** (Android's no-battery-limits question, `KeepAlive.kt`), and on
+  Xiaomi/Redmi/POCO **Autostart and Recents lock** (opens Xiaomi's Autostart page; lock Pleat in Recents by hand).
+  The service already comes back by itself when Android allows it (START_STICKY, always-on start reuses the last exit).
 - Known blind spot: `Health.kt` `exitOf()` drops processes Android killed or force-stopped while showing nothing,
   so some failures send no report (the widget trail exists for that reason).
 
@@ -835,6 +841,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
   keep/clear history); Profile gets the Plans shelf.
 - PR #89 (1.2.49) Locations country list: Fastest-for-you bar, filter chips, regions, health pips, Not answering.
 - PR #90 (1.2.50) native crash: the code offsets inside the core, the signal's sender, stderr per process.
+- PR #91 (1.2.51) Stay running (no battery limits) + Xiaomi Autostart row in Protect; kill reports say battery/always-on.
 
 ---
 
@@ -930,6 +937,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 88 | 11-13 | Activity account hub (data and days, sessions, keep/clear history) + Profile Plans shelf (1.2.48) |
 | 89 | 11-13 | Locations country list: Fastest for you, chips, regions, health pips, Not answering (1.2.49) |
 | 90 | 11-13 | Native crash: offsets inside the core (pc, lr, Go frame chain), signal sender, stderr matched per process (1.2.50) |
+| 91 | 11-13 | Protect: Stay running (no battery limits) + Xiaomi Autostart and Recents lock; kill reports carry battery limits and always-on; bot reads kills as no crash (1.2.51) |
 
 ---
 

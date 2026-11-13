@@ -387,6 +387,33 @@ class Tunnel {
     }
   }
 
+  /// Whether Android lets Pleat run without battery limits, and whether
+  /// this is a Xiaomi phone (its own cleaner and Autostart switch close
+  /// VPNs too). Null off Android.
+  Future<({bool exempt, bool xiaomi})?> keepAlive() async {
+    if (!await available()) return null;
+    try {
+      final m = await _method.invokeMapMethod<String, Object?>('keepAlive');
+      if (m == null) return null;
+      return (exempt: m['exempt'] == true, xiaomi: m['xiaomi'] == true);
+    } on PlatformException {
+      return null;
+    } on MissingPluginException {
+      return null;
+    }
+  }
+
+  /// Android's "let Pleat run in the background" question, or its battery
+  /// page when that can't open.
+  Future<void> askBatteryExempt() async {
+    if (await available()) await _method.invokeMethod<void>('askExempt');
+  }
+
+  /// Xiaomi's Autostart page (the app's own page where it isn't there).
+  Future<void> openAutostart() async {
+    if (await available()) await _method.invokeMethod<void>('autostart');
+  }
+
   // The same channel also carries the few phone actions the store needs.
 
   /// Opens a web or Telegram link in its app; false when nothing opened.
