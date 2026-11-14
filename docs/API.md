@@ -13,9 +13,17 @@ in the `CG_API_BASE` repo variable / the Pleat workflow's `api_base` input). The
 **CORS** headers are added to every `/api/v1` answer.
 **Rate limits** (`RL_IP` 20/min, `RL_LOGIN` 5/min, `RL_PUB` 120/min in `wrangler.jsonc`) are per Cloudflare
 location and only roughly counted: they slow one client's burst, they are not a security boundary. Over the limit:
-`429 too_many_requests`. If the limiter itself fails, routes that write, send a code or check a password refuse
-with `429 too_many_requests` (fail closed, SEC-08); read-only routes (`/plans`, `/app-config`, `/ip`, deep
-`/health`, `/mini/probe`, `/net/rank`, `/app/apk`) let the request through (fail open: a refusal there saves nothing).
+`429 too_many_requests`. If the limiter itself fails (SEC-08):
+- **fail closed** (`429 too_many_requests`), where a secret can be guessed or someone without an account writes:
+  `/auth/login`, `/auth/tg/verify`, `/auth/change-password`, `/me/email`, `/me/telegram/verify`, `/coupons/check`,
+  `/admin/auth` and admin ops, `/auth/register`, `/auth/tg/start`, `/auth/tg/register`, `/auth/tg/webapp`,
+  `/auth/tg/webapp/register`, `POST /mini/probe`, `/trial`, `/me/telegram/start`;
+- **fail open** (the request goes through), where closing would stop people connecting or paying and saves nothing:
+  `/auth/refresh` (a signature check), `POST /orders`, `/orders/:id/receipt`, `/orders/:id/paid`, `/me/health`,
+  `/net/report`, `/net/google`, `/net/rank`, `/app/apk`, the bot's Telegram code (per-link caps in D1), and all
+  public reads (`/plans`, `/app-config`, `/ip`, deep `/health`, `GET /mini/probe`).
+`RL_PUB` on `/plans`, `/app-config`, `/ip` counts per account when the call carries a valid access token (checked by
+signature only, no D1), else per IP, so phones sharing one VPN exit do not share one limit.
 All routes that write for someone without an account (`/auth/register`, `/auth/tg/start`,
 `/auth/tg/register`, `/auth/tg/webapp/register`) share one per-IP key, so they are one allowance, not four.
 **Global write budgets** (SEC-01, `util.js` `spendBudget`): at most `SIGNUP_PER_HOUR` (default 30) email sign-ups
@@ -46,9 +54,9 @@ account per Telegram id.
 
 | Method + path | Limit | Handler | Purpose |
 |---|---|---|---|
-| `GET /app-config` | IP (`RL_PUB`) | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`) |
-| `GET /plans` | IP (`RL_PUB`) | `account.plans` | active plans |
-| `GET /ip` | IP (`RL_PUB`) | `account.myIp` | caller's IP/country (no login) |
+| `GET /app-config` | account or IP (`RL_PUB`) | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`) |
+| `GET /plans` | account or IP (`RL_PUB`) | `account.plans` | active plans |
+| `GET /ip` | account or IP (`RL_PUB`) | `account.myIp` | caller's IP/country (no login) |
 | `POST /auth/register` | IP (shared) + hourly budget | `auth.register` | email sign-up → tokens; `429 busy` when the hour's sign-up budget is spent |
 | `POST /auth/login` | IP + login | `auth.login` | email **or** Telegram @username + password → tokens |
 | `POST /auth/tg/start` | IP (shared) + hourly budget | `auth.tgStart` | start Telegram code sign-in (bot sends a 6-digit code); `429 busy` when the hour's link budget is spent |

@@ -1281,6 +1281,12 @@ section('SEC-01: one IP cannot spend the day\'s D1 writes or requests through si
   for (const p of ['/api/v1/plans', '/api/v1/app-config', '/api/v1/ip', '/health?deep=1', '/mini/probe']) pub.push((await fcall('GET', p, null, '192.0.2.60')).status);
   ok(pub[0] === 200 && pub[1] === 200 && pub.slice(2).every((s) => s === 429), 'plans, app-config, ip, deep health and the probe page share a per-IP limit: ' + pub.join(','));
   ok((await fcall('GET', '/health', null, '192.0.2.60')).status === 200, 'plain /health (no D1, the app\'s reachability check) is never limited');
+  // signed in, the limit follows the account: phones on one VPN exit (one IP) do not share it
+  fenv.RL_PUB = limiter(1);
+  const pubAs = async (tok) => (await worker.fetch(new Request('https://api.test/api/v1/plans', { headers: { 'cf-connecting-ip': '192.0.2.70', authorization: 'Bearer ' + tok } }), fenv, ctx)).status;
+  const ta = fresh.data.access_token, tb = mix.length && (await reg('pubb', '192.0.2.71')).data?.access_token;
+  ok(await pubAs(ta) === 200 && tb && await pubAs(tb) === 200 && await pubAs(ta) === 429 && await pubAs('not-a-token') === 200 && await pubAs('not-a-token') === 429,
+    'public reads are limited per account when signed in, per IP otherwise');
   delete fenv.RL_PUB;
   } finally { Date.now = realNow; console.warn = realWarn; }
 }
@@ -1327,6 +1333,34 @@ section('SEC-08: a failing limiter closes write routes, and every costly route h
     ok(o.id && a.status === 200 && asked > 0 && b.status === 200 && b.data.id === o.id && outside === 0,
       `order poll still answers, but the explorer is skipped once its per-order limit is spent: ${asked} then ${outside} calls`);
   } finally { globalThis.fetch = realFetch; delete env.RL_LOGIN; }
+
+  // a limiter outage must not stop paying users: refresh (a signature check, nothing to guess) and the per-account
+  // routes already capped elsewhere (open orders, daily report caps, per-link code tries) stay open
+  const reg3 = await call('POST', '/api/v1/auth/register', { json: { email: 'sec08c@example.com', password: 'password123' } });
+  env.TELEGRAM_BOT_USERNAME = 'pleat_test_bot';
+  const link = (await call('POST', '/api/v1/auth/tg/start')).data;
+  delete env.TELEGRAM_BOT_USERNAME;
+  const { tgIssueCode } = await import('../src/auth.js');
+  env.RL_IP = broken; env.RL_LOGIN = broken; env.RL_PUB = broken;
+  const t3 = reg3.data.access_token;
+  const card = await call('POST', '/api/v1/orders', { token: t3, json: { topup_toman: 500000, method: 'card' } });
+  const open = [
+    (await call('POST', '/api/v1/auth/refresh', { json: { refresh_token: reg3.data.refresh_token } })).status,
+    card.status,
+    (await call('POST', `/api/v1/orders/${card.data?.id}/receipt`, { token: t3, json: {} })).status,
+    (await call('POST', `/api/v1/orders/${card.data?.id}/paid`, { token: t3, json: {} })).status, // 400 not coin: past the limiter
+    (await call('POST', '/api/v1/me/health', { token: t3, json: { events: [] } })).status,
+    (await call('POST', '/api/v1/net/report', { token: t3, json: { results: [] } })).status,
+    (await call('POST', '/api/v1/net/google', { token: t3, json: { k: 'aaaaaa11' } })).status,
+  ];
+  ok(open[0] === 200 && open[1] === 201 && open.every((s) => s !== 429), 'limiter down: refresh, orders, receipt, "I paid", health and net reports still work: ' + open.join(','));
+  const code = await tgIssueCode(env, link.nonce, { id: 770001, first_name: 'Sec' });
+  ok(/security code/.test(code.text), 'limiter down: the bot still sends the Telegram code (per-link tries are capped in D1): ' + code.text.slice(0, 80));
+  ok((await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: link.nonce, code: '000000' } })).status === 429, 'limiter down: code guessing stays closed');
+  delete env.RL_IP; delete env.RL_LOGIN; delete env.RL_PUB;
+  // leave no open orders behind for the cron sections further down
+  await call('POST', `/api/v1/orders/${card.data?.id}/cancel`, { token: t3 });
+  await call('POST', `/api/v1/orders/${o.id}/cancel`, { token: tok2 });
 }
 
 section('two sign-ups with the same email at the same moment');

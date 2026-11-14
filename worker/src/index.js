@@ -1,6 +1,6 @@
 // Cloud Gold store on Cloudflare Workers. One Worker serves the app API, the NOWPayments webhook
 // and the Telegram admin bot. State lives in D1 (env.DB).
-import { json, err, ApiError, safeEqual, logError, rateLimit, setErrorSink } from './util.js';
+import { json, err, ApiError, safeEqual, logError, rateLimit, setErrorSink, verifyJwt, jwtSecret } from './util.js';
 import { recordError } from './cfmon.js';
 import { first, run, insert } from './db.js';
 import * as auth from './auth.js';
@@ -159,14 +159,25 @@ async function body(request) {
   try { return await request.json(); } catch (e) { return {}; }
 }
 
+async function pubKey(env, H, ip) {
+  const a = H.get('authorization') || '';
+  if (a.startsWith('Bearer ')) {
+    const t = await verifyJwt(a.slice(7), jwtSecret(env)).catch(() => null);
+    if (t && t.typ === 'access' && /^\d{1,12}$/.test(String(t.sub))) return 'pubu:' + t.sub;
+  }
+  return 'pub:' + ip;
+}
+
 async function route(request, env, p, ctx) {
   const m = request.method;
   const H = request.headers;
 
   const ip = H.get('cf-connecting-ip') || '';
-  // public, read-only: limited per IP (RL_PUB, generous: many phones can share one carrier or VPN exit address)
+  // public, read-only: limited per account when the call carries a valid access token (Pleat sends it, and its calls
+  // through the tunnel share the exit's IP with everyone on that exit), else per IP. The token is only checked by
+  // its signature here (no D1); RL_PUB is generous since many phones share one carrier address.
   if ((p === '/app-config' || p === '/plans' || p === '/ip') && m === 'GET') {
-    await rateLimit(env, 'RL_PUB', 'pub:' + ip, { open: true });
+    await rateLimit(env, 'RL_PUB', await pubKey(env, H, ip), { open: true });
     if (p === '/app-config') return account.appConfig(env);
     if (p === '/plans') return account.plans(env);
     return account.myIp(env, request);
@@ -215,8 +226,9 @@ async function route(request, env, p, ctx) {
     await rateLimit(env, 'RL_IP', 'miniprobe:' + ip);
     return account.miniProbeReport(env, await body(request), request);
   }
+  // refresh only checks a signature (nothing to guess): open when the limiter fails, or nobody could reconnect
   if (p === '/auth/refresh' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'refresh:' + ip);
+    await rateLimit(env, 'RL_IP', 'refresh:' + ip, { open: true });
     return auth.refresh(env, await body(request));
   }
 
@@ -304,14 +316,14 @@ async function route(request, env, p, ctx) {
   if (p === '/vpn/sub' && m === 'GET') return account.vpnSub(env, user, request);
   // Pleat's automatic health reports (health.js): batched, capped per user per day
   if (p === '/me/health' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'health:' + user.id);
+    await rateLimit(env, 'RL_IP', 'health:' + user.id, { open: true });
     const { report } = await import('./health.js');
     return report(env, user, request, await body(request), ctx);
   }
   // crowd network stats: per account across isolates (netstats.js's own throttle only holds within one isolate)
-  if (p === '/net/report' && m === 'POST') { await rateLimit(env, 'RL_IP', 'net:' + user.id); const ns = await import('./netstats.js'); return ns.report(env, user, request, await body(request)); }
+  if (p === '/net/report' && m === 'POST') { await rateLimit(env, 'RL_IP', 'net:' + user.id, { open: true }); const ns = await import('./netstats.js'); return ns.report(env, user, request, await body(request)); }
   if (p === '/net/rank' && m === 'GET') { await rateLimit(env, 'RL_PUB', 'rank:' + user.id, { open: true }); const ns = await import('./netstats.js'); return ns.rank(env, request, new URL(request.url).searchParams.get('kind')); }
-  if (p === '/net/google' && m === 'POST') { await rateLimit(env, 'RL_IP', 'goo:' + user.id); const ns = await import('./netstats.js'); return ns.googleReport(env, user, await body(request)); }
+  if (p === '/net/google' && m === 'POST') { await rateLimit(env, 'RL_IP', 'goo:' + user.id, { open: true }); const ns = await import('./netstats.js'); return ns.googleReport(env, user, await body(request)); }
   // coupon codes are guessable: per account, like a password
   if (p === '/coupons/check' && m === 'POST') {
     await rateLimit(env, 'RL_LOGIN', 'coupon:' + user.id);
@@ -321,9 +333,10 @@ async function route(request, env, p, ctx) {
   if (p === '/wallet' && m === 'GET') return orders.wallet(env, user);
   if (p === '/referral' && m === 'GET') return orders.referral(env, user);
   if (p === '/orders' && m === 'GET') return orders.listOrders(env, user);
-  // new orders, receipts and "I paid" are limited per account (each one messages the admin or reserves an amount)
+  // new orders, receipts and "I paid" are limited per account (each one messages the admin or reserves an amount);
+  // open when the limiter fails: they are capped in D1 too (open orders per method), and closing them stops sales
   if (p === '/orders' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'order:' + user.id);
+    await rateLimit(env, 'RL_IP', 'order:' + user.id, { open: true });
     return orders.createOrder(env, user, await body(request));
   }
 
@@ -331,12 +344,12 @@ async function route(request, env, p, ctx) {
   if ((mm = p.match(/^\/devices\/(\d+)$/)) && m === 'DELETE') return account.removeDevice(env, user, parseInt(mm[1], 10));
   if ((mm = p.match(/^\/orders\/(\d+)$/)) && m === 'GET') return orders.getOrder(env, user, parseInt(mm[1], 10));
   if ((mm = p.match(/^\/orders\/(\d+)\/receipt$/)) && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'receipt:' + user.id);
+    await rateLimit(env, 'RL_IP', 'receipt:' + user.id, { open: true });
     return orders.uploadReceipt(env, user, parseInt(mm[1], 10), request);
   }
   if ((mm = p.match(/^\/orders\/(\d+)\/cancel$/)) && m === 'POST') return orders.cancelOrder(env, user, parseInt(mm[1], 10));
   if ((mm = p.match(/^\/orders\/(\d+)\/paid$/)) && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'paid:' + user.id);
+    await rateLimit(env, 'RL_IP', 'paid:' + user.id, { open: true });
     return orders.markCoinPaid(env, user, parseInt(mm[1], 10), await body(request));
   }
 

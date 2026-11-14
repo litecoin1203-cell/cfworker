@@ -198,7 +198,8 @@ export async function tgStart(env, linkUserId = null) {
 export async function tgIssueCode(env, nonce, from) {
   const expired = 'This sign-in link has expired. Go back to the app and tap "Continue with Telegram" again.';
   if (!NONCE_RE.test(nonce || '') || !from || from.is_bot || !from.id) return { text: expired };
-  try { await rateLimit(env, 'RL_LOGIN', 'tgcode:' + from.id); } catch (e) { return { text: 'Too many codes. Wait a minute and tap Start again.' }; }
+  // open when the limiter fails: each link sends at most MAX_CODES codes and allows MAX_TRIES tries, kept in D1
+  try { await rateLimit(env, 'RL_LOGIN', 'tgcode:' + from.id, { open: true }); } catch (e) { return { text: 'Too many codes. Wait a minute and tap Start again.' }; }
   const h = await nonceHash(env, nonce);
   const row = await first(env, 'SELECT * FROM tg_logins WHERE nonce_hash = ?', h);
   const now = nowSec();

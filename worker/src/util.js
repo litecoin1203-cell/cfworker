@@ -98,10 +98,12 @@ export function throttled(bag, id, ms) {
 }
 
 // Per-key request limits from the Workers Rate Limiting bindings in wrangler.jsonc. A missing binding (local runs)
-// lets the request through. When the limiter itself fails, a route that writes, sends a code or checks a password
-// is refused (fail closed, 429): otherwise a limiter outage would leave sign-ups and password guessing unlimited.
-// Read-only routes pass { open: true } and keep working (fail open): a refusal there saves nothing (the invocation
-// is already counted, the reads are cheap) and would only hide plans or the store's settings from people.
+// lets the request through. When the limiter itself fails (in practice a bad deploy or a Cloudflare incident, so
+// on every call), a route that checks a secret someone could guess (password, code, coupon) or writes for someone
+// without an account is refused (fail closed, 429): otherwise an outage would leave guessing and floods unlimited.
+// Every other route passes { open: true } and keeps working (fail open): reads, token refresh (a signature, nothing
+// to guess) and per-account routes already capped in D1 (orders, reports). Closing those would stop people
+// connecting or paying while saving nothing.
 // The bindings count per Cloudflare location and only roughly, so they stop one client's burst; the hard cap on
 // what all clients together may write is the global budget below (spendBudget).
 export async function rateLimit(env, binding, key, { open = false } = {}) {
@@ -111,7 +113,7 @@ export async function rateLimit(env, binding, key, { open = false } = {}) {
   try { outcome = await limiter.limit({ key }); } catch (e) {
     logError('rate limiter failed', e, { binding, open });
     if (open) return;
-    throw err(429, 'too_many_requests', 'Too many requests right now. Wait a minute and try again.');
+    throw err(429, 'too_many_requests', 'تعداد درخواست‌ها زیاد است. یک دقیقه صبر کن و دوباره امتحان کن.');
   }
   if (outcome && outcome.success === false) throw err(429, 'too_many_requests', 'تعداد درخواست‌ها زیاد است. یک دقیقه صبر کن و دوباره امتحان کن.');
 }
