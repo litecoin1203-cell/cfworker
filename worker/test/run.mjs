@@ -36,9 +36,10 @@ const env = {
   TELEGRAM_CHAT_ID: '12345',
   TELEGRAM_WEBHOOK_SECRET: 'hook',
   // the suite makes ~120 accounts within seconds, which the global hourly sign-up budget (default 30) is there to
-  // refuse; it is set the way the owner raises it for a launch day. The budget itself is tested at its defaults
+  // refuse (and Telegram links, default 60); it is set the way the owner raises it for a launch day. The budget itself is tested at its defaults
   // on a fresh database ("SEC-01" section).
   SIGNUP_PER_HOUR: '100000',
+  TG_START_PER_HOUR: '100000',
 };
 env.DB.onQuery = () => { const s = invocation.getStore(); if (s && ++s.q === QUERY_CAP + 1) overCap.push(s); };
 const _pending = [];
@@ -1194,10 +1195,23 @@ section('SEC-01: one IP cannot spend the day\'s D1 writes or requests through si
     const st = prep(sql);
     const run0 = st.run.bind(st);
     st.run = async () => { const r = await run0(); if (r.meta.changes) { writes++; rows += r.meta.changes * (1 + (nIdx[tableOf(sql)] ?? 3)); } return r; };
+    // a write ... RETURNING read with first(): a returned row is one changed row
+    const first0 = st.first.bind(st);
+    st.first = async (c) => { const r = await first0(c); if (r != null && tableOf(sql)) { writes++; rows += 1 + (nIdx[tableOf(sql)] ?? 3); } return r; };
     return st;
   };
+  // the clock stands still in this section, so an hour boundary during the run cannot reopen the budget
+  const realNow = Date.now;
+  const frozen = realNow();
+  Date.now = () => frozen;
+  const realWarn = console.warn;
+  console.warn = () => {}; // the "write budget spent" lines of the refused requests
+  try {
   db.onQuery = env.DB.onQuery; // still held to the 50-query guard
-  const fenv = { DB: db, SECRET_KEY: env.SECRET_KEY, PUBLIC_BASE_URL: 'https://api.test', TELEGRAM_BOT_USERNAME: 'pleat_test_bot' };
+  const fenv = { DB: db, SECRET_KEY: env.SECRET_KEY, PUBLIC_BASE_URL: 'https://api.test', TELEGRAM_BOT_USERNAME: 'pleat_test_bot',
+    TELEGRAM_BOT_TOKEN: 'bot:token', TELEGRAM_CHAT_ID: '12345' };
+  const alertsBefore = fakes.tg.messages.length;
+  const budgetAlerts = () => fakes.tg.messages.slice(alertsBefore).filter((m) => (m.text || '').includes('سقف ساعتی'));
   const fcall = async (method, path, j, ip = '203.0.113.7') => {
     const h = { 'cf-connecting-ip': ip };
     if (j) h['content-type'] = 'application/json';
@@ -1231,6 +1245,10 @@ section('SEC-01: one IP cannot spend the day\'s D1 writes or requests through si
   rows = 0; writes = 0;
   for (let i = 0; i < 20; i++) await fcall('POST', '/api/v1/auth/tg/start');
   ok(writes === 0, 'refused Telegram links write nothing: ' + writes);
+  // the owner hears it once per kind per hour (sent by the request that fills the budget, so a refusal sends nothing)
+  const al = budgetAlerts();
+  ok(al.length === 2 && al.some((m) => m.text.includes('ثبت‌نام با ایمیل')) && al.some((m) => m.text.includes('ورود با تلگرام'))
+    && al.every((m) => !/(^|\s)\/[a-z]/.test(m.text)), 'one Persian alert per budget for the hour, no typed command: ' + al.map((m) => m.text).join(' | ').slice(0, 300));
 
   // a whole day of this (one such flood every hour, from any number of IPs) stays far below the ~100k rows written
   const perDay = floodRows * 24;
@@ -1264,6 +1282,7 @@ section('SEC-01: one IP cannot spend the day\'s D1 writes or requests through si
   ok(pub[0] === 200 && pub[1] === 200 && pub.slice(2).every((s) => s === 429), 'plans, app-config, ip, deep health and the probe page share a per-IP limit: ' + pub.join(','));
   ok((await fcall('GET', '/health', null, '192.0.2.60')).status === 200, 'plain /health (no D1, the app\'s reachability check) is never limited');
   delete fenv.RL_PUB;
+  } finally { Date.now = realNow; console.warn = realWarn; }
 }
 
 section('SEC-08: a failing limiter closes write routes, and every costly route has a limit');

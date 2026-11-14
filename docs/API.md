@@ -22,7 +22,11 @@ All routes that write for someone without an account (`/auth/register`, `/auth/t
 and `TG_START_PER_HOUR` (default 60) Telegram sign-in links (`/auth/tg/start` and `/me/telegram/start`) per UTC hour
 for all clients together, counted in one `settings` row each (`budget_signup`, `budget_tgstart`). When spent:
 `429 busy` with an English message, and the refused request writes nothing. Only a sign-up that is about to write
-counts (a taken email or bad password does not). The owner can raise a cap with the Worker variable for a launch day.
+counts (a taken email or bad password does not). The request that fills a budget sends the owner one Persian bot
+alert (with a ☁️ button) per kind and hour; refused requests send and write nothing. The owner can raise a cap with
+the Worker variable for a launch day. `/auth/tg/register` and `/auth/tg/webapp/register` spend no budget on purpose:
+each needs a Telegram identity (a code sent by the bot, or `initData` signed by Telegram) and makes at most one
+account per Telegram id.
 
 **Request headers Pleat sends:** `Authorization: Bearer <access>`, `X-Device-Id`, `X-Device-Model`,
 `X-Device-OS`, `X-App-Version`, `X-HWID` (panel 1 has an HWID limit).

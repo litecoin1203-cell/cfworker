@@ -742,7 +742,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | **~5M D1 rows read/day** | every per-minute query must use an index (0021 fixed a full scan of `subscriptions`) |
 | **100k Worker requests/day** | roughly 200–500 active users; Workers Paid ($5/month, 10M/day) for thousands |
 | Rate limiting is per Cloudflare location and approximate | do not rely on it as a security boundary; it fails closed on write and password routes, open on read-only ones (release audit SEC-08) |
-| Anyone can write without an account (sign-up, Telegram link) | a global hourly budget per kind (`util.js` `spendBudget`, one `settings` row each: `SIGNUP_PER_HOUR` 30, `TG_START_PER_HOUR` 60) caps a flood from any number of IPs at ~23k rows/day; a refused request writes nothing (release audit SEC-01) |
+| Anyone can write without an account (sign-up, Telegram link) | a global hourly budget per kind (`util.js` `spendBudget`, one `settings` row each: `SIGNUP_PER_HOUR` 30, `TG_START_PER_HOUR` 60) caps a flood from any number of IPs at ~23k rows/day; a refused request writes nothing; the owner gets one bot alert per kind and hour when a budget fills (release audit SEC-01). The cost: during a flood, new sign-ups / Telegram links stall until the next hour (the WAF rule in §19 is the per-IP answer) |
 
 ---
 

@@ -130,26 +130,46 @@ export async function allowed(env, binding, key) {
 // reset every minute, so many IPs, or one IP over a day, could still spend the Free plan's ~100k rows/day and stop
 // the whole service. A budget caps how many of these all clients together may do per UTC hour. It is one settings
 // row per budget, value "<hour>:<count>", moved on by ONE conditional upsert: under the cap it counts this one (or
-// starts the new hour at 1); at the cap the upsert changes nothing, so a refused request writes no row at all (it
-// only logs to Workers Logs). A cap can be raised for a launch day with the Worker variable named in `env`
-// (dashboard or wrangler vars), no code change. Worst case at the defaults, counted generously (every index row):
-// 30 x ~12 + 60 x ~10 rows (a link row is deleted again later) = under 1k rows/hour, ~23k rows/day of the ~100k.
+// starts a newer hour at 1; hours only move forward, so an isolate whose clock lags cannot reopen the hour); at the
+// cap the upsert changes nothing, so a refused request writes no row at all (it only logs to Workers Logs).
+// The request that fills the budget (RETURNING gives the new count, so no extra query) tells the owner once per
+// kind and hour in the bot: one Telegram call on an accepted request, nothing on refused ones.
+// A cap can be raised for a launch day with the Worker variable named in `env` (dashboard or wrangler vars), no
+// code change. Worst case at the defaults, counted generously (every index row): 30 x ~12 + 60 x ~10 rows (a link
+// row is deleted again later) = under 1k rows/hour, ~23k rows/day of the ~100k.
 export const BUDGETS = {
-  signup: { env: 'SIGNUP_PER_HOUR', def: 30, message: 'Too many new accounts right now. Try again later, or continue with Telegram.' },
-  tgstart: { env: 'TG_START_PER_HOUR', def: 60, message: 'Telegram sign-in is busy right now. Try again in a few minutes, or log in with your password.' },
+  signup: { env: 'SIGNUP_PER_HOUR', def: 30, fa: 'ثبت‌نام با ایمیل', message: 'Too many new accounts right now. Try again later, or continue with Telegram.' },
+  tgstart: { env: 'TG_START_PER_HOUR', def: 60, fa: 'ورود با تلگرام', message: 'Telegram sign-in is busy right now. Try again in a few minutes, or log in with your password.' },
 };
 export const budgetCap = (env, name) => { const v = parseInt(env[BUDGETS[name].env], 10); return v > 0 ? v : BUDGETS[name].def; };
-const BUDGET_SQL = `INSERT INTO settings (key, value) VALUES (?1, ?2 || ':1')
-  ON CONFLICT(key) DO UPDATE SET value = CASE WHEN substr(value, 1, instr(value, ':') - 1) = ?2
-      THEN ?2 || ':' || (CAST(substr(value, instr(value, ':') + 1) AS INTEGER) + 1) ELSE ?2 || ':1' END
-  WHERE substr(value, 1, instr(value, ':') - 1) != ?2 OR CAST(substr(value, instr(value, ':') + 1) AS INTEGER) < ?3`;
+const B_HOUR = "CAST(substr(value, 1, instr(value, ':') - 1) AS INTEGER)";
+const B_COUNT = "CAST(substr(value, instr(value, ':') + 1) AS INTEGER)";
+const BUDGET_SQL = `INSERT INTO settings (key, value) VALUES (?1, CAST(?2 AS INTEGER) || ':1')
+  ON CONFLICT(key) DO UPDATE SET value = CASE WHEN ${B_HOUR} < ?2 THEN CAST(?2 AS INTEGER) || ':1'
+      ELSE CAST(?2 AS INTEGER) || ':' || (${B_COUNT} + 1) END
+  WHERE ${B_HOUR} < ?2 OR (${B_HOUR} = ?2 AND ${B_COUNT} < ?3)
+  RETURNING value`;
 export async function spendBudget(env, name) {
-  const hour = String(Math.floor(Date.now() / 3600000));
-  const r = await env.DB.prepare(BUDGET_SQL).bind('budget_' + name, hour, budgetCap(env, name)).run();
-  if (r && r.meta && r.meta.changes) return;
+  const hour = Math.floor(Date.now() / 3600000);
+  const cap = budgetCap(env, name);
+  const row = await env.DB.prepare(BUDGET_SQL).bind('budget_' + name, hour, cap).first();
+  if (row) {
+    if (parseInt(String(row.value).split(':')[1], 10) === cap) await budgetAlert(env, name, cap);
+    return;
+  }
   // a warning line in Workers Logs only: logError would also write the error log row, and a refusal writes nothing
   console.warn(JSON.stringify({ message: 'write budget spent', budget: name, hour }));
   throw err(429, 'busy', BUDGETS[name].message);
+}
+async function budgetAlert(env, name, cap) {
+  const b = BUDGETS[name];
+  const text = [`⚠️ سقف ساعتی «${b.fa}» پر شد (${cap} در این ساعت).`, '',
+    'درخواست‌های بعدی تا شروع ساعت بعد (UTC) رد می‌شوند و چیزی در دیتابیس نوشته نمی‌شود، تا سهمیه‌ی روزانه‌ی D1 تمام نشود.',
+    `اگر حمله نیست (مثلاً روز معرفی)، متغیر ${b.env} را در داشبورد کلودفلر بالاتر ببر.`].join('\n');
+  try {
+    const { notifyAdmin } = await import('./telegram.js');
+    await notifyAdmin(env, text, { inline_keyboard: [[{ text: '☁️ مانیتورینگ کلودفلر', callback_data: 'm:cf' }]] });
+  } catch (e) { console.warn(JSON.stringify({ message: 'budget alert failed', budget: name })); }
 }
 
 // JWTs get their own key when JWT_SECRET is set, so SECRET_KEY stays only the password pepper.
