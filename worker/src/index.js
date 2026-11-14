@@ -62,10 +62,17 @@ export default {
     }
     if (event && event.cron && event.cron !== '30 20 * * *') {
       ctx.waitUntil((async () => {
-        // both share this run's 50 subrequests: the sync job gets what the chain scan left
-        let spent = 0;
-        try { const { scanAll } = await import('./chainwatch.js'); spent = (await scanAll(env)).spent || 0; } catch (e) { spent = 8; logError('chain scan failed', e); }
-        try { const { runSync } = await import('./sync.js'); await runSync(env, { spent }); } catch (e) { logError('panel sync failed', e); }
+        // an order whose settle was cut off half way (PAY-01): one per run. Finishing it costs about a delivery's D1
+        // queries and subrequests, so a run that tried one leaves the chain scan and the sync job to the next minute
+        // (never when it found the order busy: then nothing was spent).
+        let recovered = false;
+        try { const { recoverStuckTick } = await import('./billing.js'); const r = await recoverStuckTick(env); recovered = !!r && r.result !== 'busy'; } catch (e) { logError('stuck order check failed', e); }
+        if (!recovered) {
+          // both share this run's 50 subrequests: the sync job gets what the chain scan left
+          let spent = 0;
+          try { const { scanAll } = await import('./chainwatch.js'); spent = (await scanAll(env)).spent || 0; } catch (e) { spent = 8; logError('chain scan failed', e); }
+          try { const { runSync } = await import('./sync.js'); await runSync(env, { spent }); } catch (e) { logError('panel sync failed', e); }
+        }
         try { const { ensureWebhook } = await import('./telegram.js'); await ensureWebhook(env); } catch (e) { logError('webhook check failed', e); }
         // which configs come from a panel's "Tunnel" group (the app marks them), read every 15 minutes
         if (new Date().getUTCMinutes() % 15 === 7) {

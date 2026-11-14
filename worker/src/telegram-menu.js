@@ -370,7 +370,7 @@ const ACTION_RISK = {
   ud: 'reversible', ugb: 'reversible', upz: 'reversible', upn: 'reversible', ulo: 'reversible', ublk: 'reversible', uav: 'reversible',
   udd: 'reversible', urs: 'money', uend: 'destructive', utg: 'destructive', udel: 'destructive', uux: 'destructive',
   // sales (stage 3)
-  oap: 'money', orf: 'money', orj: 'reversible', ocx: 'reversible', orc: 'read',
+  oap: 'money', orf: 'money', orr: 'money', orj: 'reversible', ocx: 'reversible', orc: 'read',
   pmv: 'reversible', pcp: 'reversible', pua: 'reversible', pdl: 'destructive',
   cs: 'reversible', ct: 'reversible', ss: 'reversible', sdel: 'reversible',
   // panels, servers, the app, network (stage 4)
@@ -701,14 +701,20 @@ export async function onMenu(env, cq) {
     return ack('');
   }
   // ---- sales (stage 3) ----
-  if (route === 'oap' || route === 'orf') { // money: asks first; the action itself refuses a second delivery or refund
-    const o = await first(env, `SELECT o.id, o.status, o.kind, o.amount_toman, o.method, u.email, p.name plan_name,
-        (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'admin_refund') refunded
+  if (route === 'oap' || route === 'orf' || route === 'orr') { // money: asks first; the action itself refuses a second delivery or refund
+    const { WALLET_PAID_SQL, isStuck } = await import('./billing.js');
+    const o = await first(env, `SELECT o.id, o.status, o.settling_at, o.kind, o.amount_toman, o.method, u.email, p.name plan_name,
+        (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'admin_refund') refunded, ${WALLET_PAID_SQL} wallet_paid
       FROM orders o JOIN users u ON u.id = o.user_id LEFT JOIN plans p ON p.id = COALESCE(o.plan_id, o.activate_plan_id) WHERE o.id = ?`, int(0));
     if (!o) return ack('سفارش پیدا نشد');
     const what = o.kind === 'plan' ? `پلن ${o.plan_name || ''}` : 'شارژ کیف پول';
+    if (route === 'orr') { // a settle cut off half way (PAY-01): settle once more; never delivers twice
+      if (!isStuck(o)) { await ack(o.status === 'paid' ? 'قبلاً تأیید و فعال شده' : 'این سفارش گیر نکرده است', true); return showScreen(env, cq, `o:${o.id}`); }
+      await askConfirm(env, chatId, 'o_retry', { order_id: o.id }, `سفارش #${o.id} (${what}، ${fa(o.amount_toman)} تومان، ${o.email}) وسط فعال‌سازی مانده است. دوباره امتحان شود؟\nاگر پلن قبلاً روی پنل رفته باشد، دوباره تمدید نمی‌شود؛ فقط پرداخت‌شده علامت می‌خورد.${o.method === 'wallet' ? '\nاگر باز هم نشد، مبلغ به کیف پول کاربر برمی‌گردد.' : ''}`);
+      return ack('');
+    }
     if (route === 'oap') {
-      if (!S.ORDER_OPEN.includes(o.status)) { await ack(o.status === 'paid' ? 'قبلاً تأیید و فعال شده' : 'این سفارش تأییدشدنی نیست', true); return showScreen(env, cq, `o:${o.id}`); }
+      if (!S.ORDER_OPEN.includes(o.status) || !S.approvable(o)) { await ack(o.status === 'paid' ? 'قبلاً تأیید و فعال شده' : 'این سفارش تأییدشدنی نیست', true); return showScreen(env, cq, `o:${o.id}`); }
       await askConfirm(env, chatId, 'o_approve', { order_id: o.id }, `سفارش #${o.id} (${what}، ${fa(o.amount_toman)} تومان، ${o.email}) تأیید و همین الان فعال شود؟\nفقط وقتی بزن که پول را واقعاً گرفته‌ای.`);
       return ack('');
     }

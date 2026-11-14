@@ -217,14 +217,20 @@ async function onCallback(env, cq) {
 
   if (action === 'ap' || action === 'rp') {
     if (order.status === 'paid') return ack('قبلاً تأیید و فعال شده');
-    if (!['review', 'pending', 'rejected'].includes(order.status)) return ack(`وضعیت سفارش: ${order.status}`);
-    const { settle, BillingError } = await import('./billing.js');
+    const { settle, BillingError, isStuck, recoverStuck } = await import('./billing.js');
+    const stuck = isStuck(order); // a settle cut off half way (PAY-01): settled once more, never twice
+    if (!stuck && !['review', 'pending', 'rejected'].includes(order.status)) return ack(`وضعیت سفارش: ${order.status}`);
     try {
-      await settle(env, order);
+      if (stuck) {
+        const r = await recoverStuck(env, order);
+        if (r.result === 'refunded') return ack('دوباره هم تحویل نشد؛ مبلغ به کیف پول کاربر برگشت و سفارش لغو شد.', true);
+        if (r.result !== 'paid') throw r.error;
+      } else await settle(env, order);
     } catch (e) {
       // settle already sent the panel's exact error with a retry button
       if (e instanceof BillingError && (e.code === 'settle_busy' || e.code.startsWith('coupon'))) return ack(e.message, true);
-      return ack('⚠️ ' + (e instanceof BillingError ? 'ساخت اکانت روی پنل انجام نشد. پیام بعدی را ببین.' : e.message), true);
+      // only a panel failure comes with its own message (the panel's exact error and a retry button)
+      return ack('⚠️ ' + (e instanceof BillingError && e.code === 'activation_failed' ? 'ساخت اکانت روی پنل انجام نشد. پیام بعدی را ببین.' : (e && e.message) || 'خطای ناشناخته'), true);
     }
     await audit(env, chatId, 'order.approve', 'order', order.id, `${order.amount_toman} تومان · دکمه‌ی رسید`);
     await editStatus(env, cq, `✅ تأیید و فعال شد — سفارش #${order.id} (${user.email})`);
@@ -333,7 +339,7 @@ async function onConfirm(env, cq, yes, role = null) {
   // every confirmed change goes through the actions layer (same checks, same admin log as everywhere else)
   const ACTION = { drain_panel: 'panel.drain', grant: 'user.grant', link: 'user.link', del_coupon: 'coupon.delete',
     u_reset: 'user.reset_usage', u_end: 'user.end', u_tg: 'user.unlink_tg', u_del: 'user.delete', u_unlink: 'user.unlink_panel', u_wallet: 'user.wallet',
-    o_approve: 'order.approve', o_refund: 'order.refund', del_plan: 'plan.delete', net_reset: 'net.reset', bc_start: 'broadcast.start' };
+    o_approve: 'order.approve', o_retry: 'order.approve', o_refund: 'order.refund', del_plan: 'plan.delete', net_reset: 'net.reset', bc_start: 'broadcast.start' };
   const ARGS = {
     drain_panel: () => ({ panelId: payload.panel_id }),
     grant: () => ({ userId: payload.user_id, planId: payload.plan_id }),
@@ -346,6 +352,7 @@ async function onConfirm(env, cq, yes, role = null) {
     u_unlink: () => ({ userId: payload.user_id, panelId: payload.panel_id, off: planStr === '1' }),
     u_wallet: () => ({ userId: payload.userId, amount: payload.amount, note: payload.note }),
     o_approve: () => ({ orderId: payload.order_id }),
+    o_retry: () => ({ orderId: payload.order_id, retry: true }),
     o_refund: () => ({ orderId: payload.order_id }),
     del_plan: () => ({ id: payload.plan_id }),
     net_reset: () => ({ kind: payload.kind, id: payload.id }),
@@ -573,7 +580,12 @@ async function onMessage(env, msg, opts = {}) {
     if (p.deposit && p.amounts.length) {
       const r = await handleBankSms(env, { sender: 'admin-paste', text, trusted: true, source: 'paste' });
       if (r.result === 'paid') return say(`✅ سفارش #${r.orderId} تأیید و فعال شد.`);
-      if (r.result === 'duplicate') return say('این پیامک قبلاً بررسی شده است.');
+      if (r.result === 'duplicate') {
+        if (!r.orderId) return say('این پیامک قبلاً بررسی شده است.');
+        return say(r.was === 'paid' ? `این پیامک قبلاً حساب شده و سفارش #${r.orderId} را پرداخت کرده است؛ دوباره حساب نمی‌شود.`
+          : `این پیامک قبلاً برای سفارش #${r.orderId} ثبت شده است و برای سفارش دیگری حساب نمی‌شود. اگر آن سفارش هنوز تأیید نشده، از کارتش تأییدش کن.`,
+        { reply_markup: { inline_keyboard: [[{ text: `🧾 سفارش #${r.orderId}`, callback_data: `m:o:${r.orderId}` }]] } });
+      }
       if (r.result === 'settle_failed') return say(`⚠️ سفارش #${r.orderId} پیدا شد ولی فعال‌سازی انجام نشد: ${r.message}`);
       if (r.result === 'no_order' || r.result === 'ambiguous') return; // handleBankSms already explained it
       return say('سفارش برای تأیید تو فرستاده شد.');

@@ -5125,6 +5125,360 @@ section('Mini App admin parity: Cloudflare monitoring, app health reports, sync 
   }
 }
 
+section('payments audit PAY-01..PAY-04: stuck settle recovered, SMS deposit line only, one SMS pays once, failed wallet order is not approvable');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const billing = await import('../src/billing.js');
+  const { parseBankSms } = await import('../src/sms.js');
+  const adminApi = await import('../src/admin-api.js');
+  const A = { chat: { id: 12345 } };
+  let tapN = 0;
+  const tap = (data) => tgWebhook({ callback_query: { id: 'pay-' + (++tapN), data, message: { ...A, message_id: 990, text: 'menu' } } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const exec = (sql, ...a) => env.DB.prepare(sql).bind(...a).run();
+  const confirmOf = (n) => {
+    const m = since(n).filter((c) => c.method === 'sendMessage' && c.body && c.body.reply_markup && flat(c.body.reply_markup.inline_keyboard).some((x) => x.startsWith('cf:'))).pop();
+    return m ? flat(m.body.reply_markup.inline_keyboard).find((x) => x.startsWith('cf:')) : null;
+  };
+  const texts = (n) => since(n).filter((c) => c.method === 'sendMessage').map((c) => String(c.body.text || '')).join('\n---\n');
+  const now = () => Math.floor(Date.now() / 1000);
+  const cron = async () => { await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain(); return allInv.filter((s) => s.label === 'cron * * * * *').pop(); };
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.price_toman === 189000);
+  const expiresOf = async (uid) => (await row('SELECT expires_at e FROM subscriptions WHERE user_id = ?', uid) || {}).e || 0;
+  const uidOf = async (email) => (await row('SELECT id FROM users WHERE email = ?', email)).id;
+  await exec("UPDATE orders SET status = 'cancelled' WHERE status = 'settling'"); // nothing left over from earlier sections
+  // a stuck settle: the run that claimed the order was killed (CPU limit, waitUntil cap, slow panel)
+  const stick = (id, ago, provisioned) => exec('UPDATE orders SET status = ?, settling_at = ?, provisioned_at = ? WHERE id = ?', 'settling', now() - ago, provisioned ? now() - ago : null, id);
+
+  // ---------------- PAY-01 ----------------
+  const t1 = await signup('stuck1@example.com', { device: 'pay1' });
+  const u1 = await uidOf('stuck1@example.com');
+  const s1 = (await call('POST', '/api/v1/orders', { token: t1, json: { plan_id: monthly.id, method: 'card' } })).data;
+  await stick(s1.id, 3600, false);
+  let n = fakes.tg.calls.length;
+  const run1 = await cron();
+  const r1 = await row('SELECT status, provisioned_at FROM orders WHERE id = ?', s1.id);
+  ok(r1.status === 'paid' && r1.provisioned_at && await expiresOf(u1) > now() + 29 * 86400, 'PAY-01: the per-minute cron finishes an order stuck in settling for an hour: ' + JSON.stringify(r1));
+  ok(texts(n).includes(`#${s1.id}`), 'PAY-01: the admin is told the stuck order was finished');
+  ok(run1 && run1.q <= 50, `PAY-01: the recovering cron run stays within 50 D1 queries (${run1 && run1.q})`);
+  ok((await call('GET', `/api/v1/orders/${s1.id}`, { token: t1 })).data.status === 'paid', 'PAY-01: the user sees the order paid');
+
+  // provision had already committed before the run was cut off: marked paid, never extended a second time
+  const s2 = (await call('POST', '/api/v1/orders', { token: t1, json: { plan_id: monthly.id, method: 'card' } })).data;
+  const exp0 = await expiresOf(u1);
+  const periods0 = (await row('SELECT COUNT(*) c FROM sub_periods WHERE user_id = ?', u1)).c;
+  const puts0 = fakes.pg.puts;
+  await stick(s2.id, 3600, true);
+  await cron();
+  ok((await row('SELECT status FROM orders WHERE id = ?', s2.id)).status === 'paid', 'PAY-01: a stuck order whose plan already reached the panels is marked paid');
+  ok(await expiresOf(u1) === exp0 && (await row('SELECT COUNT(*) c FROM sub_periods WHERE user_id = ?', u1)).c === periods0 && fakes.pg.puts === puts0,
+    'PAY-01: ... and is not delivered twice (same expiry, no new period, no panel write)');
+
+  // a lease still running (another run may be delivering right now) is left alone
+  const s3 = (await call('POST', '/api/v1/orders', { token: t1, json: { plan_id: monthly.id, method: 'card' } })).data;
+  await stick(s3.id, 300, false);
+  await cron();
+  ok((await row('SELECT status FROM orders WHERE id = ?', s3.id)).status === 'settling', 'PAY-01: a settle younger than 10 minutes is not touched');
+  await exec("UPDATE orders SET status = 'cancelled' WHERE id = ?", s3.id);
+
+  // one order per run (the run's D1 and subrequest budget)
+  const t4 = await signup('stuck4@example.com', { device: 'pay4' });
+  const a4 = (await call('POST', '/api/v1/orders', { token: t4, json: { plan_id: monthly.id, method: 'card' } })).data;
+  const b4 = (await call('POST', '/api/v1/orders', { token: t4, json: { topup_toman: 120000, method: 'card' } })).data;
+  await stick(a4.id, 7200, false); await stick(b4.id, 3600, false);
+  await cron();
+  const st4 = async () => [(await row('SELECT status FROM orders WHERE id = ?', a4.id)).status, (await row('SELECT status FROM orders WHERE id = ?', b4.id)).status];
+  ok(JSON.stringify(await st4()) === '["paid","settling"]', 'PAY-01: one stuck order per cron run, oldest first: ' + JSON.stringify(await st4()));
+  await cron();
+  ok(JSON.stringify(await st4()) === '["paid","paid"]', 'PAY-01: the next run takes the next one');
+
+  // a stuck wallet order that still cannot be delivered: refunded exactly once and cancelled
+  const t5 = await signup('stuck5@example.com', { device: 'pay5' });
+  const u5 = await row('SELECT * FROM users WHERE email = ?', 'stuck5@example.com');
+  await exec('UPDATE users SET wallet_balance = ? WHERE id = ?', monthly.price_toman, u5.id);
+  const w5 = await insert5();
+  async function insert5() {
+    const r = await exec("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, ?, 'wallet', 'pending', ?)", u5.id, monthly.id, monthly.price_toman, now());
+    return r.meta.last_row_id;
+  }
+  await billing.walletApply(env, { ...u5 }, -monthly.price_toman, 'purchase', w5, 'test');
+  await stick(w5, 3600, false);
+  for (const p of Object.values(fakes.panels)) p.down = true;
+  n = fakes.tg.calls.length;
+  await cron();
+  await cron();
+  for (const p of Object.values(fakes.panels)) p.down = false;
+  await cron();
+  const w5r = await row("SELECT o.status, u.wallet_balance b, (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'refund') refunds FROM orders o JOIN users u ON u.id = o.user_id WHERE o.id = ?", w5);
+  ok(w5r.status === 'cancelled' && w5r.b === monthly.price_toman && w5r.refunds === 1, 'PAY-01: a stuck wallet order that fails again is refunded exactly once and cancelled: ' + JSON.stringify(w5r));
+  ok(!await expiresOf(u5.id), 'PAY-01: ... and no plan was delivered');
+  ok(texts(n).includes(`#${w5}`), 'PAY-01: the admin hears about the refunded wallet order');
+
+  // a stuck wallet order that can be delivered: paid, the money stays spent (once)
+  const w6 = await insert5();
+  await exec('UPDATE users SET wallet_balance = ? WHERE id = ?', monthly.price_toman, u5.id);
+  await billing.walletApply(env, { ...u5 }, -monthly.price_toman, 'purchase', w6, 'test');
+  await stick(w6, 3600, false);
+  await cron();
+  const w6r = await row("SELECT o.status, u.wallet_balance b FROM orders o JOIN users u ON u.id = o.user_id WHERE o.id = ?", w6);
+  ok(w6r.status === 'paid' && w6r.b === 0 && await expiresOf(u5.id) > now(), 'PAY-01: a stuck wallet order that can be delivered is paid, charged once: ' + JSON.stringify(w6r));
+
+  // the admin's own way out: the order card offers «🔁 تلاش دوباره» (asks first), and the old 🔁 button works too
+  const t7 = await signup('stuck7@example.com', { device: 'pay7' });
+  const s7 = (await call('POST', '/api/v1/orders', { token: t7, json: { plan_id: monthly.id, method: 'card' } })).data;
+  await stick(s7.id, 3600, false);
+  const card7 = await menu.renderScreen(env, `o:${s7.id}`);
+  const retryBtn = card7.kb.flat().find((x) => x.callback_data === `m:orr:${s7.id}`);
+  ok(retryBtn && retryBtn.text.includes('تلاش دوباره') && !flat(card7.kb).includes(`m:oap:${s7.id}`), 'PAY-01: a stuck order card has a «🔁 تلاش دوباره» button: ' + JSON.stringify(flat(card7.kb)));
+  ok(!flat((await menu.renderScreen(env, `o:${s2.id}`)).kb).includes(`m:orr:${s2.id}`), 'PAY-01: a paid order has no retry button');
+  n = fakes.tg.calls.length;
+  await tap(`m:orr:${s7.id}`);
+  const cf7 = confirmOf(n);
+  ok(cf7 && (await row('SELECT status FROM orders WHERE id = ?', s7.id)).status === 'settling', 'PAY-01: retry asks first');
+  await tap(cf7);
+  ok((await row('SELECT status FROM orders WHERE id = ?', s7.id)).status === 'paid' && await expiresOf(await uidOf('stuck7@example.com')) > now(), 'PAY-01: retry from the bot finishes the order');
+  const s8 = (await call('POST', '/api/v1/orders', { token: t7, json: { plan_id: monthly.id, method: 'card' } })).data;
+  await stick(s8.id, 3600, false);
+  await tap(`rp:${s8.id}`);
+  ok((await row('SELECT status FROM orders WHERE id = ?', s8.id)).status === 'paid', 'PAY-01: the 🔁 button from a panel error message also retries a stuck order');
+  // a card order that fails again goes back to review, where approve / reject work as usual
+  const s9 = (await call('POST', '/api/v1/orders', { token: t7, json: { topup_toman: 130000, method: 'card' } })).data;
+  await stick(s9.id, 3600, false);
+  const realUrl = env.PASARGUARD_URL;
+  const realWalletApply = null; void realWalletApply;
+  // a top-up delivers into the wallet; make it fail by breaking the wallet write once
+  const prep = env.DB.prepare;
+  let broke = false;
+  env.DB.prepare = (sql) => { if (!broke && /INSERT OR IGNORE INTO wallet_tx/.test(sql)) { broke = true; throw new Error('D1 hiccup'); } return prep.call(env.DB, sql); };
+  await cron();
+  env.DB.prepare = prep; env.PASARGUARD_URL = realUrl;
+  ok(broke && (await row('SELECT status FROM orders WHERE id = ?', s9.id)).status === 'review', 'PAY-01: a stuck card order that fails again goes back to review');
+  ok((await acts.runAction(env, '12345', 'order.approve', { orderId: s9.id })).ok && (await row('SELECT status FROM orders WHERE id = ?', s9.id)).status === 'paid', 'PAY-01: ... and can be approved from there');
+
+  // ---------------- PAY-02 ----------------
+  const banks = [
+    ['Mellat', 'بانک ملت\nحساب 1234567890\nواریز: 1,890,370\nمانده: 25,300,000\n1405/08/06\n10:22', [1890370]],
+    ['Melli', 'بانک ملی ایران\nواریز:1,890,370\nحساب:0101234567001\nمانده:25,300,000\n1405/08/06-10:22', [1890370]],
+    ['Saderat', 'بانك صادرات ايران\nواريز انتقالي از 6037-99**-****-1234\nمبلغ:1,890,370 ريال\nمانده:25,300,000\n14050806 10:22', [1890370]],
+    ['Tejarat', 'بانک تجارت\nحساب 1234567890\n+1,890,370\nمانده 25,300,000\n08/06 10:22', [1890370]],
+    ['Pasargad', 'پاسارگاد\nواریز به سپرده 207.8000.12345678.1\nمبلغ: 1,890,370\nمانده: 25,300,000\n1405/08/06 10:22', [1890370]],
+    ['Saman', 'بانک سامان\nواریز به 849-810-1234567-1\nمبلغ 1,890,370 ریال\nمانده 25,300,000\n1405/08/06 10:22', [1890370]],
+    ['Blu', 'بلو\n+۱,۸۹۰,۳۷۰ ریال\nواریز از علی رضایی\nموجودی: ۲۵,۳۰۰,۰۰۰ ریال\n۱۴:۲۲ - ۱۴۰۵/۰۸/۰۶', [1890370]],
+    ['Resalat', 'بانک قرض الحسنه رسالت\nواریز پایا\nمبلغ:1,890,370\nشرح:بابت 2,500,000\nکد پیگیری:123456789\nمانده:25,300,000', [1890370]],
+    ['one line + balance', 'واریز 10,000 ریال به حساب 0101 مانده 1,890,380', [10000]],
+    ['one line + reference', 'ملت: واریز 1,890,370 ریال کد پیگیری 765432 1405/08/06', [1890370]],
+    ['payer description', 'بانک ملی\nواریز: 10,000 ریال\nشرح: 1890380\nمانده: 25,300,000', [10000]],
+    ['payer بابت + توضیحات', 'واریز: 10,000\nبابت: 1,890,380\nتوضیحات: 1890380', [10000]],
+    ['tracking number', 'واریز: 10,000\nکد رهگیری 1890380\nشماره پیگیری: 1890390', [10000]],
+    ['withdraw + deposit', 'برداشت 50,000\nواریز 1,890,380', [1890380]],
+    ['plus after the amount', 'سامان\nمبلغ 1,890,370+ ریال\nمانده 9,000,000', [1890370]],
+  ];
+  for (const [bank, sms, want] of banks) {
+    const p = parseBankSms(sms);
+    ok(p.deposit && JSON.stringify(p.amounts) === JSON.stringify(want), `PAY-02: ${bank} SMS -> only the deposit amount ${want}: ${JSON.stringify(p)}`);
+  }
+  ok(!parseBankSms('بانک ملت\nبرداشت: 1,890,370\nمانده: 25,300,000').deposit, 'PAY-02: a withdrawal is not a deposit');
+  ok(parseBankSms('واریز ۱۸۹,۰۳۸ تومان').toman.includes(189038) && !parseBankSms('واریز 189,038 تومان مانده 2,000,000 ریال').toman.length, 'PAY-02: F1 rial/toman rule unchanged');
+  ok(parseBankSms('واریز 1,890,370 و 2,000,000').amounts.length === 2, 'PAY-02: two amounts on deposit lines stay two (unclear)');
+
+  await botSet('card_number', '6037991234567893');
+  await botSet('card_unique', '1');
+  await botSet('card_auto', 'auto');
+  await botSet('sms_senders', '+989100');
+  const key = (await row("SELECT value FROM settings WHERE key = 'sms_key'")).value;
+  const rial = (x) => x.toLocaleString('en-US');
+  const ta = await signup('paysms-a@example.com', { device: 'psa' });
+  const oa = (await call('POST', '/api/v1/orders', { token: ta, json: { topup_toman: 3330000, method: 'card' } })).data;
+  // PoC1: a 10,000 rial deposit whose description carries the order's rial amount
+  const p1 = await call('POST', '/sms/' + key, { json: { from: '+989100', text: `بانک ملی\nواریز: 10,000 ریال\nشرح: ${oa.amount_toman * 10}\nمانده: 25,300,000` } });
+  ok(p1.data.result !== 'paid' && (await row('SELECT status FROM orders WHERE id = ?', oa.id)).status === 'pending', 'PAY-02: a tiny deposit with the order amount in شرح does not pay it: ' + JSON.stringify(p1.data));
+  const p2 = await call('POST', '/sms/' + key, { json: { from: '+989100', text: `بانک ملی\nواریز: 10,000 ریال\nکد پیگیری: ${oa.amount_toman * 10}\nمانده: ${rial(oa.amount_toman * 10)}` } });
+  ok(p2.data.result !== 'paid' && (await row('SELECT status FROM orders WHERE id = ?', oa.id)).status === 'pending', 'PAY-02: nor in the tracking code or the balance: ' + JSON.stringify(p2.data));
+  // two candidate amounts: never confirmed by itself, handed to the admin with a button
+  n = fakes.tg.calls.length;
+  const p3 = await call('POST', '/sms/' + key, { json: { from: '+989100', text: `واریز ${rial(oa.amount_toman * 10)} و 20,000\n1405/08/09` } });
+  ok(p3.data.result !== 'paid' && (await row('SELECT status FROM orders WHERE id = ?', oa.id)).status !== 'paid', 'PAY-02: an SMS with two deposit amounts is not auto-confirmed: ' + JSON.stringify(p3.data));
+  ok(since(n).some((c) => c.method === 'sendMessage' && JSON.stringify(c.body.reply_markup || {}).includes(`ap:${oa.id}`)), 'PAY-02: ... the admin gets it with an approve button');
+  // the real deposit still confirms it
+  const p4 = await call('POST', '/sms/' + key, { json: { from: '+989100', text: `بانک ملی\nواریز: ${rial(oa.amount_toman * 10)}\nکد پیگیری: 99887766\nمانده: 41,000,000\n1405/08/09-11:02` } });
+  ok(p4.data.result === 'paid' && (await row('SELECT status FROM orders WHERE id = ?', oa.id)).status === 'paid', 'PAY-02: the real deposit line confirms the order: ' + JSON.stringify(p4.data));
+
+  // ---------------- PAY-03 ----------------
+  const tb = await signup('paysms-b@example.com', { device: 'psb' });
+  const tc = await signup('paysms-c@example.com', { device: 'psc' });
+  const ob = (await call('POST', '/api/v1/orders', { token: tb, json: { topup_toman: 4440000, method: 'card' } })).data;
+  const sms3 = `بانک ملی\nواریز: ${rial(ob.amount_toman * 10)}\nمانده: 12,345,000\n1405/08/09-12:40`;
+  ok((await call('POST', '/sms/' + key, { json: { from: '+989100', text: sms3 } })).data.result === 'paid', 'PAY-03: the forwarded SMS pays order B');
+  const oc = (await call('POST', '/api/v1/orders', { token: tc, json: { topup_toman: 4440000, method: 'card' } })).data;
+  await exec('UPDATE orders SET amount_toman = ? WHERE id = ?', ob.amount_toman, oc.id); // same amount (1 in 99 for the same price)
+  n = fakes.tg.calls.length;
+  await tgWebhook({ message: { ...A, text: sms3.replace(/\n/g, '\n ').replace('ی', 'ي') } }); // the admin pastes the same SMS (spacing, Arabic ي)
+  ok((await row('SELECT status FROM orders WHERE id = ?', oc.id)).status === 'pending', 'PAY-03: the same SMS pasted into the bot does not pay a second order');
+  ok(texts(n).includes('قبلاً') && texts(n).includes(`#${ob.id}`), 'PAY-03: the admin is told it was already counted for order #B: ' + texts(n).slice(0, 200));
+  ok((await call('POST', '/sms/' + key, { json: { from: '+98 912 000 0000', text: sms3 } })).data.result === 'duplicate', 'PAY-03: another forwarder sending the same SMS is a duplicate too');
+  ok((await row("SELECT COUNT(*) c FROM sms_log WHERE result = 'paid' AND order_id IN (?, ?)", ob.id, oc.id)).c === 1, 'PAY-03: one paid sms_log row');
+  // an SMS that came before its order: pasting it later still confirms (it never paid anything)
+  const td = await signup('paysms-d@example.com', { device: 'psd' });
+  const early = `بانک ملی\nواریز: 55,550,000\nمانده: 70,000,000\n1405/08/09-13:00`;
+  ok((await call('POST', '/sms/' + key, { json: { from: '+989100', text: early } })).data.result === 'no_order', 'PAY-03: an SMS with no order yet is logged as no_order');
+  const od = (await call('POST', '/api/v1/orders', { token: td, json: { topup_toman: 5555000, method: 'card' } })).data;
+  await exec('UPDATE orders SET amount_toman = 5555000 WHERE id = ?', od.id);
+  await tgWebhook({ message: { ...A, text: early } });
+  ok((await row('SELECT status FROM orders WHERE id = ?', od.id)).status === 'paid', 'PAY-03: pasting an SMS that paid nothing yet still confirms the order');
+
+  // ---------------- PAY-04 ----------------
+  const tw = await signup('poorwallet@example.com', { device: 'pw' });
+  const uw = await uidOf('poorwallet@example.com');
+  const fw = await call('POST', '/api/v1/orders', { token: tw, json: { plan_id: monthly.id, method: 'wallet' } });
+  const fwr = await row('SELECT id, status FROM orders WHERE user_id = ? ORDER BY id DESC', uw);
+  ok(fw.status === 400 && fw.data.detail.code === 'insufficient_balance' && fwr.status === 'cancelled', 'PAY-04: a wallet purchase without the money leaves no pending order: ' + JSON.stringify(fwr));
+  const ap4 = await acts.runAction(env, '12345', 'order.approve', { orderId: fwr.id });
+  ok(!ap4.ok && !await expiresOf(uw), 'PAY-04: approve refuses it, no plan delivered');
+  // an unpaid wallet order left pending by the old code: no approve button anywhere, and approve refuses it
+  const legacy = (await exec("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, ?, 'wallet', 'pending', ?)", uw, monthly.id, monthly.price_toman, now())).meta.last_row_id;
+  const lc = await menu.renderScreen(env, `o:${legacy}`);
+  ok(!flat(lc.kb).includes(`m:oap:${legacy}`), 'PAY-04: the bot order card shows no approve button for an unpaid wallet order: ' + JSON.stringify(flat(lc.kb)));
+  const lj = await (await adminApi.order(env, legacy)).json();
+  ok(lj.can && lj.can.approve === false, 'PAY-04: the Mini App order says it cannot be approved: ' + JSON.stringify(lj.can));
+  n = fakes.tg.calls.length;
+  await tap(`m:oap:${legacy}`);
+  ok(!confirmOf(n), 'PAY-04: tapping an old approve button does not even ask');
+  const ap5 = await acts.runAction(env, '12345', 'order.approve', { orderId: legacy });
+  await tgWebhook({ callback_query: { id: 'pay-ap-legacy', data: `ap:${legacy}`, message: { ...A, message_id: 991, text: 'x' } } });
+  const lw = await row('SELECT o.status, u.wallet_balance b FROM orders o JOIN users u ON u.id = o.user_id WHERE o.id = ?', legacy);
+  ok(!ap5.ok && lw.status !== 'paid' && lw.b === 0 && !await expiresOf(uw), 'PAY-04: approve (action and receipt button) never delivers an unpaid wallet order: ' + JSON.stringify(lw));
+  // a paid-for wallet order still works as before
+  await exec('UPDATE users SET wallet_balance = ? WHERE id = ?', monthly.price_toman, uw);
+  const okw = await call('POST', '/api/v1/orders', { token: tw, json: { plan_id: monthly.id, method: 'wallet' } });
+  ok(okw.status === 201 && okw.data.status === 'paid' && await expiresOf(uw) > now(), 'PAY-04: a wallet purchase with the money is delivered');
+
+  // ---------------- independent review fixes (B1, S1, S2, S3, nits) ----------------
+  const acksOf = (k) => since(k).filter((c) => c.method === 'answerCallbackQuery').map((c) => String(c.body.text || '')).join(' | ');
+  // B1: an SMS that matched an order (review) and the admin approved with ✅ must not pay a second order when pasted
+  for (const [label, senders, mode] of [['untrusted sender', '', 'auto'], ['detect mode', '+989100', 'detect']]) {
+    await botSet('sms_senders', senders || '-');
+    if (!senders) await exec("UPDATE settings SET value = '' WHERE key = 'sms_senders'");
+    await botSet('card_auto', mode);
+    const tA = await signup(`b1a-${mode}@example.com`, { device: 'b1a' + mode });
+    const tB = await signup(`b1b-${mode}@example.com`, { device: 'b1b' + mode });
+    const oA = (await call('POST', '/api/v1/orders', { token: tA, json: { topup_toman: 6660000, method: 'card' } })).data;
+    const smsB1 = `بانک ملی\nواریز: ${rial(oA.amount_toman * 10)}\nمانده: ${rial(7000000 + oA.id)}\n1405/08/10-09:15`;
+    const first1 = await call('POST', '/sms/' + key, { json: { from: '+989100', text: smsB1 } });
+    await tgWebhook({ callback_query: { id: 'b1-' + mode, data: `ap:${oA.id}`, message: { ...A, message_id: 992, text: 'x' } } });
+    const oB = (await call('POST', '/api/v1/orders', { token: tB, json: { topup_toman: 6660000, method: 'card' } })).data;
+    await exec('UPDATE orders SET amount_toman = ? WHERE id = ?', oA.amount_toman, oB.id);
+    await botSet('card_auto', 'auto');
+    n = fakes.tg.calls.length;
+    await tgWebhook({ message: { ...A, text: smsB1 } });
+    const sA = (await row('SELECT status FROM orders WHERE id = ?', oA.id)).status;
+    const sB = (await row('SELECT status FROM orders WHERE id = ?', oB.id)).status;
+    ok(first1.data.result === 'review' && sA === 'paid' && sB === 'pending', `B1 (${label}): SMS sent to review, approved with ✅, then pasted: the second order stays unpaid: ${first1.data.result} A=${sA} B=${sB}`);
+    ok(texts(n).includes(`#${oA.id}`), `B1 (${label}): the admin is told which order the SMS belongs to`);
+  }
+  await botSet('sms_senders', '+989100');
+  await botSet('card_auto', 'auto');
+
+  // N1: an SMS with several deposit amounts names them neutrally
+  const tN1 = await signup('n1@example.com', { device: 'n1' });
+  const oN1 = (await call('POST', '/api/v1/orders', { token: tN1, json: { topup_toman: 7770000, method: 'card' } })).data;
+  n = fakes.tg.calls.length;
+  await call('POST', '/sms/' + key, { json: { from: '+989100', text: `واریز 10,000 و ${rial(oN1.amount_toman * 10)}\n1405/08/10` } });
+  ok(texts(n).includes('یکی از این مبلغ‌ها') && !texts(n).includes(`پیامک واریز ${rial(oN1.amount_toman * 10)} ریال`), 'N1: the several-amounts notice does not call the matched number the deposit: ' + texts(n).slice(0, 160));
+  await exec("UPDATE orders SET status = 'cancelled' WHERE id = ?", oN1.id);
+
+  // S1 + S2: one notice for settles stuck over 7 days (or with no time), never settled by themselves; the cron goes on
+  await exec("UPDATE orders SET status = 'cancelled' WHERE status = 'settling'");
+  const tS = await signup('s1s2@example.com', { device: 's1s2' });
+  const uS = await uidOf('s1s2@example.com');
+  const oOld = (await call('POST', '/api/v1/orders', { token: tS, json: { plan_id: monthly.id, method: 'card' } })).data;
+  const oNull = (await call('POST', '/api/v1/orders', { token: tS, json: { topup_toman: 140000, method: 'card' } })).data;
+  const oNew = (await call('POST', '/api/v1/orders', { token: tS, json: { topup_toman: 150000, method: 'card' } })).data;
+  await stick(oOld.id, 8 * 86400, false);
+  await exec("UPDATE orders SET status = 'settling', settling_at = NULL WHERE id = ?", oNull.id);
+  await stick(oNew.id, 3600, false);
+  n = fakes.tg.calls.length;
+  await exec("DELETE FROM settings WHERE key = 'tg_webhook_sig'");
+  await cron();
+  const st = async (id) => (await row('SELECT status FROM orders WHERE id = ?', id)).status;
+  ok(await st(oNew.id) === 'paid', 'S1: a settling order with no settling_at does not block a recent stuck order behind it');
+  ok(await st(oOld.id) === 'settling' && await st(oNull.id) === 'settling' && !await expiresOf(uS), 'S2: a settle stuck over 7 days (or with no time) is not settled by itself');
+  const notice = since(n).filter((c) => c.method === 'sendMessage' && JSON.stringify(c.body.reply_markup || {}).includes(`m:orr:${oOld.id}`)).pop();
+  ok(notice && JSON.stringify(notice.body.reply_markup).includes(`m:orr:${oNull.id}`) && /تلاش دوباره/.test(JSON.stringify(notice.body.reply_markup)), 'S2: the admin gets one notice listing them with «🔁 تلاش دوباره»');
+  ok(since(n).some((c) => c.method === 'setWebhook'), 'S1/N7: a run that recovered an order still keeps the webhook registered');
+  n = fakes.tg.calls.length;
+  await cron();
+  ok(!since(n).some((c) => c.method === 'sendMessage' && JSON.stringify(c.body.reply_markup || {}).includes(`m:orr:${oOld.id}`)), 'S2: the notice is sent once, not every minute');
+  await exec('UPDATE sync_cursor SET run_at = 0');
+  await cron();
+  ok((await row('SELECT MAX(run_at) t FROM sync_cursor')).t > 0, 'S1: with only old stuck orders the cron still runs the sync');
+  // the owner decides: retry from the notice; an order with no settling_at can be claimed
+  for (const id of [oNull.id, oOld.id]) {
+    n = fakes.tg.calls.length;
+    await tap(`m:orr:${id}`);
+    await tap(confirmOf(n));
+    ok(await st(id) === 'paid', `S1/S2: the owner's retry settles stuck order #${id}`);
+  }
+  // S1: a recovery that finds the order busy (another run just claimed it) does not stop the chain scan and sync
+  const oBusy = (await call('POST', '/api/v1/orders', { token: tS, json: { topup_toman: 160000, method: 'card' } })).data;
+  await stick(oBusy.id, 3600, false);
+  const prepB = env.DB.prepare;
+  env.DB.prepare = (sql) => {
+    if (/SET status = 'settling', settling_at = \?/.test(sql)) { prepB.call(env.DB, 'UPDATE orders SET settling_at = ? WHERE id = ?').bind(now(), oBusy.id).run(); }
+    return prepB.call(env.DB, sql);
+  };
+  await exec('UPDATE sync_cursor SET run_at = 0');
+  await cron();
+  env.DB.prepare = prepB;
+  ok(await st(oBusy.id) === 'settling' && (await row('SELECT MAX(run_at) t FROM sync_cursor')).t > 0, 'S1: a busy recovery does not make the cron skip the sync');
+  await exec("UPDATE orders SET status = 'cancelled' WHERE id = ?", oBusy.id);
+
+  // S3: the wallet refund happens only if this run's cancel took the order; a settle claiming it in between wins
+  await exec("UPDATE orders SET status = 'cancelled' WHERE status = 'settling'");
+  const tS3 = await signup('s3@example.com', { device: 's3x' });
+  const uS3 = await row('SELECT * FROM users WHERE email = ?', 's3@example.com');
+  await exec('UPDATE users SET wallet_balance = ? WHERE id = ?', monthly.price_toman, uS3.id);
+  const wS3 = (await exec("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, ?, 'wallet', 'pending', ?)", uS3.id, monthly.id, monthly.price_toman, now())).meta.last_row_id;
+  await billing.walletApply(env, { ...uS3 }, -monthly.price_toman, 'purchase', wS3, 'test');
+  await stick(wS3, 3600, false);
+  for (const p of Object.values(fakes.panels)) p.down = true;
+  const prep3 = env.DB.prepare;
+  let raced = false;
+  env.DB.prepare = (sql) => {
+    if (!raced && /SET status = 'cancelled'/.test(sql) && /NOT IN \('paid', 'settling'/.test(sql)) {
+      raced = true; // another settle claims the order right before this run cancels it
+      prep3.call(env.DB, "UPDATE orders SET status = 'settling', settling_at = ? WHERE id = ?").bind(now(), wS3).run();
+    }
+    return prep3.call(env.DB, sql);
+  };
+  await cron();
+  env.DB.prepare = prep3;
+  for (const p of Object.values(fakes.panels)) p.down = false;
+  const s3r = await row("SELECT o.status, u.wallet_balance b, (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'refund') refunds FROM orders o JOIN users u ON u.id = o.user_id WHERE o.id = ?", wS3);
+  ok(raced && s3r.status === 'settling' && s3r.refunds === 0 && s3r.b === 0, 'S3: an order another run claimed is not refunded under it: ' + JSON.stringify(s3r));
+  await exec("UPDATE orders SET status = 'cancelled' WHERE id = ?", wS3);
+
+  // N3: «🔁 تلاش دوباره» confirmed after the order left settling shows the state instead of approving it
+  const tN3 = await signup('n3@example.com', { device: 'n3' });
+  const oN3 = (await call('POST', '/api/v1/orders', { token: tN3, json: { topup_toman: 170000, method: 'card' } })).data;
+  await stick(oN3.id, 3600, false);
+  n = fakes.tg.calls.length;
+  await tap(`m:orr:${oN3.id}`);
+  const cfN3 = confirmOf(n);
+  await exec("UPDATE orders SET status = 'review', settling_at = NULL WHERE id = ?", oN3.id); // the cron got there first
+  n = fakes.tg.calls.length;
+  await tap(cfN3);
+  ok(await st(oN3.id) === 'review' && /review|بررسی/.test(JSON.stringify(since(n).map((c) => c.body))), 'N3: a retry confirmed after the order left settling does not approve it and shows its state');
+
+  // N2: the receipt button on an unpaid wallet order says why, not "see the next message"
+  const legacy2 = (await exec("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, ?, 'wallet', 'pending', ?)", uw, monthly.id, monthly.price_toman, now())).meta.last_row_id;
+  n = fakes.tg.calls.length;
+  await tgWebhook({ callback_query: { id: 'n2-ap', data: `ap:${legacy2}`, message: { ...A, message_id: 993, text: 'x' } } });
+  ok(acksOf(n).includes('پرداخت نشده') && !acksOf(n).includes('پیام بعدی'), 'N2: ap: on an unpaid wallet order gives the real reason: ' + acksOf(n));
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

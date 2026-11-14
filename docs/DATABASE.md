@@ -135,7 +135,7 @@ Almost all runtime configuration. Defaults in `worker/src/db.js` `SETTING_DEFAUL
   user used when the panel admin gets 403 on groups/hosts — **do not delete that panel user**), `server_exit_cc`
   (exit country learned from Pleat's `/me/ip?k=`).
 - Health: `health_mode` (all / p2 / off), `health_mute`.
-- Internals: `tg_webhook_sig` (which webhook setup is registered), cached coin/USD prices and similar.
+- Internals: `tg_webhook_sig` (which webhook setup is registered), `stuck_old_notice` (ids of the old stuck `settling` orders the owner was already told about, PAY-01), cached coin/USD prices and similar.
 
 ## Backups
 The daily cron (20:30 UTC) sends a JSON backup of the main tables to the owner's Telegram. It excludes password
