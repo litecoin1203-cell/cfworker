@@ -5125,6 +5125,108 @@ section('Mini App admin parity: Cloudflare monitoring, app health reports, sync 
   }
 }
 
+section('payments audit PAY-02, PAY-03: SMS deposit line only, one SMS pays once');
+{
+  const menu = await import('../src/telegram-menu.js');
+  const acts = await import('../src/admin-actions.js');
+  const billing = await import('../src/billing.js');
+  const { parseBankSms } = await import('../src/sms.js');
+  const adminApi = await import('../src/admin-api.js');
+  const A = { chat: { id: 12345 } };
+  let tapN = 0;
+  const tap = (data) => tgWebhook({ callback_query: { id: 'pay-' + (++tapN), data, message: { ...A, message_id: 990, text: 'menu' } } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const exec = (sql, ...a) => env.DB.prepare(sql).bind(...a).run();
+  const confirmOf = (n) => {
+    const m = since(n).filter((c) => c.method === 'sendMessage' && c.body && c.body.reply_markup && flat(c.body.reply_markup.inline_keyboard).some((x) => x.startsWith('cf:'))).pop();
+    return m ? flat(m.body.reply_markup.inline_keyboard).find((x) => x.startsWith('cf:')) : null;
+  };
+  const texts = (n) => since(n).filter((c) => c.method === 'sendMessage').map((c) => String(c.body.text || '')).join('\n---\n');
+  const now = () => Math.floor(Date.now() / 1000);
+  const cron = async () => { await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain(); return allInv.filter((s) => s.label === 'cron * * * * *').pop(); };
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.price_toman === 189000);
+  const expiresOf = async (uid) => (await row('SELECT expires_at e FROM subscriptions WHERE user_id = ?', uid) || {}).e || 0;
+  const uidOf = async (email) => (await row('SELECT id FROM users WHERE email = ?', email)).id;
+  await exec("UPDATE orders SET status = 'cancelled' WHERE status = 'settling'"); // nothing left over from earlier sections
+  // a stuck settle: the run that claimed the order was killed (CPU limit, waitUntil cap, slow panel)
+  const stick = (id, ago, provisioned) => exec('UPDATE orders SET status = ?, settling_at = ?, provisioned_at = ? WHERE id = ?', 'settling', now() - ago, provisioned ? now() - ago : null, id);
+
+  let n;
+  // ---------------- PAY-02 ----------------
+  const banks = [
+    ['Mellat', 'بانک ملت\nحساب 1234567890\nواریز: 1,890,370\nمانده: 25,300,000\n1405/08/06\n10:22', [1890370]],
+    ['Melli', 'بانک ملی ایران\nواریز:1,890,370\nحساب:0101234567001\nمانده:25,300,000\n1405/08/06-10:22', [1890370]],
+    ['Saderat', 'بانك صادرات ايران\nواريز انتقالي از 6037-99**-****-1234\nمبلغ:1,890,370 ريال\nمانده:25,300,000\n14050806 10:22', [1890370]],
+    ['Tejarat', 'بانک تجارت\nحساب 1234567890\n+1,890,370\nمانده 25,300,000\n08/06 10:22', [1890370]],
+    ['Pasargad', 'پاسارگاد\nواریز به سپرده 207.8000.12345678.1\nمبلغ: 1,890,370\nمانده: 25,300,000\n1405/08/06 10:22', [1890370]],
+    ['Saman', 'بانک سامان\nواریز به 849-810-1234567-1\nمبلغ 1,890,370 ریال\nمانده 25,300,000\n1405/08/06 10:22', [1890370]],
+    ['Blu', 'بلو\n+۱,۸۹۰,۳۷۰ ریال\nواریز از علی رضایی\nموجودی: ۲۵,۳۰۰,۰۰۰ ریال\n۱۴:۲۲ - ۱۴۰۵/۰۸/۰۶', [1890370]],
+    ['Resalat', 'بانک قرض الحسنه رسالت\nواریز پایا\nمبلغ:1,890,370\nشرح:بابت 2,500,000\nکد پیگیری:123456789\nمانده:25,300,000', [1890370]],
+    ['one line + balance', 'واریز 10,000 ریال به حساب 0101 مانده 1,890,380', [10000]],
+    ['one line + reference', 'ملت: واریز 1,890,370 ریال کد پیگیری 765432 1405/08/06', [1890370]],
+    ['payer description', 'بانک ملی\nواریز: 10,000 ریال\nشرح: 1890380\nمانده: 25,300,000', [10000]],
+    ['payer بابت + توضیحات', 'واریز: 10,000\nبابت: 1,890,380\nتوضیحات: 1890380', [10000]],
+    ['tracking number', 'واریز: 10,000\nکد رهگیری 1890380\nشماره پیگیری: 1890390', [10000]],
+    ['withdraw + deposit', 'برداشت 50,000\nواریز 1,890,380', [1890380]],
+    ['plus after the amount', 'سامان\nمبلغ 1,890,370+ ریال\nمانده 9,000,000', [1890370]],
+  ];
+  for (const [bank, sms, want] of banks) {
+    const p = parseBankSms(sms);
+    ok(p.deposit && JSON.stringify(p.amounts) === JSON.stringify(want), `PAY-02: ${bank} SMS -> only the deposit amount ${want}: ${JSON.stringify(p)}`);
+  }
+  ok(!parseBankSms('بانک ملت\nبرداشت: 1,890,370\nمانده: 25,300,000').deposit, 'PAY-02: a withdrawal is not a deposit');
+  ok(parseBankSms('واریز ۱۸۹,۰۳۸ تومان').toman.includes(189038) && !parseBankSms('واریز 189,038 تومان مانده 2,000,000 ریال').toman.length, 'PAY-02: F1 rial/toman rule unchanged');
+  ok(parseBankSms('واریز 1,890,370 و 2,000,000').amounts.length === 2, 'PAY-02: two amounts on deposit lines stay two (unclear)');
+
+  await botSet('card_number', '6037991234567893');
+  await botSet('card_unique', '1');
+  await botSet('card_auto', 'auto');
+  await botSet('sms_senders', '+989100');
+  const key = (await row("SELECT value FROM settings WHERE key = 'sms_key'")).value;
+  const rial = (x) => x.toLocaleString('en-US');
+  const ta = await signup('paysms-a@example.com', { device: 'psa' });
+  const oa = (await call('POST', '/api/v1/orders', { token: ta, json: { topup_toman: 3330000, method: 'card' } })).data;
+  // PoC1: a 10,000 rial deposit whose description carries the order's rial amount
+  const p1 = await call('POST', '/sms/' + key, { json: { from: '+989100', text: `بانک ملی\nواریز: 10,000 ریال\nشرح: ${oa.amount_toman * 10}\nمانده: 25,300,000` } });
+  ok(p1.data.result !== 'paid' && (await row('SELECT status FROM orders WHERE id = ?', oa.id)).status === 'pending', 'PAY-02: a tiny deposit with the order amount in شرح does not pay it: ' + JSON.stringify(p1.data));
+  const p2 = await call('POST', '/sms/' + key, { json: { from: '+989100', text: `بانک ملی\nواریز: 10,000 ریال\nکد پیگیری: ${oa.amount_toman * 10}\nمانده: ${rial(oa.amount_toman * 10)}` } });
+  ok(p2.data.result !== 'paid' && (await row('SELECT status FROM orders WHERE id = ?', oa.id)).status === 'pending', 'PAY-02: nor in the tracking code or the balance: ' + JSON.stringify(p2.data));
+  // two candidate amounts: never confirmed by itself, handed to the admin with a button
+  n = fakes.tg.calls.length;
+  const p3 = await call('POST', '/sms/' + key, { json: { from: '+989100', text: `واریز ${rial(oa.amount_toman * 10)} و 20,000\n1405/08/09` } });
+  ok(p3.data.result !== 'paid' && (await row('SELECT status FROM orders WHERE id = ?', oa.id)).status !== 'paid', 'PAY-02: an SMS with two deposit amounts is not auto-confirmed: ' + JSON.stringify(p3.data));
+  ok(since(n).some((c) => c.method === 'sendMessage' && JSON.stringify(c.body.reply_markup || {}).includes(`ap:${oa.id}`)), 'PAY-02: ... the admin gets it with an approve button');
+  // the real deposit still confirms it
+  const p4 = await call('POST', '/sms/' + key, { json: { from: '+989100', text: `بانک ملی\nواریز: ${rial(oa.amount_toman * 10)}\nکد پیگیری: 99887766\nمانده: 41,000,000\n1405/08/09-11:02` } });
+  ok(p4.data.result === 'paid' && (await row('SELECT status FROM orders WHERE id = ?', oa.id)).status === 'paid', 'PAY-02: the real deposit line confirms the order: ' + JSON.stringify(p4.data));
+
+  // ---------------- PAY-03 ----------------
+  const tb = await signup('paysms-b@example.com', { device: 'psb' });
+  const tc = await signup('paysms-c@example.com', { device: 'psc' });
+  const ob = (await call('POST', '/api/v1/orders', { token: tb, json: { topup_toman: 4440000, method: 'card' } })).data;
+  const sms3 = `بانک ملی\nواریز: ${rial(ob.amount_toman * 10)}\nمانده: 12,345,000\n1405/08/09-12:40`;
+  ok((await call('POST', '/sms/' + key, { json: { from: '+989100', text: sms3 } })).data.result === 'paid', 'PAY-03: the forwarded SMS pays order B');
+  const oc = (await call('POST', '/api/v1/orders', { token: tc, json: { topup_toman: 4440000, method: 'card' } })).data;
+  await exec('UPDATE orders SET amount_toman = ? WHERE id = ?', ob.amount_toman, oc.id); // same amount (1 in 99 for the same price)
+  n = fakes.tg.calls.length;
+  await tgWebhook({ message: { ...A, text: sms3.replace(/\n/g, '\n ').replace('ی', 'ي') } }); // the admin pastes the same SMS (spacing, Arabic ي)
+  ok((await row('SELECT status FROM orders WHERE id = ?', oc.id)).status === 'pending', 'PAY-03: the same SMS pasted into the bot does not pay a second order');
+  ok(texts(n).includes('قبلاً') && texts(n).includes(`#${ob.id}`), 'PAY-03: the admin is told it was already counted for order #B: ' + texts(n).slice(0, 200));
+  ok((await call('POST', '/sms/' + key, { json: { from: '+98 912 000 0000', text: sms3 } })).data.result === 'duplicate', 'PAY-03: another forwarder sending the same SMS is a duplicate too');
+  ok((await row("SELECT COUNT(*) c FROM sms_log WHERE result = 'paid' AND order_id IN (?, ?)", ob.id, oc.id)).c === 1, 'PAY-03: one paid sms_log row');
+  // an SMS that came before its order: pasting it later still confirms (it never paid anything)
+  const td = await signup('paysms-d@example.com', { device: 'psd' });
+  const early = `بانک ملی\nواریز: 55,550,000\nمانده: 70,000,000\n1405/08/09-13:00`;
+  ok((await call('POST', '/sms/' + key, { json: { from: '+989100', text: early } })).data.result === 'no_order', 'PAY-03: an SMS with no order yet is logged as no_order');
+  const od = (await call('POST', '/api/v1/orders', { token: td, json: { topup_toman: 5555000, method: 'card' } })).data;
+  await exec('UPDATE orders SET amount_toman = 5555000 WHERE id = ?', od.id);
+  await tgWebhook({ message: { ...A, text: early } });
+  ok((await row('SELECT status FROM orders WHERE id = ?', od.id)).status === 'paid', 'PAY-03: pasting an SMS that paid nothing yet still confirms the order');
+
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

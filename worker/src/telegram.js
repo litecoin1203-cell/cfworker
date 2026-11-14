@@ -573,7 +573,7 @@ async function onMessage(env, msg, opts = {}) {
     if (p.deposit && p.amounts.length) {
       const r = await handleBankSms(env, { sender: 'admin-paste', text, trusted: true, source: 'paste' });
       if (r.result === 'paid') return say(`✅ سفارش #${r.orderId} تأیید و فعال شد.`);
-      if (r.result === 'duplicate') return say('این پیامک قبلاً بررسی شده است.');
+      if (r.result === 'duplicate') return say(r.orderId ? `این پیامک قبلاً حساب شده و سفارش #${r.orderId} را پرداخت کرده است؛ دوباره حساب نمی‌شود.` : 'این پیامک قبلاً بررسی شده است.');
       if (r.result === 'settle_failed') return say(`⚠️ سفارش #${r.orderId} پیدا شد ولی فعال‌سازی انجام نشد: ${r.message}`);
       if (r.result === 'no_order' || r.result === 'ambiguous') return; // handleBankSms already explained it
       return say('سفارش برای تأیید تو فرستاده شد.');
