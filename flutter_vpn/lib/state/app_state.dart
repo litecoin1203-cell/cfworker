@@ -2622,7 +2622,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _triedAll.clear();
       _resynced = false;
       _attemptAt = DateTime.now();
+      // Reconnect from a held tunnel: it stays held if this try fails too.
+      _holdOnFail = holding;
     }
+    holding = false;
     final attempt = ++_attempt;
     phase = Phase.checking;
     tunnelMessage = null;
@@ -2736,7 +2739,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       // instead of spinning.
       _handshake = Timer(const Duration(seconds: 45), () {
         if (stale() || phase != Phase.handshaking) return;
-        unawaited(_stopTunnel());
+        if (!_holdOnFail) unawaited(_stopTunnel());
         _noteFail(target, 'connect_fail');
         _noteNoExit();
         if (lockActive) return _askLock();
@@ -2878,12 +2881,43 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// connect off, so it isn't swapped). Home says so.
   bool exitSilent = false;
 
+  /// A session that was protected is failing over: if no exit answers, its
+  /// tunnel is held (see [holding]) instead of stopped.
+  bool _holdOnFail = false;
+
+  /// A live session lost every exit and Pleat keeps its tunnel up, blocking:
+  /// apps wait instead of leaving with the phone's own IP, until the person
+  /// reconnects or disconnects. Home says so.
+  bool holding = false;
+
+  /// The phone has no network at all (a lift, a mobile-data gap). Live pings
+  /// can't answer then; they are not counted against the exit and the
+  /// tunnel stays as it is. Home says so.
+  bool noNetwork = false;
+
   Future<void> _stopTunnel() {
     _tunnelHeld = false;
+    holding = false;
+    _holdOnFail = false;
     return tunnel.stop();
   }
 
+  /// The tunnel stays (blocking) with [message] on Home; the service is
+  /// told to keep a failed start's tun instead of closing it after a while.
+  void _hold(String message) {
+    _stopTimers();
+    holding = true;
+    unawaited(tunnel.hold());
+    phase = Phase.dropped;
+    connectedAt = null;
+    tunnelMessage = message;
+    progressNote = null;
+    _save();
+    notifyListeners();
+  }
+
   void _fail(String message) {
+    if (_tunnelHeld && _holdOnFail) return _hold(message);
     if (_tunnelHeld) unawaited(_stopTunnel());
     phase = Phase.idle;
     tunnelMessage = message;
@@ -2902,6 +2936,25 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   bool _external = false;
 
   void _onTunnel(TunnelState s) {
+    // A failed start keeps its tun only a short while on its own; a live
+    // session failing over keeps it for as long as that takes.
+    if (s == TunnelState.failed && _holdOnFail && _tunnelHeld) {
+      unawaited(tunnel.hold());
+    }
+    if (holding &&
+        phase == Phase.dropped &&
+        (s == TunnelState.off || s == TunnelState.down)) {
+      // Stopped from the notification (or by Android): nothing held now.
+      _tunnelHeld = false;
+      holding = false;
+      _holdOnFail = false;
+      if (s == TunnelState.off) {
+        phase = Phase.idle;
+        tunnelMessage = null;
+      }
+      notifyListeners();
+      return;
+    }
     if (s == TunnelState.starting) {
       _started = true;
       // Started outside the app (the home-screen widget, or Android's
@@ -2934,6 +2987,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(loadExitAddress());
       unawaited(_googleAfterConnect());
       _noteUp();
+      _holdOnFail = false;
+      noNetwork = false;
       _misses = 0;
       _reported = false;
       _okStreak = 0;
@@ -3032,7 +3087,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Duration get pulseGap {
     final steps = metered ? pulseStepsMetered : pulseSteps;
     final first = metered ? _pulseFirstMetered : _pulseFirst;
-    if (_misses > 0 || _okStreak < first) return steps.first;
+    if (_misses > 0 || noNetwork || _okStreak < first) return steps.first;
     var i = 1 + (_okStreak - first) ~/ _pulsePer;
     i = i.clamp(1, _foreground ? 1 : steps.length - 1);
     return steps[i];
@@ -3069,6 +3124,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _misses = 0;
       _okStreak++;
       exitSilent = false;
+      noNetwork = false;
       e.measured = ms;
       e.measuredAt = DateTime.now();
       if (!_reported) {
@@ -3081,6 +3137,23 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     _okStreak = 0;
+    // No network under the tunnel at all: no exit could answer, so the miss
+    // isn't the exit's. Nothing is counted and nothing moves: the tunnel
+    // stays (apps wait, nothing leaves bare) and the next ping, 20 s on,
+    // looks again. Pleat sits outside its own tunnel, so Android names the
+    // real network here.
+    if (await tunnel.netKind() == '') {
+      if (phase != Phase.protected || noNetwork) return;
+      noNetwork = true;
+      _misses = 0;
+      notifyListeners();
+      return;
+    }
+    if (phase != Phase.protected) return;
+    if (noNetwork) {
+      noNetwork = false;
+      notifyListeners();
+    }
     if (++_misses < 2) return;
     if (!smartConnect) {
       // The person picked this exit and turned smart connect off: it isn't
@@ -3102,15 +3175,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     phase = Phase.handshaking;
     connectedAt = null;
     tunnelMessage = null;
+    // A live session: whatever happens next, its tunnel is not let go
+    // without the person (see [holding]).
+    _holdOnFail = true;
     notifyListeners();
     if (!_failover(as: 'silent')) {
       _noteNoExit();
       if (lockActive) return _askLock();
-      await _stopTunnel();
-      phase = Phase.dropped;
-      tunnelMessage = '${e.title} stopped answering.';
-      _save();
-      notifyListeners();
+      _hold('${e.title} stopped answering.');
     }
   }
 
@@ -3408,6 +3480,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// exit tests still running are told to stop.
   Future<void> cancel() async {
     _attempt++;
+    noNetwork = false;
     _testGen++;
     _handshake?.cancel();
     progressNote = null;
@@ -3424,6 +3497,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _endTunnel({required bool log}) async {
     _attempt++;
     _stopTimers();
+    noNetwork = false;
     final running = phase == Phase.protected || phase == Phase.handshaking;
     if (log && phase == Phase.protected) _logSession();
     // Idle first, so the tunnel's own "down" is not read as a drop.

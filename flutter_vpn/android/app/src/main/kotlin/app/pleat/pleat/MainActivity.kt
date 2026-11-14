@@ -168,6 +168,10 @@ class MainActivity : FlutterActivity() {
                             startActivityForResult(ask, ASK_VPN)
                         }
                     }
+                    "hold" -> {
+                        PleatVpnService.instance?.hold()
+                        result.success(null)
+                    }
                     "stop" -> {
                         startService(Intent(this, PleatVpnService::class.java).setAction(PleatVpnService.ACTION_STOP))
                         result.success(null)

@@ -534,7 +534,13 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
 4. **Smart connect**: rank by the current network's ping + speed, start with the best; when smart connect is
    on and the exit is not pinned, the core runs a `leastPing` balancer with 2 backups (failover inside the
    core, 1.2.22). Switching exits hands over the tun without tearing it down (no leak), a failed try keeps the
-   tun 20 s.
+   tun 20 s. Live pings that miss while Android names **no network** (`netKind() == ''`) are not counted: no
+   failover, the tunnel stays, pings go on every 20 s (Home: "No network…"). When a session that was protected
+   loses every exit, the tunnel is **held** (blocking, `AppState.holding`, native `hold`) until the person
+   reconnects or disconnects; it is never stopped silently. A fresh connect that fails still stops as before.
+   The config builder refuses what the shipped core removed (`h2`/`h3`/`http`/`quic`, `security=xtls`, flows
+   other than `xtls-rprx-vision[-udp443]`) as "unsupported", and never writes `allowInsecure` (the core refuses
+   it after 2026-08-01): an insecure link is verified like any TLS exit, or by its pin (`pcs`).
 5. Smart connect, its backups and failover only use exits that match the **Route** choice (goal family and
    country, §Home tabs) and say so instead of silently switching protocol.
 6. Iran split (now Home › Route › Split route): Iranian sites/IPs direct (geo files from Loyalsoldier, fetched in
@@ -997,6 +1003,9 @@ Grouped by area. "Proven" means reproduced or measured.
 | P11 `allowBackup` default true | false — #45 |
 | Google not opening while Telegram works on some exits | IPv6 black hole (tun routes `::/0`, exit has no IPv6) — #46 |
 | **1.2.24: no exit connected at all** (proven) — IPIfNonMatch resolved the start check's host to IPv6, which the new block rule refused | AsIs, phone-only rules scoped to `inboundTag socks`, IPv4 DNS — #48 |
+| NET-01 core refuses `allowInsecure` since 2026-08-01; an insecure backup broke the whole config | never written; normal verification or the pin; insecure samples in `XRAY_DUMP` — audit fix |
+| NET-05 h2/http/quic/legacy-XTLS links passed the builder and failed in the core | refused as "unsupported" (failover, backup dropped) — audit fix |
+| NET-02 a short network loss ended in failover → `_stopTunnel` → apps out bare | no-network misses not counted; a live session that lost every exit keeps the tun held — audit fix |
 | A dead line showed as "wrong password / wrong code" | `ApiError.offline` → neutral connection card — #54 |
 | Native crash (SIGABRT) reports carried only the signal | tombstone + Go stderr + tunnel state in the report — #77, #79, #80 (root cause still open, §19) |
 | Widget: start from a fully closed app refused by Android 12+/MIUI | invisible `WidgetConnect` activity — #78 (1.2.42) |
@@ -1161,8 +1170,8 @@ unscored (phone-only).
 encryption / PII in backups · S11 refresh-token rotation (changes the app, needs a phone test) · S15 email
 verification · AD3/P17 panel 1 still special (always in provision, HWID, device removal, buying needs
 `PASARGUARD_URL`) · AD4 real device limit · AD6 staging (second Cloudflare account or separate D1) · P13 pin
-actions to SHAs. Also open: N6 exit domain resolved by the operator's DNS · N7 `allowInsecure=1` from the panel is
-honoured · P20 outdated README · Gmail one-tap sign-in (needs a Google OAuth client).
+actions to SHAs. Also open: N6 exit domain resolved by the operator's DNS · N7 `allowInsecure=1` from the panel
+(no longer written to the config; such exits are verified normally — NET-01) · P20 outdated README · Gmail one-tap sign-in (needs a Google OAuth client).
 
 ### Follow-ups (non-critical)
 PBKDF2 iterations (only with a CPU budget), split `telegram.js`, a `confirmPayment` use case, a notify port,

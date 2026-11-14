@@ -419,6 +419,12 @@ class FakeTunnel extends Tunnel {
   @override
   Future<void> stop() async => stopped = true;
 
+  /// Times the app asked the service to keep a failed start's tun.
+  int holds = 0;
+
+  @override
+  Future<void> hold() async => holds++;
+
   /// Sign-out told the widget to forget the last exit.
   bool forgot = false;
 

@@ -111,6 +111,20 @@ class Tunnel {
     if (await available()) await _method.invokeMethod<void>('stop');
   }
 
+  /// A failed start keeps its tun (blocking) only a short while on its own.
+  /// A live session that lost its exit asks it to stay until the next start
+  /// or a stop, so apps never leave outside the VPN in between.
+  Future<void> hold() async {
+    if (!await available()) return;
+    try {
+      await _method.invokeMethod<void>('hold');
+    } on MissingPluginException {
+      // No native side.
+    } on PlatformException {
+      // An older native side: it closes the tun after a while, as before.
+    }
+  }
+
   /// Current state, for when the app opens while a tunnel already runs.
   Future<TunnelState> current() async {
     if (!await available()) return TunnelState.down;

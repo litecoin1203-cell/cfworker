@@ -255,10 +255,28 @@ class PleatVpnService : VpnService() {
                         // neither comes (the app isn't running, an always-on start),
                         // it is closed after a while as before.
                         TunnelHub.set("failed")
-                        main.postDelayed({ if (gen == generation) stopTunnel("failed") }, FAILED_HOLD_MS)
+                        val close = Runnable { if (gen == generation) stopTunnel("failed") }
+                        failedClose = close
+                        main.postDelayed(close, FAILED_HOLD_MS)
                     } else stopTunnel("failed")
                 }
             }
+        }
+    }
+
+    /** Main thread only: the pending close of a failed start's held tun. */
+    private var failedClose: Runnable? = null
+
+    /**
+     * The app keeps a failed start's tun (blocking) past [FAILED_HOLD_MS]: a
+     * live session lost its exit, and apps must wait rather than leave with
+     * the phone's own IP. It stays until the next start takes it over or a
+     * stop (the app's, or Cancel on the notification) closes it.
+     */
+    fun hold() {
+        main.post {
+            failedClose?.let { main.removeCallbacks(it) }
+            failedClose = null
         }
     }
 
