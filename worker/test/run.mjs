@@ -5125,7 +5125,7 @@ section('Mini App admin parity: Cloudflare monitoring, app health reports, sync 
   }
 }
 
-section('payments audit PAY-02, PAY-03: SMS deposit line only, one SMS pays once');
+section('payments audit PAY-01..PAY-04: stuck settle recovered, SMS deposit line only, one SMS pays once, failed wallet order is not approvable');
 {
   const menu = await import('../src/telegram-menu.js');
   const acts = await import('../src/admin-actions.js');
@@ -5153,7 +5153,111 @@ section('payments audit PAY-02, PAY-03: SMS deposit line only, one SMS pays once
   // a stuck settle: the run that claimed the order was killed (CPU limit, waitUntil cap, slow panel)
   const stick = (id, ago, provisioned) => exec('UPDATE orders SET status = ?, settling_at = ?, provisioned_at = ? WHERE id = ?', 'settling', now() - ago, provisioned ? now() - ago : null, id);
 
-  let n;
+  // ---------------- PAY-01 ----------------
+  const t1 = await signup('stuck1@example.com', { device: 'pay1' });
+  const u1 = await uidOf('stuck1@example.com');
+  const s1 = (await call('POST', '/api/v1/orders', { token: t1, json: { plan_id: monthly.id, method: 'card' } })).data;
+  await stick(s1.id, 3600, false);
+  let n = fakes.tg.calls.length;
+  const run1 = await cron();
+  const r1 = await row('SELECT status, provisioned_at FROM orders WHERE id = ?', s1.id);
+  ok(r1.status === 'paid' && r1.provisioned_at && await expiresOf(u1) > now() + 29 * 86400, 'PAY-01: the per-minute cron finishes an order stuck in settling for an hour: ' + JSON.stringify(r1));
+  ok(texts(n).includes(`#${s1.id}`), 'PAY-01: the admin is told the stuck order was finished');
+  ok(run1 && run1.q <= 50, `PAY-01: the recovering cron run stays within 50 D1 queries (${run1 && run1.q})`);
+  ok((await call('GET', `/api/v1/orders/${s1.id}`, { token: t1 })).data.status === 'paid', 'PAY-01: the user sees the order paid');
+
+  // provision had already committed before the run was cut off: marked paid, never extended a second time
+  const s2 = (await call('POST', '/api/v1/orders', { token: t1, json: { plan_id: monthly.id, method: 'card' } })).data;
+  const exp0 = await expiresOf(u1);
+  const periods0 = (await row('SELECT COUNT(*) c FROM sub_periods WHERE user_id = ?', u1)).c;
+  const puts0 = fakes.pg.puts;
+  await stick(s2.id, 3600, true);
+  await cron();
+  ok((await row('SELECT status FROM orders WHERE id = ?', s2.id)).status === 'paid', 'PAY-01: a stuck order whose plan already reached the panels is marked paid');
+  ok(await expiresOf(u1) === exp0 && (await row('SELECT COUNT(*) c FROM sub_periods WHERE user_id = ?', u1)).c === periods0 && fakes.pg.puts === puts0,
+    'PAY-01: ... and is not delivered twice (same expiry, no new period, no panel write)');
+
+  // a lease still running (another run may be delivering right now) is left alone
+  const s3 = (await call('POST', '/api/v1/orders', { token: t1, json: { plan_id: monthly.id, method: 'card' } })).data;
+  await stick(s3.id, 300, false);
+  await cron();
+  ok((await row('SELECT status FROM orders WHERE id = ?', s3.id)).status === 'settling', 'PAY-01: a settle younger than 10 minutes is not touched');
+  await exec("UPDATE orders SET status = 'cancelled' WHERE id = ?", s3.id);
+
+  // one order per run (the run's D1 and subrequest budget)
+  const t4 = await signup('stuck4@example.com', { device: 'pay4' });
+  const a4 = (await call('POST', '/api/v1/orders', { token: t4, json: { plan_id: monthly.id, method: 'card' } })).data;
+  const b4 = (await call('POST', '/api/v1/orders', { token: t4, json: { topup_toman: 120000, method: 'card' } })).data;
+  await stick(a4.id, 7200, false); await stick(b4.id, 3600, false);
+  await cron();
+  const st4 = async () => [(await row('SELECT status FROM orders WHERE id = ?', a4.id)).status, (await row('SELECT status FROM orders WHERE id = ?', b4.id)).status];
+  ok(JSON.stringify(await st4()) === '["paid","settling"]', 'PAY-01: one stuck order per cron run, oldest first: ' + JSON.stringify(await st4()));
+  await cron();
+  ok(JSON.stringify(await st4()) === '["paid","paid"]', 'PAY-01: the next run takes the next one');
+
+  // a stuck wallet order that still cannot be delivered: refunded exactly once and cancelled
+  const t5 = await signup('stuck5@example.com', { device: 'pay5' });
+  const u5 = await row('SELECT * FROM users WHERE email = ?', 'stuck5@example.com');
+  await exec('UPDATE users SET wallet_balance = ? WHERE id = ?', monthly.price_toman, u5.id);
+  const w5 = await insert5();
+  async function insert5() {
+    const r = await exec("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, ?, 'wallet', 'pending', ?)", u5.id, monthly.id, monthly.price_toman, now());
+    return r.meta.last_row_id;
+  }
+  await billing.walletApply(env, { ...u5 }, -monthly.price_toman, 'purchase', w5, 'test');
+  await stick(w5, 3600, false);
+  for (const p of Object.values(fakes.panels)) p.down = true;
+  n = fakes.tg.calls.length;
+  await cron();
+  await cron();
+  for (const p of Object.values(fakes.panels)) p.down = false;
+  await cron();
+  const w5r = await row("SELECT o.status, u.wallet_balance b, (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'refund') refunds FROM orders o JOIN users u ON u.id = o.user_id WHERE o.id = ?", w5);
+  ok(w5r.status === 'cancelled' && w5r.b === monthly.price_toman && w5r.refunds === 1, 'PAY-01: a stuck wallet order that fails again is refunded exactly once and cancelled: ' + JSON.stringify(w5r));
+  ok(!await expiresOf(u5.id), 'PAY-01: ... and no plan was delivered');
+  ok(texts(n).includes(`#${w5}`), 'PAY-01: the admin hears about the refunded wallet order');
+
+  // a stuck wallet order that can be delivered: paid, the money stays spent (once)
+  const w6 = await insert5();
+  await exec('UPDATE users SET wallet_balance = ? WHERE id = ?', monthly.price_toman, u5.id);
+  await billing.walletApply(env, { ...u5 }, -monthly.price_toman, 'purchase', w6, 'test');
+  await stick(w6, 3600, false);
+  await cron();
+  const w6r = await row("SELECT o.status, u.wallet_balance b FROM orders o JOIN users u ON u.id = o.user_id WHERE o.id = ?", w6);
+  ok(w6r.status === 'paid' && w6r.b === 0 && await expiresOf(u5.id) > now(), 'PAY-01: a stuck wallet order that can be delivered is paid, charged once: ' + JSON.stringify(w6r));
+
+  // the admin's own way out: the order card offers «🔁 تلاش دوباره» (asks first), and the old 🔁 button works too
+  const t7 = await signup('stuck7@example.com', { device: 'pay7' });
+  const s7 = (await call('POST', '/api/v1/orders', { token: t7, json: { plan_id: monthly.id, method: 'card' } })).data;
+  await stick(s7.id, 3600, false);
+  const card7 = await menu.renderScreen(env, `o:${s7.id}`);
+  const retryBtn = card7.kb.flat().find((x) => x.callback_data === `m:orr:${s7.id}`);
+  ok(retryBtn && retryBtn.text.includes('تلاش دوباره') && !flat(card7.kb).includes(`m:oap:${s7.id}`), 'PAY-01: a stuck order card has a «🔁 تلاش دوباره» button: ' + JSON.stringify(flat(card7.kb)));
+  ok(!flat((await menu.renderScreen(env, `o:${s2.id}`)).kb).includes(`m:orr:${s2.id}`), 'PAY-01: a paid order has no retry button');
+  n = fakes.tg.calls.length;
+  await tap(`m:orr:${s7.id}`);
+  const cf7 = confirmOf(n);
+  ok(cf7 && (await row('SELECT status FROM orders WHERE id = ?', s7.id)).status === 'settling', 'PAY-01: retry asks first');
+  await tap(cf7);
+  ok((await row('SELECT status FROM orders WHERE id = ?', s7.id)).status === 'paid' && await expiresOf(await uidOf('stuck7@example.com')) > now(), 'PAY-01: retry from the bot finishes the order');
+  const s8 = (await call('POST', '/api/v1/orders', { token: t7, json: { plan_id: monthly.id, method: 'card' } })).data;
+  await stick(s8.id, 3600, false);
+  await tap(`rp:${s8.id}`);
+  ok((await row('SELECT status FROM orders WHERE id = ?', s8.id)).status === 'paid', 'PAY-01: the 🔁 button from a panel error message also retries a stuck order');
+  // a card order that fails again goes back to review, where approve / reject work as usual
+  const s9 = (await call('POST', '/api/v1/orders', { token: t7, json: { topup_toman: 130000, method: 'card' } })).data;
+  await stick(s9.id, 3600, false);
+  const realUrl = env.PASARGUARD_URL;
+  const realWalletApply = null; void realWalletApply;
+  // a top-up delivers into the wallet; make it fail by breaking the wallet write once
+  const prep = env.DB.prepare;
+  let broke = false;
+  env.DB.prepare = (sql) => { if (!broke && /INSERT OR IGNORE INTO wallet_tx/.test(sql)) { broke = true; throw new Error('D1 hiccup'); } return prep.call(env.DB, sql); };
+  await cron();
+  env.DB.prepare = prep; env.PASARGUARD_URL = realUrl;
+  ok(broke && (await row('SELECT status FROM orders WHERE id = ?', s9.id)).status === 'review', 'PAY-01: a stuck card order that fails again goes back to review');
+  ok((await acts.runAction(env, '12345', 'order.approve', { orderId: s9.id })).ok && (await row('SELECT status FROM orders WHERE id = ?', s9.id)).status === 'paid', 'PAY-01: ... and can be approved from there');
+
   // ---------------- PAY-02 ----------------
   const banks = [
     ['Mellat', 'بانک ملت\nحساب 1234567890\nواریز: 1,890,370\nمانده: 25,300,000\n1405/08/06\n10:22', [1890370]],
@@ -5225,6 +5329,31 @@ section('payments audit PAY-02, PAY-03: SMS deposit line only, one SMS pays once
   await tgWebhook({ message: { ...A, text: early } });
   ok((await row('SELECT status FROM orders WHERE id = ?', od.id)).status === 'paid', 'PAY-03: pasting an SMS that paid nothing yet still confirms the order');
 
+  // ---------------- PAY-04 ----------------
+  const tw = await signup('poorwallet@example.com', { device: 'pw' });
+  const uw = await uidOf('poorwallet@example.com');
+  const fw = await call('POST', '/api/v1/orders', { token: tw, json: { plan_id: monthly.id, method: 'wallet' } });
+  const fwr = await row('SELECT id, status FROM orders WHERE user_id = ? ORDER BY id DESC', uw);
+  ok(fw.status === 400 && fw.data.detail.code === 'insufficient_balance' && fwr.status === 'cancelled', 'PAY-04: a wallet purchase without the money leaves no pending order: ' + JSON.stringify(fwr));
+  const ap4 = await acts.runAction(env, '12345', 'order.approve', { orderId: fwr.id });
+  ok(!ap4.ok && !await expiresOf(uw), 'PAY-04: approve refuses it, no plan delivered');
+  // an unpaid wallet order left pending by the old code: no approve button anywhere, and approve refuses it
+  const legacy = (await exec("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, ?, 'wallet', 'pending', ?)", uw, monthly.id, monthly.price_toman, now())).meta.last_row_id;
+  const lc = await menu.renderScreen(env, `o:${legacy}`);
+  ok(!flat(lc.kb).includes(`m:oap:${legacy}`), 'PAY-04: the bot order card shows no approve button for an unpaid wallet order: ' + JSON.stringify(flat(lc.kb)));
+  const lj = await (await adminApi.order(env, legacy)).json();
+  ok(lj.can && lj.can.approve === false, 'PAY-04: the Mini App order says it cannot be approved: ' + JSON.stringify(lj.can));
+  n = fakes.tg.calls.length;
+  await tap(`m:oap:${legacy}`);
+  ok(!confirmOf(n), 'PAY-04: tapping an old approve button does not even ask');
+  const ap5 = await acts.runAction(env, '12345', 'order.approve', { orderId: legacy });
+  await tgWebhook({ callback_query: { id: 'pay-ap-legacy', data: `ap:${legacy}`, message: { ...A, message_id: 991, text: 'x' } } });
+  const lw = await row('SELECT o.status, u.wallet_balance b FROM orders o JOIN users u ON u.id = o.user_id WHERE o.id = ?', legacy);
+  ok(!ap5.ok && lw.status !== 'paid' && lw.b === 0 && !await expiresOf(uw), 'PAY-04: approve (action and receipt button) never delivers an unpaid wallet order: ' + JSON.stringify(lw));
+  // a paid-for wallet order still works as before
+  await exec('UPDATE users SET wallet_balance = ? WHERE id = ?', monthly.price_toman, uw);
+  const okw = await call('POST', '/api/v1/orders', { token: tw, json: { plan_id: monthly.id, method: 'wallet' } });
+  ok(okw.status === 201 && okw.data.status === 'paid' && await expiresOf(uw) > now(), 'PAY-04: a wallet purchase with the money is delivered');
 }
 
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');

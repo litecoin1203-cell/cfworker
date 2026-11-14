@@ -250,6 +250,11 @@ async function deliver(env, order, quiet) {
     if (order.activate_plan_id) await autoActivate(env, user, order);
     return;
   }
+  // a wallet order is delivered only against its own wallet debit (PAY-04): never one whose purchase failed
+  // before the money moved, and never one already refunded
+  if (order.method === 'wallet' && order.amount_toman > 0 && !(await walletPaid(env, order.id))) {
+    throw new BillingError('wallet_unpaid', 'این سفارش از کیف پول پرداخت نشده است و تحویل نمی‌شود.');
+  }
   const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', order.plan_id);
   if (!plan) throw new BillingError('plan_missing', 'این پلن دیگر وجود ندارد.');
   // a retry after a crash must not extend the panel account a second time
@@ -296,26 +301,91 @@ async function autoActivate(env, user, topup) {
   }
 }
 
+// 1 when this wallet order's price left the wallet and was not given back (SQL, for screens: o = the order row)
+export const WALLET_PAID_SQL = `(EXISTS (SELECT 1 FROM wallet_tx WHERE order_id = o.id AND reason = 'purchase')
+  AND NOT EXISTS (SELECT 1 FROM wallet_tx WHERE order_id = o.id AND reason = 'refund'))`;
+async function walletPaid(env, orderId) {
+  const r = await first(env, `SELECT ${WALLET_PAID_SQL} p FROM orders o WHERE o.id = ?`, orderId);
+  return !!(r && r.p);
+}
+
 export async function payWithWallet(env, user, order) {
-  const fresh = await first(env, 'SELECT wallet_balance FROM users WHERE id = ?', user.id);
-  if (fresh.wallet_balance < order.amount_toman) throw new BillingError('insufficient_balance', 'موجودی کیف پول کافی نیست.');
-  await walletApply(env, user, -order.amount_toman, 'purchase', order.id, `پرداخت سفارش #${order.id}`);
+  try {
+    const fresh = await first(env, 'SELECT wallet_balance FROM users WHERE id = ?', user.id);
+    if (fresh.wallet_balance < order.amount_toman) throw new BillingError('insufficient_balance', 'موجودی کیف پول کافی نیست.');
+    await walletApply(env, user, -order.amount_toman, 'purchase', order.id, `پرداخت سفارش #${order.id}`);
+  } catch (e) {
+    // nothing was taken: the order is closed, never left 'pending' for someone to approve without the money (PAY-04)
+    await run(env, `UPDATE orders SET status = 'cancelled' WHERE id = ? AND status = 'pending'
+      AND NOT EXISTS (SELECT 1 FROM wallet_tx WHERE order_id = orders.id AND reason = 'purchase')`, order.id);
+    order.status = 'cancelled';
+    throw e;
+  }
   try {
     await settle(env, order);
   } catch (e) {
-    // The plan may already be on the panels (provisioned_at is written with the new period) and only a later step
-    // failed: then the money stays spent and the order is paid, never a plan delivered and refunded too.
-    const o = await first(env, 'SELECT provisioned_at FROM orders WHERE id = ?', order.id).catch(() => null);
-    if (o && o.provisioned_at) {
-      await run(env, "UPDATE orders SET status = 'paid', paid_at = COALESCE(paid_at, ?), settling_at = NULL WHERE id = ?", nowSec(), order.id);
-      order.status = 'paid';
-      logError('wallet order delivered but settle failed after delivery', e, { order: order.id });
-      return;
-    }
-    // refund what we just deducted, keeping idempotency via a distinct reason
-    await walletApply(env, user, order.amount_toman, 'refund', order.id, `بازگشت وجه سفارش #${order.id}`);
-    await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ? AND status NOT IN ('paid', 'settling')", order.id);
-    await releaseCoupon(env, order);
+    await undoWalletOrder(env, user, order, e);
     throw e;
   }
+}
+
+// A wallet order that could not be delivered. The plan may already be on the panels (provisioned_at is written with
+// the new period) and only a later step failed: then the money stays spent and the order is paid, never a plan
+// delivered and refunded too. Otherwise the price goes back to the wallet once (wallet_tx is UNIQUE(order_id, reason))
+// and only if it was taken. Returns 'paid' or 'refunded'.
+async function undoWalletOrder(env, user, order, e) {
+  const o = await first(env, 'SELECT provisioned_at FROM orders WHERE id = ?', order.id).catch(() => null);
+  if (o && o.provisioned_at) {
+    await run(env, "UPDATE orders SET status = 'paid', paid_at = COALESCE(paid_at, ?), settling_at = NULL WHERE id = ?", nowSec(), order.id);
+    order.status = 'paid';
+    logError('wallet order delivered but settle failed after delivery', e, { order: order.id });
+    return 'paid';
+  }
+  if (await first(env, "SELECT 1 x FROM wallet_tx WHERE order_id = ? AND reason = 'purchase'", order.id)) {
+    await walletApply(env, user, order.amount_toman, 'refund', order.id, `بازگشت وجه سفارش #${order.id}`);
+  }
+  await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ? AND status NOT IN ('paid', 'settling')", order.id);
+  order.status = 'cancelled';
+  await releaseCoupon(env, order);
+  return 'refunded';
+}
+
+// ---------------- stuck settles (PAY-01) ----------------
+// A settle cut off half way (the Free plan's 10 ms CPU, the 30 s waitUntil cap, a panel answering slowly) leaves its
+// order 'settling' and nothing else ever picks it up. After STUCK_AFTER seconds (well past the 120 s lease) the
+// per-minute cron and the admin's «🔁 تلاش دوباره» run settle again. That never delivers twice: settle claims the
+// expired lease atomically, and an order whose plan already reached the panels (provisioned_at, written in the same
+// batch as the new period) is only marked paid.
+export const STUCK_AFTER = 600;
+export const isStuck = (o, now = nowSec()) => !!o && o.status === 'settling' && (!o.settling_at || o.settling_at < now - STUCK_AFTER);
+
+// Settle a stuck order once more. Returns {result: 'paid' | 'review' | 'refunded', error?}. A card / crypto order
+// that fails again goes back to review (approve / reject as usual); a wallet order is refunded (once) and cancelled.
+export async function recoverStuck(env, order, { quiet = false } = {}) {
+  if (!isStuck(order)) throw new BillingError('not_stuck', 'این سفارش گیر نکرده است.');
+  try {
+    await settle(env, order, { quiet });
+    return { result: 'paid' };
+  } catch (e) {
+    if (e instanceof BillingError && e.code === 'settle_busy') throw e;
+    if (order.method === 'wallet') {
+      const user = await first(env, 'SELECT * FROM users WHERE id = ?', order.user_id);
+      return { result: await undoWalletOrder(env, user, order, e), error: e };
+    }
+    return { result: 'review', error: e };
+  }
+}
+
+// Cron: the oldest stuck order, one per run (a delivery costs about 15 D1 queries and 12 subrequests of the run's 50).
+// Returns null when there is none, else what happened to it.
+export async function recoverStuckTick(env) {
+  const o = await first(env, "SELECT * FROM orders WHERE status = 'settling' AND (settling_at IS NULL OR settling_at < ?) ORDER BY settling_at LIMIT 1", nowSec() - STUCK_AFTER);
+  if (!o) return null;
+  let r;
+  try { r = await recoverStuck(env, o); } catch (e) { logError('stuck order retry failed', e, { order: o.id }); return { id: o.id, result: 'busy' }; }
+  const msg = r.result === 'paid' ? `🔁 سفارش #${o.id} که وسط فعال‌سازی مانده بود، خودکار دوباره امتحان شد و تحویل شد.`
+    : r.result === 'refunded' ? `↩️ سفارش کیف پول #${o.id} وسط فعال‌سازی مانده بود و دوباره هم تحویل نشد؛ ${o.amount_toman.toLocaleString('en-US')} تومان به کیف پول کاربر برگشت و سفارش لغو شد.\nخطا: ${untrusted(r.error && r.error.message)}`
+      : `⚠️ سفارش #${o.id} وسط فعال‌سازی مانده بود و دوباره هم تحویل نشد؛ به «در انتظار بررسی» برگشت. بعد از رفع مشکل از کارت سفارش تأییدش کن.\nخطا: ${untrusted(r.error && r.error.message)}`;
+  try { await notifyAdmin(env, msg, { inline_keyboard: [[{ text: '🧾 کارت سفارش', callback_data: `m:o:${o.id}` }]] }); } catch (e) { /* told in the log */ }
+  return { id: o.id, result: r.result };
 }

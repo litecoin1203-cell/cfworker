@@ -62,6 +62,9 @@ export default {
     }
     if (event && event.cron && event.cron !== '30 20 * * *') {
       ctx.waitUntil((async () => {
+        // an order whose settle was cut off half way (PAY-01): one per run. Finishing it costs about a delivery's D1
+        // queries and subrequests, so a run that did one leaves the chain scan and the sync job to the next minute.
+        try { const { recoverStuckTick } = await import('./billing.js'); if (await recoverStuckTick(env)) return; } catch (e) { logError('stuck order check failed', e); }
         // both share this run's 50 subrequests: the sync job gets what the chain scan left
         let spent = 0;
         try { const { scanAll } = await import('./chainwatch.js'); spent = (await scanAll(env)).spent || 0; } catch (e) { spent = 8; logError('chain scan failed', e); }

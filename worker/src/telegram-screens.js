@@ -6,6 +6,7 @@ import { nowSec } from './util.js';
 import { statsText, userInfo, HELP, STATE_FA } from './telegram.js';
 import { canUndo, APP_LISTS, splitAppList, maskBridge, itemTag } from './admin-actions.js';
 import { COINS, walletKey, coinById } from './coins.js';
+import { WALLET_PAID_SQL, isStuck } from './billing.js';
 
 export const fa = (n) => Number(n || 0).toLocaleString('en-US');
 export const b = (text, data) => ({ text, callback_data: String(data).slice(0, 64) });
@@ -376,9 +377,11 @@ export async function orderSearch(env, raw) {
 }
 
 export const ORDER_OPEN = ['pending', 'review', 'expired', 'rejected'];
+// a wallet order is approvable only when its price really left the wallet (PAY-04); o.wallet_paid from WALLET_PAID_SQL
+export const approvable = (o) => o.method !== 'wallet' || !(o.amount_toman > 0) || !!o.wallet_paid;
 export async function order(env, id) {
   const o = await first(env, `SELECT o.*, u.email, u.tg_id, u.tg_username, p.name plan_name, c.code coupon_code,
-      (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'admin_refund') refunded
+      (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'admin_refund') refunded, ${WALLET_PAID_SQL} wallet_paid
     FROM orders o JOIN users u ON u.id = o.user_id LEFT JOIN plans p ON p.id = COALESCE(o.plan_id, o.activate_plan_id)
     LEFT JOIN coupons c ON c.id = o.coupon_id WHERE o.id = ?`, id);
   if (!o) return { text: crumb('🧾 سفارش') + '\n\nسفارش پیدا نشد.', kb: [nav('or')] };
@@ -386,7 +389,8 @@ export async function order(env, id) {
   const open = ORDER_OPEN.includes(o.status);
   const canRefund = o.status === 'paid' && o.kind !== 'topup' && o.amount_toman > 0 && !o.refunded;
   const acts = [
-    ...(open ? [b('✅ تأیید و فعال‌سازی', `m:oap:${o.id}`)] : []),
+    ...(open && approvable(o) ? [b('✅ تأیید و فعال‌سازی', `m:oap:${o.id}`)] : []),
+    ...(isStuck(o) ? [b('🔁 تلاش دوباره', `m:orr:${o.id}`)] : []),
     ...(['pending', 'review', 'expired'].includes(o.status) ? [b('❌ رد', `m:orj:${o.id}`)] : []),
     ...(open ? [b('🚫 لغو', `m:ocx:${o.id}`)] : []),
   ];

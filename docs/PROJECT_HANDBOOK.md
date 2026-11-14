@@ -385,6 +385,32 @@ Later money fixes (engineering audit, PRs #63–#65, 2026-11-11):
 **The SMS amount unit bug (F1)**: Iranian bank SMS show **rials**, prices are **toman** (×10). This was a real
 HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman straight.
 
+Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
+- **PAY-01 stuck settles**: a `settle` cut off half way (10 ms CPU, the 30 s `waitUntil` cap, a slow panel) used to
+  leave the order in `settling` forever. `billing.recoverStuckTick` (first step of the per-minute cron) takes the
+  oldest order whose `settling_at` is over **10 minutes** old (`STUCK_AFTER`), **one per run**, and settles it again;
+  a run that did one skips the chain scan and sync until the next minute (D1/subrequest budget). It never delivers
+  twice: `settle` claims the expired lease atomically and `provisioned_at` (same batch as the new period) turns a
+  retry into "mark paid". A card/crypto order that fails again goes back to `review`; a **wallet** order is refunded
+  once (`wallet_tx` UNIQUE(order_id, reason), only if the purchase debit exists) and cancelled. The admin hears about
+  each one. The bot's order card shows **«🔁 تلاش دوباره»** (`m:orr:`, asks first, owner only) on such an order, and the
+  older `rp:` button and `order.approve` also accept it.
+- **PAY-02 SMS amount**: `sms.parseBankSms` takes an amount **only from a deposit line**: a line with a deposit word
+  (واریز…) or `مبلغ`, or an amount marked `+`. Withdrawal lines are skipped, and a line is cut at
+  شرح/بابت/توضیحات/پیگیری/رهگیری/مانده/موجودی/شناسه/سند/مرجع/کد (payer text, references and the balance are never the
+  amount). Account/card/date tokens with separators (`207.8000.…`, `849-810-…`, `1405/08/06-10:22`) are ignored.
+  **More than one deposit amount = unclear → never auto-confirmed** (admin gets ✅ buttons); a deposit with no clear
+  amount goes to the admin. F1 (rial unless the line says تومان and not ریال) is unchanged. Tests cover Mellat, Melli,
+  Saderat, Tejarat, Pasargad, Saman, Blu and Resalat style SMS (made-up numbers).
+- **PAY-03 SMS dedup**: the `sms_log.hash` is HMAC of the normalised SMS text only (digits, ي/ك, zero-width chars,
+  spaces), **not the sender**, so a forwarded copy and the admin's pasted copy are one deposit (no schema change).
+  A copy from another source is looked at again only while the SMS has paid nothing (atomic claim on its row), so an
+  SMS that arrived before its order can still be pasted later. Rows written before this change keep the old hash.
+- **PAY-04 failed wallet purchase**: a wallet purchase that fails before the debit (insufficient balance) now
+  cancels its order instead of leaving it `pending`. `deliver` refuses a wallet order (amount > 0) with no
+  `purchase` debit or with a refund (`wallet_unpaid`), and the bot card, the `oap` button and the Mini App
+  `can.approve` hide approve for such an order (`WALLET_PAID_SQL`).
+
 ---
 
 ## 8. Panels and the control plane
@@ -1169,6 +1195,10 @@ PBKDF2 iterations (only with a CPU budget), split `telegram.js`, a `confirmPayme
 compat-date bump (`2025-09-01`), delete `android/`,
 `app-web/`, `android.yml` and the old-app compatibility paths (`centralApp`, `sub_url`, `/vpn/sub`,
 `/pay/done` with `cloudgold://`). Not built: per-session byte usage, Cloudflare clean-IP/SNI tricks, a domestic relay for intranet-only periods, Hiddify adapter.
+Payments (after PAY-01..04): a real sample of the owner's bank SMS is still wanted to confirm the deposit-line rule
+on his exact format (unclear SMS go to the admin, never auto-paid); an order whose settle is killed every time is
+retried every 10 minutes with no cap; SMS logged before PAY-03 keep their sender-based hash; the card suffix is still
+predictable (`(id*37+i)%99`) and a just-paid amount can be reused at once (audit suggestions not in the approved scope).
 
 ---
 
