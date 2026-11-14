@@ -1,0 +1,30 @@
+Pleat bundles these open-source components in its APK, unmodified. The
+exact source code of the version in this build is available at the addresses
+below, free of charge.
+
+AndroidLibXrayLite v26.7.5 (libv2ray.aar, libgojni.so)
+  GNU Lesser General Public License v3.0, with the GNU GPL v3.0 it builds on.
+  Source: https://github.com/2dust/AndroidLibXrayLite/tree/v26.7.5
+  It is linked as a separate shared library (libgojni.so), so an
+  interface-compatible modified version can take its place.
+
+Xray-core (compiled into libgojni.so)
+  Mozilla Public License 2.0.
+  AndroidLibXrayLite v26.7.5 builds it from the module
+  github.com/autorepobot/xray-core v0.0.0-20260704054728-50c452881eb9
+  (a mirror of github.com/xtls/xray-core, see its go.mod replace line).
+  Source: https://proxy.golang.org/github.com/autorepobot/xray-core/@v/v0.0.0-20260704054728-50c452881eb9.zip
+  Upstream: https://github.com/XTLS/Xray-core
+
+hev-socks5-tunnel commit 67dfba56c0a9254f401447e0751432bd36617d70
+(libhev-socks5-tunnel.so), with hev-socks5-core, hev-task-system, yaml and lwIP
+  MIT License (lwIP: BSD 3-clause).
+  Source: https://github.com/heiher/hev-socks5-tunnel/tree/67dfba56c0a9254f401447e0751432bd36617d70
+
+Go modules inside libgojni.so
+  Each under its own licence, listed under "Go modules" by module and version.
+  Source of any of them: https://proxy.golang.org/<module>/@v/<version>.zip
+
+Routing data (geoip.dat, geosite.dat)
+  GNU GPL v3.0, GeoLite2 data by MaxMind. See "Routing data".
+  Source: https://github.com/Loyalsoldier/v2ray-rules-dat

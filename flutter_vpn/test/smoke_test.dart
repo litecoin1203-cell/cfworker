@@ -1243,6 +1243,43 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
   });
 
+  testWidgets('LEG-01: Profile has Open-source licences next to the version', (
+    tester,
+  ) async {
+    await _boot(tester, {'onboarded': true}, tunnel: FakeTunnel());
+    await tester.tap(find.textContaining(', Ali'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    final entry = find.text('OPEN-SOURCE LICENCES');
+    await tester.scrollUntilVisible(
+      entry,
+      300,
+      scrollable: find
+          .descendant(
+            of: find.byType(ProfileScreen),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    expect(entry, findsOneWidget);
+    // next to the version footer, under Check for updates
+    expect(
+      tester.getTopLeft(entry).dy,
+      greaterThan(tester.getTopLeft(find.text('CHECK FOR UPDATES')).dy),
+    );
+    await tester.ensureVisible(entry);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(entry);
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(LicensePage), findsOneWidget);
+    expect(find.textContaining('Pleat: source code'), findsWidgets);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
   testWidgets('a long email fits one line on a small phone, domain kept', (
     tester,
   ) async {
