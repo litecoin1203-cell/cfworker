@@ -388,13 +388,20 @@ HIGH bug (pay 1/10 of the price). Any SMS code change must keep rial/toman strai
 Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 - **PAY-01 stuck settles**: a `settle` cut off half way (10 ms CPU, the 30 s `waitUntil` cap, a slow panel) used to
   leave the order in `settling` forever. `billing.recoverStuckTick` (first step of the per-minute cron) takes the
-  oldest order whose `settling_at` is over **10 minutes** old (`STUCK_AFTER`), **one per run**, and settles it again;
-  a run that did one skips the chain scan and sync until the next minute (D1/subrequest budget). It never delivers
-  twice: `settle` claims the expired lease atomically and `provisioned_at` (same batch as the new period) turns a
-  retry into "mark paid". A card/crypto order that fails again goes back to `review`; a **wallet** order is refunded
-  once (`wallet_tx` UNIQUE(order_id, reason), only if the purchase debit exists) and cancelled. The admin hears about
-  each one. The bot's order card shows **«🔁 تلاش دوباره»** (`m:orr:`, asks first, owner only) on such an order, and the
-  older `rp:` button and `order.approve` also accept it.
+  oldest order whose `settling_at` is over **10 minutes** old (`STUCK_AFTER`) but **under 7 days** old
+  (`AUTO_RECOVER_DAYS`), **one per run**, and settles it again; a run that tried one skips the chain scan and sync
+  until the next minute (D1/subrequest budget) but still runs `ensureWebhook`; a "busy" result (another run holds it)
+  skips nothing. Older stuck orders, and any with `settling_at` NULL, are **never settled by themselves** (the owner
+  may have fixed them by hand): the owner gets **one** notice listing them (remembered in `settings.stuck_old_notice`)
+  with a «🔁 تلاش دوباره» button each. It never delivers twice: `settle` claims the expired (or NULL) lease atomically
+  and `provisioned_at` (same batch as the new period) turns a retry into "mark paid". A card/crypto order that fails
+  again goes back to `review`; a **wallet** order is cancelled and refunded in **one D1 batch**, cancel first, and the
+  refund only moves when the order is then `cancelled`, not provisioned and has its purchase debit (`wallet_tx`
+  UNIQUE(order_id, reason) keeps it to once); if another run claimed it in between, nothing is refunded. The admin
+  hears about each one. The bot's order card shows **«🔁 تلاش دوباره»** (`m:orr:`, asks first, owner only) on such an
+  order; the confirm (`o_retry`) re-checks that the order is still stuck and otherwise only shows its state. The older
+  `rp:`/`ap:` buttons and `order.approve` also accept a stuck order; support can therefore retry through `ap:`/`rp:`
+  from old notifications (no escalation: support may approve receipts anyway). The Mini App has no retry button.
 - **PAY-02 SMS amount**: `sms.parseBankSms` takes an amount **only from a deposit line**: a line with a deposit word
   (واریز…) or `مبلغ`, or an amount marked `+`. Withdrawal lines are skipped, and a line is cut at
   شرح/بابت/توضیحات/پیگیری/رهگیری/مانده/موجودی/شناسه/سند/مرجع/کد (payer text, references and the balance are never the
@@ -404,8 +411,11 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   Saderat, Tejarat, Pasargad, Saman, Blu and Resalat style SMS (made-up numbers).
 - **PAY-03 SMS dedup**: the `sms_log.hash` is HMAC of the normalised SMS text only (digits, ي/ك, zero-width chars,
   spaces), **not the sender**, so a forwarded copy and the admin's pasted copy are one deposit (no schema change).
-  A copy from another source is looked at again only while the SMS has paid nothing (atomic claim on its row), so an
-  SMS that arrived before its order can still be pasted later. Rows written before this change keep the old hash.
+  A copy from another source is looked at again only when the first copy matched **no order** (`no_order` /
+  `not_deposit` with no `order_id`; atomic claim on its row), so an SMS that arrived before its order can still be
+  pasted later. An SMS tied to an order (paid, or review / ambiguous / settle_failed that the admin then approves
+  with a button) is a duplicate, and the bot names that order. Rows written before this change keep the old
+  sender-based hash: for ~36 h after deploy, do not paste an SMS that was forwarded before the deploy.
 - **PAY-04 failed wallet purchase**: a wallet purchase that fails before the debit (insufficient balance) now
   cancels its order instead of leaving it `pending`. `deliver` refuses a wallet order (amount > 0) with no
   `purchase` debit or with a refund (`wallet_unpaid`), and the bot card, the `oap` button and the Mini App
@@ -1197,7 +1207,8 @@ compat-date bump (`2025-09-01`), delete `android/`,
 `/pay/done` with `cloudgold://`). Not built: per-session byte usage, Cloudflare clean-IP/SNI tricks, a domestic relay for intranet-only periods, Hiddify adapter.
 Payments (after PAY-01..04): a real sample of the owner's bank SMS is still wanted to confirm the deposit-line rule
 on his exact format (unclear SMS go to the admin, never auto-paid); an order whose settle is killed every time is
-retried every 10 minutes with no cap; SMS logged before PAY-03 keep their sender-based hash; the card suffix is still
+retried every 10 minutes with no cap; a wallet order whose debit committed but whose run died before `settle`'s claim
+stays `pending` with the money taken and nobody is told (pre-existing, review N5; it is approvable); SMS logged before PAY-03 keep their sender-based hash; the card suffix is still
 predictable (`(id*37+i)%99`) and a just-paid amount can be reused at once (audit suggestions not in the approved scope).
 
 ---

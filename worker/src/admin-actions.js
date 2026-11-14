@@ -617,17 +617,20 @@ export const COUPON_FIELDS = { p: 'percent', u: 'max_uses', d: 'expires_at', l: 
 Object.assign(ACTIONS, {
   'order.approve': {
     risk: 'money', target: 'order',
-    async apply(env, { orderId }) {
+    async apply(env, { orderId, retry }) {
       const o = await orderRow(env, orderId);
       if (!o) return fail('سفارش پیدا نشد.');
       if (o.status === 'paid') return fail('این سفارش قبلاً تأیید و فعال شده است.');
       const { settle, BillingError, isStuck, recoverStuck } = await import('./billing.js');
+      // a «🔁 تلاش دوباره» confirmed after the cron already moved the order on: show where it is, never approve it
+      if (retry && !isStuck(o)) return fail(`سفارش #${o.id} دیگر گیر نکرده است؛ وضعیت فعلی: «${o.status}». از کارت سفارش تصمیم بگیر.`);
       // «🔁 تلاش دوباره» on an order whose settle was cut off (PAY-01): settle once more, never twice
       if (isStuck(o)) {
         let r;
         try { r = await recoverStuck(env, o); } catch (e) { return fail('⚠️ ' + (e instanceof BillingError ? e.message : (e && e.message) || 'خطای ناشناخته')); }
         const why = r.error ? `\nخطا: ${(r.error instanceof BillingError ? r.error.message : r.error.message) || ''}` : '';
         if (r.result === 'paid') return { targetId: o.id, summary: `تلاش دوباره · ${fa(o.amount_toman)} ت · ${o.method}`, text: `✅ سفارش #${o.id} دوباره امتحان شد و تحویل شد.` };
+        if (r.result === 'busy') return fail('این سفارش همین الان در حال فعال‌سازی است؛ چند لحظه دیگر کارتش را ببین.');
         if (r.result === 'refunded') return fail(`↩️ سفارش #${o.id} دوباره هم تحویل نشد؛ مبلغش به کیف پول کاربر برگشت و سفارش لغو شد.${why}`);
         return fail(`⚠️ سفارش #${o.id} دوباره هم تحویل نشد و به «در انتظار بررسی» برگشت.${why}`);
       }

@@ -5389,6 +5389,94 @@ section('payments audit PAY-01..PAY-04: stuck settle recovered, SMS deposit line
   ok(texts(n).includes('یکی از این مبلغ‌ها') && !texts(n).includes(`پیامک واریز ${rial(oN1.amount_toman * 10)} ریال`), 'N1: the several-amounts notice does not call the matched number the deposit: ' + texts(n).slice(0, 160));
   await exec("UPDATE orders SET status = 'cancelled' WHERE id = ?", oN1.id);
 
+  // S1 + S2: one notice for settles stuck over 7 days (or with no time), never settled by themselves; the cron goes on
+  await exec("UPDATE orders SET status = 'cancelled' WHERE status = 'settling'");
+  const tS = await signup('s1s2@example.com', { device: 's1s2' });
+  const uS = await uidOf('s1s2@example.com');
+  const oOld = (await call('POST', '/api/v1/orders', { token: tS, json: { plan_id: monthly.id, method: 'card' } })).data;
+  const oNull = (await call('POST', '/api/v1/orders', { token: tS, json: { topup_toman: 140000, method: 'card' } })).data;
+  const oNew = (await call('POST', '/api/v1/orders', { token: tS, json: { topup_toman: 150000, method: 'card' } })).data;
+  await stick(oOld.id, 8 * 86400, false);
+  await exec("UPDATE orders SET status = 'settling', settling_at = NULL WHERE id = ?", oNull.id);
+  await stick(oNew.id, 3600, false);
+  n = fakes.tg.calls.length;
+  await exec("DELETE FROM settings WHERE key = 'tg_webhook_sig'");
+  await cron();
+  const st = async (id) => (await row('SELECT status FROM orders WHERE id = ?', id)).status;
+  ok(await st(oNew.id) === 'paid', 'S1: a settling order with no settling_at does not block a recent stuck order behind it');
+  ok(await st(oOld.id) === 'settling' && await st(oNull.id) === 'settling' && !await expiresOf(uS), 'S2: a settle stuck over 7 days (or with no time) is not settled by itself');
+  const notice = since(n).filter((c) => c.method === 'sendMessage' && JSON.stringify(c.body.reply_markup || {}).includes(`m:orr:${oOld.id}`)).pop();
+  ok(notice && JSON.stringify(notice.body.reply_markup).includes(`m:orr:${oNull.id}`) && /تلاش دوباره/.test(JSON.stringify(notice.body.reply_markup)), 'S2: the admin gets one notice listing them with «🔁 تلاش دوباره»');
+  ok(since(n).some((c) => c.method === 'setWebhook'), 'S1/N7: a run that recovered an order still keeps the webhook registered');
+  n = fakes.tg.calls.length;
+  await cron();
+  ok(!since(n).some((c) => c.method === 'sendMessage' && JSON.stringify(c.body.reply_markup || {}).includes(`m:orr:${oOld.id}`)), 'S2: the notice is sent once, not every minute');
+  await exec('UPDATE sync_cursor SET run_at = 0');
+  await cron();
+  ok((await row('SELECT MAX(run_at) t FROM sync_cursor')).t > 0, 'S1: with only old stuck orders the cron still runs the sync');
+  // the owner decides: retry from the notice; an order with no settling_at can be claimed
+  for (const id of [oNull.id, oOld.id]) {
+    n = fakes.tg.calls.length;
+    await tap(`m:orr:${id}`);
+    await tap(confirmOf(n));
+    ok(await st(id) === 'paid', `S1/S2: the owner's retry settles stuck order #${id}`);
+  }
+  // S1: a recovery that finds the order busy (another run just claimed it) does not stop the chain scan and sync
+  const oBusy = (await call('POST', '/api/v1/orders', { token: tS, json: { topup_toman: 160000, method: 'card' } })).data;
+  await stick(oBusy.id, 3600, false);
+  const prepB = env.DB.prepare;
+  env.DB.prepare = (sql) => {
+    if (/SET status = 'settling', settling_at = \?/.test(sql)) { prepB.call(env.DB, 'UPDATE orders SET settling_at = ? WHERE id = ?').bind(now(), oBusy.id).run(); }
+    return prepB.call(env.DB, sql);
+  };
+  await exec('UPDATE sync_cursor SET run_at = 0');
+  await cron();
+  env.DB.prepare = prepB;
+  ok(await st(oBusy.id) === 'settling' && (await row('SELECT MAX(run_at) t FROM sync_cursor')).t > 0, 'S1: a busy recovery does not make the cron skip the sync');
+  await exec("UPDATE orders SET status = 'cancelled' WHERE id = ?", oBusy.id);
+
+  // S3: the wallet refund happens only if this run's cancel took the order; a settle claiming it in between wins
+  await exec("UPDATE orders SET status = 'cancelled' WHERE status = 'settling'");
+  const tS3 = await signup('s3@example.com', { device: 's3x' });
+  const uS3 = await row('SELECT * FROM users WHERE email = ?', 's3@example.com');
+  await exec('UPDATE users SET wallet_balance = ? WHERE id = ?', monthly.price_toman, uS3.id);
+  const wS3 = (await exec("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, ?, 'wallet', 'pending', ?)", uS3.id, monthly.id, monthly.price_toman, now())).meta.last_row_id;
+  await billing.walletApply(env, { ...uS3 }, -monthly.price_toman, 'purchase', wS3, 'test');
+  await stick(wS3, 3600, false);
+  for (const p of Object.values(fakes.panels)) p.down = true;
+  const prep3 = env.DB.prepare;
+  let raced = false;
+  env.DB.prepare = (sql) => {
+    if (!raced && /SET status = 'cancelled'/.test(sql) && /NOT IN \('paid', 'settling'/.test(sql)) {
+      raced = true; // another settle claims the order right before this run cancels it
+      prep3.call(env.DB, "UPDATE orders SET status = 'settling', settling_at = ? WHERE id = ?").bind(now(), wS3).run();
+    }
+    return prep3.call(env.DB, sql);
+  };
+  await cron();
+  env.DB.prepare = prep3;
+  for (const p of Object.values(fakes.panels)) p.down = false;
+  const s3r = await row("SELECT o.status, u.wallet_balance b, (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'refund') refunds FROM orders o JOIN users u ON u.id = o.user_id WHERE o.id = ?", wS3);
+  ok(raced && s3r.status === 'settling' && s3r.refunds === 0 && s3r.b === 0, 'S3: an order another run claimed is not refunded under it: ' + JSON.stringify(s3r));
+  await exec("UPDATE orders SET status = 'cancelled' WHERE id = ?", wS3);
+
+  // N3: «🔁 تلاش دوباره» confirmed after the order left settling shows the state instead of approving it
+  const tN3 = await signup('n3@example.com', { device: 'n3' });
+  const oN3 = (await call('POST', '/api/v1/orders', { token: tN3, json: { topup_toman: 170000, method: 'card' } })).data;
+  await stick(oN3.id, 3600, false);
+  n = fakes.tg.calls.length;
+  await tap(`m:orr:${oN3.id}`);
+  const cfN3 = confirmOf(n);
+  await exec("UPDATE orders SET status = 'review', settling_at = NULL WHERE id = ?", oN3.id); // the cron got there first
+  n = fakes.tg.calls.length;
+  await tap(cfN3);
+  ok(await st(oN3.id) === 'review' && /review|بررسی/.test(JSON.stringify(since(n).map((c) => c.body))), 'N3: a retry confirmed after the order left settling does not approve it and shows its state');
+
+  // N2: the receipt button on an unpaid wallet order says why, not "see the next message"
+  const legacy2 = (await exec("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, ?, 'wallet', 'pending', ?)", uw, monthly.id, monthly.price_toman, now())).meta.last_row_id;
+  n = fakes.tg.calls.length;
+  await tgWebhook({ callback_query: { id: 'n2-ap', data: `ap:${legacy2}`, message: { ...A, message_id: 993, text: 'x' } } });
+  ok(acksOf(n).includes('پرداخت نشده') && !acksOf(n).includes('پیام بعدی'), 'N2: ap: on an unpaid wallet order gives the real reason: ' + acksOf(n));
 }
 
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');

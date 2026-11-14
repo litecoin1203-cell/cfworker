@@ -229,7 +229,8 @@ async function onCallback(env, cq) {
     } catch (e) {
       // settle already sent the panel's exact error with a retry button
       if (e instanceof BillingError && (e.code === 'settle_busy' || e.code.startsWith('coupon'))) return ack(e.message, true);
-      return ack('⚠️ ' + (e instanceof BillingError ? 'ساخت اکانت روی پنل انجام نشد. پیام بعدی را ببین.' : e.message), true);
+      // only a panel failure comes with its own message (the panel's exact error and a retry button)
+      return ack('⚠️ ' + (e instanceof BillingError && e.code === 'activation_failed' ? 'ساخت اکانت روی پنل انجام نشد. پیام بعدی را ببین.' : (e && e.message) || 'خطای ناشناخته'), true);
     }
     await audit(env, chatId, 'order.approve', 'order', order.id, `${order.amount_toman} تومان · دکمه‌ی رسید`);
     await editStatus(env, cq, `✅ تأیید و فعال شد — سفارش #${order.id} (${user.email})`);
@@ -351,7 +352,7 @@ async function onConfirm(env, cq, yes, role = null) {
     u_unlink: () => ({ userId: payload.user_id, panelId: payload.panel_id, off: planStr === '1' }),
     u_wallet: () => ({ userId: payload.userId, amount: payload.amount, note: payload.note }),
     o_approve: () => ({ orderId: payload.order_id }),
-    o_retry: () => ({ orderId: payload.order_id }),
+    o_retry: () => ({ orderId: payload.order_id, retry: true }),
     o_refund: () => ({ orderId: payload.order_id }),
     del_plan: () => ({ id: payload.plan_id }),
     net_reset: () => ({ kind: payload.kind, id: payload.id }),
