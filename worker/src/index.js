@@ -1,6 +1,6 @@
 // Cloud Gold store on Cloudflare Workers. One Worker serves the app API, the NOWPayments webhook
 // and the Telegram admin bot. State lives in D1 (env.DB).
-import { json, err, ApiError, safeEqual, logError, rateLimit, setErrorSink } from './util.js';
+import { json, err, ApiError, safeEqual, logError, rateLimit, setErrorSink, verifyJwt, jwtSecret } from './util.js';
 import { recordError } from './cfmon.js';
 import { first, run, insert } from './db.js';
 import * as auth from './auth.js';
@@ -97,12 +97,19 @@ export default {
     const path = url.pathname;
 
     try {
+      // plain /health is never limited: it touches nothing (no D1, no outside call), a limiter there could not save
+      // the request it already is, and Pleat races it on every address to pick a working one (a 429 = "down")
       if (path === '/health' && url.searchParams.get('deep') !== '1') return json({ ok: true });
+      const ip = request.headers.get('cf-connecting-ip') || '';
       // Mini App stage 0: a throw-away page that tests whether a Mini App opens on Iranian networks (account.js)
-      if (path === '/mini/probe' && request.method === 'GET') return account.miniProbePage(env, request);
+      if (path === '/mini/probe' && request.method === 'GET') {
+        await rateLimit(env, 'RL_PUB', 'pub:' + ip, { open: true });
+        return account.miniProbePage(env, request);
+      }
       // for an outside uptime monitor: is the per-minute cron still running? (the panel sync stamps its cursor
       // every run while a panel is active). 503 when it has been quiet for 10 minutes. One read, no details.
       if (path === '/health') {
+        await rateLimit(env, 'RL_PUB', 'pub:' + ip, { open: true });
         const { first } = await import('./db.js');
         const row = await first(env, 'SELECT MAX(run_at) t FROM sync_cursor').catch(() => null);
         const age = row && row.t ? Math.max(0, Math.floor(Date.now() / 1000) - row.t) : null;
@@ -152,19 +159,37 @@ async function body(request) {
   try { return await request.json(); } catch (e) { return {}; }
 }
 
+async function pubKey(env, H, ip) {
+  const a = H.get('authorization') || '';
+  if (a.startsWith('Bearer ')) {
+    const t = await verifyJwt(a.slice(7), jwtSecret(env)).catch(() => null);
+    if (t && t.typ === 'access' && /^\d{1,12}$/.test(String(t.sub))) return 'pubu:' + t.sub;
+  }
+  return 'pub:' + ip;
+}
+
 async function route(request, env, p, ctx) {
   const m = request.method;
   const H = request.headers;
 
-  // public
-  if (p === '/app-config' && m === 'GET') return account.appConfig(env);
-  if (p === '/plans' && m === 'GET') return account.plans(env);
-  if (p === '/ip' && m === 'GET') return account.myIp(env, request);
-
-  // auth (rate-limited per IP, and login also per email, against password guessing and mass sign-ups)
   const ip = H.get('cf-connecting-ip') || '';
+  // public, read-only: limited per account when the call carries a valid access token (Pleat sends it, and its calls
+  // through the tunnel share the exit's IP with everyone on that exit), else per IP. The token is only checked by
+  // its signature here (no D1); RL_PUB is generous since many phones share one carrier address.
+  if ((p === '/app-config' || p === '/plans' || p === '/ip') && m === 'GET') {
+    await rateLimit(env, 'RL_PUB', await pubKey(env, H, ip), { open: true });
+    if (p === '/app-config') return account.appConfig(env);
+    if (p === '/plans') return account.plans(env);
+    return account.myIp(env, request);
+  }
+
+  // auth (rate-limited per IP, and login also per email, against password guessing and mass sign-ups).
+  // Every route that writes for someone without an account shares ONE per-IP key (ANON_WRITE), so four such
+  // endpoints are not four times the allowance; sign-ups and Telegram links also spend a global hourly budget
+  // (util.js spendBudget), which holds however many IPs or Cloudflare locations a flood comes from.
+  const ANON_WRITE = 'anonw:' + ip;
   if (p === '/auth/register' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'register:' + ip);
+    await rateLimit(env, 'RL_IP', ANON_WRITE);
     return auth.register(env, await body(request), H);
   }
   if (p === '/auth/login' && m === 'POST') {
@@ -175,7 +200,7 @@ async function route(request, env, p, ctx) {
   }
   // Telegram sign-up / login (6-digit code from the bot); verify is also limited per sign-in link
   if (p === '/auth/tg/start' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'tgstart:' + ip);
+    await rateLimit(env, 'RL_IP', ANON_WRITE);
     return auth.tgStart(env);
   }
   if (p === '/auth/tg/verify' && m === 'POST') {
@@ -185,7 +210,7 @@ async function route(request, env, p, ctx) {
     return auth.tgVerify(env, b, H);
   }
   if (p === '/auth/tg/register' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'register:' + ip);
+    await rateLimit(env, 'RL_IP', ANON_WRITE);
     return auth.tgRegister(env, await body(request), H);
   }
   // Telegram Mini App sign-in (initData signed by Telegram) and one-tap account
@@ -194,15 +219,16 @@ async function route(request, env, p, ctx) {
     return auth.webappLogin(env, await body(request));
   }
   if (p === '/auth/tg/webapp/register' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'register:' + ip);
+    await rateLimit(env, 'RL_IP', ANON_WRITE);
     return auth.webappRegister(env, await body(request));
   }
   if (p === '/mini/probe' && m === 'POST') {
     await rateLimit(env, 'RL_IP', 'miniprobe:' + ip);
     return account.miniProbeReport(env, await body(request), request);
   }
+  // refresh only checks a signature (nothing to guess): open when the limiter fails, or nobody could reconnect
   if (p === '/auth/refresh' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'refresh:' + ip);
+    await rateLimit(env, 'RL_IP', 'refresh:' + ip, { open: true });
     return auth.refresh(env, await body(request));
   }
 
@@ -235,7 +261,10 @@ async function route(request, env, p, ctx) {
   // a Mini App token reads the account and buys; VPN configs stay with Pleat (no panel or node address in a web page)
   if (user._mini && (p === '/vpn' || p.startsWith('/vpn/') || p.startsWith('/devices'))) throw err(403, 'use_pleat', 'Open the Pleat app for this.');
 
-  if (p === '/auth/change-password' && m === 'POST') return auth.changePassword(env, user, await body(request));
+  if (p === '/auth/change-password' && m === 'POST') {
+    await rateLimit(env, 'RL_LOGIN', 'pw:' + user.id); // it checks the current password: no guessing with a stolen token
+    return auth.changePassword(env, user, await body(request));
+  }
   if (p === '/auth/logout-all' && m === 'POST') return auth.logoutAll(env, user);
   if (p === '/me' && m === 'GET') return account.me(env, user, request, ctx);
   // the address this request came from and where Cloudflare places it: through the VPN, the exit's public IP,
@@ -259,7 +288,7 @@ async function route(request, env, p, ctx) {
   }
   // the announced Pleat update (appupdate.js), passed through from the private release; limited per user (resumes are new requests)
   if (p === '/app/apk' && m === 'GET') {
-    await rateLimit(env, 'RL_IP', 'apk:' + user.id);
+    await rateLimit(env, 'RL_IP', 'apk:' + user.id, { open: true }); // a read: open if the limiter fails
     const { apkDownload } = await import('./appupdate.js');
     return apkDownload(env, request);
   }
@@ -270,7 +299,7 @@ async function route(request, env, p, ctx) {
   }
   if (p === '/me/avatar' && m === 'POST') return auth.setAvatar(env, user, await body(request));
   if (p === '/me/telegram/start' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'tgstart:' + ip);
+    await rateLimit(env, 'RL_IP', 'tglink:' + user.id); // per account (it also spends the Telegram link budget)
     return auth.tgLinkStart(env, user);
   }
   if (p === '/me/telegram/verify' && m === 'POST') {
@@ -287,21 +316,27 @@ async function route(request, env, p, ctx) {
   if (p === '/vpn/sub' && m === 'GET') return account.vpnSub(env, user, request);
   // Pleat's automatic health reports (health.js): batched, capped per user per day
   if (p === '/me/health' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'health:' + user.id);
+    await rateLimit(env, 'RL_IP', 'health:' + user.id, { open: true });
     const { report } = await import('./health.js');
     return report(env, user, request, await body(request), ctx);
   }
-  if (p === '/net/report' && m === 'POST') { const ns = await import('./netstats.js'); return ns.report(env, user, request, await body(request)); }
-  if (p === '/net/rank' && m === 'GET') { const ns = await import('./netstats.js'); return ns.rank(env, request, new URL(request.url).searchParams.get('kind')); }
-  if (p === '/net/google' && m === 'POST') { const ns = await import('./netstats.js'); return ns.googleReport(env, user, await body(request)); }
-  if (p === '/coupons/check' && m === 'POST') return orders.checkCoupon(env, user, await body(request));
+  // crowd network stats: per account across isolates (netstats.js's own throttle only holds within one isolate)
+  if (p === '/net/report' && m === 'POST') { await rateLimit(env, 'RL_IP', 'net:' + user.id, { open: true }); const ns = await import('./netstats.js'); return ns.report(env, user, request, await body(request)); }
+  if (p === '/net/rank' && m === 'GET') { await rateLimit(env, 'RL_PUB', 'rank:' + user.id, { open: true }); const ns = await import('./netstats.js'); return ns.rank(env, request, new URL(request.url).searchParams.get('kind')); }
+  if (p === '/net/google' && m === 'POST') { await rateLimit(env, 'RL_IP', 'goo:' + user.id, { open: true }); const ns = await import('./netstats.js'); return ns.googleReport(env, user, await body(request)); }
+  // coupon codes are guessable: per account, like a password
+  if (p === '/coupons/check' && m === 'POST') {
+    await rateLimit(env, 'RL_LOGIN', 'coupon:' + user.id);
+    return orders.checkCoupon(env, user, await body(request));
+  }
   if (p === '/devices' && m === 'GET') return account.devices(env, user);
   if (p === '/wallet' && m === 'GET') return orders.wallet(env, user);
   if (p === '/referral' && m === 'GET') return orders.referral(env, user);
   if (p === '/orders' && m === 'GET') return orders.listOrders(env, user);
-  // new orders, receipts and "I paid" are limited per account (each one messages the admin or reserves an amount)
+  // new orders, receipts and "I paid" are limited per account (each one messages the admin or reserves an amount);
+  // open when the limiter fails: they are capped in D1 too (open orders per method), and closing them stops sales
   if (p === '/orders' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'order:' + user.id);
+    await rateLimit(env, 'RL_IP', 'order:' + user.id, { open: true });
     return orders.createOrder(env, user, await body(request));
   }
 
@@ -309,12 +344,12 @@ async function route(request, env, p, ctx) {
   if ((mm = p.match(/^\/devices\/(\d+)$/)) && m === 'DELETE') return account.removeDevice(env, user, parseInt(mm[1], 10));
   if ((mm = p.match(/^\/orders\/(\d+)$/)) && m === 'GET') return orders.getOrder(env, user, parseInt(mm[1], 10));
   if ((mm = p.match(/^\/orders\/(\d+)\/receipt$/)) && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'receipt:' + user.id);
+    await rateLimit(env, 'RL_IP', 'receipt:' + user.id, { open: true });
     return orders.uploadReceipt(env, user, parseInt(mm[1], 10), request);
   }
   if ((mm = p.match(/^\/orders\/(\d+)\/cancel$/)) && m === 'POST') return orders.cancelOrder(env, user, parseInt(mm[1], 10));
   if ((mm = p.match(/^\/orders\/(\d+)\/paid$/)) && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'paid:' + user.id);
+    await rateLimit(env, 'RL_IP', 'paid:' + user.id, { open: true });
     return orders.markCoinPaid(env, user, parseInt(mm[1], 10), await body(request));
   }
 

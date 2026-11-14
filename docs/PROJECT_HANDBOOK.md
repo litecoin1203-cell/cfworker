@@ -275,7 +275,7 @@ The full list (every route, its auth, handler and limits, plus the admin API and
 | File | Responsibility |
 |---|---|
 | `index.js` | HTTP + cron entry, CORS, routing, default plan seed (`DEFAULT_PLANS`, only when `plans` is empty) |
-| `util.js` | JSON/errors, PBKDF2 + pepper, JWT HS256, HMAC, AES-GCM `seal`, rate limit (fail-open on purpose), JSON logs that strip URLs |
+| `util.js` | JSON/errors, PBKDF2 + pepper, JWT HS256, HMAC, AES-GCM `seal`, rate limit (fails closed on write / password routes, open on reads), global write budgets (`spendBudget`), JSON logs that strip URLs |
 | `db.js` | D1 helpers (`first`, `all`, `run`, `insert`), the `settings` key/value store with `SETTING_DEFAULTS`, `touchDevice` |
 | `auth.js` | email sign-up/login, Telegram 6-digit code login/sign-up, refresh, change password, link Telegram, backup email, avatar (`AVATARS`) |
 | `account.js` | app-config, plans, `/me`, subscription status, server list (`vpnServers`), devices, trial (`startTrial`) |
@@ -741,7 +741,8 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | **~100k D1 writes/day** | the old cron wrote 2 rows per user per minute even when idle → cap hit at ~35 users (PR #41: writes only on change). A phone that keeps the VPN on still changes its counter every minute, so the cap was still ~33 always-on users; the engineering-audit phase 6 PR spreads those writes (`LEDGER_EVERY` = 10 min in `sync.js`, never for big changes, near-quota, panel resets or a user coming online): 100 always-on users went from 295k to 33k rows/day (measured). Stored "online now" therefore means seen in the last 13 min (`STORED_ONLINE_SEC`); the bot's live card is exact. |
 | **~5M D1 rows read/day** | every per-minute query must use an index (0021 fixed a full scan of `subscriptions`) |
 | **100k Worker requests/day** | roughly 200–500 active users; Workers Paid ($5/month, 10M/day) for thousands |
-| Rate limiting is per Cloudflare location and fail-open | do not rely on it as a security boundary |
+| Rate limiting is per Cloudflare location and approximate | do not rely on it as a security boundary; it fails closed where a secret can be guessed or someone without an account writes, open on reads, token refresh and per-account routes capped in D1 (release audit SEC-08; the full split is in `docs/API.md`) |
+| Anyone can write without an account (sign-up, Telegram link) | a global hourly budget per kind (`util.js` `spendBudget`, one `settings` row each: `SIGNUP_PER_HOUR` 30, `TG_START_PER_HOUR` 60) caps a flood from any number of IPs at ~23k rows/day; a refused request writes nothing; the owner gets one bot alert per kind and hour when a budget fills (release audit SEC-01). The cost: during a flood, new sign-ups / Telegram links stall until the next hour (the WAF rule in §19 is the per-IP answer) |
 
 ---
 
@@ -1066,6 +1067,10 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
   country list (Fastest bar, chips, regions, pips, Not answering).
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
+- **Abuse limits (release audit SEC-01/SEC-08)**: add the one free WAF rate-limiting rule on the custom domain and
+  turn off the `workers.dev` route once the app no longer needs it (the WAF does not run there). Only a rule in
+  front of the Worker saves the 100k requests/day; the Worker's own limits save D1 writes. Raise
+  `SIGNUP_PER_HOUR` / `TG_START_PER_HOUR` only for a launch day.
 - **Phone test Pleat 1.2.33 → 1.2.46**: avatar gate, update live track on MIUI, version signature, Route cards and
   rules, Stats, a health report (long-press the version), detailed crash view in the bot, **widget cold start**
   (connect once in the app first to seed the spare exits; 1.2.44 fix unconfirmed), Recommended exits under Now,

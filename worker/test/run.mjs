@@ -35,6 +35,11 @@ const env = {
   TELEGRAM_BOT_TOKEN: 'bot:token',
   TELEGRAM_CHAT_ID: '12345',
   TELEGRAM_WEBHOOK_SECRET: 'hook',
+  // the suite makes ~120 accounts within seconds, which the global hourly sign-up budget (default 30) is there to
+  // refuse (and Telegram links, default 60); it is set the way the owner raises it for a launch day. The budget itself is tested at its defaults
+  // on a fresh database ("SEC-01" section).
+  SIGNUP_PER_HOUR: '100000',
+  TG_START_PER_HOUR: '100000',
 };
 env.DB.onQuery = () => { const s = invocation.getStore(); if (s && ++s.q === QUERY_CAP + 1) overCap.push(s); };
 const _pending = [];
@@ -1170,8 +1175,192 @@ section('rate limits on login, sign-up and free trial');
   ok(regs[0] === 201 && regs[1] === 201 && regs[2] === 429, 'third sign-up from one IP in a minute -> 429: ' + regs.join(','));
   ok((await call('POST', '/api/v1/auth/register', { headers: { 'cf-connecting-ip': '9.9.9.9' }, json: { email: 'rlreg-other@example.com', password: 'password123' } })).status === 201, 'another IP can still sign up');
   env.RL_IP = { limit: async () => { throw new Error('limiter down'); } };
-  ok((await call('POST', '/api/v1/auth/login', { json: { email: 'rl@example.com', password: 'password123' } })).status === 200, 'a failing limiter never locks users out');
+  // SEC-08: a failing limiter closes routes that check a password (no unlimited guessing); reads stay open
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 'rl@example.com', password: 'password123' } })).status === 429, 'a failing limiter does not open login to unlimited guessing');
+  ok((await call('GET', '/api/v1/plans')).status === 200, 'a failing limiter never hides the plans');
   delete env.RL_IP;
+}
+
+section('SEC-01: one IP cannot spend the day\'s D1 writes or requests through sign-up and Telegram codes');
+{
+  // A fresh database and the production defaults (no budget variables), like the audit's PoC. Rows are counted the
+  // way D1 bills them: every changed row plus one per index on its table (a conservative upper bound).
+  const db = makeDB(new URL('../migrations/0001_init.sql', import.meta.url).pathname);
+  const nIdx = {};
+  for (const t of ['users', 'devices', 'tg_logins', 'settings', 'worker_errors']) nIdx[t] = (await db.prepare('SELECT COUNT(*) c FROM pragma_index_list(?)').bind(t).first()).c;
+  let rows = 0, writes = 0;
+  const tableOf = (sql) => ((/^\s*(?:INSERT(?:\s+OR\s+\w+)?\s+INTO|UPDATE|DELETE\s+FROM)\s+(\w+)/i.exec(sql) || [])[1]);
+  const prep = db.prepare;
+  db.prepare = (sql) => {
+    const st = prep(sql);
+    const run0 = st.run.bind(st);
+    st.run = async () => { const r = await run0(); if (r.meta.changes) { writes++; rows += r.meta.changes * (1 + (nIdx[tableOf(sql)] ?? 3)); } return r; };
+    // a write ... RETURNING read with first(): a returned row is one changed row
+    const first0 = st.first.bind(st);
+    st.first = async (c) => { const r = await first0(c); if (r != null && tableOf(sql)) { writes++; rows += 1 + (nIdx[tableOf(sql)] ?? 3); } return r; };
+    return st;
+  };
+  // the clock stands still in this section, so an hour boundary during the run cannot reopen the budget
+  const realNow = Date.now;
+  const frozen = realNow();
+  Date.now = () => frozen;
+  const realWarn = console.warn;
+  console.warn = () => {}; // the "write budget spent" lines of the refused requests
+  try {
+  db.onQuery = env.DB.onQuery; // still held to the 50-query guard
+  const fenv = { DB: db, SECRET_KEY: env.SECRET_KEY, PUBLIC_BASE_URL: 'https://api.test', TELEGRAM_BOT_USERNAME: 'pleat_test_bot',
+    TELEGRAM_BOT_TOKEN: 'bot:token', TELEGRAM_CHAT_ID: '12345' };
+  const alertsBefore = fakes.tg.messages.length;
+  const budgetAlerts = () => fakes.tg.messages.slice(alertsBefore).filter((m) => (m.text || '').includes('سقف ساعتی'));
+  const fcall = async (method, path, j, ip = '203.0.113.7') => {
+    const h = { 'cf-connecting-ip': ip };
+    if (j) h['content-type'] = 'application/json';
+    const res = await worker.fetch(new Request('https://api.test' + path, { method, headers: h, body: j ? JSON.stringify(j) : undefined }), fenv, ctx);
+    let data = null; try { data = await res.clone().json(); } catch (e) {}
+    return { status: res.status, data };
+  };
+  const reg = (i, ip) => fcall('POST', '/api/v1/auth/register', { email: `flood${i}@mail.test`, password: 'password123', device_id: 'd' + i }, ip);
+
+  // a flood from one IP (the per-location limiter is absent here, as it is for every location it never saw)
+  const N = 200;
+  let made = 0, refused = 0, floodRows = 0;
+  for (let i = 0; i < N; i++) { const r = await reg(i); if (r.status === 201) made++; else if (r.status === 429 && r.data.detail.code === 'busy') refused++; }
+  const rowsPerSignup = made ? rows / made : 0;
+  floodRows += rows;
+  ok(made > 0 && made <= 30 && made + refused === N, `email sign-up flood stopped at the hourly budget: ${made} made, ${refused} refused of ${N}`);
+  // a refused request writes nothing at all
+  rows = 0; writes = 0;
+  for (let i = N; i < N + 20; i++) await reg(i);
+  ok(writes === 0 && rows === 0, `refused sign-ups write no row: ${writes} statements, ${rows} rows`);
+  const users = (await db.prepare('SELECT COUNT(*) c FROM users').first()).c;
+  ok(users === made, `only the budgeted accounts exist: ${users}`);
+
+  // the same for Telegram sign-in links (each one writes a tg_logins row)
+  rows = 0; writes = 0;
+  let links = 0, busy = 0;
+  for (let i = 0; i < N; i++) { const r = await fcall('POST', '/api/v1/auth/tg/start'); if (r.status === 200 && r.data.nonce) links++; else if (r.status === 429 && r.data.detail.code === 'busy') busy++; }
+  const rowsPerLink = links ? rows / links : 0;
+  floodRows += 2 * rows; // each link row is deleted again once expired: count it twice
+  ok(links > 0 && links <= 60 && links + busy === N, `Telegram code flood stopped at the hourly budget: ${links} links, ${busy} refused`);
+  rows = 0; writes = 0;
+  for (let i = 0; i < 20; i++) await fcall('POST', '/api/v1/auth/tg/start');
+  ok(writes === 0, 'refused Telegram links write nothing: ' + writes);
+  // the owner hears it once per kind per hour (sent by the request that fills the budget, so a refusal sends nothing)
+  const al = budgetAlerts();
+  ok(al.length === 2 && al.some((m) => m.text.includes('ثبت‌نام با ایمیل')) && al.some((m) => m.text.includes('ورود با تلگرام'))
+    && al.every((m) => !/(^|\s)\/[a-z]/.test(m.text)), 'one Persian alert per budget for the hour, no typed command: ' + al.map((m) => m.text).join(' | ').slice(0, 300));
+
+  // a whole day of this (one such flood every hour, from any number of IPs) stays far below the ~100k rows written
+  const perDay = floodRows * 24;
+  console.log(`    rows per sign-up ~${rowsPerSignup.toFixed(1)}, per Telegram link ~${rowsPerLink.toFixed(1)}; worst day ~${perDay} rows`);
+  ok(perDay > 0 && perDay <= 25000, 'a day of floods writes at most a quarter of the daily allowance: ' + perDay);
+
+  // the next hour opens again; a person signing up normally gets in
+  await db.prepare("UPDATE settings SET value = '1:999' WHERE key IN ('budget_signup', 'budget_tgstart')").run();
+  const fresh = await reg('ok', '198.51.100.20');
+  ok(fresh.status === 201 && fresh.data.access_token, 'a legitimate sign-up works again in the next hour: ' + fresh.status);
+  ok((await fcall('POST', '/api/v1/auth/tg/start')).status === 200, 'Telegram sign-in works again in the next hour');
+  // a sign-up that is refused for its own reason (taken email) does not use up the budget
+  const before = (await db.prepare("SELECT value FROM settings WHERE key = 'budget_signup'").first())?.value;
+  ok((await reg('ok', '198.51.100.20')).status === 409 && (await db.prepare("SELECT value FROM settings WHERE key = 'budget_signup'").first())?.value === before,
+    'a taken email is refused without spending the budget');
+
+  // all unauthenticated writing routes share one per-IP limit, so 4 endpoints are not 4 times the allowance
+  const limiter = (n) => { const seen = new Map(); return { limit: async ({ key }) => { const c = (seen.get(key) || 0) + 1; seen.set(key, c); return { success: c <= n }; } }; };
+  fenv.RL_IP = limiter(2);
+  await db.prepare("UPDATE settings SET value = '1:0' WHERE key IN ('budget_signup', 'budget_tgstart')").run();
+  const mix = [(await reg('mix1', '192.0.2.50')).status, (await fcall('POST', '/api/v1/auth/tg/start', null, '192.0.2.50')).status,
+    (await fcall('POST', '/api/v1/auth/tg/register', { signup_token: 'x', password: 'password123' }, '192.0.2.50')).status,
+    (await fcall('POST', '/api/v1/auth/tg/webapp/register', { init_data: 'x' }, '192.0.2.50')).status];
+  ok(mix[0] === 201 && mix[1] === 200 && mix[2] === 429 && mix[3] === 429, 'sign-up, Telegram link and Telegram sign-ups share one per-IP limit: ' + mix.join(','));
+  delete fenv.RL_IP;
+
+  // the public read routes are limited per IP too (they read D1 on every call)
+  fenv.RL_PUB = limiter(2);
+  const pub = [];
+  for (const p of ['/api/v1/plans', '/api/v1/app-config', '/api/v1/ip', '/health?deep=1', '/mini/probe']) pub.push((await fcall('GET', p, null, '192.0.2.60')).status);
+  ok(pub[0] === 200 && pub[1] === 200 && pub.slice(2).every((s) => s === 429), 'plans, app-config, ip, deep health and the probe page share a per-IP limit: ' + pub.join(','));
+  ok((await fcall('GET', '/health', null, '192.0.2.60')).status === 200, 'plain /health (no D1, the app\'s reachability check) is never limited');
+  // signed in, the limit follows the account: phones on one VPN exit (one IP) do not share it
+  fenv.RL_PUB = limiter(1);
+  const pubAs = async (tok) => (await worker.fetch(new Request('https://api.test/api/v1/plans', { headers: { 'cf-connecting-ip': '192.0.2.70', authorization: 'Bearer ' + tok } }), fenv, ctx)).status;
+  const ta = fresh.data.access_token, tb = mix.length && (await reg('pubb', '192.0.2.71')).data?.access_token;
+  ok(await pubAs(ta) === 200 && tb && await pubAs(tb) === 200 && await pubAs(ta) === 429 && await pubAs('not-a-token') === 200 && await pubAs('not-a-token') === 429,
+    'public reads are limited per account when signed in, per IP otherwise');
+  delete fenv.RL_PUB;
+  } finally { Date.now = realNow; console.warn = realWarn; }
+}
+
+section('SEC-08: a failing limiter closes write routes, and every costly route has a limit');
+{
+  const limiter = (n) => { const seen = new Map(); return { limit: async ({ key }) => { const c = (seen.get(key) || 0) + 1; seen.set(key, c); return { success: c <= n }; } }; };
+  const broken = { limit: async () => { throw new Error('limiter down'); } };
+  const usersBefore = (await env.DB.prepare('SELECT COUNT(*) c FROM users').first()).c;
+  env.RL_IP = broken; env.RL_LOGIN = broken; env.RL_PUB = broken;
+  const r1 = await call('POST', '/api/v1/auth/register', { json: { email: 'closed@example.com', password: 'password123' } });
+  ok(r1.status === 429 && (await env.DB.prepare('SELECT COUNT(*) c FROM users').first()).c === usersBefore, 'limiter down: sign-up refused and nothing written: ' + r1.status);
+  ok((await call('POST', '/api/v1/auth/tg/start')).status === 429, 'limiter down: no Telegram sign-in link');
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 'rl@example.com', password: 'password123' } })).status === 429, 'limiter down: password guessing is not open');
+  ok((await call('GET', '/api/v1/plans')).status === 200 && (await call('GET', '/api/v1/app-config')).status === 200, 'limiter down: read-only routes keep working');
+  delete env.RL_IP; delete env.RL_LOGIN; delete env.RL_PUB;
+
+  // routes the audit found without any limit
+  const tok = await signup('sec08@example.com', { device: 'sec08-phone' });
+  env.RL_IP = limiter(0); env.RL_LOGIN = limiter(0); env.RL_PUB = limiter(0);
+  const st = [
+    (await call('POST', '/api/v1/coupons/check', { token: tok, json: { code: 'GUESS1' } })).status,
+    (await call('POST', '/api/v1/net/report', { token: tok, json: { results: [] } })).status,
+    (await call('POST', '/api/v1/net/google', { token: tok, json: { k: 'aaaaaa11' } })).status,
+    (await call('GET', '/api/v1/net/rank', { token: tok })).status,
+    (await call('POST', '/api/v1/auth/change-password', { token: tok, json: { current_password: 'password123', new_password: 'password456' } })).status,
+  ];
+  ok(st.every((s) => s === 429), 'coupon check, net report / google / rank, change-password are limited: ' + st.join(','));
+  delete env.RL_IP; delete env.RL_LOGIN; delete env.RL_PUB;
+
+  // polling a crypto order asks the blockchain explorer at most a few times a minute per order (not per isolate)
+  const tok2 = await signup('sec08b@example.com', { device: 'sec08b-phone' });
+  const plans = (await call('GET', '/api/v1/plans')).data;
+  const o = (await call('POST', '/api/v1/orders', { token: tok2, json: { plan_id: plans[0].id, method: 'coin', coin: 'xlm' } })).data;
+  const realFetch = globalThis.fetch;
+  let outside = 0;
+  globalThis.fetch = (input, init) => { outside++; return realFetch(input, init); };
+  try {
+    globalThis.__cgChk = {};
+    const a = await call('GET', `/api/v1/orders/${o.id}`, { token: tok2 });
+    const asked = outside;
+    env.RL_LOGIN = limiter(0); globalThis.__cgChk = {}; outside = 0;
+    const b = await call('GET', `/api/v1/orders/${o.id}`, { token: tok2 });
+    ok(o.id && a.status === 200 && asked > 0 && b.status === 200 && b.data.id === o.id && outside === 0,
+      `order poll still answers, but the explorer is skipped once its per-order limit is spent: ${asked} then ${outside} calls`);
+  } finally { globalThis.fetch = realFetch; delete env.RL_LOGIN; }
+
+  // a limiter outage must not stop paying users: refresh (a signature check, nothing to guess) and the per-account
+  // routes already capped elsewhere (open orders, daily report caps, per-link code tries) stay open
+  const reg3 = await call('POST', '/api/v1/auth/register', { json: { email: 'sec08c@example.com', password: 'password123' } });
+  env.TELEGRAM_BOT_USERNAME = 'pleat_test_bot';
+  const link = (await call('POST', '/api/v1/auth/tg/start')).data;
+  delete env.TELEGRAM_BOT_USERNAME;
+  const { tgIssueCode } = await import('../src/auth.js');
+  env.RL_IP = broken; env.RL_LOGIN = broken; env.RL_PUB = broken;
+  const t3 = reg3.data.access_token;
+  const card = await call('POST', '/api/v1/orders', { token: t3, json: { topup_toman: 500000, method: 'card' } });
+  const open = [
+    (await call('POST', '/api/v1/auth/refresh', { json: { refresh_token: reg3.data.refresh_token } })).status,
+    card.status,
+    (await call('POST', `/api/v1/orders/${card.data?.id}/receipt`, { token: t3, json: {} })).status,
+    (await call('POST', `/api/v1/orders/${card.data?.id}/paid`, { token: t3, json: {} })).status, // 400 not coin: past the limiter
+    (await call('POST', '/api/v1/me/health', { token: t3, json: { events: [] } })).status,
+    (await call('POST', '/api/v1/net/report', { token: t3, json: { results: [] } })).status,
+    (await call('POST', '/api/v1/net/google', { token: t3, json: { k: 'aaaaaa11' } })).status,
+  ];
+  ok(open[0] === 200 && open[1] === 201 && open.every((s) => s !== 429), 'limiter down: refresh, orders, receipt, "I paid", health and net reports still work: ' + open.join(','));
+  const code = await tgIssueCode(env, link.nonce, { id: 770001, first_name: 'Sec' });
+  ok(/security code/.test(code.text), 'limiter down: the bot still sends the Telegram code (per-link tries are capped in D1): ' + code.text.slice(0, 80));
+  ok((await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: link.nonce, code: '000000' } })).status === 429, 'limiter down: code guessing stays closed');
+  delete env.RL_IP; delete env.RL_LOGIN; delete env.RL_PUB;
+  // leave no open orders behind for the cron sections further down
+  await call('POST', `/api/v1/orders/${card.data?.id}/cancel`, { token: t3 });
+  await call('POST', `/api/v1/orders/${o.id}/cancel`, { token: tok2 });
 }
 
 section('two sign-ups with the same email at the same moment');
@@ -5041,6 +5230,9 @@ section('Mini App admin parity: Cloudflare monitoring, app health reports, sync 
   const realFetch = globalThis.fetch;
   const TOKEN = 'cf-token-value-should-never-show-9876543210';
   const hourIso = (t) => new Date((t - (t % 3600)) * 1000).toISOString().replace('.000Z', 'Z');
+  // the CPU rejections two hours ago, but never before today's start (before 02:00 UTC that would be yesterday and
+  // fall out of "used today"); in the day's first hour they land in this hour
+  const cpuAt = Math.max(today * 86400, now - 7200), cpuNow = Math.floor(cpuAt / 3600) === Math.floor(now / 3600) ? 20 : 0;
   globalThis.fetch = async (input, init = {}) => {
     const url = typeof input === 'string' ? input : input.url;
     const j = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
@@ -5048,7 +5240,7 @@ section('Mini App admin parity: Cloudflare monitoring, app health reports, sync 
       const q = JSON.parse(init.body).query, acc = {};
       if (q.includes('workersInvocationsAdaptive')) acc.workersInvocationsAdaptive = [
         { sum: { requests: 3000, errors: 30, subrequests: 4000 }, quantiles: { cpuTimeP50: 2, cpuTimeP99: 6 }, dimensions: { datetimeHour: hourIso(now), scriptName: 'cloudgold', status: 'success' } },
-        { sum: { requests: 20, errors: 20, subrequests: 0 }, quantiles: { cpuTimeP50: 11, cpuTimeP99: 12 }, dimensions: { datetimeHour: hourIso(now - 7200), scriptName: 'cloudgold', status: 'exceededCpu' } }];
+        { sum: { requests: 20, errors: 20, subrequests: 0 }, quantiles: { cpuTimeP50: 11, cpuTimeP99: 12 }, dimensions: { datetimeHour: hourIso(cpuAt), scriptName: 'cloudgold', status: 'exceededCpu' } }];
       if (q.includes('d1AnalyticsAdaptiveGroups')) { acc.d1AnalyticsAdaptiveGroups = [{ sum: { readQueries: 1, writeQueries: 1, rowsRead: 100000, rowsWritten: 9000 }, dimensions: { date: new Date(now * 1000).toISOString().slice(0, 10), databaseId: 'db' } }]; acc.d1StorageAdaptiveGroups = []; }
       if (q.includes('d1QueriesAdaptiveGroups')) acc.d1QueriesAdaptiveGroups = [{ sum: { rowsRead: 900, rowsWritten: 0, queryDurationMs: 10 }, avg: { queryDurationMs: 0.1 }, dimensions: { query: 'SELECT 1 FROM users' } }];
       return j({ data: { viewer: { accounts: [acc] } }, errors: null });
@@ -5078,7 +5270,7 @@ section('Mini App admin parity: Cloudflare monitoring, app health reports, sync 
     ok(ov.token && ov.workers.hours.length === 24 && ov.workers.requests.used === 3020 && ov.workers.requests.limit === 100000 && ov.d1.rows_written.used === 9000
       && ov.workers.last24.cpu_over === 20 && ov.workers.last24.status.exceededCpu === 20 && ov.reset_at - ov.day_start === 86400 && typeof ov.alerts === 'boolean',
     'overview: quota per allowance with limit, 24 hourly buckets, CPU rejections, status breakdown, reset time: ' + JSON.stringify(ov).slice(0, 400));
-    ok(ov.workers.hours[23].requests === 3000 && ov.workers.hours[23].errors === 30, 'the last hourly bucket is this hour');
+    ok(ov.workers.hours[23].requests === 3000 + cpuNow && ov.workers.hours[23].errors === 30 + cpuNow, 'the last hourly bucket is this hour');
     const hi = (await A('GET', '/cf/history', T)).data;
     ok(hi.days.length === 7 && hi.days[6].today && hi.days[6].rows_written === 9000, 'history: 7 days, today last');
     const dp = (await A('GET', '/cf/deploys', T)).data;

@@ -17,10 +17,15 @@
   // every 2 minutes: one page (25 messages) of an admin broadcast, in its own invocation and subrequest budget
   "triggers": { "crons": ["* * * * *", "30 20 * * *", "*/2 * * * *"] },
   // Workers Rate Limiting (counted per Cloudflare location): RL_IP caps sign-ups, logins and free trials per IP,
-  // RL_LOGIN caps login attempts per email. namespace_id is any number unique within the account.
+  // RL_LOGIN caps login attempts per email, RL_PUB caps the public read-only routes (plans, app-config, ip, deep
+  // health) per IP. namespace_id is any number unique within the account.
+  // Optional Worker variables (dashboard → Settings → Variables, plain text, not secrets): SIGNUP_PER_HOUR (default
+  // 30) and TG_START_PER_HOUR (default 60), the global hourly budgets for email sign-ups and Telegram sign-in links
+  // (util.js spendBudget). Raise them only for a launch day: each sign-up writes ~12 D1 rows (with index rows).
   "ratelimits": [
     { "name": "RL_IP", "namespace_id": "1001", "simple": { "limit": 20, "period": 60 } },
-    { "name": "RL_LOGIN", "namespace_id": "1002", "simple": { "limit": 5, "period": 60 } }
+    { "name": "RL_LOGIN", "namespace_id": "1002", "simple": { "limit": 5, "period": 60 } },
+    { "name": "RL_PUB", "namespace_id": "1003", "simple": { "limit": 120, "period": 60 } }
   ],
   "d1_databases": [
     {
