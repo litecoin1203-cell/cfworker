@@ -112,7 +112,7 @@ void main() {
     final insecure = _out(
       'trojan://p@1.2.3.4:443?allow_insecure=1#x',
     )['streamSettings']['tlsSettings'];
-    expect(insecure['allowInsecure'], true);
+    expect(insecure.containsKey('allowInsecure'), isFalse);
     expect(insecure.containsKey('serverName'), isFalse);
   });
 
@@ -149,7 +149,7 @@ void main() {
     expect((st['hysteriaSettings'] as Map)['version'], 2);
     final tls = st['tlsSettings'] as Map;
     expect(tls['serverName'], 'cdn.example.com');
-    expect(tls['allowInsecure'], true);
+    expect(tls.containsKey('allowInsecure'), isFalse);
     expect(tls['alpn'], ['h3']);
     final mask = st['finalmask'] as Map;
     expect(mask['udp'], [
@@ -332,6 +332,61 @@ void main() {
     );
   });
 
+  // The core shipped with Pleat refuses any config with "allowInsecure"
+  // (removed after 2026-08-01): one such backup would stop the whole config.
+  test('insecure links never produce allowInsecure, alone or as a backup', () {
+    final vmess = base64.encode(
+      utf8.encode(
+        jsonEncode({
+          'add': 'a.example.com',
+          'port': '443',
+          'id': '0b8c1e2a-1111-4222-8333-444455556666',
+          'net': 'ws',
+          'tls': 'tls',
+          'allowInsecure': '1',
+        }),
+      ),
+    );
+    final insecure = [
+      'trojan://p@us1.example.com:443?allow_insecure=1#x',
+      'trojan://p@us1.example.com:443?allowInsecure=1#x',
+      'vless://u@de1.example.com:443?security=tls&type=ws&insecure=true#x',
+      'hysteria2://pw@hy.example.com:443?insecure=1&sni=hy.example.com#x',
+      'vmess://$vmess',
+    ];
+    for (final link in insecure) {
+      final single = xrayConfig(link, api: (user: 'u', pass: 'p'));
+      expect(single, isNot(contains('allowInsecure')), reason: link);
+      final tls =
+          (jsonDecode(single)['outbounds'] as List)
+                  .first['streamSettings']['tlsSettings']
+              as Map;
+      // verified like any TLS exit: a valid certificate still connects
+      expect(tls.containsKey('pinnedPeerCertSha256'), isFalse, reason: link);
+      final asBackup = xrayConfig(
+        'vless://u@de1.example.com:443?security=tls&type=ws#x',
+        backups: [link],
+      );
+      expect(asBackup, isNot(contains('allowInsecure')), reason: link);
+      // the backup itself is kept, only verified
+      final tags = [
+        for (final o in jsonDecode(asBackup)['outbounds'] as List) o['tag'],
+      ];
+      expect(tags, contains('proxy-1'), reason: link);
+      expect(
+        bridgeConfig(link, ['api.example.org'], (user: 'u', pass: 'p')),
+        isNot(contains('allowInsecure')),
+        reason: link,
+      );
+    }
+    // with a pinned certificate the pin carries it, as before
+    final pinned = _out(
+      'trojan://p@us1.example.com:443?allowInsecure=1&pcs=AB12#x',
+    )['streamSettings']['tlsSettings'];
+    expect(pinned['pinnedPeerCertSha256'], 'AB12');
+    expect(pinned.containsKey('allowInsecure'), isFalse);
+  });
+
   test('unsupported protocols are refused, not guessed', () {
     expect(() => outboundOf('tuic://x@h:443'), throwsFormatException);
     expect(() => outboundOf('vless://u@h:0'), throwsFormatException);
@@ -378,6 +433,11 @@ void main() {
       'vmess_ws': 'vmess://$vmess',
       'ss': 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#x',
       'hysteria2': 'hysteria2://pw@hy.example.com:443,20000-30000/?sni=hy.example.com&obfs=salamander&obfs-password=ob#x',
+      // "insecure" links: the core refuses "allowInsecure", so it must
+      // never reach a config
+      'trojan_insecure': 'trojan://pass@us1.example.com:443?allowInsecure=1&sni=us1.example.com#x',
+      'hysteria2_insecure':
+          'hysteria2://pw@hy.example.com:443?insecure=1&sni=hy.example.com#x',
       'hysteria2_plain': 'hy2://pw@1.2.3.4:8443?pinSHA256=0000000000000000000000000000000000000000000000000000000000000000#x',
       'wireguard':
           'wireguard://${Uri.encodeComponent('AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE=')}@wg.example.com:51820'
@@ -400,6 +460,13 @@ void main() {
         localDirect: true,
         api: (user: 'u1', pass: 'p1'),
         backups: [samples['wireguard']!, samples['hysteria2']!],
+      ),
+    );
+    // An insecure backup must not stop the healthy exit in front of it.
+    File('$out/smart_insecure_backup.json').writeAsStringSync(
+      xrayConfig(
+        samples['vless_reality']!,
+        backups: [samples['trojan_insecure']!, samples['hysteria2_insecure']!],
       ),
     );
     // Protect's Shield: ads, trackers and adult sites refused by name (the

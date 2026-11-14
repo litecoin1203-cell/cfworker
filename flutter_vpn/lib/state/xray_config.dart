@@ -690,13 +690,13 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
       // such an exit fails the handshake.
       'pinnedPeerCertSha256': ?pinned,
       'verifyPeerCertByName': ?q['vcn'],
-      if (pinned == null &&
-          [
-            'insecure',
-            'allowInsecure',
-            'allow_insecure',
-          ].any((k) => q[k] == '1' || q[k] == 'true'))
-        'allowInsecure': true,
+      // A link's "insecure" / "allowInsecure" is ignored on purpose: the
+      // core refuses any config holding "allowInsecure" (removed after
+      // 2026-08-01), and one such backup would stop the whole tunnel. The
+      // exit is verified like any other: a valid certificate (most of
+      // them) still connects; a self-signed one fails its handshake like a
+      // dead exit and the failover moves on. The pin above is the way to
+      // trust one certificate.
       // Encrypted Client Hello hides the SNI from filters; a host that
       // sets it often only answers with it.
       'echConfigList': ?q['ech'],
