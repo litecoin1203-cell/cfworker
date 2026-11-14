@@ -5230,6 +5230,9 @@ section('Mini App admin parity: Cloudflare monitoring, app health reports, sync 
   const realFetch = globalThis.fetch;
   const TOKEN = 'cf-token-value-should-never-show-9876543210';
   const hourIso = (t) => new Date((t - (t % 3600)) * 1000).toISOString().replace('.000Z', 'Z');
+  // the CPU rejections two hours ago, but never before today's start (before 02:00 UTC that would be yesterday and
+  // fall out of "used today"); in the day's first hour they land in this hour
+  const cpuAt = Math.max(today * 86400, now - 7200), cpuNow = Math.floor(cpuAt / 3600) === Math.floor(now / 3600) ? 20 : 0;
   globalThis.fetch = async (input, init = {}) => {
     const url = typeof input === 'string' ? input : input.url;
     const j = (o, status = 200) => new Response(JSON.stringify(o), { status, headers: { 'content-type': 'application/json' } });
@@ -5237,7 +5240,7 @@ section('Mini App admin parity: Cloudflare monitoring, app health reports, sync 
       const q = JSON.parse(init.body).query, acc = {};
       if (q.includes('workersInvocationsAdaptive')) acc.workersInvocationsAdaptive = [
         { sum: { requests: 3000, errors: 30, subrequests: 4000 }, quantiles: { cpuTimeP50: 2, cpuTimeP99: 6 }, dimensions: { datetimeHour: hourIso(now), scriptName: 'cloudgold', status: 'success' } },
-        { sum: { requests: 20, errors: 20, subrequests: 0 }, quantiles: { cpuTimeP50: 11, cpuTimeP99: 12 }, dimensions: { datetimeHour: hourIso(now - 7200), scriptName: 'cloudgold', status: 'exceededCpu' } }];
+        { sum: { requests: 20, errors: 20, subrequests: 0 }, quantiles: { cpuTimeP50: 11, cpuTimeP99: 12 }, dimensions: { datetimeHour: hourIso(cpuAt), scriptName: 'cloudgold', status: 'exceededCpu' } }];
       if (q.includes('d1AnalyticsAdaptiveGroups')) { acc.d1AnalyticsAdaptiveGroups = [{ sum: { readQueries: 1, writeQueries: 1, rowsRead: 100000, rowsWritten: 9000 }, dimensions: { date: new Date(now * 1000).toISOString().slice(0, 10), databaseId: 'db' } }]; acc.d1StorageAdaptiveGroups = []; }
       if (q.includes('d1QueriesAdaptiveGroups')) acc.d1QueriesAdaptiveGroups = [{ sum: { rowsRead: 900, rowsWritten: 0, queryDurationMs: 10 }, avg: { queryDurationMs: 0.1 }, dimensions: { query: 'SELECT 1 FROM users' } }];
       return j({ data: { viewer: { accounts: [acc] } }, errors: null });
@@ -5267,7 +5270,7 @@ section('Mini App admin parity: Cloudflare monitoring, app health reports, sync 
     ok(ov.token && ov.workers.hours.length === 24 && ov.workers.requests.used === 3020 && ov.workers.requests.limit === 100000 && ov.d1.rows_written.used === 9000
       && ov.workers.last24.cpu_over === 20 && ov.workers.last24.status.exceededCpu === 20 && ov.reset_at - ov.day_start === 86400 && typeof ov.alerts === 'boolean',
     'overview: quota per allowance with limit, 24 hourly buckets, CPU rejections, status breakdown, reset time: ' + JSON.stringify(ov).slice(0, 400));
-    ok(ov.workers.hours[23].requests === 3000 && ov.workers.hours[23].errors === 30, 'the last hourly bucket is this hour');
+    ok(ov.workers.hours[23].requests === 3000 + cpuNow && ov.workers.hours[23].errors === 30 + cpuNow, 'the last hourly bucket is this hour');
     const hi = (await A('GET', '/cf/history', T)).data;
     ok(hi.days.length === 7 && hi.days[6].today && hi.days[6].rows_written === 9000, 'history: 7 days, today last');
     const dp = (await A('GET', '/cf/deploys', T)).data;
