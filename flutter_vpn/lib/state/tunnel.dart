@@ -309,6 +309,35 @@ class Tunnel {
     }
   }
 
+  /// Whether the phone has a network under the tunnel at all: false only
+  /// when Android names none; null when it can't say (no engine, an older
+  /// native side, an error), which callers treat as "there may be one".
+  Future<bool?> hasNetwork() async {
+    if (_available != true) return null;
+    try {
+      final k = await _method.invokeMethod<String>('netKind');
+      if (k == null || k == 'error') return null;
+      return k.isNotEmpty;
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// Whether the service holds a session's tun for the app (see [hold]),
+  /// so a reopened app shows it held instead of idle.
+  Future<bool> held() async {
+    if (!await available()) return false;
+    try {
+      return await _method.invokeMethod<bool>('held') ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
   /// Whether the phone's own network (not the tunnel) is metered: mobile
   /// data, or Wi-Fi marked metered. False when unknown.
   Future<bool> metered() async {
