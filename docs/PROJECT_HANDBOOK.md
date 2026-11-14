@@ -595,6 +595,15 @@ does not reach users by itself.
 - App version is a signature at the end of Profile (Pleat mark, "Up to date · checked …", Check for updates).
   Long-press the version to send a test health report. Night mode toggle placement: **leave it as it is** (Ali
   rejected three alternatives).
+- **Open-source licences** (release audit LEG-01..03): under Check for updates in the version footer, opens
+  Flutter's `showLicensePage`. Besides the Dart packages Flutter lists itself, `lib/licenses.dart` registers the
+  native parts from `assets/licenses/` with `LicenseRegistry`: AndroidLibXrayLite (LGPL-3.0 + GPL-3.0),
+  Xray-core (MPL-2.0), hev-socks5-tunnel and its submodules (MIT, lwIP BSD), the geo data (GPL-3.0 + the
+  MaxMind GeoLite2 attribution, domain-list-community MIT), every Go module inside `libgojni.so`
+  (`go-modules.txt`) and the source offer (`SOURCE.txt`, entry "Pleat: source code", with the exact upstream
+  tag / commit). A test ties `SOURCE.txt` to `XRAY_LIB_TAG` / `HEV_COMMIT` in the workflow; the manual APK run
+  fails if `go-modules.txt` no longer matches the AAR's modules or the APK lacks the texts. After bumping
+  `XRAY_LIB_TAG`: `python3 -I tool/go_licenses.py write <libgojni.so>` and update `SOURCE.txt`.
 
 ### Home tabs (PRs #71, #74, #75, #81)
 - **Route** (design D): goal cards **Auto / Stealth / Speed / Classic** + a location bar with a country sheet. Each
@@ -610,6 +619,10 @@ does not reach users by itself.
   IR TUNNEL, protocol, ping, CONNECT) plus one blue line per exit saying **why** (`recommend.dart`: fastest here,
   strong for N people, worked for you before, …; never invented), and a "Tested on … · RE-TEST" footer.
 - Locations rows show **P1/P2** tags and the slanted **IR TUNNEL** badge (#56, #59).
+- **No plan** (release audit UX-01): Connect that stops at "No active plan." (or a stopped plan, or "Your plan
+  ended.") shows a **Start free trial** / **See plans** button under the stage line (`AppState.planNeeded`,
+  `NoPlanAction` in `states.dart`); both open Plans, where the trial is one tap. The Now tile without a plan
+  carries the same button, and the bell's "No plan yet" notice has See plans. Any other failure hides it.
 
 ### Protect (PR #82, 1.2.46, layout B)
 - **Always protected**: kill switch + start with the phone (both open Android's always-on VPN page).
@@ -835,6 +848,11 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
   keep/clear history); Profile gets the Plans shelf.
 - PR #89 (1.2.49) Locations country list: Fastest-for-you bar, filter chips, regions, health pips, Not answering.
 - PR #90 (1.2.50) native crash: the code offsets inside the core, the signal's sender, stderr per process.
+
+**2026-11-14 — Release audit fixes, wave 1.**
+- Branch `claude/w1-licenses-ux` (no version bump; the lead numbers the release): Open-source licences page with
+  the engines' licence texts, Go module list and source offer (LEG-01..03), README licence note (LEG-04), and the
+  no-plan Connect failure / Now tile offer the trial or Plans (UX-01).
 
 ---
 
@@ -1066,6 +1084,13 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
   country list (Fastest bar, chips, regions, pips, Not answering).
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
+- **Licence of the repo's own code** (audit LEG-04): there is no top-level `LICENSE`, so the Worker, Mini App and
+  Pleat are all rights reserved. Choose one (or a proprietary notice); `android/` stays GPL-3.0.
+- **GeoLite2 terms** (LEG-02): the APK carries MaxMind's attribution, but the GeoLite2 EULA may also require
+  updating or deleting old copies; the geo files are refreshed only when an APK is built. Legal review, or a
+  source with simpler terms (DB-IP / IPinfo lite, CC BY 4.0).
+- **Xray-core fork**: AndroidLibXrayLite v26.7.5 builds Xray-core from `github.com/autorepobot/xray-core`
+  (a `replace` in its go.mod), not from `XTLS/Xray-core` directly. The licence page and source offer name it.
 - **Phone test Pleat 1.2.33 → 1.2.46**: avatar gate, update live track on MIUI, version signature, Route cards and
   rules, Stats, a health report (long-press the version), detailed crash view in the bot, **widget cold start**
   (connect once in the app first to seed the spare exits; 1.2.44 fix unconfirmed), Recommended exits under Now,

@@ -57,6 +57,27 @@ class ServersState extends StatelessWidget {
   }
 }
 
+/// The way out of "no plan": Start free trial when the account still has
+/// it, See plans otherwise. Both open Plans, where the trial starts with
+/// one tap.
+class NoPlanAction extends StatelessWidget {
+  const NoPlanAction({super.key, required this.app, this.height = 46});
+  final AppState app;
+  final double height;
+
+  @override
+  Widget build(BuildContext context) => PillButton(
+    label: (app.me.value?.trialAvailable ?? false)
+        ? 'Start free trial'
+        : 'See plans',
+    expand: false,
+    height: height,
+    onTap: () =>
+        Navigator.of(context)
+            .push(FadeRoute(builder: (_) => const PlansScreen())),
+  );
+}
+
 /// The floating message the screens use for a backend answer.
 /// Navy, never red: red is kept for a dropped tunnel.
 void showNote(BuildContext context, String text) {

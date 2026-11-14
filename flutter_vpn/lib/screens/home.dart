@@ -89,6 +89,15 @@ class _HomeScreenState extends State<HomeScreen> {
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
                     child: _StageLine(app: app),
                   ),
+                  // Connect stopped for want of a plan: the way out, at once.
+                  if (app.planNeeded)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+                      child: NoPlanAction(
+                        key: const ValueKey('noPlan.stage'),
+                        app: app,
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -528,6 +537,8 @@ class _Instrument extends StatelessWidget {
     // Connected: the exit's country code, big, with the city and the
     // public IP the internet sees above it.
     final a = app.exitAddress;
+    // No plan on Now: the caption carries the button to the trial / Plans.
+    final noPlan = tab == _HomeTab.now && app.me.ready && sub == null;
     final detail = tab == _HomeTab.now && protected
         ? (a == null ? 'Finding your IP address' : 'IP ${a.ip}')
         : null;
@@ -558,7 +569,11 @@ class _Instrument extends StatelessWidget {
       _HomeTab.now => (
         app.me.loading ? '…' : '0',
         'exits',
-        app.me.loading ? 'Loading your plan' : 'No plan yet. Open Plans.',
+        app.me.loading
+            ? 'Loading your plan'
+            : ((app.me.value?.trialAvailable ?? false)
+                  ? 'No plan yet. The free trial opens every exit.'
+                  : 'No plan yet. A plan opens every exit.'),
       ),
       _HomeTab.route when e != null && app.pinned => (
         e.code.isEmpty ? e.protocol : e.code,
@@ -592,6 +607,15 @@ class _Instrument extends StatelessWidget {
             style: PType.small(color: PColors.ink)
                 .copyWith(fontWeight: FontWeight.w600),
           ),
+          if (noPlan)
+            Padding(
+              padding: const EdgeInsets.only(top: 10),
+              child: NoPlanAction(
+                key: const ValueKey('noPlan.tile'),
+                app: app,
+                height: 40,
+              ),
+            ),
           if (detail != null)
             Padding(
               padding: const EdgeInsets.only(top: 2),

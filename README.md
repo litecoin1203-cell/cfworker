@@ -6,6 +6,14 @@
 > - [docs/DATABASE.md](docs/DATABASE.md) — همه‌ی جدول‌ها، ستون‌ها و migrationها
 > - [AGENTS.md](AGENTS.md) — قوانین کوتاه برای ایجنت‌های هوش مصنوعی
 >
+> **Licences.** The repository has no top-level licence file yet: until the owner chooses one, the Worker,
+> the Mini App and Pleat are all rights reserved. Exceptions: `android/` is a fork of v2rayNG 2.2.6 and is
+> licensed under the **GPL-3.0** (`android/LICENSE`); `app-web/` was distributed inside that GPL-3.0 app (CloudGold
+> v1.7.1, copied in by `android/sync-web.sh`), so its source stays published here with it. Both are retired. Pleat
+> (`flutter_vpn/`) contains no v2rayNG code; the third-party engines it bundles (Xray-core MPL-2.0,
+> AndroidLibXrayLite LGPL-3.0, hev-socks5-tunnel MIT, geo data GPL-3.0) are listed with their full licence
+> texts and source links in the app (Profile › Open-source licences, from `flutter_vpn/assets/licenses/`).
+>
 > **توجه:** بقیه‌ی این README راهنمای نصب اولیه است و بخش‌هایی از آن قدیمی است (اپ قدیمی Cloud Gold، «۵۳ تست»). اپ فعلی **Pleat** در `flutter_vpn/` است، Mini App در `miniapp/`، و تست‌های Worker حدود ۱۴۵۰ مورد است. هر جا این README با مستندات بالا فرق داشت، مستندات درست است.
 
 کل فروشگاه روی **Cloudflare** اجرا می‌شود و **هیچ VPS‌ای لازم ندارد**. فقط هزینه‌ی یک دامنه در سال.
