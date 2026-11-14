@@ -631,6 +631,32 @@ void main() {
     expect(ss['routing']['rules'], hasLength(2));
   });
 
+  // Only the phone's traffic is split: the app's own API calls and the core's
+  // start and connection checks always use the exit, so a site in Direct
+  // sites (say gstatic.com) can't make a dead exit look alive.
+  test(
+    'every rule but private ranges and the balancer is for the phone only',
+    () {
+      final c = jsonDecode(
+        xrayConfig(
+          'trojan://p@us1.example.com:443#x',
+          localDirect: true,
+          api: (user: 'u', pass: 'p'),
+          directSites: ['gstatic.com'],
+          backups: ['trojan://p@us2.example.com:443#y'],
+          shield: const Shield(level: 2, adult: true),
+        ),
+      );
+      final rules = c['routing']['rules'] as List;
+      expect(rules, hasLength(8));
+      for (final r in rules) {
+        final private = (r['ip'] as List?)?.contains('10.0.0.0/8') ?? false;
+        if (private || r['balancerTag'] != null) continue;
+        expect(r['inboundTag'], ['socks'], reason: '$r');
+      }
+    },
+  );
+
   test('a site the phone resolved to IPv6 is still reached through the exit', () {
     final c = jsonDecode(xrayConfig('trojan://p@us1.example.com:443#x'));
     // the sniffed name replaces the address, so the exit resolves it itself

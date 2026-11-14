@@ -227,9 +227,14 @@ String xrayConfig(
             'domain': blocked,
             'outboundTag': 'block',
           },
+        // Every split below is for the phone's traffic only (the socks
+        // inbound): the app's own API calls and the core's start and
+        // connection checks always take the exit, so a site the person sends
+        // direct can't make a dead exit look alive.
         if (blockQuic)
           {
             'type': 'field',
+            'inboundTag': ['socks'],
             'network': 'udp',
             'port': '443',
             'outboundTag': 'block',
@@ -239,17 +244,20 @@ String xrayConfig(
         if (directSites.isNotEmpty)
           {
             'type': 'field',
+            'inboundTag': ['socks'],
             'domain': [for (final d in directSites) 'domain:$d'],
             'outboundTag': 'direct',
           },
         if (localDirect) ...[
           {
             'type': 'field',
+            'inboundTag': ['socks'],
             'domain': ['domain:ir', 'geosite:category-ir'],
             'outboundTag': 'direct',
           },
           {
             'type': 'field',
+            'inboundTag': ['socks'],
             'ip': ['geoip:ir'],
             'outboundTag': 'direct',
           },
