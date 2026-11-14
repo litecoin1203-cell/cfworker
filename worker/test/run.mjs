@@ -5354,6 +5354,41 @@ section('payments audit PAY-01..PAY-04: stuck settle recovered, SMS deposit line
   await exec('UPDATE users SET wallet_balance = ? WHERE id = ?', monthly.price_toman, uw);
   const okw = await call('POST', '/api/v1/orders', { token: tw, json: { plan_id: monthly.id, method: 'wallet' } });
   ok(okw.status === 201 && okw.data.status === 'paid' && await expiresOf(uw) > now(), 'PAY-04: a wallet purchase with the money is delivered');
+
+  // ---------------- independent review fixes (B1, S1, S2, S3, nits) ----------------
+  const acksOf = (k) => since(k).filter((c) => c.method === 'answerCallbackQuery').map((c) => String(c.body.text || '')).join(' | ');
+  // B1: an SMS that matched an order (review) and the admin approved with ✅ must not pay a second order when pasted
+  for (const [label, senders, mode] of [['untrusted sender', '', 'auto'], ['detect mode', '+989100', 'detect']]) {
+    await botSet('sms_senders', senders || '-');
+    if (!senders) await exec("UPDATE settings SET value = '' WHERE key = 'sms_senders'");
+    await botSet('card_auto', mode);
+    const tA = await signup(`b1a-${mode}@example.com`, { device: 'b1a' + mode });
+    const tB = await signup(`b1b-${mode}@example.com`, { device: 'b1b' + mode });
+    const oA = (await call('POST', '/api/v1/orders', { token: tA, json: { topup_toman: 6660000, method: 'card' } })).data;
+    const smsB1 = `بانک ملی\nواریز: ${rial(oA.amount_toman * 10)}\nمانده: ${rial(7000000 + oA.id)}\n1405/08/10-09:15`;
+    const first1 = await call('POST', '/sms/' + key, { json: { from: '+989100', text: smsB1 } });
+    await tgWebhook({ callback_query: { id: 'b1-' + mode, data: `ap:${oA.id}`, message: { ...A, message_id: 992, text: 'x' } } });
+    const oB = (await call('POST', '/api/v1/orders', { token: tB, json: { topup_toman: 6660000, method: 'card' } })).data;
+    await exec('UPDATE orders SET amount_toman = ? WHERE id = ?', oA.amount_toman, oB.id);
+    await botSet('card_auto', 'auto');
+    n = fakes.tg.calls.length;
+    await tgWebhook({ message: { ...A, text: smsB1 } });
+    const sA = (await row('SELECT status FROM orders WHERE id = ?', oA.id)).status;
+    const sB = (await row('SELECT status FROM orders WHERE id = ?', oB.id)).status;
+    ok(first1.data.result === 'review' && sA === 'paid' && sB === 'pending', `B1 (${label}): SMS sent to review, approved with ✅, then pasted: the second order stays unpaid: ${first1.data.result} A=${sA} B=${sB}`);
+    ok(texts(n).includes(`#${oA.id}`), `B1 (${label}): the admin is told which order the SMS belongs to`);
+  }
+  await botSet('sms_senders', '+989100');
+  await botSet('card_auto', 'auto');
+
+  // N1: an SMS with several deposit amounts names them neutrally
+  const tN1 = await signup('n1@example.com', { device: 'n1' });
+  const oN1 = (await call('POST', '/api/v1/orders', { token: tN1, json: { topup_toman: 7770000, method: 'card' } })).data;
+  n = fakes.tg.calls.length;
+  await call('POST', '/sms/' + key, { json: { from: '+989100', text: `واریز 10,000 و ${rial(oN1.amount_toman * 10)}\n1405/08/10` } });
+  ok(texts(n).includes('یکی از این مبلغ‌ها') && !texts(n).includes(`پیامک واریز ${rial(oN1.amount_toman * 10)} ریال`), 'N1: the several-amounts notice does not call the matched number the deposit: ' + texts(n).slice(0, 160));
+  await exec("UPDATE orders SET status = 'cancelled' WHERE id = ?", oN1.id);
+
 }
 
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');

@@ -83,11 +83,13 @@ export async function handleBankSms(env, { sender = '', text = '', trusted = fal
   try { await insert(env, 'sms_log', { hash, sender: String(sender).slice(0, 60), body, created_at: nowSec() }); }
   catch (e) {
     // Seen before. A copy from another source (the admin pastes what the forwarder already sent) is looked at again
-    // only while that SMS has paid nothing: claimed atomically, so it can never pay a second order.
+    // only when the first copy matched no order at all (no_order / not_deposit, no order_id): an SMS that was tied
+    // to an order (paid, or review / ambiguous / settle_failed that the admin then approves with a button, which
+    // never marks the SMS) is a duplicate, so it can never pay a second order. The claim is atomic.
     const seen = await first(env, 'SELECT sender, result, order_id FROM sms_log WHERE hash = ?', hash);
-    const again = seen && normSender(seen.sender) !== normSender(sender) && seen.result && seen.result !== 'paid'
-      && (await run(env, "UPDATE sms_log SET result = NULL, sender = ? WHERE hash = ? AND result IS NOT NULL AND result != 'paid'", String(sender).slice(0, 60), hash)).meta.changes;
-    if (!again) return { result: 'duplicate', orderId: seen && seen.result === 'paid' ? seen.order_id : undefined };
+    const again = seen && seen.order_id == null && ['no_order', 'not_deposit'].includes(seen.result) && normSender(seen.sender) !== normSender(sender)
+      && (await run(env, "UPDATE sms_log SET result = NULL, sender = ? WHERE hash = ? AND order_id IS NULL AND result IN ('no_order', 'not_deposit')", String(sender).slice(0, 60), hash)).meta.changes;
+    if (!again) return { result: 'duplicate', orderId: seen && seen.order_id != null ? seen.order_id : undefined, was: seen ? seen.result : null };
   }
 
   const p = parseBankSms(body);
@@ -117,8 +119,10 @@ export async function handleBankSms(env, { sender = '', text = '', trusted = fal
   // more than one order, or more than one deposit amount in the SMS (PAY-02): never by itself, the admin decides
   if (matches.length > 1 || p.amounts.length > 1) {
     await run(env, 'UPDATE sms_log SET result = ?, amount_rial = ? WHERE hash = ?', 'ambiguous', rial, hash);
-    const why = matches.length > 1 ? `با ${matches.length} سفارش جور است (${matches.map((o) => '#' + o.id).join('، ')})` : `چند مبلغ دارد (${p.amounts.map((x) => x.toLocaleString('en-US')).join('، ')}) و یکی با سفارش #${matches[0].id} جور است`;
-    await notifyAdmin(env, `💳 پیامک واریز ${rial.toLocaleString('en-US')} ریال ${why}. خودت تأیید کن.\n\n${untrusted(body)}`,
+    const head = p.amounts.length > 1
+      ? `💳 پیامک واریز چند مبلغ دارد (${p.amounts.map((x) => x.toLocaleString('en-US')).join('، ')}) و معلوم نیست کدام واریز شده است. یکی از این مبلغ‌ها (${rial.toLocaleString('en-US')} ریال) با ${matches.length > 1 ? `${matches.length} سفارش (${matches.map((o) => '#' + o.id).join('، ')})` : `سفارش #${matches[0].id}`} جور است. فقط اگر واریز را در حساب دیدی تأیید کن.`
+      : `💳 پیامک واریز ${rial.toLocaleString('en-US')} ریال با ${matches.length} سفارش جور است (${matches.map((o) => '#' + o.id).join('، ')}). خودت تأیید کن.`;
+    await notifyAdmin(env, `${head}\n\n${untrusted(body)}`,
       { inline_keyboard: matches.slice(0, 4).map((o) => [{ text: `✅ تأیید #${o.id}`, callback_data: `ap:${o.id}` }]) });
     return { result: 'ambiguous' };
   }
