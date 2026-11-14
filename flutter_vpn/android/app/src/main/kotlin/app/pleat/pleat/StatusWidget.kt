@@ -156,7 +156,7 @@ class StatusWidget : AppWidgetProvider() {
                 "held" -> {
                     face(false)
                     v.setTextViewText(R.id.widget_title, "No exit is answering")
-                    line("Traffic held · Tap to disconnect")
+                    line("Traffic held · Open Pleat or tap to disconnect")
                     v.setInt(R.id.widget_switch, "setBackgroundResource", R.drawable.widget_switch_wait)
                     v.setContentDescription(R.id.widget_switch, "Traffic held. Tap to disconnect")
                     v.setOnClickPendingIntent(R.id.widget_root, disconnect(context))

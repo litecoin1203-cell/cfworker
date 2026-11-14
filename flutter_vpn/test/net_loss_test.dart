@@ -351,6 +351,61 @@ void main() {
     await tester.pump(const Duration(minutes: 3));
   });
 
+  testWidgets('a late "up" is followed only for a start of this attempt', (
+    tester,
+  ) async {
+    // The start in flight answers after the app gave up (45 s): followed.
+    final (app, tunnel) = await _protected(tester);
+    tunnel
+      ..live = null
+      ..pings = {};
+    await _beat(tester);
+    await _beat(tester);
+    expect(app.phase, Phase.handshaking);
+    await _secs(tester, 46);
+    expect(app.holding, isTrue);
+    tunnel.emit(TunnelState.up);
+    await tester.pump(PMotion.seal);
+    expect(app.phase, Phase.protected);
+    expect(app.holding, isFalse);
+    await app.disconnect();
+    await tester.pump(const Duration(minutes: 3));
+  });
+
+  testWidgets('reopened while held: a replayed "up" does not end the hold', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel()
+      ..kind = 'wifi'
+      ..now = TunnelState.up
+      ..heldNow = true;
+    final (app, _) = await _boot(tester, tunnel);
+    await app.resumeTunnel();
+    await tester.pump(const Duration(seconds: 1));
+    expect(app.holding, isTrue);
+    // the event channel's replay of the service's last state, arriving late
+    tunnel.emit(TunnelState.up);
+    await tester.pump(PMotion.seal);
+    expect(app.phase, Phase.dropped);
+    expect(app.holding, isTrue);
+    await app.disconnect();
+    await tester.pump(const Duration(minutes: 3));
+  });
+
+  testWidgets('a silent hold: a stray "up" does not end the hold', (
+    tester,
+  ) async {
+    // smart connect finds nothing to fail over to: held on the running core
+    final (app, tunnel) = await _protected(tester);
+    await _loseEveryExit(tester, app, tunnel);
+    tunnel.emit(TunnelState.up);
+    await tester.pump(PMotion.seal);
+    expect(app.phase, Phase.dropped);
+    expect(app.holding, isTrue);
+    await app.disconnect();
+    await tester.pump(const Duration(minutes: 3));
+  });
+
   testWidgets('stay in one country while held: no "stopped" or "Not '
       'connected"', (tester) async {
     final tunnel = FakeTunnel()

@@ -2631,6 +2631,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _holdOnFail = holding;
     }
     holding = false;
+    _lateUpOk = false;
+    _timedOut = false;
     _holdRetry?.cancel();
     final attempt = ++_attempt;
     phase = Phase.checking;
@@ -2746,6 +2748,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _handshake = Timer(const Duration(seconds: 45), () {
         if (stale() || phase != Phase.handshaking) return;
         if (!_holdOnFail) unawaited(_stopTunnel());
+        // the service may still be probing this start: a late "up" counts
+        _timedOut = true;
         _noteFail(target, 'connect_fail');
         _noteNoExit();
         if (lockActive) return _askLock();
@@ -2925,8 +2929,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   int _offlineBeats = 0;
   static const _offlineGraceBeats = 6;
 
+  /// A start of the attempt that ended in the hold is still in flight; its
+  /// late "up" is followed (see [_hold]).
+  bool _lateUpOk = false;
+
+  /// The handshake limit (45 s) gave up on a start still in flight.
+  bool _timedOut = false;
+
   /// Leaves the held state's own bookkeeping (not the tunnel).
   void _clearHold() {
+    _lateUpOk = false;
     holding = false;
     _holdOnFail = false;
     holdTries = 0;
@@ -2946,6 +2958,12 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// The tunnel stays (blocking) with [message] on Home; the service is
   /// told to keep a failed start's tun instead of closing it after a while.
   void _hold(String message) {
+    // Only a start of this attempt that the service is still probing may
+    // come up later (the 45 s handshake limit); any other "up" (a replay
+    // on reopen, a held core that was already running) is not the exit
+    // answering again.
+    _lateUpOk = _timedOut;
+    _timedOut = false;
     _stopTimers();
     final first = !holding;
     holding = true;
@@ -2963,7 +2981,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(
         tunnel.alert(
           'No exit is answering',
-          'Traffic is held so nothing leaves outside the VPN. Pleat keeps trying; open it to disconnect.',
+          'Traffic is held so nothing leaves outside the VPN. Open Pleat to reconnect or disconnect.',
         ),
       );
     }
@@ -3072,7 +3090,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       return;
     }
     // The service's own probe came up after the app gave up and held.
-    if (s == TunnelState.up && holding && phase == Phase.dropped) {
+    if (s == TunnelState.up && holding && _lateUpOk && phase == Phase.dropped) {
       phase = Phase.handshaking;
     }
     if (s != TunnelState.up && phase == Phase.handshaking && !_started) {
@@ -3284,6 +3302,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _logSession();
     _stopTimers();
     phase = Phase.handshaking;
+    // nothing is started yet: the running core's states are not this try's
+    _started = false;
     connectedAt = null;
     tunnelMessage = null;
     // A live session: whatever happens next, its tunnel is not let go

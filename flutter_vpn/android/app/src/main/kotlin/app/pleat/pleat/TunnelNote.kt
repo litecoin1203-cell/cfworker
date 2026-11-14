@@ -63,7 +63,7 @@ object TunnelNote {
         val i = info
         val up = upNow && !held
         val flag = i.flag.ifEmpty { "🌐" }
-        val place = if (held) "Traffic held · Pleat keeps trying" else i.place.ifEmpty { "Finding your exit" }
+        val place = if (held) "Traffic held · Open Pleat or tap Disconnect" else i.place.ifEmpty { "Finding your exit" }
         val title = when {
             held -> "No exit is answering"
             up -> "Protected"
