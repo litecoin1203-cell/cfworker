@@ -10,6 +10,7 @@ import 'package:pleat/screens/checkout.dart';
 import 'package:pleat/screens/home.dart';
 import 'package:pleat/screens/login.dart';
 import 'package:pleat/screens/onboarding.dart';
+import 'package:pleat/screens/plans.dart';
 import 'package:pleat/screens/profile.dart';
 import 'package:pleat/screens/shell.dart';
 import 'package:pleat/state/app_state.dart';
@@ -1184,6 +1185,62 @@ void main() {
     expect(find.byType(AvatarGate), findsNothing);
     expect(find.byType(HomeScreen), findsOneWidget);
     await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('UX-01: Connect with no plan offers the trial, which opens '
+      'Plans; the Now tile does too', (tester) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, tunnel: FakeTunnel());
+    api.hasPlan = false;
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(app.subscription, isNull);
+    // the Now tile: an action, not "Open Plans." as plain text
+    expect(find.text('No plan yet. Open Plans.'), findsNothing);
+    expect(find.byKey(const ValueKey('noPlan.tile')), findsOneWidget);
+
+    await app.connect();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(app.phase, Phase.idle);
+    expect(app.tunnelMessage, 'No active plan.');
+    expect(app.planNeeded, isTrue);
+    final stage = find.byKey(const ValueKey('noPlan.stage'));
+    expect(stage, findsOneWidget);
+    expect(
+      find.descendant(of: stage, matching: find.text('START FREE TRIAL')),
+      findsOneWidget,
+    );
+    await tester.ensureVisible(stage);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.tap(stage);
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(PlansScreen), findsOneWidget);
+    expect(find.text('START TRIAL'), findsWidgets);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('UX-01: a failure that is not about the plan has no plan '
+      'button', (tester) async {
+    final (app, api) = await _boot(tester, {'onboarded': true});
+    api.hasPlan = false;
+    await app.loadMe();
+    await tester.runAsync(() => app.connect());
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(app.planNeeded, isTrue);
+    expect(find.byKey(const ValueKey('noPlan.stage')), findsOneWidget);
+    // a plan now, but no tunnel engine in this build: another failure
+    api.hasPlan = true;
+    await app.loadMe();
+    await tester.runAsync(() => app.connect());
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(app.tunnelMessage, contains('tunnel engine'));
+    expect(app.planNeeded, isFalse);
+    expect(find.byKey(const ValueKey('noPlan.stage')), findsNothing);
+    expect(find.byKey(const ValueKey('noPlan.tile')), findsNothing);
+    await tester.pump(const Duration(seconds: 1));
   });
 
   testWidgets('a long email fits one line on a small phone, domain kept', (

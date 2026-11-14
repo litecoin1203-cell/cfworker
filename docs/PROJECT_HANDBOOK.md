@@ -610,6 +610,10 @@ does not reach users by itself.
   IR TUNNEL, protocol, ping, CONNECT) plus one blue line per exit saying **why** (`recommend.dart`: fastest here,
   strong for N people, worked for you before, …; never invented), and a "Tested on … · RE-TEST" footer.
 - Locations rows show **P1/P2** tags and the slanted **IR TUNNEL** badge (#56, #59).
+- **No plan** (release audit UX-01): Connect that stops at "No active plan." (or a stopped plan, or "Your plan
+  ended.") shows a **Start free trial** / **See plans** button under the stage line (`AppState.planNeeded`,
+  `NoPlanAction` in `states.dart`); both open Plans, where the trial is one tap. The Now tile without a plan
+  carries the same button, and the bell's "No plan yet" notice has See plans. Any other failure hides it.
 
 ### Protect (PR #82, 1.2.46, layout B)
 - **Always protected**: kill switch + start with the phone (both open Android's always-on VPN page).
@@ -835,6 +839,10 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
   keep/clear history); Profile gets the Plans shelf.
 - PR #89 (1.2.49) Locations country list: Fastest-for-you bar, filter chips, regions, health pips, Not answering.
 - PR #90 (1.2.50) native crash: the code offsets inside the core, the signal's sender, stderr per process.
+
+**2026-11-14 — Release audit fixes, wave 1.**
+- Branch `claude/w1-licenses-ux` (no version bump; the lead numbers the release):
+  the no-plan Connect failure / Now tile offer the trial or Plans (UX-01).
 
 ---
 
