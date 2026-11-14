@@ -387,6 +387,60 @@ void main() {
     expect(pinned.containsKey('allowInsecure'), isFalse);
   });
 
+  // Transports and flows the shipped core removed: refused here, so the app
+  // fails over at once instead of starting a core that cannot run.
+  test('transports and flows the core removed are refused as unsupported', () {
+    final unsupported = isA<FormatException>().having(
+      (e) => e.message,
+      'message',
+      startsWith('unsupported'),
+    );
+    String vmess(String net) =>
+        'vmess://${base64.encode(utf8.encode(jsonEncode({'add': 'a.example.com', 'port': '443', 'id': '0b8c1e2a-1111-4222-8333-444455556666', 'net': net, 'tls': 'tls'})))}';
+    for (final link in [
+      'vless://u@h.example.com:443?security=tls&type=h2&path=%2F#x',
+      'vless://u@h.example.com:443?security=tls&type=http#x',
+      'vless://u@h.example.com:443?security=tls&type=h3#x',
+      'vless://u@h.example.com:443?security=tls&type=quic#x',
+      'trojan://p@h.example.com:443?type=h2#x',
+      vmess('h2'),
+      vmess('quic'),
+      'vless://u@h.example.com:443?security=xtls&flow=xtls-rprx-direct#x',
+      'vless://u@h.example.com:443?security=tls&flow=xtls-rprx-direct#x',
+      'vless://u@h.example.com:443?security=tls&flow=xtls-rprx-splice#x',
+      'vless://u@h.example.com:443?security=reality&pbk=k&flow=xtls-rprx-origin#x',
+    ]) {
+      expect(() => outboundOf(link), throwsA(unsupported), reason: link);
+    }
+    // still fine: Vision (also its udp443 form), no flow, HTTP-header TCP
+    for (final link in [
+      'vless://u@h.example.com:443?security=reality&pbk=k&flow=xtls-rprx-vision#x',
+      'vless://u@h.example.com:443?security=tls&flow=xtls-rprx-vision-udp443#x',
+      'vless://u@h.example.com:443?security=tls&type=tcp&headerType=http#x',
+      'vless://u@h.example.com:443?security=tls&type=kcp#x',
+    ]) {
+      expect(outboundOf(link)['protocol'], 'vless', reason: link);
+    }
+    // one such backup is left out; the exit and the other backup still run
+    final c = jsonDecode(
+      xrayConfig(
+        'vless://u@de1.example.com:443?security=tls&type=ws#x',
+        backups: [
+          'vless://u@h.example.com:443?security=tls&type=h2#y',
+          'trojan://p@us1.example.com:443#z',
+          'vless://u@h.example.com:443?security=tls&flow=xtls-rprx-direct#w',
+        ],
+      ),
+    ) as Map;
+    final out = c['outbounds'] as List;
+    expect(
+      [for (final o in out) o['tag']],
+      ['proxy', 'proxy-1', 'direct', 'block'],
+    );
+    expect(out[1]['protocol'], 'trojan');
+    expect(jsonEncode(c), isNot(contains('httpSettings')));
+  });
+
   test('unsupported protocols are refused, not guessed', () {
     expect(() => outboundOf('tuic://x@h:443'), throwsFormatException);
     expect(() => outboundOf('vless://u@h:0'), throwsFormatException);

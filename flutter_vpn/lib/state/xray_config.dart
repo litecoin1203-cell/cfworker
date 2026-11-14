@@ -506,6 +506,14 @@ Map<String, String> _query(String link) {
 }
 
 Map<String, Object?> _vless(Uri u, Map<String, String> q) {
+  // The core only knows Vision; the older XTLS flows were removed from it
+  // and a config naming one does not start.
+  final flow = q['flow'];
+  if (flow != null &&
+      flow != 'xtls-rprx-vision' &&
+      flow != 'xtls-rprx-vision-udp443') {
+    throw FormatException('unsupported flow $flow');
+  }
   return {
     'tag': 'proxy',
     'protocol': 'vless',
@@ -518,7 +526,7 @@ Map<String, Object?> _vless(Uri u, Map<String, String> q) {
             {
               'id': Uri.decodeComponent(u.userInfo),
               'encryption': q['encryption'] ?? 'none',
-              'flow': ?q['flow'],
+              'flow': ?flow,
             },
           ],
         },
@@ -653,6 +661,14 @@ String _b64(String s) {
 Map<String, Object?> _stream(Map<String, String> q, String address) {
   final net = (q['type'] ?? 'tcp').toLowerCase();
   final security = (q['security'] ?? 'none').toLowerCase();
+  // Removed from the core Pleat ships: a config holding one does not start
+  // at all (and as a backup it would stop the whole tunnel).
+  if (const {'h2', 'h3', 'http', 'quic'}.contains(net)) {
+    throw FormatException('unsupported transport $net');
+  }
+  if (security == 'xtls') {
+    throw const FormatException('unsupported security xtls (legacy XTLS)');
+  }
   // The name the transport itself presents, which v2rayNG falls back to
   // when the link has no sni: gRPC's authority, else the host header.
   final hostName = net == 'grpc'
@@ -677,7 +693,7 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
       .toList();
   final pinned = q['pcs'] ?? q['pinSHA256'];
   final out = <String, Object?>{
-    'network': net == 'h2' ? 'http' : net,
+    'network': net,
     'security': security == 'tls' || security == 'reality' ? security : 'none',
   };
   if (security == 'tls') {
@@ -736,11 +752,6 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
         'mode': ?q['mode'],
         // xmux, padding and the rest of the host's XHTTP settings, as JSON.
         'extra': ?_json(q['extra']),
-      };
-    case 'http':
-      out['httpSettings'] = {
-        'path': ?path,
-        if (host != null) 'host': host.split(','),
       };
     case 'tcp' when q['headerType'] == 'http':
       out['tcpSettings'] = {
