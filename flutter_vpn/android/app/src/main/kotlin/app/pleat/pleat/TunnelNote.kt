@@ -53,13 +53,23 @@ object TunnelNote {
         )
     }
 
-    /** [up] is false while connecting: the card says so and the button cancels. */
-    fun build(context: Context, up: Boolean, upSince: Long): Notification {
+    /**
+     * [up] is false while connecting: the card says so and the button cancels.
+     * [held]: every exit failed and the app holds the tun, so nothing leaves
+     * outside the VPN; the card says traffic is held and offers Disconnect.
+     */
+    fun build(context: Context, upNow: Boolean, upSince: Long, held: Boolean = false): Notification {
         channel(context)
         val i = info
+        val up = upNow && !held
         val flag = i.flag.ifEmpty { "🌐" }
-        val place = i.place.ifEmpty { "Finding your exit" }
-        val title = if (up) "Protected" else "Connecting"
+        val place = if (held) "Traffic held · Pleat keeps trying" else i.place.ifEmpty { "Finding your exit" }
+        val title = when {
+            held -> "No exit is answering"
+            up -> "Protected"
+            else -> "Connecting"
+        }
+        val button = if (up || held) "Disconnect" else "Cancel"
         // Chronometer counts from an elapsedRealtime() base.
         val started = if (i.since > 0) i.since else upSince
         val base = SystemClock.elapsedRealtime() - (System.currentTimeMillis() - started).coerceAtLeast(0)
@@ -95,13 +105,13 @@ object TunnelNote {
         val small = RemoteViews(context.packageName, R.layout.note_small).apply {
             top()
             setOnClickPendingIntent(R.id.note_power, disconnect)
-            setContentDescription(R.id.note_power, if (up) "Disconnect" else "Cancel")
+            setContentDescription(R.id.note_power, button)
         }
         val big = RemoteViews(context.packageName, R.layout.note_big).apply {
             top()
             setTextViewText(R.id.note_ip, i.ip.ifEmpty { "Checking…" })
             setTextViewText(R.id.note_protocol, i.protocol.ifEmpty { "—" })
-            setTextViewText(R.id.note_disconnect_label, if (up) "Disconnect" else "Cancel")
+            setTextViewText(R.id.note_disconnect_label, button)
             setOnClickPendingIntent(R.id.note_disconnect, disconnect)
             setOnClickPendingIntent(R.id.note_locations, locations)
         }
@@ -110,7 +120,7 @@ object TunnelNote {
         else @Suppress("DEPRECATION") Notification.Builder(context)
         b.setSmallIcon(R.drawable.ic_note)
             .setColor(context.getColor(R.color.note_blue))
-            .setContentTitle(if (up) "Protected · $place" else "Connecting")
+            .setContentTitle(if (up) "Protected · $place" else title)
             .setContentText(if (up && i.ip.isNotEmpty()) "IP ${i.ip}" else place)
             .setContentIntent(open)
             .setOngoing(true)

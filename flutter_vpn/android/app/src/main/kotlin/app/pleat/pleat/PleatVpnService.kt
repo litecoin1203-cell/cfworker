@@ -183,6 +183,7 @@ class PleatVpnService : VpnService() {
     /** [keep]: a widget start's spare; otherwise any spares left are dropped. */
     private fun begin(config: String, keep: Boolean = false) {
         if (!keep) spares.clear()
+        held = false
         up = false
         upSince = 0
         StatusWidget.upSince = 0
@@ -277,8 +278,21 @@ class PleatVpnService : VpnService() {
         main.post {
             failedClose?.let { main.removeCallbacks(it) }
             failedClose = null
+            if (!held) {
+                held = true
+                redraw()
+                StatusWidget.refresh(this)
+            }
         }
     }
+
+    /**
+     * The app holds this session's tun (blocking) after every exit failed.
+     * The card and the widget say so; the next start or a stop ends it.
+     */
+    @Volatile
+    var held = false
+        private set
 
     /** Main thread only: what a widget start tries after its first exit. */
     private val spares = ArrayDeque<StatusWidget.Spare>()
@@ -482,6 +496,7 @@ class PleatVpnService : VpnService() {
 
     private fun stopTunnel(state: String) {
         WidgetTrail.step(this, "stop_$state")
+        held = false
         val gen = ++generation
         Health.tunnelState(this, "stopping")
         ops.execute {
@@ -560,8 +575,8 @@ class PleatVpnService : VpnService() {
     private fun redraw() {
         if (instance !== this) return
         // A stop already took the card down (or is about to): don't bring it back.
-        if (TunnelHub.state != "up" && TunnelHub.state != "starting") return
+        if (TunnelHub.state != "up" && TunnelHub.state != "starting" && !held) return
         val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(TunnelNote.ID, TunnelNote.build(this, up, upSince))
+        nm.notify(TunnelNote.ID, TunnelNote.build(this, up, upSince, held))
     }
 }

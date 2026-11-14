@@ -534,10 +534,15 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
 4. **Smart connect**: rank by the current network's ping + speed, start with the best; when smart connect is
    on and the exit is not pinned, the core runs a `leastPing` balancer with 2 backups (failover inside the
    core, 1.2.22). Switching exits hands over the tun without tearing it down (no leak), a failed try keeps the
-   tun 20 s. Live pings that miss while Android names **no network** (`netKind() == ''`) are not counted: no
-   failover, the tunnel stays, pings go on every 20 s (Home: "No network…"). When a session that was protected
-   loses every exit, the tunnel is **held** (blocking, `AppState.holding`, native `hold`) until the person
-   reconnects or disconnects; it is never stopped silently. A fresh connect that fails still stops as before.
+   tun 20 s. Live pings that miss while Android names **no network** (`hasNetwork() == false`) are not counted
+   for about two minutes (6 pings): no failover, the tunnel stays (Home: "No network…"); after that, or when
+   Android can't say (`null`, native `netKind` = `error`), misses count as before. When a session that was
+   protected loses every exit, the tunnel is **held** (blocking, `AppState.holding`, native `hold`/`held`): the
+   notification and widget say "No exit is answering · traffic held" with Disconnect, a background alert tells
+   the person, and the exits are re-tested quietly after 15 s, 30 s, 60 s, then every 2 min; the first that
+   answers takes the held tun over. It ends on reconnect, Disconnect (app, notification, widget) or a widget
+   start (which then behaves like any widget start). A reopened app reads `held` and shows it. A fresh connect
+   that fails still stops as before.
    The config builder refuses what the shipped core removed (`h2`/`h3`/`http`/`quic`, `security=xtls`, flows
    other than `xtls-rprx-vision[-udp443]`) as "unsupported", and never writes `allowInsecure` (the core refuses
    it after 2026-08-01): an insecure link is verified like any TLS exit, or by its pin (`pcs`).
@@ -1005,7 +1010,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | **1.2.24: no exit connected at all** (proven) — IPIfNonMatch resolved the start check's host to IPv6, which the new block rule refused | AsIs, phone-only rules scoped to `inboundTag socks`, IPv4 DNS — #48 |
 | NET-01 core refuses `allowInsecure` since 2026-08-01; an insecure backup broke the whole config | never written; normal verification or the pin; insecure samples in `XRAY_DUMP` — audit fix |
 | NET-05 h2/http/quic/legacy-XTLS links passed the builder and failed in the core | refused as "unsupported" (failover, backup dropped) — audit fix |
-| NET-02 a short network loss ended in failover → `_stopTunnel` → apps out bare | no-network misses not counted; a live session that lost every exit keeps the tun held — audit fix |
+| NET-02 a short network loss ended in failover → `_stopTunnel` → apps out bare | no-network misses not counted (bounded ~2 min); a live session that lost every exit keeps the tun held, shown on the card/widget, retried with back-off — audit fix |
 | A dead line showed as "wrong password / wrong code" | `ApiError.offline` → neutral connection card — #54 |
 | Native crash (SIGABRT) reports carried only the signal | tombstone + Go stderr + tunnel state in the report — #77, #79, #80 (root cause still open, §19) |
 | Widget: start from a fully closed app refused by Android 12+/MIUI | invisible `WidgetConnect` activity — #78 (1.2.42) |
@@ -1174,7 +1179,9 @@ actions to SHAs. Also open: N6 exit domain resolved by the operator's DNS · N7 
 (no longer written to the config; such exits are verified normally — NET-01) · P20 outdated README · Gmail one-tap sign-in (needs a Google OAuth client).
 
 ### Follow-ups (non-critical)
-PBKDF2 iterations (only with a CPU budget), split `telegram.js`, a `confirmPayment` use case, a notify port,
+Pleat: `_failover`'s resync (`loadServers().then(... _connect(null, failover: true))`) is not guarded by
+`_attempt`, so a Disconnect during it can be followed by a fresh start (pre-existing, audit review N4); the config
+builder still lets unknown `type=` values and REALITY over ws/httpupgrade through to the core (N3). PBKDF2 iterations (only with a CPU budget), split `telegram.js`, a `confirmPayment` use case, a notify port,
 compat-date bump (`2025-09-01`), delete `android/`,
 `app-web/`, `android.yml` and the old-app compatibility paths (`centralApp`, `sub_url`, `/vpn/sub`,
 `/pay/done` with `cloudgold://`). Not built: per-session byte usage, Cloudflare clean-IP/SNI tricks, a domestic relay for intranet-only periods, Hiddify adapter.
