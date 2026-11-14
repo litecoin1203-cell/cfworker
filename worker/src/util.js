@@ -81,8 +81,6 @@ export async function safeEqual(a, b) {
   return timingSafeEqual(hex(x), hex(y));
 }
 
-// Per-key request limits from the Workers Rate Limiting bindings in wrangler.jsonc. A missing binding
-// (local runs) or a failing limiter lets the request through: the limiter must never lock users out.
 // A deadline for an outside call, so one slow service can't hold a request or the cron until the Worker is killed.
 export const deadline = (ms) => (typeof AbortSignal !== 'undefined' && AbortSignal.timeout ? AbortSignal.timeout(ms) : undefined);
 
@@ -99,12 +97,42 @@ export function throttled(bag, id, ms) {
   return false;
 }
 
+// Per-key request limits from the Workers Rate Limiting bindings in wrangler.jsonc. A missing binding
+// (local runs) or a failing limiter lets the request through: the limiter must never lock users out.
 export async function rateLimit(env, binding, key) {
   const limiter = env[binding];
   if (!limiter || !key) return;
   let outcome;
   try { outcome = await limiter.limit({ key }); } catch (e) { logError('rate limiter failed', e, { binding }); return; }
   if (outcome && outcome.success === false) throw err(429, 'too_many_requests', 'تعداد درخواست‌ها زیاد است. یک دقیقه صبر کن و دوباره امتحان کن.');
+}
+
+// ---------------- global write budgets ----------------
+// Anyone may sign up or ask for a Telegram sign-in link without an account, and each one writes D1 rows (a sign-up
+// about 12 counting index rows: user, device, this counter). The per-IP limits count per Cloudflare location and
+// reset every minute, so many IPs, or one IP over a day, could still spend the Free plan's ~100k rows/day and stop
+// the whole service. A budget caps how many of these all clients together may do per UTC hour. It is one settings
+// row per budget, value "<hour>:<count>", moved on by ONE conditional upsert: under the cap it counts this one (or
+// starts the new hour at 1); at the cap the upsert changes nothing, so a refused request writes no row at all (it
+// only logs to Workers Logs). A cap can be raised for a launch day with the Worker variable named in `env`
+// (dashboard or wrangler vars), no code change. Worst case at the defaults, counted generously (every index row):
+// 30 x ~12 + 60 x ~10 rows (a link row is deleted again later) = under 1k rows/hour, ~23k rows/day of the ~100k.
+export const BUDGETS = {
+  signup: { env: 'SIGNUP_PER_HOUR', def: 30, message: 'Too many new accounts right now. Try again later, or continue with Telegram.' },
+  tgstart: { env: 'TG_START_PER_HOUR', def: 60, message: 'Telegram sign-in is busy right now. Try again in a few minutes, or log in with your password.' },
+};
+export const budgetCap = (env, name) => { const v = parseInt(env[BUDGETS[name].env], 10); return v > 0 ? v : BUDGETS[name].def; };
+const BUDGET_SQL = `INSERT INTO settings (key, value) VALUES (?1, ?2 || ':1')
+  ON CONFLICT(key) DO UPDATE SET value = CASE WHEN substr(value, 1, instr(value, ':') - 1) = ?2
+      THEN ?2 || ':' || (CAST(substr(value, instr(value, ':') + 1) AS INTEGER) + 1) ELSE ?2 || ':1' END
+  WHERE substr(value, 1, instr(value, ':') - 1) != ?2 OR CAST(substr(value, instr(value, ':') + 1) AS INTEGER) < ?3`;
+export async function spendBudget(env, name) {
+  const hour = String(Math.floor(Date.now() / 3600000));
+  const r = await env.DB.prepare(BUDGET_SQL).bind('budget_' + name, hour, budgetCap(env, name)).run();
+  if (r && r.meta && r.meta.changes) return;
+  // a warning line in Workers Logs only: logError would also write the error log row, and a refusal writes nothing
+  console.warn(JSON.stringify({ message: 'write budget spent', budget: name, hour }));
+  throw err(429, 'busy', BUDGETS[name].message);
 }
 
 // JWTs get their own key when JWT_SECRET is set, so SECRET_KEY stays only the password pepper.

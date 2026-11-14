@@ -11,8 +11,15 @@ in the `CG_API_BASE` repo variable / the Pleat workflow's `api_base` input). The
 **Errors** are `{"detail": {"code": "<machine_code>", "message": "<text>"}}` with an HTTP status (`ApiError` in
 `util.js`). Messages for the old app are Persian; Pleat maps `code` to English and never shows Persian.
 **CORS** headers are added to every `/api/v1` answer.
-**Rate limits** (`RL_IP` 20/min, `RL_LOGIN` 5/min in `wrangler.jsonc`) are per Cloudflare location and fail open:
-they slow abuse, they are not a security boundary.
+**Rate limits** (`RL_IP` 20/min, `RL_LOGIN` 5/min, `RL_PUB` 120/min in `wrangler.jsonc`) are per Cloudflare
+location and only roughly counted: they slow one client's burst, they are not a security boundary. Over the limit:
+`429 too_many_requests`. All routes that write for someone without an account (`/auth/register`, `/auth/tg/start`,
+`/auth/tg/register`, `/auth/tg/webapp/register`) share one per-IP key, so they are one allowance, not four.
+**Global write budgets** (SEC-01, `util.js` `spendBudget`): at most `SIGNUP_PER_HOUR` (default 30) email sign-ups
+and `TG_START_PER_HOUR` (default 60) Telegram sign-in links (`/auth/tg/start` and `/me/telegram/start`) per UTC hour
+for all clients together, counted in one `settings` row each (`budget_signup`, `budget_tgstart`). When spent:
+`429 busy` with an English message, and the refused request writes nothing. Only a sign-up that is about to write
+counts (a taken email or bad password does not). The owner can raise a cap with the Worker variable for a launch day.
 
 **Request headers Pleat sends:** `Authorization: Bearer <access>`, `X-Device-Id`, `X-Device-Model`,
 `X-Device-OS`, `X-App-Version`, `X-HWID` (panel 1 has an HWID limit).
@@ -21,8 +28,8 @@ they slow abuse, they are not a security boundary.
 
 | Method + path | Auth | Handler | Purpose |
 |---|---|---|---|
-| `GET /health` | none | `index.js` | `{ok:true}`; `?deep=1` also checks D1 and the cron's last run |
-| `GET /mini/probe` | none | `account.miniProbePage` | Mini App stage-0 probe page (strict CSP) |
+| `GET /health` | none | `index.js` | `{ok:true}`, never limited (no D1; Pleat races it to pick an address); `?deep=1` also checks D1 and the cron's last run (limited per IP, `RL_PUB`) |
+| `GET /mini/probe` | none (`RL_PUB` per IP) | `account.miniProbePage` | Mini App stage-0 probe page (strict CSP) |
 | `GET /pay/done` | none | `index.js` | return page after a gateway payment (old app deep link) |
 | `POST /sms` | `X-SMS-Key` header = settings `sms_key` | `sms.js` | bank SMS forwarded from the admin's phone → auto-confirm card orders |
 | `POST /tg[/<secret>]` | `TELEGRAM_WEBHOOK_SECRET` in path + `X-Telegram-Bot-Api-Secret-Token`; admin role per update | `telegram.js` → `telegram-menu.js` | the admin Telegram bot webhook |
@@ -32,16 +39,16 @@ they slow abuse, they are not a security boundary.
 
 | Method + path | Limit | Handler | Purpose |
 |---|---|---|---|
-| `GET /app-config` | – | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`) |
-| `GET /plans` | – | `account.plans` | active plans |
-| `GET /ip` | – | `account.myIp` | caller's IP/country (no login) |
-| `POST /auth/register` | IP | `auth.register` | email sign-up → tokens |
+| `GET /app-config` | IP (`RL_PUB`) | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`) |
+| `GET /plans` | IP (`RL_PUB`) | `account.plans` | active plans |
+| `GET /ip` | IP (`RL_PUB`) | `account.myIp` | caller's IP/country (no login) |
+| `POST /auth/register` | IP (shared) + hourly budget | `auth.register` | email sign-up → tokens; `429 busy` when the hour's sign-up budget is spent |
 | `POST /auth/login` | IP + login | `auth.login` | email **or** Telegram @username + password → tokens |
-| `POST /auth/tg/start` | IP | `auth.tgStart` | start Telegram code sign-in (bot sends a 6-digit code) |
+| `POST /auth/tg/start` | IP (shared) + hourly budget | `auth.tgStart` | start Telegram code sign-in (bot sends a 6-digit code); `429 busy` when the hour's link budget is spent |
 | `POST /auth/tg/verify` | IP + nonce | `auth.tgVerify` | check the code → tokens, or `need_password` for a new account |
-| `POST /auth/tg/register` | IP | `auth.tgRegister` | finish Telegram sign-up with a password |
+| `POST /auth/tg/register` | IP (shared) | `auth.tgRegister` | finish Telegram sign-up with a password |
 | `POST /auth/tg/webapp` | IP | `auth.webappLogin` | Mini App sign-in with Telegram `initData` (≤ 1 h) → 30-min access token marked `src: mini`; `{need_account}` if new |
-| `POST /auth/tg/webapp/register` | IP | `auth.webappRegister` | one-tap account from the Mini App (no password), invite `startapp=ref_<CODE>` |
+| `POST /auth/tg/webapp/register` | IP (shared) | `auth.webappRegister` | one-tap account from the Mini App (no password), invite `startapp=ref_<CODE>` |
 | `POST /mini/probe` | IP; `initData` HMAC | `account.miniProbeReport` | stage-0 probe result → admin chat |
 | `POST /auth/refresh` | IP | `auth.refresh` | refresh token (60 days, not rotating) → new access token (30 min) |
 | `POST /payments/nowpayments/ipn` | HMAC-SHA512 | `orders.nowpaymentsIpn` | optional crypto gateway → `settle` |
@@ -57,7 +64,7 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | `GET /me/packages` | `account.packages` | package history (`sub_periods`) |
 | `POST /me/email` | `auth.setEmail` | backup Gmail |
 | `POST /me/avatar` | `auth.setAvatar` | pick one of 14 Folk avatars (empty pick refused since PR #66) |
-| `POST /me/telegram/start`, `/me/telegram/verify` | `auth` | link / verify Telegram on an email account |
+| `POST /me/telegram/start`, `/me/telegram/verify` | `auth` | link / verify Telegram on an email account (start: per account + the Telegram link budget, `429 busy`) |
 | `POST /me/health` | `health.report` | Pleat's batched health reports (PR #73). Limited per user; capped per day in `health.js` `LIMITS`. |
 | `POST /trial` | `account.startTrial` | free trial (needs verified Telegram when `trial_needs_telegram=1`) |
 | `GET /vpn` | `account.vpn` | connect pre-check; registers the device (`403 device_limit`, `402 no_subscription`, `410 sub_missing`) |

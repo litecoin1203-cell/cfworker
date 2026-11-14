@@ -97,12 +97,19 @@ export default {
     const path = url.pathname;
 
     try {
+      // plain /health is never limited: it touches nothing (no D1, no outside call), a limiter there could not save
+      // the request it already is, and Pleat races it on every address to pick a working one (a 429 = "down")
       if (path === '/health' && url.searchParams.get('deep') !== '1') return json({ ok: true });
+      const ip = request.headers.get('cf-connecting-ip') || '';
       // Mini App stage 0: a throw-away page that tests whether a Mini App opens on Iranian networks (account.js)
-      if (path === '/mini/probe' && request.method === 'GET') return account.miniProbePage(env, request);
+      if (path === '/mini/probe' && request.method === 'GET') {
+        await rateLimit(env, 'RL_PUB', 'pub:' + ip);
+        return account.miniProbePage(env, request);
+      }
       // for an outside uptime monitor: is the per-minute cron still running? (the panel sync stamps its cursor
       // every run while a panel is active). 503 when it has been quiet for 10 minutes. One read, no details.
       if (path === '/health') {
+        await rateLimit(env, 'RL_PUB', 'pub:' + ip);
         const { first } = await import('./db.js');
         const row = await first(env, 'SELECT MAX(run_at) t FROM sync_cursor').catch(() => null);
         const age = row && row.t ? Math.max(0, Math.floor(Date.now() / 1000) - row.t) : null;
@@ -156,15 +163,22 @@ async function route(request, env, p, ctx) {
   const m = request.method;
   const H = request.headers;
 
-  // public
-  if (p === '/app-config' && m === 'GET') return account.appConfig(env);
-  if (p === '/plans' && m === 'GET') return account.plans(env);
-  if (p === '/ip' && m === 'GET') return account.myIp(env, request);
-
-  // auth (rate-limited per IP, and login also per email, against password guessing and mass sign-ups)
   const ip = H.get('cf-connecting-ip') || '';
+  // public, read-only: limited per IP (RL_PUB, generous: many phones can share one carrier or VPN exit address)
+  if ((p === '/app-config' || p === '/plans' || p === '/ip') && m === 'GET') {
+    await rateLimit(env, 'RL_PUB', 'pub:' + ip);
+    if (p === '/app-config') return account.appConfig(env);
+    if (p === '/plans') return account.plans(env);
+    return account.myIp(env, request);
+  }
+
+  // auth (rate-limited per IP, and login also per email, against password guessing and mass sign-ups).
+  // Every route that writes for someone without an account shares ONE per-IP key (ANON_WRITE), so four such
+  // endpoints are not four times the allowance; sign-ups and Telegram links also spend a global hourly budget
+  // (util.js spendBudget), which holds however many IPs or Cloudflare locations a flood comes from.
+  const ANON_WRITE = 'anonw:' + ip;
   if (p === '/auth/register' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'register:' + ip);
+    await rateLimit(env, 'RL_IP', ANON_WRITE);
     return auth.register(env, await body(request), H);
   }
   if (p === '/auth/login' && m === 'POST') {
@@ -175,7 +189,7 @@ async function route(request, env, p, ctx) {
   }
   // Telegram sign-up / login (6-digit code from the bot); verify is also limited per sign-in link
   if (p === '/auth/tg/start' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'tgstart:' + ip);
+    await rateLimit(env, 'RL_IP', ANON_WRITE);
     return auth.tgStart(env);
   }
   if (p === '/auth/tg/verify' && m === 'POST') {
@@ -185,7 +199,7 @@ async function route(request, env, p, ctx) {
     return auth.tgVerify(env, b, H);
   }
   if (p === '/auth/tg/register' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'register:' + ip);
+    await rateLimit(env, 'RL_IP', ANON_WRITE);
     return auth.tgRegister(env, await body(request), H);
   }
   // Telegram Mini App sign-in (initData signed by Telegram) and one-tap account
@@ -194,7 +208,7 @@ async function route(request, env, p, ctx) {
     return auth.webappLogin(env, await body(request));
   }
   if (p === '/auth/tg/webapp/register' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'register:' + ip);
+    await rateLimit(env, 'RL_IP', ANON_WRITE);
     return auth.webappRegister(env, await body(request));
   }
   if (p === '/mini/probe' && m === 'POST') {
@@ -270,7 +284,7 @@ async function route(request, env, p, ctx) {
   }
   if (p === '/me/avatar' && m === 'POST') return auth.setAvatar(env, user, await body(request));
   if (p === '/me/telegram/start' && m === 'POST') {
-    await rateLimit(env, 'RL_IP', 'tgstart:' + ip);
+    await rateLimit(env, 'RL_IP', 'tglink:' + user.id); // per account (it also spends the Telegram link budget)
     return auth.tgLinkStart(env, user);
   }
   if (p === '/me/telegram/verify' && m === 'POST') {

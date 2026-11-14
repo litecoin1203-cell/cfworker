@@ -1,7 +1,7 @@
 // Accounts: register / login / refresh / change-password. Email + password, or Telegram (6-digit code from the
 // bot, then a password; later logins with @username or numeric Telegram id + password).
 import { first, run, insert, touchDevice } from './db.js';
-import { json, err, hashPassword, verifyPassword, signJwt, verifyJwt, jwtSecret, cleanEmail, cleanNewEmail, randomCode, nowSec, hmacHex, safeEqual, rateLimit } from './util.js';
+import { json, err, hashPassword, verifyPassword, signJwt, verifyJwt, jwtSecret, cleanEmail, cleanNewEmail, randomCode, nowSec, hmacHex, safeEqual, rateLimit, spendBudget } from './util.js';
 
 const ACCESS_MIN = 30;
 const REFRESH_DAYS = 60;
@@ -47,6 +47,8 @@ export async function register(env, body, headers) {
   checkPassword(body.password);
   const existing = await first(env, 'SELECT id FROM users WHERE email = ?', email);
   if (existing) throw err(409, 'email_taken', 'با این ایمیل قبلاً حساب ساخته شده. وارد شو.');
+  // the gate against sign-up floods: only a sign-up that is about to write counts, and a refused one writes nothing
+  await spendBudget(env, 'signup');
   let id;
   try {
     id = await insert(env, 'users', {
@@ -179,6 +181,8 @@ async function botUsername(env) {
 export async function tgStart(env, linkUserId = null) {
   const bot = await botUsername(env);
   if (!bot) throw err(503, 'telegram_unavailable', 'Telegram sign-in is not available right now. Try again later or use email.');
+  // the gate against link floods (each link is a row): refused before anything is written
+  await spendBudget(env, 'tgstart');
   const nonce = randomHex(16);
   const now = nowSec();
   await run(env, 'DELETE FROM tg_logins WHERE expires_at < ?', now - 3600);

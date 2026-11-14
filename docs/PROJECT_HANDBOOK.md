@@ -742,6 +742,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | **~5M D1 rows read/day** | every per-minute query must use an index (0021 fixed a full scan of `subscriptions`) |
 | **100k Worker requests/day** | roughly 200–500 active users; Workers Paid ($5/month, 10M/day) for thousands |
 | Rate limiting is per Cloudflare location and fail-open | do not rely on it as a security boundary |
+| Anyone can write without an account (sign-up, Telegram link) | a global hourly budget per kind (`util.js` `spendBudget`, one `settings` row each: `SIGNUP_PER_HOUR` 30, `TG_START_PER_HOUR` 60) caps a flood from any number of IPs at ~23k rows/day; a refused request writes nothing (release audit SEC-01) |
 
 ---
 
@@ -1066,6 +1067,10 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
   country list (Fastest bar, chips, regions, pips, Not answering).
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
+- **Abuse limits (release audit SEC-01/SEC-08)**: add the one free WAF rate-limiting rule on the custom domain and
+  turn off the `workers.dev` route once the app no longer needs it (the WAF does not run there). Only a rule in
+  front of the Worker saves the 100k requests/day; the Worker's own limits save D1 writes. Raise
+  `SIGNUP_PER_HOUR` / `TG_START_PER_HOUR` only for a launch day.
 - **Phone test Pleat 1.2.33 → 1.2.46**: avatar gate, update live track on MIUI, version signature, Route cards and
   rules, Stats, a health report (long-press the version), detailed crash view in the bot, **widget cold start**
   (connect once in the app first to seed the spare exits; 1.2.44 fix unconfirmed), Recommended exits under Now,
