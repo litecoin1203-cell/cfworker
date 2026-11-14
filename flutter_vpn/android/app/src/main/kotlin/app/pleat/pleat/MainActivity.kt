@@ -168,6 +168,11 @@ class MainActivity : FlutterActivity() {
                             startActivityForResult(ask, ASK_VPN)
                         }
                     }
+                    "hold" -> {
+                        PleatVpnService.instance?.hold()
+                        result.success(null)
+                    }
+                    "held" -> result.success(PleatVpnService.instance?.held == true)
                     "stop" -> {
                         startService(Intent(this, PleatVpnService::class.java).setAction(PleatVpnService.ACTION_STOP))
                         result.success(null)
@@ -397,7 +402,8 @@ class MainActivity : FlutterActivity() {
                     }
                 }
         } catch (e: Throwable) {
-            ""
+            // not "": the app reads "" as no network at all
+            "error"
         }
     }
 

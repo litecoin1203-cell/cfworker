@@ -227,9 +227,14 @@ String xrayConfig(
             'domain': blocked,
             'outboundTag': 'block',
           },
+        // Every split below is for the phone's traffic only (the socks
+        // inbound): the app's own API calls and the core's start and
+        // connection checks always take the exit, so a site the person sends
+        // direct can't make a dead exit look alive.
         if (blockQuic)
           {
             'type': 'field',
+            'inboundTag': ['socks'],
             'network': 'udp',
             'port': '443',
             'outboundTag': 'block',
@@ -239,17 +244,20 @@ String xrayConfig(
         if (directSites.isNotEmpty)
           {
             'type': 'field',
+            'inboundTag': ['socks'],
             'domain': [for (final d in directSites) 'domain:$d'],
             'outboundTag': 'direct',
           },
         if (localDirect) ...[
           {
             'type': 'field',
+            'inboundTag': ['socks'],
             'domain': ['domain:ir', 'geosite:category-ir'],
             'outboundTag': 'direct',
           },
           {
             'type': 'field',
+            'inboundTag': ['socks'],
             'ip': ['geoip:ir'],
             'outboundTag': 'direct',
           },
@@ -506,6 +514,14 @@ Map<String, String> _query(String link) {
 }
 
 Map<String, Object?> _vless(Uri u, Map<String, String> q) {
+  // The core only knows Vision; the older XTLS flows were removed from it
+  // and a config naming one does not start.
+  final flow = q['flow'];
+  if (flow != null &&
+      flow != 'xtls-rprx-vision' &&
+      flow != 'xtls-rprx-vision-udp443') {
+    throw FormatException('unsupported flow $flow');
+  }
   return {
     'tag': 'proxy',
     'protocol': 'vless',
@@ -518,7 +534,7 @@ Map<String, Object?> _vless(Uri u, Map<String, String> q) {
             {
               'id': Uri.decodeComponent(u.userInfo),
               'encryption': q['encryption'] ?? 'none',
-              'flow': ?q['flow'],
+              'flow': ?flow,
             },
           ],
         },
@@ -653,6 +669,14 @@ String _b64(String s) {
 Map<String, Object?> _stream(Map<String, String> q, String address) {
   final net = (q['type'] ?? 'tcp').toLowerCase();
   final security = (q['security'] ?? 'none').toLowerCase();
+  // Removed from the core Pleat ships: a config holding one does not start
+  // at all (and as a backup it would stop the whole tunnel).
+  if (const {'h2', 'h3', 'http', 'quic'}.contains(net)) {
+    throw FormatException('unsupported transport $net');
+  }
+  if (security == 'xtls') {
+    throw const FormatException('unsupported security xtls (legacy XTLS)');
+  }
   // The name the transport itself presents, which v2rayNG falls back to
   // when the link has no sni: gRPC's authority, else the host header.
   final hostName = net == 'grpc'
@@ -677,7 +701,7 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
       .toList();
   final pinned = q['pcs'] ?? q['pinSHA256'];
   final out = <String, Object?>{
-    'network': net == 'h2' ? 'http' : net,
+    'network': net,
     'security': security == 'tls' || security == 'reality' ? security : 'none',
   };
   if (security == 'tls') {
@@ -690,13 +714,13 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
       // such an exit fails the handshake.
       'pinnedPeerCertSha256': ?pinned,
       'verifyPeerCertByName': ?q['vcn'],
-      if (pinned == null &&
-          [
-            'insecure',
-            'allowInsecure',
-            'allow_insecure',
-          ].any((k) => q[k] == '1' || q[k] == 'true'))
-        'allowInsecure': true,
+      // A link's "insecure" / "allowInsecure" is ignored on purpose: the
+      // core refuses any config holding "allowInsecure" (removed after
+      // 2026-08-01), and one such backup would stop the whole tunnel. The
+      // exit is verified like any other: a valid certificate (most of
+      // them) still connects; a self-signed one fails its handshake like a
+      // dead exit and the failover moves on. The pin above is the way to
+      // trust one certificate.
       // Encrypted Client Hello hides the SNI from filters; a host that
       // sets it often only answers with it.
       'echConfigList': ?q['ech'],
@@ -736,11 +760,6 @@ Map<String, Object?> _stream(Map<String, String> q, String address) {
         'mode': ?q['mode'],
         // xmux, padding and the rest of the host's XHTTP settings, as JSON.
         'extra': ?_json(q['extra']),
-      };
-    case 'http':
-      out['httpSettings'] = {
-        'path': ?path,
-        if (host != null) 'host': host.split(','),
       };
     case 'tcp' when q['headerType'] == 'http':
       out['tcpSettings'] = {

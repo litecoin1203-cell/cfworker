@@ -89,6 +89,19 @@ class _HomeScreenState extends State<HomeScreen> {
                     padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
                     child: _StageLine(app: app),
                   ),
+                  // A held tunnel blocks the phone's traffic: the way out.
+                  if (app.holding)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(20, 0, 20, 18),
+                      child: PillButton(
+                        label: 'Disconnect',
+                        icon: PIcon.power,
+                        color: PColors.navy,
+                        height: 44,
+                        expand: false,
+                        onTap: app.disconnect,
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -725,6 +738,10 @@ class _StageLine extends StatelessWidget {
         'Handshaking with ${app.exit?.title}. Tap to cancel.',
         PColors.blue,
       ),
+      Phase.protected when app.noNetwork => (
+        'No network. Pleat keeps the tunnel and goes on when it’s back.',
+        PColors.alert,
+      ),
       Phase.protected when app.exitSilent => (
         '${app.exit?.title} isn’t answering. Pick another exit.',
         PColors.alert,
@@ -732,6 +749,11 @@ class _StageLine extends StatelessWidget {
       Phase.protected => (
         'Protected. ${app.exit?.protocol} to ${app.exit?.title}.',
         PColors.safe,
+      ),
+      // Nothing leaves outside the VPN while held: apps wait.
+      Phase.dropped when app.holding => (
+        '${app.tunnelMessage ?? 'No exit answered.'} Traffic is held until you reconnect or disconnect.',
+        PColors.alert,
       ),
       Phase.dropped => (
         '${app.tunnelMessage ?? 'Tunnel dropped.'} Not protected.',

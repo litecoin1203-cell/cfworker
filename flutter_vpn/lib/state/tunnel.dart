@@ -111,6 +111,20 @@ class Tunnel {
     if (await available()) await _method.invokeMethod<void>('stop');
   }
 
+  /// A failed start keeps its tun (blocking) only a short while on its own.
+  /// A live session that lost its exit asks it to stay until the next start
+  /// or a stop, so apps never leave outside the VPN in between.
+  Future<void> hold() async {
+    if (!await available()) return;
+    try {
+      await _method.invokeMethod<void>('hold');
+    } on MissingPluginException {
+      // No native side.
+    } on PlatformException {
+      // An older native side: it closes the tun after a while, as before.
+    }
+  }
+
   /// Current state, for when the app opens while a tunnel already runs.
   Future<TunnelState> current() async {
     if (!await available()) return TunnelState.down;
@@ -292,6 +306,35 @@ class Tunnel {
       return '';
     } on PlatformException {
       return '';
+    }
+  }
+
+  /// Whether the phone has a network under the tunnel at all: false only
+  /// when Android names none; null when it can't say (no engine, an older
+  /// native side, an error), which callers treat as "there may be one".
+  Future<bool?> hasNetwork() async {
+    if (_available != true) return null;
+    try {
+      final k = await _method.invokeMethod<String>('netKind');
+      if (k == null || k == 'error') return null;
+      return k.isNotEmpty;
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// Whether the service holds a session's tun for the app (see [hold]),
+  /// so a reopened app shows it held instead of idle.
+  Future<bool> held() async {
+    if (!await available()) return false;
+    try {
+      return await _method.invokeMethod<bool>('held') ?? false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
     }
   }
 

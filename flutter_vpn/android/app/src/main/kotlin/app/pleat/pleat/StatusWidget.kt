@@ -150,7 +150,17 @@ class StatusWidget : AppWidgetProvider() {
 
             fun line(text: String) = v.setChronometer(R.id.widget_sub, now, text.replace("%", "%%"), false)
 
-            when (state) {
+            // A held session: every app is blocked by Pleat, so say so.
+            val held = PleatVpnService.instance?.held == true
+            when (if (held) "held" else state) {
+                "held" -> {
+                    face(false)
+                    v.setTextViewText(R.id.widget_title, "No exit is answering")
+                    line("Traffic held · Open Pleat or tap to disconnect")
+                    v.setInt(R.id.widget_switch, "setBackgroundResource", R.drawable.widget_switch_wait)
+                    v.setContentDescription(R.id.widget_switch, "Traffic held. Tap to disconnect")
+                    v.setOnClickPendingIntent(R.id.widget_root, disconnect(context))
+                }
                 "up" -> {
                     face(true)
                     v.setTextViewText(R.id.widget_title, place.ifEmpty { "Protected" })
