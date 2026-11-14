@@ -275,7 +275,7 @@ The full list (every route, its auth, handler and limits, plus the admin API and
 | File | Responsibility |
 |---|---|
 | `index.js` | HTTP + cron entry, CORS, routing, default plan seed (`DEFAULT_PLANS`, only when `plans` is empty) |
-| `util.js` | JSON/errors, PBKDF2 + pepper, JWT HS256, HMAC, AES-GCM `seal`, rate limit (fail-open on purpose), JSON logs that strip URLs |
+| `util.js` | JSON/errors, PBKDF2 + pepper, JWT HS256, HMAC, AES-GCM `seal`, rate limit (fails closed on write / password routes, open on reads), global write budgets (`spendBudget`), JSON logs that strip URLs |
 | `db.js` | D1 helpers (`first`, `all`, `run`, `insert`), the `settings` key/value store with `SETTING_DEFAULTS`, `touchDevice` |
 | `auth.js` | email sign-up/login, Telegram 6-digit code login/sign-up, refresh, change password, link Telegram, backup email, avatar (`AVATARS`) |
 | `account.js` | app-config, plans, `/me`, subscription status, server list (`vpnServers`), devices, trial (`startTrial`) |
@@ -741,7 +741,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | **~100k D1 writes/day** | the old cron wrote 2 rows per user per minute even when idle → cap hit at ~35 users (PR #41: writes only on change). A phone that keeps the VPN on still changes its counter every minute, so the cap was still ~33 always-on users; the engineering-audit phase 6 PR spreads those writes (`LEDGER_EVERY` = 10 min in `sync.js`, never for big changes, near-quota, panel resets or a user coming online): 100 always-on users went from 295k to 33k rows/day (measured). Stored "online now" therefore means seen in the last 13 min (`STORED_ONLINE_SEC`); the bot's live card is exact. |
 | **~5M D1 rows read/day** | every per-minute query must use an index (0021 fixed a full scan of `subscriptions`) |
 | **100k Worker requests/day** | roughly 200–500 active users; Workers Paid ($5/month, 10M/day) for thousands |
-| Rate limiting is per Cloudflare location and fail-open | do not rely on it as a security boundary |
+| Rate limiting is per Cloudflare location and approximate | do not rely on it as a security boundary; it fails closed on write and password routes, open on read-only ones (release audit SEC-08) |
 | Anyone can write without an account (sign-up, Telegram link) | a global hourly budget per kind (`util.js` `spendBudget`, one `settings` row each: `SIGNUP_PER_HOUR` 30, `TG_START_PER_HOUR` 60) caps a flood from any number of IPs at ~23k rows/day; a refused request writes nothing (release audit SEC-01) |
 
 ---

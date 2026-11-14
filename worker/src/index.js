@@ -103,13 +103,13 @@ export default {
       const ip = request.headers.get('cf-connecting-ip') || '';
       // Mini App stage 0: a throw-away page that tests whether a Mini App opens on Iranian networks (account.js)
       if (path === '/mini/probe' && request.method === 'GET') {
-        await rateLimit(env, 'RL_PUB', 'pub:' + ip);
+        await rateLimit(env, 'RL_PUB', 'pub:' + ip, { open: true });
         return account.miniProbePage(env, request);
       }
       // for an outside uptime monitor: is the per-minute cron still running? (the panel sync stamps its cursor
       // every run while a panel is active). 503 when it has been quiet for 10 minutes. One read, no details.
       if (path === '/health') {
-        await rateLimit(env, 'RL_PUB', 'pub:' + ip);
+        await rateLimit(env, 'RL_PUB', 'pub:' + ip, { open: true });
         const { first } = await import('./db.js');
         const row = await first(env, 'SELECT MAX(run_at) t FROM sync_cursor').catch(() => null);
         const age = row && row.t ? Math.max(0, Math.floor(Date.now() / 1000) - row.t) : null;
@@ -166,7 +166,7 @@ async function route(request, env, p, ctx) {
   const ip = H.get('cf-connecting-ip') || '';
   // public, read-only: limited per IP (RL_PUB, generous: many phones can share one carrier or VPN exit address)
   if ((p === '/app-config' || p === '/plans' || p === '/ip') && m === 'GET') {
-    await rateLimit(env, 'RL_PUB', 'pub:' + ip);
+    await rateLimit(env, 'RL_PUB', 'pub:' + ip, { open: true });
     if (p === '/app-config') return account.appConfig(env);
     if (p === '/plans') return account.plans(env);
     return account.myIp(env, request);
@@ -249,7 +249,10 @@ async function route(request, env, p, ctx) {
   // a Mini App token reads the account and buys; VPN configs stay with Pleat (no panel or node address in a web page)
   if (user._mini && (p === '/vpn' || p.startsWith('/vpn/') || p.startsWith('/devices'))) throw err(403, 'use_pleat', 'Open the Pleat app for this.');
 
-  if (p === '/auth/change-password' && m === 'POST') return auth.changePassword(env, user, await body(request));
+  if (p === '/auth/change-password' && m === 'POST') {
+    await rateLimit(env, 'RL_LOGIN', 'pw:' + user.id); // it checks the current password: no guessing with a stolen token
+    return auth.changePassword(env, user, await body(request));
+  }
   if (p === '/auth/logout-all' && m === 'POST') return auth.logoutAll(env, user);
   if (p === '/me' && m === 'GET') return account.me(env, user, request, ctx);
   // the address this request came from and where Cloudflare places it: through the VPN, the exit's public IP,
@@ -273,7 +276,7 @@ async function route(request, env, p, ctx) {
   }
   // the announced Pleat update (appupdate.js), passed through from the private release; limited per user (resumes are new requests)
   if (p === '/app/apk' && m === 'GET') {
-    await rateLimit(env, 'RL_IP', 'apk:' + user.id);
+    await rateLimit(env, 'RL_IP', 'apk:' + user.id, { open: true }); // a read: open if the limiter fails
     const { apkDownload } = await import('./appupdate.js');
     return apkDownload(env, request);
   }
@@ -305,10 +308,15 @@ async function route(request, env, p, ctx) {
     const { report } = await import('./health.js');
     return report(env, user, request, await body(request), ctx);
   }
-  if (p === '/net/report' && m === 'POST') { const ns = await import('./netstats.js'); return ns.report(env, user, request, await body(request)); }
-  if (p === '/net/rank' && m === 'GET') { const ns = await import('./netstats.js'); return ns.rank(env, request, new URL(request.url).searchParams.get('kind')); }
-  if (p === '/net/google' && m === 'POST') { const ns = await import('./netstats.js'); return ns.googleReport(env, user, await body(request)); }
-  if (p === '/coupons/check' && m === 'POST') return orders.checkCoupon(env, user, await body(request));
+  // crowd network stats: per account across isolates (netstats.js's own throttle only holds within one isolate)
+  if (p === '/net/report' && m === 'POST') { await rateLimit(env, 'RL_IP', 'net:' + user.id); const ns = await import('./netstats.js'); return ns.report(env, user, request, await body(request)); }
+  if (p === '/net/rank' && m === 'GET') { await rateLimit(env, 'RL_PUB', 'rank:' + user.id, { open: true }); const ns = await import('./netstats.js'); return ns.rank(env, request, new URL(request.url).searchParams.get('kind')); }
+  if (p === '/net/google' && m === 'POST') { await rateLimit(env, 'RL_IP', 'goo:' + user.id); const ns = await import('./netstats.js'); return ns.googleReport(env, user, await body(request)); }
+  // coupon codes are guessable: per account, like a password
+  if (p === '/coupons/check' && m === 'POST') {
+    await rateLimit(env, 'RL_LOGIN', 'coupon:' + user.id);
+    return orders.checkCoupon(env, user, await body(request));
+  }
   if (p === '/devices' && m === 'GET') return account.devices(env, user);
   if (p === '/wallet' && m === 'GET') return orders.wallet(env, user);
   if (p === '/referral' && m === 'GET') return orders.referral(env, user);

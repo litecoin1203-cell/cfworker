@@ -1174,7 +1174,9 @@ section('rate limits on login, sign-up and free trial');
   ok(regs[0] === 201 && regs[1] === 201 && regs[2] === 429, 'third sign-up from one IP in a minute -> 429: ' + regs.join(','));
   ok((await call('POST', '/api/v1/auth/register', { headers: { 'cf-connecting-ip': '9.9.9.9' }, json: { email: 'rlreg-other@example.com', password: 'password123' } })).status === 201, 'another IP can still sign up');
   env.RL_IP = { limit: async () => { throw new Error('limiter down'); } };
-  ok((await call('POST', '/api/v1/auth/login', { json: { email: 'rl@example.com', password: 'password123' } })).status === 200, 'a failing limiter never locks users out');
+  // SEC-08: a failing limiter closes routes that check a password (no unlimited guessing); reads stay open
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 'rl@example.com', password: 'password123' } })).status === 429, 'a failing limiter does not open login to unlimited guessing');
+  ok((await call('GET', '/api/v1/plans')).status === 200, 'a failing limiter never hides the plans');
   delete env.RL_IP;
 }
 
@@ -1262,6 +1264,50 @@ section('SEC-01: one IP cannot spend the day\'s D1 writes or requests through si
   ok(pub[0] === 200 && pub[1] === 200 && pub.slice(2).every((s) => s === 429), 'plans, app-config, ip, deep health and the probe page share a per-IP limit: ' + pub.join(','));
   ok((await fcall('GET', '/health', null, '192.0.2.60')).status === 200, 'plain /health (no D1, the app\'s reachability check) is never limited');
   delete fenv.RL_PUB;
+}
+
+section('SEC-08: a failing limiter closes write routes, and every costly route has a limit');
+{
+  const limiter = (n) => { const seen = new Map(); return { limit: async ({ key }) => { const c = (seen.get(key) || 0) + 1; seen.set(key, c); return { success: c <= n }; } }; };
+  const broken = { limit: async () => { throw new Error('limiter down'); } };
+  const usersBefore = (await env.DB.prepare('SELECT COUNT(*) c FROM users').first()).c;
+  env.RL_IP = broken; env.RL_LOGIN = broken; env.RL_PUB = broken;
+  const r1 = await call('POST', '/api/v1/auth/register', { json: { email: 'closed@example.com', password: 'password123' } });
+  ok(r1.status === 429 && (await env.DB.prepare('SELECT COUNT(*) c FROM users').first()).c === usersBefore, 'limiter down: sign-up refused and nothing written: ' + r1.status);
+  ok((await call('POST', '/api/v1/auth/tg/start')).status === 429, 'limiter down: no Telegram sign-in link');
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 'rl@example.com', password: 'password123' } })).status === 429, 'limiter down: password guessing is not open');
+  ok((await call('GET', '/api/v1/plans')).status === 200 && (await call('GET', '/api/v1/app-config')).status === 200, 'limiter down: read-only routes keep working');
+  delete env.RL_IP; delete env.RL_LOGIN; delete env.RL_PUB;
+
+  // routes the audit found without any limit
+  const tok = await signup('sec08@example.com', { device: 'sec08-phone' });
+  env.RL_IP = limiter(0); env.RL_LOGIN = limiter(0); env.RL_PUB = limiter(0);
+  const st = [
+    (await call('POST', '/api/v1/coupons/check', { token: tok, json: { code: 'GUESS1' } })).status,
+    (await call('POST', '/api/v1/net/report', { token: tok, json: { results: [] } })).status,
+    (await call('POST', '/api/v1/net/google', { token: tok, json: { k: 'aaaaaa11' } })).status,
+    (await call('GET', '/api/v1/net/rank', { token: tok })).status,
+    (await call('POST', '/api/v1/auth/change-password', { token: tok, json: { current_password: 'password123', new_password: 'password456' } })).status,
+  ];
+  ok(st.every((s) => s === 429), 'coupon check, net report / google / rank, change-password are limited: ' + st.join(','));
+  delete env.RL_IP; delete env.RL_LOGIN; delete env.RL_PUB;
+
+  // polling a crypto order asks the blockchain explorer at most a few times a minute per order (not per isolate)
+  const tok2 = await signup('sec08b@example.com', { device: 'sec08b-phone' });
+  const plans = (await call('GET', '/api/v1/plans')).data;
+  const o = (await call('POST', '/api/v1/orders', { token: tok2, json: { plan_id: plans[0].id, method: 'coin', coin: 'xlm' } })).data;
+  const realFetch = globalThis.fetch;
+  let outside = 0;
+  globalThis.fetch = (input, init) => { outside++; return realFetch(input, init); };
+  try {
+    globalThis.__cgChk = {};
+    const a = await call('GET', `/api/v1/orders/${o.id}`, { token: tok2 });
+    const asked = outside;
+    env.RL_LOGIN = limiter(0); globalThis.__cgChk = {}; outside = 0;
+    const b = await call('GET', `/api/v1/orders/${o.id}`, { token: tok2 });
+    ok(o.id && a.status === 200 && asked > 0 && b.status === 200 && b.data.id === o.id && outside === 0,
+      `order poll still answers, but the explorer is skipped once its per-order limit is spent: ${asked} then ${outside} calls`);
+  } finally { globalThis.fetch = realFetch; delete env.RL_LOGIN; }
 }
 
 section('two sign-ups with the same email at the same moment');

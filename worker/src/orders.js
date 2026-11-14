@@ -1,6 +1,6 @@
 // Orders (plan purchase & wallet top-up), receipts, crypto webhook, wallet and referral.
 import { first, all, run, insert, getSettings, getSettingInt } from './db.js';
-import { json, err, nowSec } from './util.js';
+import { json, err, nowSec, allowed } from './util.js';
 import { payWithWallet, settle, BillingError } from './billing.js';
 import { cryptoEnabled, tomanToUsd, createInvoice, verifyIpn, PAID_STATES, FAILED_STATES } from './nowpayments.js';
 import { sendReceipt, notifyAdmin } from './telegram.js';
@@ -273,8 +273,10 @@ async function ownOrder(env, user, orderId) {
 
 export async function getOrder(env, user, orderId) {
   let o = await ownOrder(env, user, orderId);
-  // the payment screen polls this: look on the blockchain right now so the user sees it within seconds
-  if (o.method === 'coin') {
+  // the payment screen polls this: look on the blockchain right now so the user sees it within seconds. At most 5
+  // looks a minute per order across isolates (RL_LOGIN), so polling cannot burn the explorers' quotas; past that
+  // the answer is what D1 has (the per-minute cron keeps looking)
+  if (o.method === 'coin' && (await allowed(env, 'RL_LOGIN', 'chain:' + o.id))) {
     try {
       const { checkOrder } = await import('./chainwatch.js');
       if (await checkOrder(env, o)) o = await first(env, 'SELECT * FROM orders WHERE id = ?', o.id);

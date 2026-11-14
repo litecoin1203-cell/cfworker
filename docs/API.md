@@ -13,7 +13,10 @@ in the `CG_API_BASE` repo variable / the Pleat workflow's `api_base` input). The
 **CORS** headers are added to every `/api/v1` answer.
 **Rate limits** (`RL_IP` 20/min, `RL_LOGIN` 5/min, `RL_PUB` 120/min in `wrangler.jsonc`) are per Cloudflare
 location and only roughly counted: they slow one client's burst, they are not a security boundary. Over the limit:
-`429 too_many_requests`. All routes that write for someone without an account (`/auth/register`, `/auth/tg/start`,
+`429 too_many_requests`. If the limiter itself fails, routes that write, send a code or check a password refuse
+with `429 too_many_requests` (fail closed, SEC-08); read-only routes (`/plans`, `/app-config`, `/ip`, deep
+`/health`, `/mini/probe`, `/net/rank`, `/app/apk`) let the request through (fail open: a refusal there saves nothing).
+All routes that write for someone without an account (`/auth/register`, `/auth/tg/start`,
 `/auth/tg/register`, `/auth/tg/webapp/register`) share one per-IP key, so they are one allowance, not four.
 **Global write budgets** (SEC-01, `util.js` `spendBudget`): at most `SIGNUP_PER_HOUR` (default 30) email sign-ups
 and `TG_START_PER_HOUR` (default 60) Telegram sign-in links (`/auth/tg/start` and `/me/telegram/start`) per UTC hour
@@ -70,20 +73,20 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | `GET /vpn` | `account.vpn` | connect pre-check; registers the device (`403 device_limit`, `402 no_subscription`, `410 sub_missing`) |
 | `GET /vpn/servers` | `account.vpnServers` | the user's exits from every panel, unified names (`🇩🇪 DE 2`), `tunnel: true` for Iran-tunnel configs, `panel: <n>` (P1/P2 tag). Creates missing panel accounts on demand. `503 panel_unavailable` = account rows exist but no links came back. |
 | `GET /vpn/sub` | `account.vpnSub` | old-app subscription format (retired app) |
-| `POST /net/report` | `netstats.report` | ping / speed results per server key (crowd ranking) |
-| `GET /net/rank` | `netstats.rank` | ranking for the caller's operator (ASN), plus the Google map |
-| `POST /net/google` | `netstats.googleReport` | what Google sees through an exit (Protect › Google location) |
-| `POST /coupons/check` | `orders.checkCoupon` | validate a coupon |
+| `POST /net/report` | `netstats.report` | ping / speed results per server key (crowd ranking). Limited per user (`RL_IP`). |
+| `GET /net/rank` | `netstats.rank` | ranking for the caller's operator (ASN), plus the Google map. Limited per user (`RL_PUB`, fail open). |
+| `POST /net/google` | `netstats.googleReport` | what Google sees through an exit (Protect › Google location). Limited per user (`RL_IP`). |
+| `POST /coupons/check` | `orders.checkCoupon` | validate a coupon. 5/min per user (`RL_LOGIN`, against guessing codes). |
 | `GET /devices`, `DELETE /devices/:id` | `account` | the user's phones |
 | `GET /wallet` | `orders.wallet` | balance + ledger |
 | `GET /referral` | `orders.referral` | invite code and earnings |
 | `GET /orders`, `POST /orders` | `orders` | list / create (wallet, card, coin, gateway). ≤ 3 open orders per method (`429 too_many_open_orders`). |
-| `GET /orders/:id` | `orders.getOrder` | one order |
+| `GET /orders/:id` | `orders.getOrder` | one order. A crypto order is looked up on the explorer at most 5 times a minute per order (`RL_LOGIN` `chain:`); past that the stored state is returned. |
 | `POST /orders/:id/receipt` | `orders.uploadReceipt` | card receipt photo (`upload_id` dedupes offline retries) |
 | `POST /orders/:id/cancel` | `orders.cancelOrder` | cancel an open order |
 | `POST /orders/:id/paid` | `orders.markCoinPaid` | "I paid" for a crypto order |
 | `GET /app/apk` | `appupdate.apkDownload` | proxies the announced APK from the private `pleat-latest` release (resumable) |
-| `POST /auth/change-password` | `auth.changePassword` | |
+| `POST /auth/change-password` | `auth.changePassword` | 5/min per user (`RL_LOGIN`; it checks the current password) |
 | `POST /auth/logout-all` | `auth.logoutAll` | bumps `token_version` |
 
 ## Admin API (Telegram Mini App admin panel) — `admin-api.js`

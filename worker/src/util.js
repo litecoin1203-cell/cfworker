@@ -97,14 +97,31 @@ export function throttled(bag, id, ms) {
   return false;
 }
 
-// Per-key request limits from the Workers Rate Limiting bindings in wrangler.jsonc. A missing binding
-// (local runs) or a failing limiter lets the request through: the limiter must never lock users out.
-export async function rateLimit(env, binding, key) {
+// Per-key request limits from the Workers Rate Limiting bindings in wrangler.jsonc. A missing binding (local runs)
+// lets the request through. When the limiter itself fails, a route that writes, sends a code or checks a password
+// is refused (fail closed, 429): otherwise a limiter outage would leave sign-ups and password guessing unlimited.
+// Read-only routes pass { open: true } and keep working (fail open): a refusal there saves nothing (the invocation
+// is already counted, the reads are cheap) and would only hide plans or the store's settings from people.
+// The bindings count per Cloudflare location and only roughly, so they stop one client's burst; the hard cap on
+// what all clients together may write is the global budget below (spendBudget).
+export async function rateLimit(env, binding, key, { open = false } = {}) {
   const limiter = env[binding];
   if (!limiter || !key) return;
   let outcome;
-  try { outcome = await limiter.limit({ key }); } catch (e) { logError('rate limiter failed', e, { binding }); return; }
+  try { outcome = await limiter.limit({ key }); } catch (e) {
+    logError('rate limiter failed', e, { binding, open });
+    if (open) return;
+    throw err(429, 'too_many_requests', 'Too many requests right now. Wait a minute and try again.');
+  }
   if (outcome && outcome.success === false) throw err(429, 'too_many_requests', 'تعداد درخواست‌ها زیاد است. یک دقیقه صبر کن و دوباره امتحان کن.');
+}
+
+// "May this optional costly step run now?" (not a whole request): false once the limit is spent. A failing
+// limiter says yes: the step always ran before, and the request around it has its own limit.
+export async function allowed(env, binding, key) {
+  const limiter = env[binding];
+  if (!limiter || !key) return true;
+  try { const o = await limiter.limit({ key }); return !(o && o.success === false); } catch (e) { logError('rate limiter failed', e, { binding }); return true; }
 }
 
 // ---------------- global write budgets ----------------
