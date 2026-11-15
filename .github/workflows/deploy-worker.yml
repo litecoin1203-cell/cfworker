@@ -10,7 +10,20 @@ permissions:
   contents: read
 
 jobs:
+  # Only what was merged into main is deployed: a run started on any other branch stops here, before any job
+  # holds the Cloudflare token or touches the database (OPS-02).
+  main-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy only from main
+        if: github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Deploy runs only from main, not from ${GITHUB_REF}. Merge the pull request, then run this workflow with 'Use workflow from: main'."
+          exit 1
+
   deploy:
+    needs: main-only
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -21,9 +34,9 @@ jobs:
       # an exact version: this job holds the Cloudflare token, so a new wrangler release is taken on purpose, not by chance
       WRANGLER: npx --yes wrangler@4.158.0
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'   # the tests use node:sqlite
 

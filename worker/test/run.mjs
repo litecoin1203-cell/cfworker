@@ -5693,6 +5693,120 @@ section('payments audit PAY-01..PAY-04: stuck settle recovered, SMS deposit line
   ok(acksOf(n).includes('پرداخت نشده') && !acksOf(n).includes('پیام بعدی'), 'N2: ap: on an unpaid wallet order gives the real reason: ' + acksOf(n));
 }
 
+section('CI: release workflows run only from main, on pinned actions and checked downloads (OPS-02, SEC-04)');
+{
+  const { readFileSync } = await import('node:fs');
+  const wf = (n) => readFileSync(new URL(`../../.github/workflows/${n}`, import.meta.url), 'utf8');
+  // every job that holds a secret or publishes: the product's workflows (android.yml is the retired app, make-key.yml
+  // the one-off signing key tool, both left as they are)
+  const live = ['flutter-vpn.yml', 'deploy-worker.yml', 'test-worker.yml'];
+  const unpinned = live.flatMap((n) => [...wf(n).matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)].map((m) => m[1])
+    .filter((u) => !/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(u)).map((u) => `${n}: ${u}`));
+  ok(!unpinned.length, 'SEC-04: every action is pinned to a full commit SHA; not pinned: ' + unpinned.join(', '));
+
+  // OPS-02: a deploy or an APK from a branch that was never merged is refused, with a message that says why
+  const dep = wf('deploy-worker.yml');
+  const depJob = dep.slice(dep.indexOf('\n  deploy:'));
+  ok(/\n {4}needs: main-only\n/.test(depJob) && /\n {4}if: github\.ref == 'refs\/heads\/main'\n/.test(depJob),
+    'OPS-02: the deploy job runs only after the main-only check, and only on main');
+  ok(/\n {2}main-only:\n[\s\S]*?if: github\.ref != 'refs\/heads\/main'[\s\S]*?::error::[^\n]*main[\s\S]*?exit 1/.test(dep.slice(0, dep.indexOf('\n  deploy:'))),
+    'OPS-02: deploying from another branch fails with an error that names main');
+  const fv = wf('flutter-vpn.yml');
+  const steps = fv.slice(fv.indexOf('    steps:\n'));
+  const firstStep = steps.split('\n      - ')[1] || '';
+  ok(/github\.event_name == 'workflow_dispatch' && github\.ref != 'refs\/heads\/main'/.test(firstStep) && /::error::[^\n]*main/.test(firstStep) && /exit 1/.test(firstStep),
+    'OPS-02: the APK run refuses any branch but main before anything else runs: ' + firstStep.split('\n')[0]);
+
+  // SEC-04: what goes into the APK (or checks it) is a fixed version with a SHA-256 kept in this repo
+  const envOf = (k) => ((fv.match(new RegExp(`^  ${k}: (\\S+)`, 'm')) || [])[1] || '').replace(/^'(.*)'$/, '$1');
+  const sums = ['XRAY_LIB_SHA256', 'XRAY_ZIP_SHA256', 'GEOIP_SHA256', 'GEOSITE_SHA256'];
+  ok(sums.every((k) => /^[0-9a-f]{64}$/.test(envOf(k) || '')), 'SEC-04: the core, the desktop core and both geo files have a pinned SHA-256: ' + sums.map((k) => `${k}=${envOf(k)}`).join(' '));
+  ok(/^\d{12}$/.test(envOf('GEO_TAG') || '') && /^v\d+\.\d+\.\d+$/.test(envOf('XRAY_CORE_TAG') || ''), 'SEC-04: the geo files and the desktop core come from a fixed release');
+  ok(!/releases\/latest|xray-core:latest|@release\b/.test(fv), 'SEC-04: nothing is taken from a "latest" release or a moving branch');
+  ok(sums.every((k) => fv.split('$' + k).length > 1), 'SEC-04: every pinned SHA-256 is checked in a step');
+  ok(/ghcr\.io\/xtls\/xray-core:[^\s@]+@sha256:[0-9a-f]{64}/.test(fv), 'SEC-04: the core image fallback is pinned by digest');
+  const wrapper = readFileSync(new URL('../../flutter_vpn/android/gradle/wrapper/gradle-wrapper.properties', import.meta.url), 'utf8');
+  ok(/^distributionSha256Sum=[0-9a-f]{64}$/m.test(wrapper) && /distributionSha256Sum/.test(fv), 'SEC-04: Gradle itself is checked against its SHA-256');
+  const tw = wf('test-worker.yml');
+  ok(/paths: \[[^\]]*'\.github\/workflows\/\*\*'/.test(tw), 'these checks run on every pull request that changes a workflow');
+}
+
+section('CI: the APK run runs the Kotlin unit tests before it publishes (QA-01)');
+{
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const fv = readFileSync(new URL('../../.github/workflows/flutter-vpn.yml', import.meta.url), 'utf8');
+  const gradle = readFileSync(new URL('../../flutter_vpn/android/app/build.gradle.kts', import.meta.url), 'utf8');
+  let tests = [];
+  try { tests = readdirSync(new URL('../../flutter_vpn/android/app/src/test/kotlin/app/pleat/pleat/', import.meta.url)).filter((f) => f.endsWith('Test.kt')); } catch (e) {}
+  ok(tests.length >= 2 && /testImplementation\("junit:junit:[\d.]+"\)/.test(gradle), 'QA-01: the app module has JVM unit tests and JUnit: ' + tests.join(', '));
+  const run = fv.indexOf('testReleaseUnitTest');
+  ok(run > 0 && run > fv.indexOf('name: Build APK') && run < fv.indexOf('name: Publish APKs'), 'QA-01: the manual run runs them after the build and before anything is published');
+  // AGP 9 only makes unit-test tasks for the tested build type (debug) unless this is turned off, so
+  // testReleaseUnitTest would not exist and the APK run would stop after the build
+  const props = readFileSync(new URL('../../flutter_vpn/android/gradle.properties', import.meta.url), 'utf8');
+  ok(/^android\.onlyEnableUnitTestForTheTestedBuildType=false$/m.test(props), 'QA-01: gradle.properties lets AGP 9 make testReleaseUnitTest');
+}
+
+section('OPS-06: the daily Telegram backup restores into a new database');
+{
+  const { backupJson } = await import('../src/telegram.js');
+  const { signJwt } = await import('../src/util.js');
+  const { restoreSql, BACKUP_TABLES, NO_PASSWORD } = await import('../scripts/restore-backup.mjs');
+  const backup = JSON.parse(await backupJson(env));
+  const { sql, counts } = restoreSql(backup);
+  // a new database as Deploy makes it (every migration), then the file as `wrangler d1 execute --file` runs it
+  const fresh = makeDB(new URL('../migrations/0001_init.sql', import.meta.url).pathname);
+  let applied = true;
+  try { fresh.exec(sql); } catch (e) { applied = false; console.log('    ' + e.message); }
+  ok(applied, 'OPS-06: the restore SQL runs on a freshly migrated database');
+  const q = async (s) => (await fresh.prepare(s).all()).results;
+  const differ = [];
+  for (const t of BACKUP_TABLES) {
+    const got = await q(`SELECT * FROM ${t}`);
+    const want = backup.tables[t];
+    if (got.length !== want.length || counts[t] !== want.length) { differ.push(`${t}: ${got.length} rows, backup ${want.length}`); continue; }
+    // every column the backup has comes back with the same value (rows in rowid order on both sides)
+    const key = (r) => JSON.stringify(Object.keys(want[0] || {}).map((c) => r[c]));
+    const a = want.map(key).sort(), b2 = got.map(key).sort();
+    if (a.some((x, i) => x !== b2[i])) differ.push(`${t}: values differ`);
+  }
+  ok(!differ.length && backup.tables.users.length > 50 && backup.tables.orders.length > 20,
+    `OPS-06: every backed-up table comes back row for row (${backup.tables.users.length} users, ${backup.tables.orders.length} orders): ${differ.join('; ')}`);
+  const pw = await q('SELECT DISTINCT password_hash h FROM users');
+  ok(pw.length === 1 && pw[0].h === NO_PASSWORD, 'OPS-06: restored accounts get a password hash nothing matches');
+
+  // the Worker runs on the restored database: a session token still opens the account with its money and plan;
+  // the old password is refused cleanly (401, not an error) until the owner sets a new one
+  const env3 = { ...env, DB: fresh };
+  const ali = backup.tables.users.find((u) => u.email === 'ali@example.com');
+  const tok = await signJwt({ sub: String(ali.id), ver: ali.token_version || 0, typ: 'access' }, env.SECRET_KEY, 600);
+  const meR = await worker.fetch(new Request('https://api.test/api/v1/me', { headers: { authorization: 'Bearer ' + tok } }), env3, ctx);
+  const me3 = await meR.json();
+  ok(meR.status === 200 && me3.email === 'ali@example.com' && me3.wallet_balance === ali.wallet_balance, 'OPS-06: the restored account opens with its wallet: ' + meR.status);
+  const login = await worker.fetch(new Request('https://api.test/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'ali@example.com', password: 'password123' }) }), env3, ctx);
+  ok(login.status === 401, 'OPS-06: the old password is refused cleanly after a restore: ' + login.status);
+
+  // text with quotes, new lines and Persian survives; junk is refused
+  const odd = restoreSql({ created_at: 'x', tables: { users: [], settings: [{ key: "it's", value: "a'b\nپشتیبان;--" }] } });
+  const one = makeDB(new URL('../migrations/0001_init.sql', import.meta.url).pathname);
+  one.exec(odd.sql);
+  const s1 = await one.prepare("SELECT value FROM settings WHERE key = 'it''s'").first();
+  ok(s1 && s1.value === "a'b\nپشتیبان;--" && (await one.prepare('SELECT COUNT(*) c FROM settings').first()).c === 1, 'OPS-06: quotes, new lines and Persian text come back exactly');
+  const refused = (b) => { try { restoreSql(b); return false; } catch (e) { return true; } };
+  ok(refused('{}') && refused({ tables: { users: [], sessions: [] } }) && refused({ tables: { users: [{ 'id) VALUES (1); DROP TABLE users; --': 1 }] } }),
+    'OPS-06: a file that is not a backup, an unknown table or a strange column name is refused');
+
+  // the command line the runbook gives
+  const { execFileSync } = await import('node:child_process');
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(tmpdir() + '/cg-restore-');
+  writeFileSync(dir + '/b.json', JSON.stringify(backup));
+  const out = execFileSync(process.execPath, [new URL('../scripts/restore-backup.mjs', import.meta.url).pathname, dir + '/b.json'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+  ok(out === sql, 'OPS-06: node scripts/restore-backup.mjs <file> prints the same SQL');
+}
+
 section('payments audit PAY-08: one on/off switch per payment method, enforced when an order is made');
 {
   const { createHmac } = await import('node:crypto');
