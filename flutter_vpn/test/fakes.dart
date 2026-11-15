@@ -60,6 +60,13 @@ class FakeApi extends ApiClient {
 
   /// Telegram verified on this account (Profile shows VERIFY until it is).
   bool tgVerified = false;
+
+  /// The store's switch: the free trial only with a verified Telegram. Off
+  /// here like the Worker's test setup; the real default is on.
+  bool trialNeedsTelegram = false;
+
+  /// The store's support link (app-config).
+  String supportUrl = '';
   String email = 'ali@example.com';
 
   /// A character already picked, so most tests start past the avatar gate.
@@ -176,7 +183,8 @@ class FakeApi extends ApiClient {
         ];
       case 'GET /app-config':
         return {
-          'support_url': '',
+          'support_url': supportUrl,
+          'trial_needs_telegram': trialNeedsTelegram,
           'announcement': '',
           'card_enabled': true,
           'card_auto': false,
@@ -328,6 +336,9 @@ class FakeApi extends ApiClient {
         return {'subscription': hasPlan ? sub : null};
       case 'POST /trial':
         if (trialError != null) throw ApiError(400, 'trial_used', trialError!);
+        if (trialNeedsTelegram && !tgVerified) {
+          throw ApiError(403, 'trial_needs_telegram', 'Verify Telegram.');
+        }
         hasPlan = true;
         if (loseTrialAnswer) {
           throw ApiError(0, 'offline', 'Can’t reach the server.');

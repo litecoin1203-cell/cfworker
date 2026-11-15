@@ -1452,6 +1452,110 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
   });
 
+  testWidgets('UX-02: Plans says up front that the trial needs a verified '
+      'Telegram, and links it', (tester) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, tunnel: FakeTunnel());
+    api
+      ..hasPlan = false
+      ..trialNeedsTelegram = true;
+    await app.loadConfig();
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(app.config.trialNeedsTelegram, isTrue);
+    await tester.tap(find.byKey(const ValueKey('noPlan.tile')));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(PlansScreen), findsOneWidget);
+    expect(
+      find.text('The free trial needs a verified Telegram'),
+      findsOneWidget,
+    );
+    // no Start trial that can only fail; the way there instead
+    expect(find.text('START TRIAL'), findsNothing);
+    final verify = find.text('VERIFY TELEGRAM');
+    expect(verify, findsWidgets);
+    await tester.tap(verify.first);
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(TelegramLoginScreen), findsOneWidget);
+    expect(find.text('Verify your Telegram'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('UX-02: a verified Telegram gets Start trial on Plans', (
+    tester,
+  ) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, tunnel: FakeTunnel());
+    api
+      ..hasPlan = false
+      ..trialNeedsTelegram = true
+      ..tgVerified = true;
+    await app.loadConfig();
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 400));
+    await tester.tap(find.byKey(const ValueKey('noPlan.tile')));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('The free trial needs a verified Telegram'), findsNothing);
+    expect(find.text('START TRIAL'), findsWidgets);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('UX-02: Create account says the trial needs Telegram', (
+    tester,
+  ) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, signedIn: false);
+    api.trialNeedsTelegram = true;
+    await app.loadPublic();
+    await tester.tap(find.text('Create account'));
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.text('7-day free trial with Telegram'), findsOneWidget);
+    expect(
+      find.text(
+        'The free trial needs a verified Telegram. Signing up with email? '
+        'Link Telegram in Profile later to start it.',
+      ),
+      findsOneWidget,
+    );
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('UX-02: Forgot password says what to do with no Telegram', (
+    tester,
+  ) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, signedIn: false);
+    api.supportUrl = 'https://support.example.com';
+    await app.loadPublic();
+    await tester.tap(find.text('Forgot password?'));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(
+      find.text(
+        'Email only? Pleat can’t send reset emails yet. Contact '
+        'support with the email on your account and they’ll reset your '
+        'password.',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Sign in with Telegram'), findsOneWidget);
+    expect(find.text('CONTACT SUPPORT'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
   testWidgets('a long email fits one line on a small phone, domain kept', (
     tester,
   ) async {

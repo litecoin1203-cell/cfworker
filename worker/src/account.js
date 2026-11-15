@@ -26,6 +26,8 @@ export async function appConfig(env) {
     })(),
     min_topup_toman: parseInt(s.min_topup_toman, 10) || 0,
     referral_percent: parseInt(s.referral_percent, 10) || 0,
+    // the free trial needs a verified Telegram (the bot's switch): the app says so before sign-up and on Plans
+    trial_needs_telegram: String(s.trial_needs_telegram ?? '1') !== '0',
     // ways around filtering, kept by the app for its next launch (see app_api_bases / app_bridges)
     api_bases: splitList(s.app_api_bases).filter((b) => /^https:\/\/[a-z0-9.-]+(:\d+)?$/i.test(b)).slice(0, 8),
     bridges: splitList(s.app_bridges).filter((l) => /^(vless|vmess|trojan|ss|hysteria2|hy2|wireguard):\/\//i.test(l)).slice(0, 8),

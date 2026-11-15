@@ -632,6 +632,14 @@ does not reach users by itself.
   ended.") shows a **Start free trial** / **See plans** button under the stage line (`AppState.planNeeded`,
   `NoPlanAction` in `states.dart`); both open Plans, where the trial is one tap. The Now tile without a plan
   carries the same button, and the bell's "No plan yet" notice has See plans. Any other failure hides it.
+- **Trial needs Telegram, said up front** (release audit UX-02; the trial stays Telegram-only, Ali's call):
+  `/app-config` carries `trial_needs_telegram` (the bot's switch). While it is on and the account has no verified
+  Telegram, Plans shows "The free trial needs a verified Telegram" with VERIFY TELEGRAM (the Profile link flow,
+  `TelegramLoginScreen(link: true)`) and the plan cards say Verify instead of a Start trial that would fail; the
+  Create account header chip reads "N-day free trial with Telegram" and the form says email sign-ups link
+  Telegram later. **Forgot password** says plainly that there is no reset email: Telegram → sign in with a bot
+  code; email only → support resets it (Contact support when `support_url` is set). An email reset needs a mail
+  sender the Worker does not have.
 
 ### Protect (PR #82, 1.2.46, layout B)
 - **Always protected**: kill switch + start with the phone (both open Android's always-on VPN page).

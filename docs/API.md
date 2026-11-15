@@ -32,7 +32,7 @@ they slow abuse, they are not a security boundary.
 
 | Method + path | Limit | Handler | Purpose |
 |---|---|---|---|
-| `GET /app-config` | – | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`) |
+| `GET /app-config` | – | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`), `trial_needs_telegram` (the free trial needs a verified Telegram) |
 | `GET /plans` | – | `account.plans` | active plans |
 | `GET /ip` | – | `account.myIp` | caller's IP/country (no login) |
 | `POST /auth/register` | IP | `auth.register` | email sign-up → tokens |
