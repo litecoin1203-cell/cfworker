@@ -5989,6 +5989,40 @@ section('SEC-02: a free account cannot rename servers for everyone through /me/i
   ok(writes <= 1, 'SEC-02: rapid reports from one user are throttled: ' + writes + ' writes');
 }
 
+section('CF-02: bot work on slow panels finishes inside the 30 s waitUntil window and still reports to the admin');
+{
+  const W = await world('cf2', 3);
+  await W.signupW('cf2@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'cf2@example.com'))[0].id;
+  // simulated clock: each call to a slow panel takes 7 s, unless the caller's deadline is shorter (then it times out)
+  let skew = 0;
+  const realNow = Date.now, realTimeout = AbortSignal.timeout, realFetch = globalThis.fetch;
+  Date.now = () => realNow() + skew;
+  AbortSignal.timeout = (ms) => { const sg = realTimeout.call(AbortSignal, ms); sg.__ms = ms; return sg; };
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (W.bases.some((b) => url.startsWith(b + '/'))) {
+      const lim = init.signal && init.signal.__ms != null ? init.signal.__ms : Infinity;
+      if (lim < 7000) { skew += Math.max(0, lim); throw new DOMException('The operation timed out.', 'TimeoutError'); }
+      skew += 7000;
+    }
+    return realFetch(input, init);
+  };
+  const n = fakes.tg.messages.length;
+  let elapsed;
+  try {
+    const t0 = skew;
+    await W.bot(`/grant cf2@example.com ${W.plan.id}`);
+    elapsed = skew - t0;
+  } finally { Date.now = realNow; AbortSignal.timeout = realTimeout; globalThis.fetch = realFetch; }
+  ok(elapsed <= 30000, 'CF-02: the bot\'s panel work ends inside the waitUntil window: ' + elapsed + ' ms (simulated)');
+  const sub = (await W.q('SELECT state FROM subscriptions WHERE user_id = ?', uid))[0];
+  ok(sub && sub.state === 'active', 'CF-02: the plan is given on the panel(s) that answered in time');
+  const pas = await W.q('SELECT panel_id, dirty, applied FROM panel_accounts WHERE user_id = ? ORDER BY panel_id', uid);
+  ok(pas.some((r) => r.panel_id === 1 && r.dirty === 0), 'CF-02: panel 1 done: ' + JSON.stringify(pas));
+  ok(fakes.tg.messages.length > n, 'CF-02: the admin hears the result');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

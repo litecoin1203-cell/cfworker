@@ -143,7 +143,9 @@ export default {
         const okHeader = !!secret && (await safeEqual(request.headers.get('x-telegram-bot-api-secret-token') || '', secret));
         if (!okPath || !okHeader) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
         const update = await request.json().catch(() => ({}));
-        ctx.waitUntil(handleWebhook(env, update));
+        // CF-02: waitUntil work is cut 30 s after this answer; panel calls in it share one deadline (pasarguard.js)
+        const { BOT_BUDGET_MS } = await import('./pasarguard.js');
+        ctx.waitUntil(handleWebhook({ ...env, __panelDeadline: Date.now() + BOT_BUDGET_MS }, update));
         return json({ ok: true });
       }
 

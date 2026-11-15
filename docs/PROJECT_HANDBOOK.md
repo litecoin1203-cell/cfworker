@@ -1070,6 +1070,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | "Unknown country" for remarks without a flag emoji | names / codes / host labels (`countries.js`) — #67; learned exit country — #72, #76 |
 | Bot: 🗂 پنل‌های کاربر ran the app-update announce (shared route `upa`) | route renamed `m:uac` — #55 |
 | PNL-01 a panel answering a 200 HTML page (CDN challenge) threw a SyntaxError → every purchase failed, panel 1 ran ahead of D1 | non-JSON body = `PasarGuardError(bad_json)`; any error fails only that panel (dirty) |
+| CF-02 bot work (approve → provision, panel test) runs in `waitUntil`, cut 30 s after the reply; 15 s per panel call could pass it | bot work carries one 22 s panel deadline, each call ≤ 8 s; a slow panel fails as a panel error (dirty → sync) and the admin still gets the answer |
 | SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |
 
 ### App and tunnel
