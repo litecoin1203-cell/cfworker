@@ -140,4 +140,6 @@ Almost all runtime configuration. Defaults in `worker/src/db.js` `SETTING_DEFAUL
 ## Backups
 The daily cron (20:30 UTC) sends a JSON backup of the main tables to the owner's Telegram. It excludes password
 hashes, subscription URLs, panel credentials, the SMS key and bridges, but still holds PII (emails, Telegram ids) in
-clear — open decision S10. There is no restore tool; real recovery is **D1 Time Travel** (7 days back on the Free plan).
+clear — open decision S10. Real recovery is **D1 Time Travel** (7 days back on the Free plan). For anything older,
+`worker/scripts/restore-backup.mjs` turns a backup file into SQL for a new, migrated database (tested on every PR);
+what it cannot bring back and the steps are in [`RESTORE.md`](RESTORE.md).

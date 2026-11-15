@@ -5721,6 +5721,66 @@ section('CI: the APK run runs the Kotlin unit tests before it publishes (QA-01)'
   ok(run > 0 && run > fv.indexOf('name: Build APK') && run < fv.indexOf('name: Publish APKs'), 'QA-01: the manual run runs them after the build and before anything is published');
 }
 
+section('OPS-06: the daily Telegram backup restores into a new database');
+{
+  const { backupJson } = await import('../src/telegram.js');
+  const { signJwt } = await import('../src/util.js');
+  const { restoreSql, BACKUP_TABLES, NO_PASSWORD } = await import('../scripts/restore-backup.mjs');
+  const backup = JSON.parse(await backupJson(env));
+  const { sql, counts } = restoreSql(backup);
+  // a new database as Deploy makes it (every migration), then the file as `wrangler d1 execute --file` runs it
+  const fresh = makeDB(new URL('../migrations/0001_init.sql', import.meta.url).pathname);
+  let applied = true;
+  try { fresh.exec(sql); } catch (e) { applied = false; console.log('    ' + e.message); }
+  ok(applied, 'OPS-06: the restore SQL runs on a freshly migrated database');
+  const q = async (s) => (await fresh.prepare(s).all()).results;
+  const differ = [];
+  for (const t of BACKUP_TABLES) {
+    const got = await q(`SELECT * FROM ${t}`);
+    const want = backup.tables[t];
+    if (got.length !== want.length || counts[t] !== want.length) { differ.push(`${t}: ${got.length} rows, backup ${want.length}`); continue; }
+    // every column the backup has comes back with the same value (rows in rowid order on both sides)
+    const key = (r) => JSON.stringify(Object.keys(want[0] || {}).map((c) => r[c]));
+    const a = want.map(key).sort(), b2 = got.map(key).sort();
+    if (a.some((x, i) => x !== b2[i])) differ.push(`${t}: values differ`);
+  }
+  ok(!differ.length && backup.tables.users.length > 50 && backup.tables.orders.length > 20,
+    `OPS-06: every backed-up table comes back row for row (${backup.tables.users.length} users, ${backup.tables.orders.length} orders): ${differ.join('; ')}`);
+  const pw = await q('SELECT DISTINCT password_hash h FROM users');
+  ok(pw.length === 1 && pw[0].h === NO_PASSWORD, 'OPS-06: restored accounts get a password hash nothing matches');
+
+  // the Worker runs on the restored database: a session token still opens the account with its money and plan;
+  // the old password is refused cleanly (401, not an error) until the owner sets a new one
+  const env3 = { ...env, DB: fresh };
+  const ali = backup.tables.users.find((u) => u.email === 'ali@example.com');
+  const tok = await signJwt({ sub: String(ali.id), ver: ali.token_version || 0, typ: 'access' }, env.SECRET_KEY, 600);
+  const meR = await worker.fetch(new Request('https://api.test/api/v1/me', { headers: { authorization: 'Bearer ' + tok } }), env3, ctx);
+  const me3 = await meR.json();
+  ok(meR.status === 200 && me3.email === 'ali@example.com' && me3.wallet_balance === ali.wallet_balance, 'OPS-06: the restored account opens with its wallet: ' + meR.status);
+  const login = await worker.fetch(new Request('https://api.test/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'ali@example.com', password: 'password123' }) }), env3, ctx);
+  ok(login.status === 401, 'OPS-06: the old password is refused cleanly after a restore: ' + login.status);
+
+  // text with quotes, new lines and Persian survives; junk is refused
+  const odd = restoreSql({ created_at: 'x', tables: { users: [], settings: [{ key: "it's", value: "a'b\nپشتیبان;--" }] } });
+  const one = makeDB(new URL('../migrations/0001_init.sql', import.meta.url).pathname);
+  one.exec(odd.sql);
+  const s1 = await one.prepare("SELECT value FROM settings WHERE key = 'it''s'").first();
+  ok(s1 && s1.value === "a'b\nپشتیبان;--" && (await one.prepare('SELECT COUNT(*) c FROM settings').first()).c === 1, 'OPS-06: quotes, new lines and Persian text come back exactly');
+  const refused = (b) => { try { restoreSql(b); return false; } catch (e) { return true; } };
+  ok(refused('{}') && refused({ tables: { users: [], sessions: [] } }) && refused({ tables: { users: [{ 'id) VALUES (1); DROP TABLE users; --': 1 }] } }),
+    'OPS-06: a file that is not a backup, an unknown table or a strange column name is refused');
+
+  // the command line the runbook gives
+  const { execFileSync } = await import('node:child_process');
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(tmpdir() + '/cg-restore-');
+  writeFileSync(dir + '/b.json', JSON.stringify(backup));
+  const out = execFileSync(process.execPath, [new URL('../scripts/restore-backup.mjs', import.meta.url).pathname, dir + '/b.json'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+  ok(out === sql, 'OPS-06: node scripts/restore-backup.mjs <file> prints the same SQL');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
