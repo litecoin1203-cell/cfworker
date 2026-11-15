@@ -372,7 +372,7 @@ const ACTION_RISK = {
   // sales (stage 3)
   oap: 'money', orf: 'money', orr: 'money', orj: 'reversible', ocx: 'reversible', orc: 'read',
   pmv: 'reversible', pcp: 'reversible', pua: 'reversible', pdl: 'destructive',
-  cs: 'reversible', ct: 'reversible', ss: 'reversible', sdel: 'reversible',
+  cs: 'reversible', ct: 'reversible', ss: 'reversible', sdel: 'reversible', pcn: 'reversible',
   // panels, servers, the app, network (stage 4)
   pen: 'reversible', sh: 'reversible', sl: 'reversible', apm: 'reversible', apr: 'reversible', apc: 'reversible', apt: 'read', nrs: 'destructive',
   upa: 'reversible', upf: 'reversible', upx: 'reversible',
@@ -561,7 +561,8 @@ export async function checkHealth(base) {
 const NET_TABLE_FA = { net_stats: 'آمار روزانه', net_geo: 'آمار استانی', net_votes: 'رأی کاربران', net_speed_votes: 'رأی سرعت',
   user_net_srv: 'تجربه‌ی هر کاربر', user_net: 'شبکه‌های کاربران', google_probe: 'تست گوگل', google_votes: 'رأی تست گوگل' };
 // where a one-tap setting comes back to
-const SET_BACK = { referral_percent: 'ref', trial_data_gb: 'app', trial_needs_telegram: 'app', cf_alerts: 'cf' };
+const SET_BACK = { referral_percent: 'ref', trial_data_gb: 'app', trial_needs_telegram: 'app', cf_alerts: 'cf',
+  pay_wallet_on: 'pay', pay_card_on: 'pay', pay_coin_on: 'pay', pay_crypto_on: 'pay' };
 
 // onCallback in telegram.js has already checked that the tap came from the admin in their private chat.
 export async function onMenu(env, cq) {
@@ -753,6 +754,18 @@ export async function onMenu(env, cq) {
     if (!r.ok) return ack(r.error, true);
     await ack('✅ ' + (S.KEY_FA[key] || key) + ' = ' + val);
     return cardWithUndo(env, cq, SET_BACK[key] || 'payset', r);
+  }
+  if (route === 'pcn') { // PAY-08: one coin on (1) or off (0) for users; its wallet address stays saved
+    const { coinById } = await import('./coins.js');
+    const { getSettings, coinsOff } = await import('./db.js');
+    const c = coinById(args[0]);
+    if (!c || !['0', '1'].includes(args[1])) return ack('');
+    const off = coinsOff(await getSettings(env)).filter((x) => x !== c.id);
+    if (args[1] === '0') off.push(c.id);
+    const r = await runAction(env, chatId, 'setting.set', { key: 'pay_coins_off', val: off.join(',') });
+    if (!r.ok) return ack(r.error, true);
+    await ack(`${args[1] === '0' ? '🔴' : '🟢'} ${c.symbol} ${args[1] === '0' ? 'برای کاربرها خاموش شد' : 'روشن شد'}`);
+    return cardWithUndo(env, cq, 'pay', r);
   }
   if (route === 'sdel') {
     const { normSender } = await import('./sms.js');

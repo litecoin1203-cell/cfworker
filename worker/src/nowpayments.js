@@ -5,6 +5,9 @@ export const PAID_STATES = new Set(['finished', 'confirmed']);
 export const FAILED_STATES = new Set(['failed', 'expired', 'refunded']);
 
 export const cryptoEnabled = (env) => !!env.NOWPAYMENTS_API_KEY;
+// PAY-08: the gateway is offered and accepted only with its key, a dollar rate (0 used to make a 0-dollar invoice)
+// and its switch on. s = getSettings().
+export const gatewayReady = (env, s) => cryptoEnabled(env) && parseInt(s.usdt_rate_toman, 10) > 0 && String(s.pay_crypto_on ?? '1').trim() !== '0';
 
 export function tomanToUsd(amountToman, rateToman) {
   if (!rateToman) return 0;

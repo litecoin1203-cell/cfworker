@@ -1,7 +1,7 @@
 // Cloud Gold Pay: crypto paid straight to the admin's own wallets (no third-party gateway, no fees).
 // Each order gets a live quote with a unique amount (so every transfer maps to exactly one order), a
 // 30-minute price lock, and the admin confirms the transfer from Telegram with one tap.
-import { getSettings, getSetting, setSetting } from './db.js';
+import { getSettings, getSetting, setSetting, switchOn, coinsOff } from './db.js';
 import { usdRateInfo } from './usdrate.js';
 import { deadline } from './util.js';
 
@@ -49,10 +49,13 @@ export async function usdRate(env) {
   return (await usdRateInfo(env)).rate;
 }
 
-// coins the admin has given a wallet address for
-export async function enabledCoins(env) {
-  const s = await getSettings(env);
-  return COINS.filter((c) => validAddress(c.id, s[walletKey(c)]));
+// coins the admin has given a wallet address for and not switched off (PAY-08: pay_coin_on, pay_coins_off).
+// Orders already open on a coin that is switched off are still watched and confirmed (chainwatch does not use this).
+export async function enabledCoins(env, s = null) {
+  s = s || (await getSettings(env));
+  if (!switchOn(s, 'pay_coin_on')) return [];
+  const off = coinsOff(s);
+  return COINS.filter((c) => validAddress(c.id, s[walletKey(c)]) && !off.includes(c.id));
 }
 
 export const coinOut = (c) => ({ id: c.id, symbol: c.symbol, name: c.name, fa: c.fa, network: c.network, color: c.color, fee: c.fee, memo: c.memo || null });
