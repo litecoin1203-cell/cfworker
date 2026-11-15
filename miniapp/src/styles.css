@@ -321,3 +321,12 @@ button.tile { cursor: pointer; } button.tile:active { background: var(--field); 
 .steps li::before { content: counter(s); width: 26px; height: 26px; border-radius: 50%; background: var(--mist); color: var(--accent); font-weight: 700; font-size: 13px; display: grid; place-items: center; }
 .det { display: grid; gap: 0; }
 .det .kv span:last-child { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; font-weight: 500; max-width: 62%; }
+
+/* Privacy policy / Terms of use (PRV-03) */
+.legal h1 { font-size: 22px; font-weight: 700; letter-spacing: -.3px; margin: 0 0 10px; }
+.legal h2 { font-size: 15px; font-weight: 700; margin: 16px 0 6px; }
+.legal p { color: var(--ink); font-size: 14px; line-height: 1.55; margin: 0 0 8px; }
+.legal p.item { padding-left: 14px; position: relative; }
+.legal p.item::before { content: ''; position: absolute; left: 2px; top: .6em; width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.note.agree { margin-top: 14px; }
+.note .inline { color: var(--accent); font: inherit; font-weight: 600; background: none; border: 0; padding: 0; cursor: pointer; }
