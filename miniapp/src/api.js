@@ -27,17 +27,25 @@ export async function request(path, { method = 'GET', body, auth = true, timeout
   try { data = await res.json(); } catch (e) { /* not JSON */ }
   if (!res.ok) {
     const d = (data && data.detail) || {};
-    throw new ApiError(res.status, d.code || 'error', englishOr(d.message, res.status));
+    throw new ApiError(res.status, d.code || 'error', englishOr(d.message, res.status, d.code));
   }
   return data;
 }
 
+// Refusals the Worker words in Persian (for the old app), named by their code (UX-11; like `_english` in Pleat).
+const BY_CODE = {
+  account_disabled: 'This account is disabled.',
+  trial_needs_telegram: 'Verify your Telegram in the Pleat app first, then start the free trial.',
+  device_limit: 'Your plan is on as many phones as it allows. Remove an old phone in the Pleat app.',
+};
+
 // The Worker's messages for the old app are Persian; Pleat is English, so those become a plain English line.
-function englishOr(msg, status) {
+function englishOr(msg, status, code) {
   if (msg && !/[؀-ۿ]/.test(msg)) return msg;
+  if (code && BY_CODE[code]) return BY_CODE[code];
   if (status === 429) return 'Too many tries. Wait a minute and try again.';
   if (status === 401) return 'Your session ended. Close Pleat and open it again from the bot.';
-  if (status === 403) return 'This account is disabled.';
+  if (status === 403) return 'This isn’t allowed here. Try it in the Pleat app.';
   return 'Something went wrong. Try again in a moment.';
 }
 
