@@ -5747,6 +5747,20 @@ section('CI: the APK run runs the Kotlin unit tests before it publishes (QA-01)'
   ok(/^android\.onlyEnableUnitTestForTheTestedBuildType=false$/m.test(props), 'QA-01: gradle.properties lets AGP 9 make testReleaseUnitTest');
 }
 
+section('CI: each published APK build has its own fixed source tag, and a build number is never published twice (OPS-05)');
+{
+  const { readFileSync } = await import('node:fs');
+  const fv = readFileSync(new URL('../../.github/workflows/flutter-vpn.yml', import.meta.url), 'utf8');
+  const guardAt = fv.indexOf('name: Refuse a version that was already published');
+  const guard = guardAt > 0 ? fv.slice(guardAt, fv.indexOf('\n      - ', guardAt)) : '';
+  ok(guardAt > 0 && guardAt < fv.indexOf('name: Build APK') && /workflow_dispatch/.test(guard) && /pleat-v\$full|pleat-v\$\{full\}/.test(guard) && /::error::/.test(guard) && /exit 1/.test(guard),
+    'OPS-05: before the build, a manual run stops when the version+build already has its tag or files');
+  const pub = fv.slice(fv.indexOf('name: Publish APKs'));
+  const tagAt = pub.search(/git\/refs"? -f ref="?refs\/tags\/pleat-v\$full"? -f sha="?\$GITHUB_SHA/);
+  ok(tagAt > 0 && tagAt < pub.indexOf('gh release upload'), 'OPS-05: an immutable tag pleat-v<version>+<build> is made at the built commit before any file is uploaded');
+  ok(/git\/refs\/tags\/pleat-latest"? -f sha="?\$GITHUB_SHA"? -F force=true/.test(pub), 'OPS-05: pleat-latest is moved to the built commit');
+}
+
 section('OPS-06: the daily Telegram backup restores into a new database');
 {
   const { backupJson } = await import('../src/telegram.js');
