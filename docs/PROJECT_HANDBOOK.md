@@ -456,6 +456,14 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   backups. Change with "🔐 ورود پنل". Panel 1 still reads `PASARGUARD_*` secrets.
 - **Accounts on a new panel**: created on demand when the app opens (`/vpn/servers`), plus up to 8 per cron run
   in the background; refused creates are kept in `panel_err_<id>` and Ali is alerted (at most every 6 h).
+- **Intent first (PNL-02)**: before an account is created on a panel its `panel_accounts` row is written as
+  `applied = 'pending'` (the name about to be made, no link, `dirty = 1`). Pending rows serve nothing and are never
+  read for usage or pushed. A retry uses the same name; a 409 whose account carries the note `Pleat #<user id>` is
+  that earlier account and is adopted (given the wanted expiry/limit), so an invocation cut between panel and D1
+  no longer leaves an orphan plus a second account. The cron's `settlePending` (2 per run, rows older than 30 min)
+  adopts or drops pending rows nobody finished.
+- **Bot deadline (CF-02)**: bot work runs in `waitUntil` (cut 30 s after the reply), so its panel calls share one
+  22 s deadline (`env.__panelDeadline`, ≤ 8 s per call); a slow panel becomes a panel failure for the sync job.
 - **Usage**: the cron reads one page of one panel per run (round-robin), adds deltas to `usage_counters`,
   `evaluate` decides over the **sum of all panels**, and the desired state (active/limited/expired) is applied
   idempotently to each panel. **Manual edits on a panel don't stick** — the Worker re-applies its state. Use the
@@ -470,8 +478,9 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   city name, a two-letter code token, then a host label like `de1.`. Before that only a flag counted, so remarks
   without a flag showed as "Unknown country". No country → `Server N`; the bot's server card shows the panel's
   remark and the admin can give a label with a flag. Since Pleat 1.2.34 the app sends `/me/ip?k=<serverKey>` while
-  connected; the Worker stores the exit's Cloudflare country in settings `server_exit_cc` (never IR; a change needs
-  two reports in a row) and uses it when the remark names no country. Once confirmed (n>=2, nothing pending) the learned exit country
+  connected; the Worker stores the exit's Cloudflare country in settings `server_exit_cc` (never IR; since SEC-02
+  only users with a running plan vote, only for servers in their own `user_skeys`, one vote per user, at most one
+  report a minute per user; a new country needs two different users) and uses it when the remark names no country. Once confirmed (n>=2, nothing pending) the learned exit country
   also overrules a remark that names another country (TR 1/TR 7 left via Hetzner/dataforest in DE): confirmed exit >
   remark > unconfirmed exit > host label. The bot's server list marks such servers with 📍.
 - PasarGuard may serve Xray JSON to a v2rayNG user agent; `collectLinks` falls back to `<sub>/links` (PR #9).
@@ -766,7 +775,8 @@ fix / advice (`diagnose.dart`), "Copy report" (real app version), and **"Test al
 ```sh
 cd worker
 npm test            # node --experimental-sqlite test/run.mjs  (Node 22)
-npm run coverage    # c8, ≥ 80% lines/functions/statements (actual ~97% lines)
+npm run coverage    # c8, ≥ 80% lines/functions/statements (actual ~97% lines), and ≥ 80% branches per file on
+                    # sms, nowpayments, chainwatch, pasarguard, marzban (QA-02; actual 85-100%)
 ```
 - `test/run.mjs` is one large file with a hand-made harness. The shim runs real Worker code on node:sqlite with
   fake panels and counts queries.
@@ -1068,6 +1078,11 @@ Grouped by area. "Proven" means reproduced or measured.
 | Panel 1 admin gets 403 on `/api/groups` and `/api/hosts` → no IR TUNNEL marks | `cgtunnel_` probe user in the Tunnel group — #61 |
 | "Unknown country" for remarks without a flag emoji | names / codes / host labels (`countries.js`) — #67; learned exit country — #72, #76 |
 | Bot: 🗂 پنل‌های کاربر ran the app-update announce (shared route `upa`) | route renamed `m:uac` — #55 |
+| PNL-01 a panel answering a 200 HTML page (CDN challenge) threw a SyntaxError → every purchase failed, panel 1 ran ahead of D1 | non-JSON body = `PasarGuardError(bad_json)`; any error fails only that panel (dirty) |
+| CF-02 bot work (approve → provision, panel test) runs in `waitUntil`, cut 30 s after the reply; 15 s per panel call could pass it | bot work carries one 22 s panel deadline, each call ≤ 8 s; a slow panel fails as a panel error (dirty → sync) and the admin still gets the answer |
+| PNL-02 an account created on a panel whose D1 write never ran stayed active as an orphan, and the retry made a second one | intent row first (`applied = 'pending'`), adopt own 409 by note, cron `settlePending` |
+| QA-02 branch coverage 64-74% on sms, nowpayments, chainwatch and the panel adapters (the error paths that move money) | tests for forwarder formats, odd SMS, every SMS outcome, IPN signatures, watcher filters, adapter logins/fallbacks; per-file ≥ 80% branch gate (`coverage:money`) |
+| SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |
 
 ### App and tunnel
 | Problem | Fix |

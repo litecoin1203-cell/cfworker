@@ -467,7 +467,7 @@ async function panelTestOf(env, id) {
   return readJson((await first(env, 'SELECT value FROM settings WHERE key = ?', `panel_test_${id}`))?.value, null);
 }
 export async function panels(env) {
-  const rows = await all(env, `SELECT p.*, (SELECT COUNT(*) FROM panel_accounts a WHERE a.panel_id = p.id AND a.desired = 'active') accounts,
+  const rows = await all(env, `SELECT p.*, (SELECT COUNT(*) FROM panel_accounts a WHERE a.panel_id = p.id AND a.desired = 'active' AND a.applied != 'pending') accounts,
     (SELECT value FROM settings WHERE key = 'panel_err_' || p.id) err FROM panels p ORDER BY p.id`);
   return json({ panels: rows.map((p) => ({ id: p.id, label: p.label, kind: p.kind, state: p.state, pct: p.rollout_percent, health: p.health,
     version: p.version || null, accounts: p.accounts, create_error: readJson(p.err, null) && readJson(p.err, null).msg ? String(readJson(p.err, null).msg).slice(0, 160) : null })) });
@@ -479,7 +479,7 @@ export async function panel(env, id) {
   if (!p) throw err(404, 'not_found', 'Panel not found.');
   const { panelProgress, createError } = await import('./sync.js');
   const [accounts, test, progress, ce, cred] = await Promise.all([
-    first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active'", p.id),
+    first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active' AND applied != 'pending'", p.id),
     panelTestOf(env, p.id),
     ['active', 'rollout'].includes(p.state) ? panelProgress(env, p) : Promise.resolve(null),
     createError(env, p.id),
