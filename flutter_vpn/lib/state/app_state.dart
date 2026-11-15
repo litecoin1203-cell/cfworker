@@ -88,7 +88,8 @@ class Notice {
   final String title, body;
   final bool alert;
 
-  /// 'update': the notice carries an Update button.
+  /// 'update': the notice carries an Update button; 'plans': a button
+  /// that opens Plans (the trial or a plan to buy).
   final String? action;
 }
 
@@ -710,6 +711,17 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Why the last connect attempt or session ended; shown in the stage line.
   String? tunnelMessage;
+
+  /// The [tunnelMessage] that said there is no running plan, if any.
+  String? _planMessage;
+
+  /// The last connect stopped because there is no running plan (none yet,
+  /// or it ended): Home shows a button to the trial or Plans with the
+  /// message. Any other message, or a new attempt, hides it.
+  bool get planNeeded =>
+      (phase == Phase.idle || phase == Phase.dropped) &&
+      tunnelMessage != null &&
+      tunnelMessage == _planMessage;
 
   /// What a connect attempt is doing right now, for the stage line.
   String? progressNote;
@@ -2109,6 +2121,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           me.value!.trialAvailable
               ? 'Start the free trial in Plans to get exits.'
               : 'Buy a plan to get exits.',
+          action: 'plans',
         ),
       );
     } else if (s != null) {
@@ -2657,6 +2670,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           if (sub == null || !sub.active) {
             return _fail(
               sub == null ? 'No active plan.' : '${sub.statusLine}.',
+              plan: true,
             );
           }
         } on ApiError catch (e) {
@@ -3080,11 +3094,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (still()) _scheduleHoldRetry();
   }
 
-  void _fail(String message) {
-    if (_tunnelHeld && _holdOnFail) return _hold(message);
+  /// [plan]: it failed because there is no running plan, so Home offers
+  /// the trial or Plans next to the message ([planNeeded]).
+  void _fail(String message, {bool plan = false}) {
+    if (!plan && _tunnelHeld && _holdOnFail) return _hold(message);
     if (_tunnelHeld) unawaited(_stopTunnel());
     phase = Phase.idle;
     tunnelMessage = message;
+    _planMessage = plan ? message : null;
     progressNote = null;
     notifyListeners();
   }
@@ -3658,6 +3675,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       phase = Phase.dropped;
       connectedAt = null;
       tunnelMessage = s == null ? 'Your plan ended.' : '${s.statusLine}.';
+      _planMessage = tunnelMessage;
       _save();
       notifyListeners();
     }

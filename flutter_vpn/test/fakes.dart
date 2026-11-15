@@ -325,7 +325,7 @@ class FakeApi extends ApiClient {
           },
         };
       case 'GET /vpn':
-        return {'subscription': sub};
+        return {'subscription': hasPlan ? sub : null};
       case 'POST /trial':
         if (trialError != null) throw ApiError(400, 'trial_used', trialError!);
         hasPlan = true;

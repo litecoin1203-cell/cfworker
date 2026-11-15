@@ -11,6 +11,7 @@ import 'activity.dart';
 import 'avatar_gate.dart';
 import 'home.dart';
 import 'locations.dart';
+import 'plan_usage.dart';
 import 'protect.dart';
 import 'route_extras.dart';
 import 'update.dart';
@@ -154,6 +155,7 @@ Future<void> showNotices(BuildContext context) {
   final app = AppScope.read(context);
   final notices = app.notices;
   app.markNoticesSeen();
+  final outer = context;
   return showModalBottomSheet<void>(
     context: context,
     backgroundColor: Colors.transparent,
@@ -241,6 +243,18 @@ Future<void> showNotices(BuildContext context) {
                           ),
                           const SizedBox(height: 3),
                           Text(notices[i].body, style: PType.small()),
+                          if (notices[i].action == 'plans') ...[
+                            const SizedBox(height: 10),
+                            PillButton(
+                              label: 'See plans',
+                              height: 40,
+                              expand: false,
+                              onTap: () {
+                                Navigator.of(context).pop();
+                                openPlans(outer);
+                              },
+                            ),
+                          ],
                           if (notices[i].action == 'update') ...[
                             const SizedBox(height: 10),
                             PillButton(

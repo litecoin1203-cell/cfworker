@@ -200,6 +200,15 @@ jobs:
             echo "== $(basename "$f")"
             /tmp/xray-app/xray run -test -c "$f"
           done
+      # The licence page lists every Go module compiled into libgojni.so (assets/licenses/go-modules.txt,
+      # written by tool/go_licenses.py). A new XRAY_LIB_TAG with other modules fails here until it is rewritten.
+      - name: Licences match the core's Go modules
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          for abi in arm64-v8a armeabi-v7a x86_64; do
+            unzip -p android/app/libs/libv2ray.aar "jni/$abi/libgojni.so" > "/tmp/gojni-$abi.so"
+            python3 -I tool/go_licenses.py check "/tmp/gojni-$abi.so"
+          done
       - name: Signing key
         if: github.event_name == 'workflow_dispatch'
         env:
@@ -306,6 +315,9 @@ jobs:
             libs=$(unzip -l "$apk" | grep -E "lib/$abi/lib(hev-socks5-tunnel|gojni|flutter)\.so" | awk '{print $4}')
             echo "$libs"
             [ "$(echo "$libs" | grep -c .)" = 3 ] || { echo "::error::$abi APK is missing an engine library"; exit 1; }
+            # the engines' licences and source offer (Profile > Open-source licences)
+            unzip -l "$apk" | grep -q "assets/flutter_assets/assets/licenses/SOURCE.txt" \
+              || { echo "::error::$abi APK has no third-party licence texts"; exit 1; }
           done
       # The APKs of a manual run go to the release "pleat-latest" (Releases page of the repo). Release files do not
       # count toward the Actions artifact storage, which fills up and then refuses every upload. Pull requests and

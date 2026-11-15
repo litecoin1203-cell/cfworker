@@ -1,0 +1,12 @@
+geoip.dat and geosite.dat (the routing data used for "local sites go direct")
+come from Loyalsoldier/v2ray-rules-dat, the release current when this build
+was made, and are shipped unmodified. That project is licensed under the GNU
+General Public License v3.0 (full text under "GPL-3.0" in this list).
+Source: https://github.com/Loyalsoldier/v2ray-rules-dat
+
+This product includes GeoLite2 data created by MaxMind, available from
+https://www.maxmind.com.
+
+geosite.dat is built from v2fly/domain-list-community (MIT License, text under
+"domain-list-community" in this list):
+https://github.com/v2fly/domain-list-community

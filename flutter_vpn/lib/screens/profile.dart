@@ -14,6 +14,7 @@ import '../design/mark.dart';
 import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
+import '../licenses.dart';
 import '../state/app_state.dart';
 import 'avatar_gate.dart';
 import 'check.dart';
@@ -420,9 +421,39 @@ class _VersionFooterState extends State<_VersionFooter> {
             ),
           ),
         ),
+        const SizedBox(height: 8),
+        // The engines' licences and where their source is (LGPL / MPL).
+        Pressable(
+          onTap: () => _openLicenses(context, v),
+          label: 'Open-source licences',
+          radius: PRadius.pill,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+            child: Text(
+              'OPEN-SOURCE LICENCES',
+              style: PType.button(color: PColors.accentInk),
+            ),
+          ),
+        ),
       ],
     );
   }
+}
+
+/// Flutter's licence page: the Dart packages, plus the native engines and
+/// geo data from assets/licenses/. The source offer is the entry
+/// [sourceOfferEntry]; the header only points to it (a long header
+/// overflows the page while the list loads).
+void _openLicenses(BuildContext context, String version) {
+  registerThirdPartyLicenses();
+  showLicensePage(
+    context: context,
+    applicationName: 'Pleat',
+    applicationVersion: version.isEmpty ? null : version,
+    applicationLegalese:
+        'Source code of the open-source engines in this app: '
+        'see "$sourceOfferEntry" below.',
+  );
 }
 
 /// One switch: on = night look, off = day look. Until the user flips it

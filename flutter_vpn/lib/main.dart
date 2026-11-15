@@ -4,11 +4,13 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'api/client.dart';
 import 'design/tokens.dart';
+import 'licenses.dart';
 import 'screens/splash.dart';
 import 'state/app_state.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  registerThirdPartyLicenses();
   final prefs = await SharedPreferences.getInstance();
   final tokens = TokenStore();
   await tokens.load();
