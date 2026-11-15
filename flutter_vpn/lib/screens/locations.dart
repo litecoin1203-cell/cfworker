@@ -79,13 +79,13 @@ class _LocationsScreenState extends State<LocationsScreen> {
   }
 
   String _emptyLine(AppState app) {
-    if (_query.trim().isNotEmpty) return 'No exit matches “$_query”';
+    if (_query.trim().isNotEmpty) return 'No location matches “$_query”';
     return switch (app.category) {
-      Category.stealth => 'No Stealth exits on your plan',
-      Category.tunnel => 'No IR Tunnel exits on your plan',
+      Category.stealth => 'No Stealth servers on your plan',
+      Category.tunnel => 'No servers via Iran on your plan',
       Category.saved => 'Nothing saved yet',
       Category.recent => 'No sessions on this phone yet',
-      Category.all => 'No exits',
+      Category.all => 'No servers',
     };
   }
 
@@ -110,7 +110,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
     return [
       if (app.network != null) 'On ${app.network!.label}',
       if (app.testing)
-        'Testing exits'
+        'Testing servers'
       else if (at != null)
         'Tested ${ago(DateTime.now().difference(at))}',
       'Pull to re-test',
@@ -142,7 +142,7 @@ class _LocationsScreenState extends State<LocationsScreen> {
       (Category.all, PIcon.grid, 'All', null),
       (Category.stealth, PIcon.shield, 'Stealth', stealth.length),
       if (tunnels.isNotEmpty)
-        (Category.tunnel, PIcon.tunnel, 'IR Tunnel', tunnels.length),
+        (Category.tunnel, PIcon.tunnel, 'Via Iran', tunnels.length),
       (Category.saved, PIcon.bookmark, 'Saved', null),
       (Category.recent, PIcon.clock, 'Recent', null),
     ];
@@ -409,7 +409,7 @@ class _FastestBar extends StatelessWidget {
     final title = e == null ? 'Smart connect' : '${e.title} · ${e.label}';
     final side = e == null
         ? 'Pleat picks for this network'
-        : (e.ping == null ? e.protocol : '${e.protocol} · ${e.ping} ms');
+        : (e.quality ?? 'Not tested yet');
     return Semantics(
       container: true,
       label: 'Fastest for you now: $title',
@@ -645,17 +645,13 @@ class _CountryRowState extends State<_CountryRow> {
     final many = w.exits.length > 1;
     final on = w.exits.where(w.isOn).firstOrNull;
     final open = many && (_open ?? on != null);
-    final kinds = {for (final e in w.exits) e.protocol}.join(', ');
-    final ping = w.best.unreachable ? null : w.best.ping;
+    final quality = w.best.unreachable ? null : w.best.quality;
     final working = w.exits.where((e) => !e.unreachable).length;
+    // UX-04: plain words; protocols and ping in ms are on the server rows
+    // when the group is opened, and on each server's page
     final meta = [
       many ? '${w.exits.length} servers' : w.best.label,
-      // a group's protocols show on its server rows; one line stays short
-      if (!many || ping == null) kinds,
-      if (w.best.pingTesting)
-        'testing'
-      else if (ping != null)
-        many ? 'best $ping ms' : '$ping ms',
+      if (w.best.pingTesting) 'testing' else ?quality,
     ].join('  ·  ');
     return Column(
       children: [
@@ -958,7 +954,9 @@ class ExitRow extends StatelessWidget {
                   const SizedBox(height: 4),
                   Text(
                     sub
-                        ? exit.meta.replaceFirst('${exit.label}  ·  ', '')
+                        // UX-04: the technical line only inside an opened
+                        // country; Home and single rows get plain words
+                        ? exit.detailMeta.replaceFirst('${exit.label}  ·  ', '')
                         : exit.meta,
                     style: PType.meta(color: PColors.ink),
                     maxLines: 1,

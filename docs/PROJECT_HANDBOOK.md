@@ -583,11 +583,16 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
   logged, also stops the connect tries behind Stats) and Clear history now (sessions + connect tries). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
 - Locations (1.2.49, Ali's pick A "Country list", `screens/locations.dart`): navy **Fastest for you now** bar
   (best of `app.best` that answers; smart connect until anything is measured), filter chips All / Stealth /
-  IR Tunnel / Saved / Recent (`Category`), countries grouped by region (`regionOf` in `api/countries.dart`), best
-  first. A country row = its best server's badge, "N servers · best X ms", one pip per server (green answered,
+  Via Iran (was "IR Tunnel") / Saved / Recent (`Category`), countries grouped by region (`regionOf` in `api/countries.dart`), best
+  first. A country row = its best server's badge, "N servers · Fast" (a plain word, UX-04), one pip per server (green answered,
   red slow/weak, grey untested), CONNECT = best server, chevron opens its servers (`ExitRow`). Countries where
   nothing answers on this network fold into "Not answering on <net>" with the core's reason per server.
-- Home has three tabs: **Now** (country + city + exit IP from `/me/ip` through the tunnel, and Recommended exits),
+- **Plain words on the main path** (release audit UX-04): the connect button says Connecting (not Handshaking), the
+  stage line "Protected · Germany." (no protocol), Home and Locations say location / server, never exit, and how
+  well a server works is one word (`Exit.quality`: download speed when tested, else ping: Fast ≤ 150 ms, Fair ≤ 400,
+  Slow). Protocols and ms stay in detail: the rows of an opened country (`Exit.detailMeta`), a server's page, the
+  Route tab, Diagnostics. `test/smoke_test.dart` "UX-04" scans Home and Locations for jargon.
+- Home has three tabs: **Now** (country + city + exit IP from `/me/ip` through the tunnel, and Recommended locations),
   **Route** (how and where to connect) and **Stats**. See "Home tabs" below.
 - Notification "Pleat card" (`TunnelNote.kt`): flag tile, Protected dot, place · timer (system Chronometer),
   Disconnect + Change location. Colours follow the phone's night mode.

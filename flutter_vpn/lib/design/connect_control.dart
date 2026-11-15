@@ -89,7 +89,7 @@ class _ConnectControlState extends State<ConnectControl>
   String get _label => switch (widget.phase) {
     Phase.idle => 'Connect',
     Phase.checking => 'Checking',
-    Phase.handshaking => 'Handshaking',
+    Phase.handshaking => 'Connecting',
     Phase.protected => 'Protected',
     Phase.dropped => 'Reconnect',
   };
@@ -103,7 +103,7 @@ class _ConnectControlState extends State<ConnectControl>
         Phase.idle => 'Connect',
         Phase.checking || Phase.handshaking => '$_label. Tap to cancel',
         Phase.protected => 'Protected. Tap to disconnect',
-        Phase.dropped => 'Tunnel dropped. Tap to reconnect',
+        Phase.dropped => 'Connection dropped. Tap to reconnect',
       },
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,

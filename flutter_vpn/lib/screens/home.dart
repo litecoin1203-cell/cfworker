@@ -153,7 +153,7 @@ class _HomeScreenState extends State<HomeScreen> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
                 child: SectionLabel(
-                  'Recommended exits',
+                  'Recommended locations',
                   trailing: 'See all',
                   onTrailing: () => app.setTab(2),
                 ),
@@ -222,7 +222,7 @@ class _Tested extends StatelessWidget {
     final at = app.testedAt;
     final on = app.network == null ? '' : ' on ${app.network!.label}';
     final line = app.testing
-        ? 'Testing exits$on'
+        ? 'Testing servers$on'
         : at == null
         ? 'Not tested$on yet'
         : 'Tested$on  ·  ${ago(DateTime.now().difference(at))}';
@@ -245,7 +245,7 @@ class _Tested extends StatelessWidget {
               ),
               Pressable(
                 onTap: app.testing ? null : () => app.testAll(),
-                label: 'Test exits again',
+                label: 'Test servers again',
                 radius: PRadius.pill,
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
@@ -327,7 +327,7 @@ class _Header extends StatelessWidget {
                     const SizedBox(width: 6),
                     Flexible(
                       child: Text(
-                        '${app.exit!.title} exit  ·  ${app.exit!.label}',
+                        '${app.exit!.title}  ·  ${app.exit!.label}',
                         style: PType.small(),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
@@ -337,7 +337,9 @@ class _Header extends StatelessWidget {
                     PIconView(PIcon.pin, size: 14, color: PColors.muted),
                     const SizedBox(width: 4),
                     Text(
-                      app.servers.loading ? 'Loading exits…' : 'No exit yet',
+                      app.servers.loading
+                          ? 'Loading locations…'
+                          : 'No location yet',
                       style: PType.small(),
                     ),
                   ],
@@ -560,14 +562,15 @@ class _Instrument extends StatelessWidget {
       _HomeTab.now when protected => (
         cc.isEmpty ? '—' : cc,
         '',
-        'Through ${a != null && a.place.isNotEmpty ? a.place : (e?.title ?? 'your exit')}',
+        'Through ${a != null && a.place.isNotEmpty ? a.place : (e?.title ?? 'your server')}',
       ),
-      _HomeTab.now when e?.ping != null => (
-        '${e!.ping}',
-        'ms',
+      // UX-04: a plain word; the ping in ms is on the server's own page
+      _HomeTab.now when e?.quality != null => (
+        e!.quality!,
+        '',
         (e.measured ?? 0) > 0
-            ? 'Ping to ${e.title} from this phone'
-            : 'Ping to ${e.title} reported on your network',
+            ? 'How ${e.title} answers this phone'
+            : 'How ${e.title} answers on your network',
       ),
       _HomeTab.now when sub != null && !sub.unlimitedTime => (
         '${sub.daysLeft ?? 0}',
@@ -576,17 +579,17 @@ class _Instrument extends StatelessWidget {
       ),
       _HomeTab.now when sub != null => (
         '${app.exits.length}',
-        'exits',
+        'servers',
         'On your plan, no end date',
       ),
       _HomeTab.now => (
         app.me.loading ? '…' : '0',
-        'exits',
+        'servers',
         app.me.loading
             ? 'Loading your plan'
             : ((app.me.value?.trialAvailable ?? false)
-                  ? 'No plan yet. The free trial opens every exit.'
-                  : 'No plan yet. A plan opens every exit.'),
+                  ? 'No plan yet. The free trial opens every location.'
+                  : 'No plan yet. A plan opens every location.'),
       ),
       _HomeTab.route when e != null && app.pinned => (
         e.code.isEmpty ? e.protocol : e.code,
@@ -598,7 +601,7 @@ class _Instrument extends StatelessWidget {
         '',
         '${app.routeMode.title} mode, ${app.routeCountry.isEmpty ? 'best location' : countryName(app.routeCountry)}',
       ),
-      _HomeTab.route => ('0', 'exits', 'No exit to route through yet'),
+      _HomeTab.route => ('0', 'servers', 'No server to route through yet'),
       _HomeTab.stats => (
         ((sub?.usedBytes ?? 0) / 1073741824).toStringAsFixed(1),
         'GB',
@@ -755,32 +758,29 @@ class _StageLine extends StatelessWidget {
         PColors.muted,
       ),
       Phase.checking => (
-        '${app.progressNote ?? 'Checking your plan and exit.'} Tap to cancel.',
+        '${app.progressNote ?? 'Checking your plan and server.'} Tap to cancel.',
         PColors.blue,
       ),
       Phase.handshaking => (
-        'Handshaking with ${app.exit?.title}. Tap to cancel.',
+        'Connecting to ${app.exit?.title}. Tap to cancel.',
         PColors.blue,
       ),
       Phase.protected when app.noNetwork => (
-        'No network. Pleat keeps the tunnel and goes on when it’s back.',
+        'No network. Pleat stays on and goes on when it’s back.',
         PColors.alert,
       ),
       Phase.protected when app.exitSilent => (
-        '${app.exit?.title} isn’t answering. Pick another exit.',
+        '${app.exit?.title} isn’t answering. Pick another location.',
         PColors.alert,
       ),
-      Phase.protected => (
-        'Protected. ${app.exit?.protocol} to ${app.exit?.title}.',
-        PColors.safe,
-      ),
+      Phase.protected => ('Protected · ${app.exit?.title}.', PColors.safe),
       // Nothing leaves outside the VPN while held: apps wait.
       Phase.dropped when app.holding => (
-        '${app.tunnelMessage ?? 'No exit answered.'} Traffic is held until you reconnect or disconnect.',
+        '${app.tunnelMessage ?? 'No server answered.'} Traffic is held until you reconnect or disconnect.',
         PColors.alert,
       ),
       Phase.dropped => (
-        '${app.tunnelMessage ?? 'Tunnel dropped.'} Not protected.',
+        '${app.tunnelMessage ?? 'Connection dropped.'} Not protected.',
         PColors.alert,
       ),
     };

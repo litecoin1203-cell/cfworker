@@ -164,8 +164,24 @@ class Exit {
   double get bearing =>
       (((countries[code]?.lon ?? 10) - 10) / 120).clamp(-1.0, 1.0);
 
-  /// One-line facts for cards: label, protocol and ping when known.
-  String get meta => [
+  /// One plain word for how well this server works here (release audit
+  /// UX-04): the download speed when tested, else the ping (Fast up to
+  /// 150 ms, Fair up to 400 ms, Slow above); null when nothing is known.
+  /// The protocol and the numbers stay on the server's own page.
+  String? get quality {
+    if (speed != null) return speed!.word;
+    final p = ping;
+    if (p == null) return null;
+    return p <= 150
+        ? Speed.fast.word
+        : p <= 400
+        ? Speed.fair.word
+        : Speed.slow.word;
+  }
+
+  /// The technical line for a server's own row (Locations, opened group):
+  /// label, protocol, ping in ms and download speed.
+  String get detailMeta => [
     label,
     protocol,
     if (pingTesting)
@@ -174,6 +190,17 @@ class Exit {
       'no answer'
     else if (ping != null)
       '$ping ms',
-    if (speedTesting) 'testing speed' else if (speed != null) speed!.word,
+    if (speedTesting) 'testing speed' else ?speed?.word,
+  ].join('  ·  ');
+
+  /// One-line facts for cards: the server's label and how well it works.
+  String get meta => [
+    label,
+    if (pingTesting || speedTesting)
+      'testing'
+    else if (unreachable)
+      'no answer'
+    else
+      ?quality,
   ].join('  ·  ');
 }
