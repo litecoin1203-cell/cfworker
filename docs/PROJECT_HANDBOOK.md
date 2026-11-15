@@ -1161,6 +1161,10 @@ DE server fails and why is known only from the next report.
 - Bot: `/start` from a non-admin shows an "Open Pleat" web_app button; `ensureWebhook` (sig v3) sets the menu button.
 - Screens: Welcome (create account), Home (data left with pleats, days left with dots, wallet), Loading/Error/Empty.
   English, Pleat day/night colours follow Telegram's theme. Stage 2 = plans and payments (needs «برو»).
+- Privacy policy / Terms of use (release audit PRV-03): Welcome says "By creating an account you agree to the
+  Terms of use and the Privacy policy" (both open in place), Home has an About list with both. The text is bundled
+  from `docs/legal/*.txt` (esbuild `.txt` text loader; `src/legal.js` parses, `src/legal-text.js` imports), the
+  same files Pleat shows.
 - **Admin panel in the Mini App (Ali's priority, 2026-11-08; redesigned in English 2026-11-09)**: an admin who opens
   `/app/` lands on the admin panel (`miniapp/src/admin/`). **English only, LTR** (Ali: the main language is English).
   Server: `worker/src/admin-api.js`, a ROUTES table `[method, regex, level, handler]` under `/api/v1/admin/*`.

@@ -5,10 +5,28 @@ import { signIn, createAccount, me } from './api.js';
 import { gb, money, statusOf, pleatsLeft, dayDots, firstName } from './format.js';
 import { Mark, Avatar, Hero, Button, Tag, Pleats, Dots, List, Row, Section, Skeleton, ErrorState, EmptyState, Overlays } from './ui.jsx';
 import { AdminApp } from './admin/App.jsx';
+import { parseLegal, LEGAL_DOCS } from './legal.js';
+import { LEGAL_TEXT } from './legal-text.js';
 
 const TONE = { safe: 'ok', alert: 'bad', muted: '' };
 
-function Welcome({ name, onCreate }) {
+// The Privacy policy or Terms of use, from docs/legal (the same text Pleat shows).
+function LegalPage({ doc, onBack }) {
+  const blocks = parseLegal(LEGAL_TEXT[doc]);
+  return (
+    <>
+      <div class="sec"><button type="button" class="link" onClick={onBack}>Back</button></div>
+      <div class="card legal">
+        {blocks.map((b, i) => b.kind === 'title' ? <h1 key={i}>{b.text}</h1>
+          : b.kind === 'heading' ? <h2 key={i}>{b.text}</h2>
+          : b.kind === 'item' ? <p key={i} class="item">{b.text}</p>
+          : <p key={i}>{b.text}</p>)}
+      </div>
+    </>
+  );
+}
+
+function Welcome({ name, onCreate, onDoc }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const go = async () => {
@@ -20,6 +38,9 @@ function Welcome({ name, onCreate }) {
       text="Create your Pleat account with your Telegram. No password needed.">
       <Button onClick={go} busy={busy}>Create account</Button>
       {error ? <p class="err" role="alert">{error}</p> : null}
+      <p class="note agree">By creating an account you agree to the{' '}
+        <button type="button" class="inline" onClick={() => onDoc('terms')}>{LEGAL_DOCS.terms.title}</button> and the{' '}
+        <button type="button" class="inline" onClick={() => onDoc('privacy')}>{LEGAL_DOCS.privacy.title}</button>.</p>
     </EmptyState>
   );
 }
@@ -39,7 +60,7 @@ function PlanCard({ sub }) {
   );
 }
 
-function Home({ data }) {
+function Home({ data, onDoc }) {
   const sub = data.subscription;
   const name = (data.telegram && data.telegram.name) || '';
   return (
@@ -60,6 +81,11 @@ function Home({ data }) {
         <Row icon="wallet" title="Wallet" sub="Top up and pay in the Pleat app" end={<b>{money(data.wallet_balance)} toman</b>} />
         <Row icon="phone" title="Connect" sub="Open the Pleat app and tap Connect" />
       </List>
+      <Section title="About" />
+      <List>
+        <Row icon="lock" title="Privacy policy" sub="What is kept, where and for how long" chevron onClick={() => onDoc('privacy')} />
+        <Row icon="receipt" title="Terms of use" sub="The rules of the service" chevron onClick={() => onDoc('terms')} />
+      </List>
     </>
   );
 }
@@ -68,6 +94,7 @@ let userView = false;
 
 function App() {
   const [state, setState] = useState({ phase: 'loading' });
+  const [doc, setDoc] = useState(null); // 'privacy' | 'terms' while one is open
   const load = useCallback(async () => {
     setState({ phase: 'loading' });
     try {
@@ -84,10 +111,12 @@ function App() {
   useEffect(() => { ready().then(load); }, []);
 
   if (state.phase === 'admin') return <AdminApp onSwitch={() => { userView = true; load(); }} />;
+  const onDoc = (d) => { setDoc(d); window.scrollTo(0, 0); };
   let body;
-  if (state.phase === 'loading') body = <Skeleton />;
-  else if (state.phase === 'welcome') body = <Welcome name={state.name} onCreate={load} />;
-  else if (state.phase === 'home') body = <Home data={state.data} />;
+  if (doc) body = <LegalPage doc={doc} onBack={() => setDoc(null)} />;
+  else if (state.phase === 'loading') body = <Skeleton />;
+  else if (state.phase === 'welcome') body = <Welcome name={state.name} onCreate={load} onDoc={onDoc} />;
+  else if (state.phase === 'home') body = <Home data={state.data} onDoc={onDoc} />;
   else if (state.code === 'no_telegram') body = <EmptyState title="Open Pleat in Telegram" text="This page works inside the Pleat bot. Open the bot and tap the Pleat button." />;
   else body = <ErrorState message={state.message} onRetry={load} />;
 
