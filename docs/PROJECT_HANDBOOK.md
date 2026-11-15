@@ -510,8 +510,11 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
 - Activity (1.2.48, Ali's pick C "Account hub", `screens/activity.dart` + `screens/plan_usage.dart`): plan card
   with a data-left ring, end date, devices, used, PACKAGES (bottom sheet with pleats = data, day dots, package
   history; moved here from Profile) and RENEW (same plan at checkout if still on sale, else Plans); the last 3
-  sessions + "See all"; "Your privacy": history only on this phone, **Keep history** (30 days, off = nothing
-  logged, also stops the connect tries behind Stats) and Clear history now (sessions + connect tries). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
+  sessions + "See all"; "Your privacy": history only on this phone, **What our server keeps** (release audit
+  PRV-01: no browsing log; operator, province and per-server results 30 days, problem reports 14 days; never
+  promise "no log" again), **Keep history** (30 days, off = nothing new saved *on the phone*, also stops the
+  connect tries behind Stats; `/net/report` and health reports are separate) and Clear history now (sessions +
+  connect tries). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
 - Locations (1.2.49, Ali's pick A "Country list", `screens/locations.dart`): navy **Fastest for you now** bar
   (best of `app.best` that answers; smart connect until anything is measured), filter chips All / Stealth /
   IR Tunnel / Saved / Recent (`Category`), countries grouped by region (`regionOf` in `api/countries.dart`), best
