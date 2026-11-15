@@ -599,7 +599,8 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
    **WireGuard MTU is forced to 1280** (links say 1420 → no traffic).
 3. `PleatVpnService` routes all IPv4 + IPv6 + DNS into a tun → hev-socks5-tunnel → core SOCKS (127.0.0.1:10808,
    **with a random per-install login** since 1.2.23) → exit. "Protected" is shown only after a probe has
-   crossed the exit.
+   crossed the exit. The tun is `setMetered(false)` with `setUnderlyingNetworks`, so it inherits the real
+   network's meteredness (Android 10+ would otherwise call the VPN metered, even on Wi-Fi; NET-04 false positive).
 4. **Smart connect**: rank by the current network's ping + speed, start with the best; when smart connect is
    on and the exit is not pinned, the core runs a `leastPing` balancer with 2 backups (failover inside the
    core, 1.2.22). Switching exits hands over the tun without tearing it down (no leak), a failed try keeps the
@@ -612,6 +613,9 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
    answers takes the held tun over. It ends on reconnect, Disconnect (app, notification, widget) or a widget
    start (which then behaves like any widget start). A reopened app reads `held` and shows it. A fresh connect
    that fails still stops as before.
+   A **network switch** (Wi-Fi <-> mobile data, or a network back after none) is checked within ~2 s: the exit is
+   asked at once and, if it misses on the new network, the same exit is restarted in place (NET-06); with the app
+   closed the service does this itself.
    The config builder refuses what the shipped core removed (`h2`/`h3`/`http`/`quic`, `security=xtls`, flows
    other than `xtls-rprx-vision[-udp443]`) as "unsupported", and never writes `allowInsecure` (the core refuses
    it after 2026-08-01): an insecure link is verified like any TLS exit, or by its pin (`pcs`).
@@ -716,6 +720,10 @@ does not reach users by itself.
   between users through the existing `/net/google` + `/net/rank`; a **"Google-clean exits only"** filter narrows
   smart connect inside the Route country (never empties the pool).
 - Split tunnel and Protocol cards were removed from Protect (Route covers them).
+- **Keep Pleat running** (AND-02): shown while Android optimises Pleat's battery use (`batteryExempt` false), until
+  fixed or hidden (`battery_tip_hidden`): opens Android's battery optimisation list and Pleat's App info (where
+  Xiaomi/Oppo/Huawei keep autostart). With the app closed, the service itself checks the exit after a network switch
+  and restarts it in place (NET-06 `kick`); other live checks (failover, plan check) still need the app.
 - **Not yet proven on a phone**: YouTube/Gemini indicators, STUN over SOCKS UDP, whoami via 1.1.1.2.
 
 ### Home-screen widget (PR #78, 1.2.39 → 1.2.44)
@@ -761,7 +769,9 @@ fix / advice (`diagnose.dart`), "Copy report" (real app version), and **"Test al
 
 ### State and code notes
 - `AppState` (~3,500 lines, ChangeNotifier) is a god object; `login.dart` ~1,780 and `profile.dart` ~1,670 lines.
-  Known, not refactored. New logic goes into a plain-Dart file under `lib/state/` (testable without Flutter), as
+  Known, not refactored. Widgets high in the tree (the Shell, MaterialApp's builder) listen through `AppSelect`, which
+  rebuilds only when its selected value changes (PERF-A-01, `test/rebuild_test.dart`); a run of exit tests tells
+  the screens at most every 150 ms (`AppState.testNotifyGap`). New logic goes into a plain-Dart file under `lib/state/` (testable without Flutter), as
   `route_rules.dart`, `recommend.dart`, `protect.dart` and `health.dart` do.
 - `ApiClient` signs out only on refresh 401/403 (not on any error; fixed 1.2.20).
 - Tokens, device id, account cache and configs live in `flutter_secure_storage` (Keystore). `allowBackup=false`.
@@ -1108,6 +1118,9 @@ Grouped by area. "Proven" means reproduced or measured.
 | NET-01 core refuses `allowInsecure` since 2026-08-01; an insecure backup broke the whole config | never written; normal verification or the pin; insecure samples in `XRAY_DUMP` — audit fix |
 | NET-05 h2/http/quic/legacy-XTLS links passed the builder and failed in the core | refused as "unsupported" (failover, backup dropped) — audit fix |
 | NET-02 a short network loss ended in failover → `_stopTunnel` → apps out bare | no-network misses not counted (bounded ~2 min); a live session that lost every exit keeps the tun held, shown on the card/widget, retried with back-off, and tried at once when Android names a network again (checked every 3 s while held) — audit fix |
+| NET-04 (audit) "`setMetered(false)` makes the VPN unmetered on mobile data" | **false positive**: for apps targeting Android 10+ a VPN is metered by default (even on Wi-Fi); `setMetered(false)` is what makes it inherit meteredness from the underlying network (`setUnderlyingNetworks`). Kept; guarded by `test/native_source_test.dart` — do not remove |
+| NET-06 a Wi-Fi <-> mobile switch was only handed to Android; core connections stayed on the old network up to 300 s | the service tells the app on a real switch (`netChanged`); the app asks the exit after 2 s and, if it misses, starts the same exit again in place (tun kept; failure fails over or holds). App closed: the service does the same itself (`kick`, nothing closed on failure). `onLost` of a network not in use no longer clears the underlying network. Dart proven by `test/net_switch_test.dart`; Kotlin uncompiled here, phone test pending; hev `tcp-read-write-timeout` left at 300 s — audit fix |
+| AND-02 with the app closed nothing watched the session, and no word on battery optimisation / autostart | Protect card "Keep Pleat running" while optimised (`battery_tip_test.dart`); the service checks the exit itself after a network switch when the app is gone. Kotlin uncompiled; OEM behaviour only provable on phones — audit fix (partial: failover and plan check still need the app) |
 | A dead line showed as "wrong password / wrong code" | `ApiError.offline` → neutral connection card — #54 |
 | Native crash (SIGABRT) reports carried only the signal | tombstone + Go stderr + tunnel state in the report — #77, #79, #80 (root cause still open, §19) |
 | Widget: start from a fully closed app refused by Android 12+/MIUI | invisible `WidgetConnect` activity — #78 (1.2.42) |

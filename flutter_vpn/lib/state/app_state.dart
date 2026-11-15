@@ -118,7 +118,34 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       ..onChange = _updaterChanged
       ..onGone = () => unawaited(loadConfig());
     unawaited(updater.load().then((_) => _offerUpdate()));
+    this.tunnel.onNetChange = networkChanged;
+    unawaited(readBattery());
     WidgetsBinding.instance.addObserver(this);
+  }
+
+  // ---- background running (AND-02) ---------------------------------------
+
+  /// Whether Android exempts Pleat from battery optimisation; null when it
+  /// can't say. Optimised, Android (and Xiaomi, Oppo, Huawei and others
+  /// more so) may stop Pleat in the background, and with it the checks
+  /// that notice a silent exit. Protect says so (see [batteryTipHidden]).
+  bool? batteryExempt;
+
+  /// The person hid Protect's "Keep Pleat running" card.
+  bool get batteryTipHidden => _prefs.getBool('battery_tip_hidden') ?? false;
+
+  bool get showBatteryTip => batteryExempt == false && !batteryTipHidden;
+
+  Future<void> readBattery() async {
+    final v = await tunnel.batteryExempt();
+    if (v == batteryExempt) return;
+    batteryExempt = v;
+    notifyListeners();
+  }
+
+  void hideBatteryTip() {
+    unawaited(_prefs.setBool('battery_tip_hidden', true));
+    notifyListeners();
   }
 
   // ---- health reports (health.dart) --------------------------------------
@@ -522,6 +549,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _beat();
     }
     if (signedIn && !me.loading) loadMe();
+    // back from Android's battery page, maybe exempted now
+    unawaited(readBattery());
     unawaited(updater.resumed());
     final at = _configAt;
     if (at == null || DateTime.now().difference(at) > configEvery) {
@@ -2258,6 +2287,17 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return c.future;
   }
 
+  /// A run's per-exit results reach the screens at most this often (each
+  /// change rebuilds Locations and Home): 20 to 60 exits answering in a few
+  /// seconds used to mean as many rebuilds. The run's end tells at once.
+  static const testNotifyGap = Duration(milliseconds: 150);
+  Timer? _testNotify;
+
+  void _notifySoon() {
+    if (_testNotify?.isActive ?? false) return;
+    _testNotify = Timer(testNotifyGap, notifyListeners);
+  }
+
   Future<void> _testAll(int? enough) async {
     final list = exits;
     if (list.isEmpty || !await tunnel.available()) return;
@@ -2303,7 +2343,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       e.measuredAt = DateTime.now();
       _cache.putPing(net, e.id, e.measured!, e.measuredAt!);
       results.add({'k': e.id, 'ok': ms != null, 'ms': ms ?? 0});
-      notifyListeners();
+      _notifySoon();
     }
 
     // The native side tests [_probeLanes] exits at a time, and each test
@@ -2327,6 +2367,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       w.$2.complete();
     }
     _answerWaits.clear();
+    _testNotify?.cancel();
     testing = false;
     testedAt = DateTime.now();
     if (enough == null) _cache.markTested(net, testedAt!);
@@ -3281,6 +3322,52 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return steps[i];
   }
 
+  /// How long a network switch settles before the exit is asked: Android
+  /// names a new network in bursts (Wi-Fi <-> mobile data hand-offs).
+  static const netSettle = Duration(seconds: 2);
+  Timer? _netSettle;
+
+  /// The next live ping follows a network switch (see [networkChanged]).
+  bool _netSwitched = false;
+
+  /// The service saw the phone move to another network (NET-06). A live
+  /// session asks the exit at once (after [netSettle]) instead of at the
+  /// next spaced-out ping; if the exit doesn't answer on the new network,
+  /// the same exit is started again in place (the tun stays), which drops
+  /// the core's connections stuck on the old one. A held session has its
+  /// own network watch; a start in flight is left alone.
+  void networkChanged() {
+    if (phase != Phase.protected) return;
+    _netSettle?.cancel();
+    _netSettle = Timer(netSettle, _afterNetChange);
+  }
+
+  void _afterNetChange() {
+    if (phase != Phase.protected) return;
+    _netSwitched = true;
+    // a ping already running: look again once it is done
+    if (_beating) {
+      _netSettle = Timer(const Duration(seconds: 1), _afterNetChange);
+      return;
+    }
+    _beat();
+  }
+
+  /// After a switch the exit didn't answer on the new network: the same
+  /// exit again, in place. A failure there fails over (smart connect) or
+  /// holds the tun, as for any live session; nothing is stopped.
+  void _restartAfterSwitch(Exit e) {
+    _misses = 0;
+    _logSession();
+    _stopTimers();
+    _tried.clear();
+    _triedAll.clear();
+    _resynced = false;
+    _attemptAt = DateTime.now();
+    _holdOnFail = true;
+    unawaited(_connect(e.id, failover: true));
+  }
+
   void _schedulePulse() {
     _pulse?.cancel();
     if (phase != Phase.protected) return;
@@ -3305,12 +3392,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _beatOnce() async {
     unawaited(flushHealth());
     metered = await tunnel.metered();
+    final switched = _netSwitched;
+    _netSwitched = false;
     final ms = await tunnel.delay();
     final e = exit;
     if (phase != Phase.protected || e == null) return;
     if (ms != null) {
       _misses = 0;
-      _okStreak++;
+      // a new network: pings stay close for a while, as after connecting
+      _okStreak = switched ? 0 : _okStreak + 1;
       exitSilent = false;
       noNetwork = false;
       _offlineBeats = 0;
@@ -3336,6 +3426,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (phase != Phase.protected) return;
     if (net == false && ++_offlineBeats <= _offlineGraceBeats) {
       _misses = 0;
+      // switched to a network not usable yet: restart once it shows
+      if (switched) _netSwitched = true;
       if (!noNetwork) {
         noNetwork = true;
         notifyListeners();
@@ -3347,6 +3439,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       noNetwork = false;
       notifyListeners();
     }
+    if (switched && net != false) return _restartAfterSwitch(e);
+    // still no network past the grace: misses count as before (NET-02),
+    // and the restart waits for the network
+    if (switched) _netSwitched = true;
     if (++_misses < 2) return;
     if (!smartConnect) {
       // The person picked this exit and turned smart connect off: it isn't
@@ -3581,6 +3677,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _netWatch?.cancel();
     _watch?.cancel();
     _pulse?.cancel();
+    _netSettle?.cancel();
+    _netSwitched = false;
     _handshake?.cancel();
   }
 
@@ -3774,6 +3872,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _stopTimers();
+    _testNotify?.cancel();
     tunnel.dispose();
     super.dispose();
   }
@@ -3789,6 +3888,55 @@ class AppScope extends InheritedNotifier<AppState> {
 
   static AppState read(BuildContext context) =>
       context.getInheritedWidgetOfExactType<AppScope>()!.notifier!;
+}
+
+/// Rebuilds [builder] only when [select] gives a different value (by ==)
+/// after the app changed, instead of on every change as [AppScope.of]
+/// does. For widgets high in the tree (the Shell, the app's own builder),
+/// whose whole subtree would otherwise be rebuilt on every change.
+class AppSelect<T> extends StatefulWidget {
+  const AppSelect({super.key, required this.select, required this.builder});
+  final T Function(AppState app) select;
+  final Widget Function(BuildContext context, AppState app, T value) builder;
+
+  @override
+  State<AppSelect<T>> createState() => _AppSelectState<T>();
+}
+
+class _AppSelectState<T> extends State<AppSelect<T>> {
+  AppState? _app;
+  late T _value;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final app = AppScope.read(context);
+    if (identical(app, _app)) return;
+    _app?.removeListener(_changed);
+    _app = app..addListener(_changed);
+    _value = widget.select(app);
+  }
+
+  @override
+  void didUpdateWidget(AppSelect<T> old) {
+    super.didUpdateWidget(old);
+    _value = widget.select(_app!);
+  }
+
+  void _changed() {
+    final next = widget.select(_app!);
+    if (next == _value) return;
+    setState(() => _value = next);
+  }
+
+  @override
+  void dispose() {
+    _app?.removeListener(_changed);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(context, _app!, _value);
 }
 
 class TelegramStart {
