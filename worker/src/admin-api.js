@@ -10,6 +10,7 @@
 // writes them and the page translates the ones it knows.
 import { json, err, signJwt, verifyJwt, jwtSecret, nowSec } from './util.js';
 import { first, all, getSettings, SETTING_DEFAULTS } from './db.js';
+import { WALLET_PAID_SQL } from './billing.js';
 
 const ADMIN_MIN = 15; // an admin token lives 15 minutes; the page signs in again with initData after that
 const GB = 1024 ** 3;
@@ -198,14 +199,15 @@ export async function orders(env, url) {
 // GET /admin/orders/:id: one order with what can be done to it now
 export async function order(env, id) {
   const o = await first(env, `SELECT ${ORDER_COLS}, c.code coupon_code,
-      (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'admin_refund') refunded
+      (SELECT COUNT(*) FROM wallet_tx WHERE order_id = o.id AND reason = 'admin_refund') refunded, ${WALLET_PAID_SQL} wallet_paid
     FROM ${ORDER_FROM} LEFT JOIN coupons c ON c.id = o.coupon_id WHERE o.id = ?`, parseInt(id, 10));
   if (!o) throw err(404, 'not_found', 'Order not found.');
+  const { approvable } = await import('./telegram-screens.js');
   const open = ORDER_OPEN.includes(o.status);
   return json({
     ...orderOut(o), coupon: o.coupon_code || null, refunded: !!o.refunded,
     can: {
-      approve: open, reject: ['pending', 'review', 'expired'].includes(o.status), cancel: open,
+      approve: open && approvable(o), reject: ['pending', 'review', 'expired'].includes(o.status), cancel: open,
       refund: o.status === 'paid' && o.kind !== 'topup' && o.amount_toman > 0 && !o.refunded,
     },
   });
