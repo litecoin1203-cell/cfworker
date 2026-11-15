@@ -606,8 +606,8 @@ section('telegram button menu');
 
 section('panel address normalisation + sub decoding');
 {
-  const b = panelBases('https://p.rain.rest/hub/#/login');
-  ok(b[0] === 'https://p.rain.rest' && b[1] === 'https://p.rain.rest/hub', 'hub/#/login -> origin first ' + JSON.stringify(b));
+  const b = panelBases('https://panel.example.invalid/hub/#/login');
+  ok(b[0] === 'https://panel.example.invalid' && b[1] === 'https://panel.example.invalid/hub', 'hub/#/login -> origin first ' + JSON.stringify(b));
   ok(panelBases('p.example.com:8000/dashboard/')[0] === 'https://p.example.com:8000', 'bare host + dashboard path');
   ok(panelBases('https://x.com/')[1] === undefined, 'plain origin has one base');
   const lines = decodeSub(btoa('vless://a@b:1#x\nvmess://abc\n'));
