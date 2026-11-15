@@ -198,8 +198,11 @@ export async function createOrder(env, user, body) {
   // PAY-08: a method the admin switched off (or that is not set up) is refused before anything is stored
   const s = await getSettings(env);
   const off = METHOD_OFF[method](env, s, body);
-  if (off) throw err(400, 'method_unavailable', off);
-  if (method !== 'wallet') await makeRoomFor(env, user, method);
+  // a plan order waits for its price: a free one (100% coupon) is no payment, so no switch applies to it
+  if (off && !body.plan_id) throw err(400, 'method_unavailable', off);
+  // an off method only gets this far for a plan order that may turn out free (stored as a wallet order), so nothing is
+  // cancelled to make room for an order that is then refused
+  if (method !== 'wallet' && !off) await makeRoomFor(env, user, method);
   let orderId;
   if (body.plan_id) {
     const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', body.plan_id);
@@ -208,6 +211,7 @@ export async function createOrder(env, user, body) {
     const price = discounted(plan.price_toman, coupon);
     const fresh = await first(env, 'SELECT wallet_balance FROM users WHERE id = ?', user.id);
     const bal = fresh.wallet_balance;
+    if (off && price > 0) throw err(400, 'method_unavailable', off);
     // paying from the balance (all of it, or the wallet part of "wallet + pay the rest") needs the wallet switch; a free
     // order (price 0) is not a wallet payment
     if (price > 0 && !switchOn(s, 'pay_wallet_on') && (method === 'wallet' || (body.use_wallet && bal > 0))) throw err(400, 'method_unavailable', WALLET_OFF);

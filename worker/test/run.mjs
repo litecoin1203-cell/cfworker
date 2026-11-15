@@ -5750,6 +5750,13 @@ section('payments audit PAY-08: one on/off switch per payment method, enforced w
   ok((await row('SELECT wallet_balance b FROM users WHERE id = ?', rich.id)).b === 500000, 'PAY-08: the refused wallet purchase took no money');
   r = await buy(half.t, { method: 'card' });
   ok(r.status === 201 && r.data.method === 'card', 'PAY-08: wallet off -> the whole price by card still works');
+  await env.DB.prepare("INSERT INTO coupons (code, percent, max_uses, created_at) VALUES ('PAY08FREE', 100, 0, ?)").bind(Math.floor(Date.now() / 1000)).run();
+  r = await buy((await fresh()).t, { method: 'wallet', coupon_code: 'PAY08FREE' });
+  ok(r.status === 201 && r.data.status === 'paid', 'PAY-08: wallet off -> a free order (100% coupon) is not a payment and still goes through: ' + r.status + JSON.stringify(r.data));
+  await tap('m:ss:pay_card_on:0');
+  r = await buy((await fresh()).t, { method: 'card', coupon_code: 'PAY08FREE' });
+  ok(r.status === 201 && r.data.status === 'paid', 'PAY-08: card off -> a free order sent as card still goes through: ' + r.status + JSON.stringify(r.data));
+  await tap('m:ss:pay_card_on:1');
   await tap('m:ss:pay_wallet_on:1');
   r = await buy(rich.t, { method: 'wallet' });
   ok(r.status === 201 && r.data.status === 'paid', 'PAY-08: wallet back on -> a wallet purchase works again: ' + r.status);
