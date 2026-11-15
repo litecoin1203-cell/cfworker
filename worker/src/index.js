@@ -287,8 +287,9 @@ async function route(request, env, p, ctx) {
       // &h=0: the person turned Pleat's diagnostics off, so no location report (the country is still learned)
       const report = new URL(request.url).searchParams.get('h') !== '0';
       const job = (async () => {
-        await learnExitFromUser(env, user, k, cf.country).catch(() => {});
-        if (report) { const { checkExitCountry } = await import('./health.js'); await checkExitCountry(env, user, request, k, cf.country).catch(() => {}); }
+        // a side job: /me/ip answers either way, but a failure is on record (worker_errors), not swallowed
+        await learnExitFromUser(env, user, k, cf.country).catch((e) => logError('learn exit country failed', e));
+        if (report) { const { checkExitCountry } = await import('./health.js'); await checkExitCountry(env, user, request, k, cf.country).catch((e) => logError('exit country check failed', e)); }
       })();
       if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
     }

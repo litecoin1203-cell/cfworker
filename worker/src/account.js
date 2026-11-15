@@ -1,6 +1,6 @@
 // Public config, plans, profile, the VPN subscription (from the control plane), the unified server list, devices and the free trial.
 import { first, all, run, getSettings, getSettingInt, switchOn } from './db.js';
-import { json, err, nowSec, deadline } from './util.js';
+import { json, err, nowSec, deadline, logError } from './util.js';
 import { PasarGuard, PasarGuardError } from './pasarguard.js';
 import { provision } from './billing.js';
 import { collectLinks } from './panels.js';
@@ -278,7 +278,8 @@ export async function removeDevice(env, user, devId) {
   if (!dev || dev.user_id !== user.id) throw err(404, 'not_found', 'این دستگاه پیدا نشد.');
   const sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
   if (sub && env.PASARGUARD_URL) {
-    try { await new PasarGuard(env).deleteHwid(sub.pg_username, dev.device_id); } catch (e) {}
+    // the device row goes anyway (the user asked for the slot); a panel that still counts the device is on record
+    try { await new PasarGuard(env).deleteHwid(sub.pg_username, dev.device_id); } catch (e) { logError('remove device: panel HWID delete failed', e); }
   }
   await run(env, 'DELETE FROM devices WHERE id = ?', devId);
   return new Response(null, { status: 204 });

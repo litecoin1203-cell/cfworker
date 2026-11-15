@@ -417,6 +417,32 @@ section('device limit + freeing a slot frees panel HWID');
   ok(fakes.pg.deletedHwids.length >= 1, 'panel HWID freed on device removal');
 }
 
+section('ARC-08: a failure on a side path is logged (worker_errors), not swallowed');
+{
+  const seen = [];
+  const realErr = console.error;
+  console.error = (line) => { try { seen.push(JSON.parse(line).message); } catch (e) { seen.push(String(line)); } };
+  try {
+    // 1. freeing a device on the panel fails: the device is still removed, and the failure is on record
+    const tok = await signup('arc08@example.com', { device: 'arc08-a' });
+    const plan = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
+    await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant arc08@example.com ${plan.id}` } });
+    await call('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'arc08-a' } });
+    const devs = (await call('GET', '/api/v1/devices', { token: tok })).data;
+    fakes.pg.down = true;
+    let del;
+    try { del = await call('DELETE', `/api/v1/devices/${devs[0].id}`, { token: tok }); } finally { fakes.pg.down = false; }
+    ok(del.status === 204 && seen.some((m) => /device/i.test(m) && /panel/i.test(m)), 'ARC-08: a failed panel HWID delete still removes the device and is logged: ' + del.status + ' ' + JSON.stringify(seen));
+    // 2. learning the exit's country from /me/ip?k= fails: the answer is unchanged, and the failure is on record
+    seen.length = 0;
+    const saved = globalThis.__cgExitVote;
+    globalThis.__cgExitVote = new (class extends Map { get() { throw new Error('vote store broken'); } })();
+    let r;
+    try { r = await call('GET', '/api/v1/me/ip?k=abcdef1234', { token: tok, cf: { country: 'DE' } }); await drain(); } finally { globalThis.__cgExitVote = saved; }
+    ok(r.status === 200 && r.data.cc === 'DE' && seen.some((m) => /exit country/i.test(m)), 'ARC-08: a failed exit-country vote is logged and /me/ip still answers: ' + JSON.stringify(seen));
+  } finally { console.error = realErr; }
+}
+
 section('used_percent on /me comes from the server');
 {
   // the limit is the control plane's; the usage is read from the panel (it only ever grows)
