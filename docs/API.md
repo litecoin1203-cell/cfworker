@@ -32,7 +32,7 @@ they slow abuse, they are not a security boundary.
 
 | Method + path | Limit | Handler | Purpose |
 |---|---|---|---|
-| `GET /app-config` | – | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`) |
+| `GET /app-config` | – | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`); payment methods that are set up and switched on (`card_enabled`, `wallet_enabled`, `crypto_enabled`, `coins`, PAY-08) |
 | `GET /plans` | – | `account.plans` | active plans |
 | `GET /ip` | – | `account.myIp` | caller's IP/country (no login) |
 | `POST /auth/register` | IP | `auth.register` | email sign-up → tokens |
@@ -70,7 +70,7 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | `GET /devices`, `DELETE /devices/:id` | `account` | the user's phones |
 | `GET /wallet` | `orders.wallet` | balance + ledger |
 | `GET /referral` | `orders.referral` | invite code and earnings |
-| `GET /orders`, `POST /orders` | `orders` | list / create (wallet, card, coin, gateway). ≤ 3 open orders per method (`429 too_many_open_orders`). |
+| `GET /orders`, `POST /orders` | `orders` | list / create (wallet, card, coin, gateway). ≤ 3 open orders per method (`429 too_many_open_orders`). A method switched off or not set up: `400 method_unavailable`, nothing stored. |
 | `GET /orders/:id` | `orders.getOrder` | one order |
 | `POST /orders/:id/receipt` | `orders.uploadReceipt` | card receipt photo (`upload_id` dedupes offline retries) |
 | `POST /orders/:id/cancel` | `orders.cancelOrder` | cancel an open order |

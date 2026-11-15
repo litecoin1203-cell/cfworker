@@ -420,6 +420,19 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   cancels its order instead of leaving it `pending`. `deliver` refuses a wallet order (amount > 0) with no
   `purchase` debit or with a refund (`wallet_unpaid`), and the bot card, the `oap` button and the Mini App
   `can.approve` hide approve for such an order (`WALLET_PAID_SQL`).
+- **PAY-08 one switch per method** (Ali asked, 2026-11-14): settings `pay_wallet_on`, `pay_card_on`, `pay_coin_on`,
+  `pay_crypto_on` (1/0, default 1, so a method that is set up keeps working after the deploy) and `pay_coins_off`
+  (coin ids switched off one by one; the wallet address stays saved). Bot › 💳 روش‌های پرداخت has 🟢/🔴 buttons
+  (`m:ss:pay_*_on:<0|1>`, per coin `m:pcn:<coin>:<0|1>`); the Mini App › Payment methods has toggles ("Offered to
+  users", and per coin in Wallets). `app-config` offers only methods that are set up **and** on (`card_enabled`,
+  `crypto_enabled`, `coins`, new `wallet_enabled`), and `createOrder` refuses an off method **before anything is
+  stored** with `400 method_unavailable` (Pleat already shows "This payment method is off right now."). Wallet off
+  also refuses "use the wallet" and "wallet + pay the rest" (paying the whole price by card/crypto still works); a
+  free order (price 0) is not a wallet payment. The NOWPayments gateway is offered and accepted only with its key,
+  `usdt_rate_toman > 0` and its switch (`nowpayments.gatewayReady`; a 0 rate used to make a 0-dollar invoice). Orders
+  already open on a switched-off method are still confirmed (chainwatch, SMS, IPN unchanged). Pleat (≤ 1.2.50) builds
+  its list from `app-config` for card / coins / gateway but always shows the wallet row: with the wallet off a tap gets
+  the server's refusal until Pleat reads `wallet_enabled`.
 
 ---
 
@@ -871,6 +884,9 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
   keep/clear history); Profile gets the Plans shelf.
 - PR #89 (1.2.49) Locations country list: Fastest-for-you bar, filter chips, regions, health pips, Not answering.
 - PR #90 (1.2.50) native crash: the code offsets inside the core, the signal's sender, stderr per process.
+- Release audit wave 1, payment controls (branch `claude/w1-payment-controls`, stacked on the PAY-01..04 branch):
+  one on/off switch per payment method (PAY-08), unrecognised bank SMS reach the admin (PAY-07), no personal data in
+  third-party panel account names or notes (PNL-07), a made-up host in a test (SEC-11).
 
 ---
 
@@ -1205,6 +1221,8 @@ PBKDF2 iterations (only with a CPU budget), split `telegram.js`, a `confirmPayme
 compat-date bump (`2025-09-01`), delete `android/`,
 `app-web/`, `android.yml` and the old-app compatibility paths (`centralApp`, `sub_url`, `/vpn/sub`,
 `/pay/done` with `cloudgold://`). Not built: per-session byte usage, Cloudflare clean-IP/SNI tricks, a domestic relay for intranet-only periods, Hiddify adapter.
+Payments (after PAY-01..04, PAY-08): Pleat should hide the wallet row when `app-config.wallet_enabled` is false
+(today the server refuses it); there is no separate switch for wallet top-ups (each top-up method has its own).
 Payments (after PAY-01..04): a real sample of the owner's bank SMS is still wanted to confirm the deposit-line rule
 on his exact format (unclear SMS go to the admin, never auto-paid); an order whose settle is killed every time is
 retried every 10 minutes with no cap; a wallet order whose debit committed but whose run died before `settle`'s claim

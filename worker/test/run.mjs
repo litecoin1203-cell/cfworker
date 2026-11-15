@@ -5479,6 +5479,129 @@ section('payments audit PAY-01..PAY-04: stuck settle recovered, SMS deposit line
   ok(acksOf(n).includes('پرداخت نشده') && !acksOf(n).includes('پیام بعدی'), 'N2: ap: on an unpaid wallet order gives the real reason: ' + acksOf(n));
 }
 
+section('payments audit PAY-08: one on/off switch per payment method, enforced when an order is made');
+{
+  const { createHmac } = await import('node:crypto');
+  const sign = (fields) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(env.TELEGRAM_BOT_TOKEN).digest();
+    return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+  };
+  const A = (method, path, token, json) => call(method, '/api/v1/admin' + path, { token, json });
+  const T = (await A('POST', '/auth', null, { init_data: sign({ user: JSON.stringify({ id: 12345, first_name: 'Ali' }), auth_date: String(Math.floor(Date.now() / 1000)) }) })).data.access_token;
+  const S = await import('../src/telegram-screens.js');
+  let tapN = 0;
+  const tap = (data) => tgWebhook({ callback_query: { id: 'p8-' + (++tapN), data, message: { chat: { id: 12345 }, message_id: 995, text: 'menu' } } });
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const setv = async (k) => ((await row('SELECT value v FROM settings WHERE key = ?', k)) || {}).v;
+  const cfg = async () => (await call('GET', '/api/v1/app-config')).data;
+  const orderCount = async () => (await row('SELECT COUNT(*) c FROM orders')).c;
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.price_toman === 189000);
+  const XLM = 'G' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.repeat(2).slice(0, 55);
+  const TRX = 'T' + '123456789ABCDEFGHJKLMNPQRSTUVWXYZ'.slice(0, 33);
+  await botSet('card_number', '6037991234567893'); await botSet('wallet_xlm', XLM); await botSet('wallet_xlm_memo', ''); await botSet('wallet_trx', TRX);
+  await botSet('usd_rate_toman', '100000'); await botSet('usdt_rate_toman', '70000');
+  let u = 0;
+  const fresh = async () => { const e = `p8-${++u}@example.com`; const t = await signup(e, { device: 'p8-' + u }); return { t, id: (await row('SELECT id FROM users WHERE email = ?', e)).id }; };
+  const buy = (t, json) => call('POST', '/api/v1/orders', { token: t, json: { plan_id: monthly.id, ...json } });
+
+  // defaults: every method that is set up stays on after the deploy (no surprise outage)
+  let c = await cfg();
+  ok(c.card_enabled === true && c.wallet_enabled === true && c.crypto_enabled === true && c.coins.some((x) => x.id === 'xlm') && c.coins.some((x) => x.id === 'trx'),
+    'PAY-08: with no switch touched, wallet, card, coins and the gateway are all offered: ' + JSON.stringify({ card: c.card_enabled, wallet: c.wallet_enabled, crypto: c.crypto_enabled, coins: (c.coins || []).map((x) => x.id) }));
+
+  // the bot's payment screen has one switch per method
+  let pay = await S.payments(env);
+  for (const k of ['pay_wallet_on', 'pay_card_on', 'pay_coin_on', 'pay_crypto_on']) ok(flat(pay.kb).includes(`m:ss:${k}:0`), `PAY-08: the bot payment screen has an off switch for ${k}`);
+  ok(flat(pay.kb).includes('m:pcn:xlm:0') && flat(pay.kb).includes('m:pcn:trx:0') && !flat(pay.kb).includes('m:pcn:sol:0'), 'PAY-08: one switch per coin that has a wallet address');
+
+  // card off: not offered, refused by the server, no order row left behind
+  await tap('m:ss:pay_card_on:0');
+  ok((await setv('pay_card_on')) === '0', 'PAY-08: the bot switch turns card-to-card off');
+  ok((await cfg()).card_enabled === false, 'PAY-08: card off -> app-config does not offer card');
+  let a = await fresh();
+  let n0 = await orderCount();
+  let r = await buy(a.t, { method: 'card' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && await orderCount() === n0, 'PAY-08: card off -> a card order is refused with method_unavailable and nothing is stored: ' + r.status + JSON.stringify(r.data));
+  r = await call('POST', '/api/v1/orders', { token: a.t, json: { topup_toman: 100000, method: 'card' } });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: card off -> a card top-up is refused too');
+  await tap('m:ss:pay_card_on:1');
+  ok((await cfg()).card_enabled === true && (await buy(a.t, { method: 'card' })).status === 201, 'PAY-08: card back on -> offered and accepted again');
+
+  // wallet off: a purchase from the balance and "wallet + the rest" are refused; paying the whole price by card works
+  const rich = await fresh();
+  await env.DB.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').bind(500000, rich.id).run();
+  await tap('m:ss:pay_wallet_on:0');
+  ok((await cfg()).wallet_enabled === false, 'PAY-08: wallet off -> app-config says so');
+  n0 = await orderCount();
+  r = await buy(rich.t, { method: 'wallet' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && await orderCount() === n0, 'PAY-08: wallet off -> buying from the balance is refused: ' + r.status + JSON.stringify(r.data));
+  r = await buy(rich.t, { method: 'card', use_wallet: true });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: wallet off -> "use the wallet" on a card order is refused');
+  const half = await fresh();
+  await env.DB.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').bind(50000, half.id).run();
+  r = await buy(half.t, { method: 'card', use_wallet: true });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: wallet off -> "wallet and pay the rest" is refused');
+  ok((await row('SELECT wallet_balance b FROM users WHERE id = ?', rich.id)).b === 500000, 'PAY-08: the refused wallet purchase took no money');
+  r = await buy(half.t, { method: 'card' });
+  ok(r.status === 201 && r.data.method === 'card', 'PAY-08: wallet off -> the whole price by card still works');
+  await tap('m:ss:pay_wallet_on:1');
+  r = await buy(rich.t, { method: 'wallet' });
+  ok(r.status === 201 && r.data.status === 'paid', 'PAY-08: wallet back on -> a wallet purchase works again: ' + r.status);
+
+  // one coin off (address kept), then all coins off
+  await tap('m:pcn:xlm:0');
+  c = await cfg();
+  ok(!c.coins.some((x) => x.id === 'xlm') && c.coins.some((x) => x.id === 'trx'), 'PAY-08: one coin off -> only that coin leaves the app list');
+  ok((await setv('wallet_xlm')) === XLM, 'PAY-08: switching a coin off keeps its wallet address');
+  a = await fresh();
+  n0 = await orderCount();
+  r = await buy(a.t, { method: 'coin', coin: 'xlm' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && await orderCount() === n0, 'PAY-08: a switched-off coin is refused before an order is stored: ' + r.status + JSON.stringify(r.data));
+  pay = await S.payments(env);
+  ok(flat(pay.kb).includes('m:pcn:xlm:1'), 'PAY-08: the bot shows the coin as off with an on switch');
+  await tap('m:ss:pay_coin_on:0');
+  ok((await cfg()).coins.length === 0, 'PAY-08: crypto off -> no coin is offered');
+  r = await buy(a.t, { method: 'coin', coin: 'trx' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: crypto off -> every coin is refused');
+  await tap('m:ss:pay_coin_on:1'); await tap('m:pcn:xlm:1');
+  ok((await cfg()).coins.some((x) => x.id === 'xlm') && (await setv('pay_coins_off')) === '', 'PAY-08: coin and crypto back on');
+
+  // the NOWPayments gateway: its switch, and never with no rate (it used to make a 0-dollar invoice)
+  await tap('m:ss:pay_crypto_on:0');
+  ok((await cfg()).crypto_enabled === false, 'PAY-08: gateway off -> not offered');
+  r = await buy(a.t, { method: 'crypto' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: gateway off -> refused');
+  await tap('m:ss:pay_crypto_on:1');
+  await botSet('usdt_rate_toman', '0');
+  ok((await cfg()).crypto_enabled === false, 'PAY-08: gateway with no rate -> not offered');
+  const inv0 = fakes.np.invoices.length;
+  n0 = await orderCount();
+  r = await buy(a.t, { method: 'crypto' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && fakes.np.invoices.length === inv0 && await orderCount() === n0,
+    'PAY-08: gateway with no rate -> refused, no invoice made: ' + r.status + JSON.stringify(r.data));
+  await botSet('usdt_rate_toman', '70000');
+
+  // the Mini App: sees every switch and sets them through setting.set; wrong values are refused
+  const mp = await A('GET', '/payments', T);
+  ok(mp.status === 200 && mp.data.methods && mp.data.methods.wallet === true && mp.data.methods.card === true && mp.data.methods.coin === true && mp.data.methods.crypto === true,
+    'PAY-08: the Mini App payment screen gets the four switches: ' + JSON.stringify(mp.data.methods));
+  ok(mp.data.ready && mp.data.ready.card === true && mp.data.ready.crypto === true, 'PAY-08: ... and whether each method is set up');
+  ok(mp.data.coins.find((x) => x.id === 'xlm').off === false, 'PAY-08: each coin says whether it is switched off');
+  r = await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_card_on', val: '0' } });
+  ok(r.status === 200 && r.data.ok && (await cfg()).card_enabled === false, 'PAY-08: the Mini App turns card off');
+  r = await A('POST', '/undo', T, { audit_id: r.data.audit_id });
+  ok(r.status === 200 && (await cfg()).card_enabled === true, 'PAY-08: and undo turns it back on');
+  ok((await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_card_on', val: 'maybe' } })).status === 422, 'PAY-08: a switch takes only 1 or 0');
+  ok((await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_coins_off', val: 'xlm,nope' } })).status === 422, 'PAY-08: the coin list takes only known coins');
+  r = await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_coins_off', val: 'TRX, xlm' } });
+  ok(r.status === 200 && (await setv('pay_coins_off')) === 'trx,xlm' && !(await cfg()).coins.some((x) => ['trx', 'xlm'].includes(x.id)) && (await cfg()).coins.length > 0, 'PAY-08: the Mini App switches coins off one by one');
+  await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_coins_off', val: '' } });
+  c = await cfg();
+  ok(['trx', 'xlm'].every((id) => c.coins.some((x) => x.id === id)), 'PAY-08: and on again');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

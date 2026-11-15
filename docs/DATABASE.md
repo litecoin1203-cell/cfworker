@@ -126,7 +126,8 @@ Almost all runtime configuration. Defaults in `worker/src/db.js` `SETTING_DEFAUL
 
 - Payments: `card_number`, `card_holder`, `card_bank`, `card_unique`, `card_auto` (auto / detect / off), `sms_senders`,
   `sms_key`, `coin_auto`, `coin_minutes`, `wallet_<coin>` / `wallet_<coin>_memo`, `usd_rate_toman`, `referral_percent`,
-  `min_topup_toman`.
+  `min_topup_toman`. Switches per method (PAY-08, 1 = offered, 0 = off, default 1): `pay_wallet_on`, `pay_card_on`,
+  `pay_coin_on`, `pay_crypto_on`; `pay_coins_off` (coin ids switched off one by one, comma separated, default empty).
 - App: `announcement`, `support_url`, `app_api_bases` (extra Worker domains), `app_bridges` (bridge links),
   `trial_data_gb`, `trial_needs_telegram`, `app_release` (in-app update announcement).
 - Monitoring: `cf_alerts` (1/0, hourly Cloudflare alerts), `cf_alert_state` (what was already told today), `sync_manual_at` (last "sync now" tap).

@@ -1,11 +1,11 @@
 // Read-only screens of the admin bot. A screen reads what it needs (a few D1 queries at most, free plan) and
 // returns {text, kb}: the first line is where you are (🏠 منو › ...), the last row is back + home.
 // Nothing here writes; every change goes through admin-actions.js from the router (telegram-menu.js).
-import { first, all, getSettings, SETTING_DEFAULTS } from './db.js';
+import { first, all, getSettings, SETTING_DEFAULTS, switchOn, coinsOff } from './db.js';
 import { nowSec } from './util.js';
 import { statsText, userInfo, HELP, STATE_FA } from './telegram.js';
 import { canUndo, APP_LISTS, splitAppList, maskBridge, itemTag } from './admin-actions.js';
-import { COINS, walletKey, coinById } from './coins.js';
+import { COINS, walletKey, coinById, validAddress } from './coins.js';
 import { WALLET_PAID_SQL, isStuck } from './billing.js';
 
 export const fa = (n) => Number(n || 0).toLocaleString('en-US');
@@ -612,14 +612,31 @@ export async function payments(env) {
   const mode = (key) => ['auto', 'detect', 'off'].map((v) => b(`${s[key] === v ? '✅ ' : ''}${AUTO_FA[v]}`, `m:sv:${key}:${v}`));
   const coins = COINS.filter((c) => s[walletKey(c)]).length;
   const senders = String(s.sms_senders || '').split(',').filter(Boolean).length;
+  // PAY-08: one switch per method; the button turns it the other way
+  const sw = (key, label) => { const on = switchOn(s, key); return b(`${on ? '🟢' : '🔴'} ${label}`, `m:ss:${key}:${on ? '0' : '1'}`); };
+  const off = coinsOff(s);
+  const withAddr = COINS.filter((c) => validAddress(c.id, s[walletKey(c)]));
+  const coinSw = withAddr.map((c) => { const on = !off.includes(c.id); return b(`${on ? '🟢' : '🔴'} ${c.symbol}`, `m:pcn:${c.id}:${on ? '0' : '1'}`); });
+  const onFa = (key) => (switchOn(s, key) ? 'روشن' : '🔴 خاموش');
+  const { gatewayReady, cryptoEnabled } = await import('./nowpayments.js');
+  const gw = !cryptoEnabled(env) ? 'کلید NOWPayments ندارد' : !(parseInt(s.usdt_rate_toman, 10) > 0) ? 'قیمت تتر ثبت نشده، به کاربر نشان داده نمی‌شود' : gatewayReady(env, s) ? 'روشن' : '🔴 خاموش';
+  // card auto-confirm is on, but no bank sender is trusted yet: every SMS waits for a tap until the admin trusts one
+  const needSender = !!s.card_number && s.card_auto !== 'off' && !senders;
   return {
     text: [crumb('💳 روش‌های پرداخت'), '',
+      `روش‌ها برای کاربر: 👛 کیف پول ${onFa('pay_wallet_on')} · 💳 کارت ${s.card_number ? onFa('pay_card_on') : 'شماره کارت ندارد'} · 💎 ارز ${onFa('pay_coin_on')}${off.length ? ` (خاموش: ${off.map((x) => x.toUpperCase()).join('، ')})` : ''} · 🌐 درگاه ${gw}`, '',
       `💳 کارت: ${card ? card.replace(/(\d{4})(?=\d)/g, '$1-') : 'ثبت نشده'}${s.card_holder ? ` · ${s.card_holder}` : ''}`,
       `🏦 تأیید کارت‌به‌کارت با پیامک: ${AUTO_FA[s.card_auto] || s.card_auto} · فرستنده‌ی بانکی: ${fa(senders)}`,
       `📩 آدرس پیامک: ${s.sms_key ? '…/sms/' + maskKey(s.sms_key) : 'هنوز ساخته نشده'}`,
       `💎 ارز دیجیتال: ${fa(coins)} ولت · تأیید روی بلاک‌چین: ${AUTO_FA[s.coin_auto] || s.coin_auto}`, '',
-      'خودکار = خودش فعال می‌کند · فقط خبر بده = تو تأیید کنی · خاموش = همه دستی'].join('\n'),
+      'خودکار = خودش فعال می‌کند · فقط خبر بده = تو تأیید کنی · خاموش = همه دستی',
+      ...(needSender ? ['', '⚠️ تأیید خودکار پیامکی هنوز کار نمی‌کند: هیچ فرستنده‌ی بانکی مورد اعتماد نیست، پس هر پیامک واریز منتظر تأیید تو می‌ماند.',
+        'یک بار کافی است: زیر اولین پیامک واریزی که از بانکت رسید، دکمه‌ی «🏦 این فرستنده بانک من است» را بزن.'] : [])].join('\n'),
     kb: [
+      [b('— روشن / خاموش برای کاربر —', 'm:pay')],
+      [sw('pay_wallet_on', 'کیف پول'), sw('pay_card_on', 'کارت‌به‌کارت')],
+      [sw('pay_coin_on', 'ارز دیجیتال'), sw('pay_crypto_on', 'درگاه ارزی')],
+      ...[0, 4, 8].map((i) => coinSw.slice(i, i + 4)).filter((r) => r.length),
       [b('💳 شماره کارت', 'm:w:set:card_number'), b('👤 نام صاحب کارت', 'm:w:set:card_holder')],
       [b('— پیامک بانک —', 'm:pay')], mode('card_auto'),
       [b('🏦 فرستنده‌های بانک', 'm:snd'), b('📨 پیامک‌های رسیده', 'm:sms')],
@@ -671,6 +688,10 @@ export const SET_CHOICES = {
   trial_data_gb: ['0', '1', '2', '5'],
   trial_needs_telegram: ['1', '0'],
   cf_alerts: ['1', '0'],
+  pay_wallet_on: ['1', '0'],
+  pay_card_on: ['1', '0'],
+  pay_coin_on: ['1', '0'],
+  pay_crypto_on: ['1', '0'],
 };
 export async function paySettings(env) {
   const s = await getSettings(env);
@@ -701,12 +722,14 @@ export const KEY_FA = {
   announcement: 'اطلاعیه‌ی اپ', trial_data_gb: 'حجم تست رایگان (0 = مثل پلن)', trial_needs_telegram: 'تست فقط با تلگرام تأییدشده', cf_alerts: 'هشدار خودکار کلودفلر (1 = روشن)', usd_rate_toman: 'قیمت دستی دلار (0 = خودکار)',
   coin_minutes: 'مهلت پرداخت ارز (دقیقه)', card_unique: 'مبلغ یکتا (1 روشن، 0 خاموش)', card_auto: 'تأیید پیامکی کارت',
   sms_senders: 'فرستنده‌های بانکی', sms_key: 'کلید آدرس پیامک', coin_auto: 'تأیید ارز دیجیتال',
+  pay_wallet_on: 'پرداخت از کیف پول (1 = روشن)', pay_card_on: 'کارت‌به‌کارت (1 = روشن)', pay_coin_on: 'ارز دیجیتال (1 = روشن)',
+  pay_crypto_on: 'درگاه ارزی NOWPayments (1 = روشن)', pay_coins_off: 'ارزهای خاموش (مثل xlm,trx)',
   app_api_bases: 'دامنه‌های اضافه‌ی اپ (ضد فیلتر)', app_bridges: 'لینک‌های پل اپ (ضد فیلتر)',
 };
 const APP_KEYS = ['announcement', 'support_url', 'app_api_bases', 'app_bridges', 'trial_data_gb', 'trial_needs_telegram', 'min_topup_toman'];
 // which screen a setting belongs to (its back button)
 const PAY_KEYS = ['usd_rate_toman', 'coin_minutes', 'min_topup_toman', 'card_unique', 'sms_key'];
-export const keyParent = (key) => (key.startsWith('wallet_') ? 'wl' : key === 'referral_percent' ? 'ref' : key === 'sms_senders' ? 'snd'
+export const keyParent = (key) => (key.startsWith('wallet_') ? 'wl' : key.startsWith('pay_') ? 'pay' : key === 'referral_percent' ? 'ref' : key === 'sms_senders' ? 'snd'
   : PAY_KEYS.includes(key) ? 'payset' : APP_KEYS.includes(key) ? 'app' : 'set');
 
 const keyRows = (s, keys, label) => {
