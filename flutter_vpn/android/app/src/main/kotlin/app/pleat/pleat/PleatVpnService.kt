@@ -198,12 +198,8 @@ class PleatVpnService : VpnService() {
             }
             // A held session stays held unless the exit answers again now.
             if (!started || gen != generation) return@execute
-            val back = try {
-                (core?.measureDelay(Engine.TEST_URL) ?: -1L) >= 0
-            } catch (e: Exception) {
-                false
-            }
-            if (!back) return@execute
+            // as in begin: a cold handshake gets three tries, 800 ms apart
+            if (!probe { gen == generation }) return@execute
             main.post {
                 if (gen != generation || !held) return@post
                 held = false
