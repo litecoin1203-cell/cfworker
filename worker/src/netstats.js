@@ -45,7 +45,7 @@ const day = () => Math.floor(nowSec() / 86400);
 const KEY_RE = /^[a-z0-9]{6,16}$/;
 const throttle = throttled;
 
-// The server key the apps send: FNV-1a of "type|host|port", identical to Pleat's serverKey and CgVpn.serverKey.
+// The server key the apps send: FNV-1a of "type|host|port", identical to Pleat's serverKey (models.dart).
 export function serverKey(link) {
   const e = linkEndpoint(link);
   if (!e) return null;

@@ -81,9 +81,11 @@ the only admin, and as of 2026-11-12 had **about 2 users** and **2 panels** (pan
 Rebecca 1.8.0). The GitHub repo is **public** (since 2026-11-11, for free Actions minutes): anything committed is
 readable by anyone, so secrets live only in GitHub/Worker secrets. Users are in **Iran**, behind heavy filtering; that fact drives many design choices.
 
-**The old app is retired.** `android/` (v2rayNG 2.2.6 fork + a WebView bridge) and `app-web/` (its Persian
-web UI) are the former "Cloud Gold" app. Nobody uses it (Ali, 2026-11-07). They are still in the repo and are
-candidates for deletion in the audit's repair phase. **Do not build new features there.**
+**The old app is retired and deleted.** `android/` (v2rayNG 2.2.6 fork + a WebView bridge, GPL-3.0) and
+`app-web/` (its web UI) were the former "Cloud Gold" app. Nobody uses it (Ali, 2026-11-07); Ali approved deleting it
+on 2026-11-13 and the release audit removed both folders and `android.yml` from main (ARC-06). Git history keeps
+them: the last commit that has them is `5890bdc` (`git show 5890bdc:android/LICENSE`). The Worker still answers
+the old app's compatibility paths (`centralApp`, `sub_url`, `/vpn/sub`, `/pay/done`); see §19.
 
 ---
 
@@ -186,7 +188,6 @@ cfworker/
 │                 parity.md      Pleat vs the old Cloud Gold app, feature by feature (Persian)
 ├── miniapp/                     TELEGRAM MINI APP (Preact 10 + esbuild, pinned + lockfile): src/ (user side),
 │                                src/admin/ (admin panel), test/; `npm run build` → worker/public/
-├── android/  app-web/           RETIRED old Cloud Gold app — do not extend
 ├── design-system/               the old app's "Vault & Hallmark" design docs (historical)
 ├── docs/                        PROJECT_HANDBOOK.md (this file), API.md, DATABASE.md, RESTORE.md (restore/rollback)
 ├── AGENTS.md, CLAUDE.md         short rule card for AI coding agents
@@ -196,7 +197,6 @@ cfworker/
     ├── flutter-vpn.yml          "Pleat Flutter app": on PRs: format, analyze, test, live test, Xray config test;
     │                            manual run (input api_base) also builds the APK and publishes to pleat-latest
     ├── deploy-worker.yml        "Deploy Cloud Gold server": manual only
-    ├── android.yml              RETIRED: old app APK
     └── make-key.yml             one-time signing key generator (already used)
 ```
 
@@ -1211,7 +1211,8 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
 - **Licence of the repo's own code** (audit LEG-04): there is no top-level `LICENSE`, so the Worker, Mini App and
-  Pleat are all rights reserved. Choose one (or a proprietary notice); `android/` stays GPL-3.0.
+  Pleat are all rights reserved. Choose one (or a proprietary notice). The deleted `android/` (in git history) stays
+  GPL-3.0.
 - **GeoLite2 terms** (LEG-02): the APK carries MaxMind's attribution, but the GeoLite2 EULA may also require
   updating or deleting old copies; the geo files are refreshed only when an APK is built. Legal review, or a
   source with simpler terms (DB-IP / IPinfo lite, CC BY 4.0).
@@ -1329,8 +1330,8 @@ actions to SHAs (done for the live workflows, release audit SEC-04). Also open: 
 Pleat: `_failover`'s resync (`loadServers().then(... _connect(null, failover: true))`) is not guarded by
 `_attempt`, so a Disconnect during it can be followed by a fresh start (pre-existing, audit review N4); the config
 builder still lets unknown `type=` values and REALITY over ws/httpupgrade through to the core (N3). PBKDF2 iterations (only with a CPU budget), split `telegram.js`, a `confirmPayment` use case, a notify port,
-compat-date bump (`2025-09-01`), delete `android/`,
-`app-web/`, `android.yml` and the old-app compatibility paths (`centralApp`, `sub_url`, `/vpn/sub`,
+compat-date bump (`2025-09-01`), delete the old-app compatibility paths in the Worker (`android/`, `app-web/` and
+`android.yml` are already gone, ARC-06) (`centralApp`, `sub_url`, `/vpn/sub`,
 `/pay/done` with `cloudgold://`). Not built: per-session byte usage, Cloudflare clean-IP/SNI tricks, a domestic relay for intranet-only periods, Hiddify adapter.
 Payments (after PAY-01..04, PAY-08): Pleat should hide the wallet row when `app-config.wallet_enabled` is false
 (today the server refuses it); there is no separate switch for wallet top-ups (each top-up method has its own).

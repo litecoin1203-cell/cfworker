@@ -25,7 +25,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
-  # The same core and tun the Cloud Gold app ships (android.yml).
+  # The Xray core (AndroidLibXrayLite) and hev-socks5-tunnel builds the APK bundles.
   HEV_COMMIT: 67dfba56c0a9254f401447e0751432bd36617d70
   XRAY_LIB_TAG: v26.7.5
   NDK_VERSION: 29.0.14206865

@@ -3,7 +3,7 @@ import 'package:pleat/api/countries.dart';
 import 'package:pleat/api/models.dart';
 
 void main() {
-  test('server key matches the Cloud Gold app and the Worker stats', () {
+  test('server key matches the Worker stats', () {
     // test/dev_server.mjs seeds net_geo with fnv('vless|de1.example.com|443').
     final e = endpointOf('vless://uuid@de1.example.com:443?security=tls#x')!;
     expect(serverKey(e), 'k53ca1f60');

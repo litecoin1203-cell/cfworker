@@ -5743,8 +5743,8 @@ section('CI: release workflows run only from main, on pinned actions and checked
 {
   const { readFileSync } = await import('node:fs');
   const wf = (n) => readFileSync(new URL(`../../.github/workflows/${n}`, import.meta.url), 'utf8');
-  // every job that holds a secret or publishes: the product's workflows (android.yml is the retired app, make-key.yml
-  // the one-off signing key tool, both left as they are)
+  // every job that holds a secret or publishes: the product's workflows (make-key.yml, the one-off signing key tool,
+  // is left as it is)
   const live = ['flutter-vpn.yml', 'deploy-worker.yml', 'test-worker.yml'];
   const unpinned = live.flatMap((n) => [...wf(n).matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)].map((m) => m[1])
     .filter((u) => !/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(u)).map((u) => `${n}: ${u}`));
@@ -6632,6 +6632,21 @@ section('review of wave 2: a settled exit country is not rewritten; pending rows
   ok(raced && on2.length === 1 && r3 && r3.remote_username === on2[0].username && r3.applied === 'active', 'review 3: the account made during the race has its row: ' + JSON.stringify(r3) + ' ' + on2.map((u) => u.username));
   await runSync(W.e); await runSync(W.e);
   ok(Object.values(W.pgs[1].users).filter((u) => u.note === `Pleat #${u3}`).length === 1, 'review 3: and no second account later');
+}
+
+section('ARC-06: the retired Cloud Gold app is gone from main, and nothing still points at it');
+{
+  const { existsSync, readFileSync, readdirSync } = await import('node:fs');
+  const at = (p) => new URL('../../' + p, import.meta.url);
+  const left = ['android', 'app-web', '.github/workflows/android.yml'].filter((p) => existsSync(at(p)));
+  ok(!left.length, 'ARC-06: android/, app-web/ and android.yml are deleted (git history keeps them): still there: ' + left.join(', '));
+  // what runs (workflows, Worker tests and scripts, the Mini App build) must not read the deleted folders
+  const files = [...readdirSync(at('.github/workflows/')).map((f) => '.github/workflows/' + f),
+    ...readdirSync(at('worker/test/')).map((f) => 'worker/test/' + f), ...readdirSync(at('worker/scripts/')).map((f) => 'worker/scripts/' + f),
+    'miniapp/build.mjs', 'flutter_vpn/docs/backend-map.md', 'flutter_vpn/lib/api/models.dart']
+    .filter((f) => f !== 'worker/test/run.mjs' && /\.(ya?ml|m?js|md|dart)$/.test(f));
+  const refs = files.filter((f) => /(?:^|[\s'"`(/.])app-web\/|\bandroid\.yml\b|CgVpn|\.\.\/\.\.\/android\//m.test(readFileSync(at(f), 'utf8')));
+  ok(!refs.length, 'ARC-06: no workflow, test, script or Pleat doc points at the retired app: ' + refs.join(', '));
 }
 
 section('CF-05: the Worker\'s error log survives the end of the request and a write that failed');

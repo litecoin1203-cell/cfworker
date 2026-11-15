@@ -307,7 +307,8 @@ Endpoint? endpointOf(String link) {
 /// Keys the Worker accepts in `/net/report` (its KEY_RE).
 final serverKeyPattern = RegExp(r'^[a-z0-9]{6,16}$');
 
-/// FNV-1a of "type|host|port", identical to `CgVpn.serverKey`.
+/// FNV-1a of "type|host|port", identical to the Worker's `serverKey`
+/// (worker/src/netstats.js; parsers_test.dart checks they agree).
 String serverKey(Endpoint e) {
   var h = 0x811c9dc5;
   for (final c in '${e.type}|${e.host}|${e.port}'.toLowerCase().codeUnits) {
