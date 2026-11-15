@@ -2287,6 +2287,17 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return c.future;
   }
 
+  /// A run's per-exit results reach the screens at most this often (each
+  /// change rebuilds Locations and Home): 20 to 60 exits answering in a few
+  /// seconds used to mean as many rebuilds. The run's end tells at once.
+  static const testNotifyGap = Duration(milliseconds: 150);
+  Timer? _testNotify;
+
+  void _notifySoon() {
+    if (_testNotify?.isActive ?? false) return;
+    _testNotify = Timer(testNotifyGap, notifyListeners);
+  }
+
   Future<void> _testAll(int? enough) async {
     final list = exits;
     if (list.isEmpty || !await tunnel.available()) return;
@@ -2332,7 +2343,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       e.measuredAt = DateTime.now();
       _cache.putPing(net, e.id, e.measured!, e.measuredAt!);
       results.add({'k': e.id, 'ok': ms != null, 'ms': ms ?? 0});
-      notifyListeners();
+      _notifySoon();
     }
 
     // The native side tests [_probeLanes] exits at a time, and each test
@@ -2356,6 +2367,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       w.$2.complete();
     }
     _answerWaits.clear();
+    _testNotify?.cancel();
     testing = false;
     testedAt = DateTime.now();
     if (enough == null) _cache.markTested(net, testedAt!);
@@ -3855,6 +3867,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _stopTimers();
+    _testNotify?.cancel();
     tunnel.dispose();
     super.dispose();
   }
@@ -3870,6 +3883,55 @@ class AppScope extends InheritedNotifier<AppState> {
 
   static AppState read(BuildContext context) =>
       context.getInheritedWidgetOfExactType<AppScope>()!.notifier!;
+}
+
+/// Rebuilds [builder] only when [select] gives a different value (by ==)
+/// after the app changed, instead of on every change as [AppScope.of]
+/// does. For widgets high in the tree (the Shell, the app's own builder),
+/// whose whole subtree would otherwise be rebuilt on every change.
+class AppSelect<T> extends StatefulWidget {
+  const AppSelect({super.key, required this.select, required this.builder});
+  final T Function(AppState app) select;
+  final Widget Function(BuildContext context, AppState app, T value) builder;
+
+  @override
+  State<AppSelect<T>> createState() => _AppSelectState<T>();
+}
+
+class _AppSelectState<T> extends State<AppSelect<T>> {
+  AppState? _app;
+  late T _value;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final app = AppScope.read(context);
+    if (identical(app, _app)) return;
+    _app?.removeListener(_changed);
+    _app = app..addListener(_changed);
+    _value = widget.select(app);
+  }
+
+  @override
+  void didUpdateWidget(AppSelect<T> old) {
+    super.didUpdateWidget(old);
+    _value = widget.select(_app!);
+  }
+
+  void _changed() {
+    final next = widget.select(_app!);
+    if (next == _value) return;
+    setState(() => _value = next);
+  }
+
+  @override
+  void dispose() {
+    _app?.removeListener(_changed);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(context, _app!, _value);
 }
 
 class TelegramStart {

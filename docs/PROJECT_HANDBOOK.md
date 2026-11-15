@@ -735,7 +735,9 @@ fix / advice (`diagnose.dart`), "Copy report" (real app version), and **"Test al
 
 ### State and code notes
 - `AppState` (~3,500 lines, ChangeNotifier) is a god object; `login.dart` ~1,780 and `profile.dart` ~1,670 lines.
-  Known, not refactored. New logic goes into a plain-Dart file under `lib/state/` (testable without Flutter), as
+  Known, not refactored. Widgets high in the tree (the Shell, MaterialApp's builder) listen through `AppSelect`, which
+  rebuilds only when its selected value changes (PERF-A-01, `test/rebuild_test.dart`); a run of exit tests tells
+  the screens at most every 150 ms (`AppState.testNotifyGap`). New logic goes into a plain-Dart file under `lib/state/` (testable without Flutter), as
   `route_rules.dart`, `recommend.dart`, `protect.dart` and `health.dart` do.
 - `ApiClient` signs out only on refresh 401/403 (not on any error; fixed 1.2.20).
 - Tokens, device id, account cache and configs live in `flutter_secure_storage` (Keystore). `allowBackup=false`.

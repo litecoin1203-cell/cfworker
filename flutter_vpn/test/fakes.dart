@@ -509,8 +509,12 @@ class FakeTunnel extends Tunnel {
   /// The core's reason for an address with no ping; default a timeout.
   Map<String, String> errors = {};
 
+  /// How long one exit test takes; zero answers at once.
+  Duration probeTakes = Duration.zero;
+
   @override
   Future<({int? ms, String? error})> probe(String config) async {
+    if (probeTakes > Duration.zero) await Future<void>.delayed(probeTakes);
     for (final e in pings.entries) {
       if (config.contains('"${e.key}"')) {
         pinged.add(e.key);
