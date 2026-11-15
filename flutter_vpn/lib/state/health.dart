@@ -9,7 +9,8 @@
 ///
 /// Nothing that could name a server or a person leaves: no share link, UUID,
 /// key, address, IP or e-mail. Servers are named by their anonymous key, the
-/// same one the network ranking already uses. The person can turn it off in
+/// same one the network ranking already uses. Nothing leaves before the
+/// person says yes (Home asks once, [asked]); they can change it any time in
 /// Profile ("Send diagnostics").
 library;
 
@@ -235,8 +236,16 @@ class HealthLog {
   static const p2Gap = Duration(minutes: 10);
   static const lowGap = Duration(hours: 6);
 
-  /// The person's switch in Profile.
+  /// The person's switch in Profile. On by default, but only for keeping
+  /// problems on the phone: nothing is sent until [asked].
   bool enabled = true;
+
+  /// The person answered "Send diagnostics?" (or flipped the switch in
+  /// Profile, which is an answer too). Kept on the phone.
+  bool asked = false;
+
+  /// Reports leave the phone: a yes, and the switch still on.
+  bool get sending => asked && enabled;
 
   /// What the Worker takes now: 'all', 'p2' (critical and high only) or
   /// 'off'. Set from each answer, so the admin can turn reports down.
@@ -258,6 +267,7 @@ class HealthLog {
 
   void _load() {
     enabled = _prefs.getBool('health_on') ?? true;
+    asked = _prefs.getBool('health_asked') ?? _prefs.containsKey('health_on');
     mode = _prefs.getString('health_mode') ?? 'all';
     final sent = _prefs.getInt('health_sent');
     _sentAt = sent == null ? null : DateTime.fromMillisecondsSinceEpoch(sent);
@@ -278,8 +288,13 @@ class HealthLog {
     if (s != null) _prefs.setInt('health_sent', s.millisecondsSinceEpoch);
   }
 
+  /// The answer to "Send diagnostics?": no also empties the queue.
+  void answer(bool on) => setEnabled(on);
+
   void setEnabled(bool on) {
     enabled = on;
+    asked = true;
+    _prefs.setBool('health_asked', true);
     _prefs.setBool('health_on', on);
     if (!on) {
       _q.clear();
@@ -399,7 +414,7 @@ class HealthLog {
   /// How long until a send is due; null when nothing waits.
   Duration? get dueIn {
     _day(); // closes yesterday into a 'daily' event
-    if (!enabled || _q.isEmpty) return null;
+    if (!sending || _q.isEmpty) return null;
     final now = _clock();
     var at = _sentAt == null ? now : _sentAt!.add(_gap);
     final r = _retryAt;

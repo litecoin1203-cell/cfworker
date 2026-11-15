@@ -8,6 +8,7 @@ import 'package:pleat/main.dart';
 import 'package:pleat/screens/avatar_gate.dart';
 import 'package:pleat/screens/checkout.dart';
 import 'package:pleat/screens/home.dart';
+import 'package:pleat/screens/legal.dart';
 import 'package:pleat/screens/login.dart';
 import 'package:pleat/screens/onboarding.dart';
 import 'package:pleat/screens/plans.dart';
@@ -26,12 +27,17 @@ Future<(AppState, FakeApi)> _boot(
   bool signedIn = true,
   Tunnel? tunnel,
   String? avatar = 'vesper',
+  bool diagnosticsAnswered = true,
 }) async {
   PType.familyOverride = 'PleatTest';
   tester.view.physicalSize = const Size(1080, 2340);
   tester.view.devicePixelRatio = 2.75;
   addTearDown(tester.view.reset);
-  SharedPreferences.setMockInitialValues(prefs);
+  SharedPreferences.setMockInitialValues({
+    // the person already said yes to Send diagnostics (PRV-03 asks once)
+    if (diagnosticsAnswered) 'health_asked': true,
+    ...prefs,
+  });
   final api = FakeApi(MemoryTokens(signedIn: signedIn))..avatar = avatar;
   final state = AppState(
     await SharedPreferences.getInstance(),
@@ -1078,6 +1084,22 @@ void main() {
       ),
       findsOneWidget,
     );
+    // the row opens the full list: the Privacy policy (PRV-03)
+    await tester.tap(find.text('What our server keeps'));
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(LegalScreen), findsOneWidget);
+    expect(find.text('Connection quality (to rank servers)'), findsOneWidget);
+    await tester.tap(
+      find.descendant(
+        of: find.byType(LegalScreen),
+        matching: find.byType(RoundIcon),
+      ),
+    );
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
     await tester.ensureVisible(find.bySemanticsLabel('Keep history'));
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.bySemanticsLabel('Keep history'));
@@ -1316,6 +1338,117 @@ void main() {
     expect(find.byType(LicensePage), findsOneWidget);
     expect(find.textContaining('Pleat: source code'), findsWidgets);
     expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('PRV-03: Profile opens the Privacy policy and Terms of use '
+      'next to the licences', (tester) async {
+    await _boot(tester, {'onboarded': true}, tunnel: FakeTunnel());
+    await tester.tap(find.textContaining(', Ali'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    final scroll = find
+        .descendant(
+          of: find.byType(ProfileScreen),
+          matching: find.byType(Scrollable),
+        )
+        .first;
+    for (final (label, doc, line) in [
+      ('PRIVACY POLICY', LegalDoc.privacy, 'What we never collect'),
+      ('TERMS OF USE', LegalDoc.terms, 'Fair use'),
+    ]) {
+      final entry = find.text(label);
+      await tester.scrollUntilVisible(entry, 300, scrollable: scroll);
+      await tester.ensureVisible(entry);
+      await tester.pump(const Duration(milliseconds: 300));
+      expect(
+        tester.getTopLeft(entry).dy,
+        greaterThan(tester.getTopLeft(find.text('CHECK FOR UPDATES')).dy),
+      );
+      await tester.tap(entry);
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(find.byType(LegalScreen), findsOneWidget);
+      expect(find.text(doc.title), findsOneWidget);
+      expect(find.text(line), findsOneWidget);
+      await tester.tap(
+        find.descendant(
+          of: find.byType(LegalScreen),
+          matching: find.byType(RoundIcon),
+        ),
+      );
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 100));
+      }
+      expect(find.byType(LegalScreen), findsNothing);
+    }
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('PRV-03: Create account says what you agree to, with links', (
+    tester,
+  ) async {
+    await _boot(tester, {'onboarded': true}, signedIn: false);
+    await tester.tap(find.text('Create account'));
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(
+      find.text('By creating an account you agree to the '),
+      findsOneWidget,
+    );
+    final terms = find.text('Terms of use');
+    await tester.ensureVisible(terms);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(terms);
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(LegalScreen), findsOneWidget);
+    expect(find.text('The service'), findsOneWidget);
+    expect(find.text('Fair use'), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('PRV-03: Send diagnostics is asked once; nothing is sent '
+      'before a yes, a no is kept', (tester) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, diagnosticsAnswered: false);
+    final ask = find.byKey(const ValueKey('diag.ask'));
+    expect(ask, findsOneWidget);
+    expect(find.text('Send diagnostics?'), findsOneWidget);
+    // undecided: problems wait on the phone, none leave
+    expect(app.sendDiagnostics, isFalse);
+    expect(await app.sendTestReport(), isFalse);
+    expect(api.healthBodies, isEmpty);
+    await tester.tap(find.text('DON’T SEND'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(ask, findsNothing);
+    expect(app.sendDiagnostics, isFalse);
+    final p = await SharedPreferences.getInstance();
+    expect(p.getBool('health_asked'), isTrue);
+    expect(p.getBool('health_on'), isFalse);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('PRV-03: a yes to Send diagnostics sends what waited', (
+    tester,
+  ) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, diagnosticsAnswered: false);
+    app.health.record('app_error', c: 'test', d: {'what': 'waited'});
+    expect(api.healthBodies, isEmpty);
+    await tester.tap(find.text('SEND'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byKey(const ValueKey('diag.ask')), findsNothing);
+    expect(app.sendDiagnostics, isTrue);
+    await tester.runAsync(() => app.flushHealth(force: true));
+    expect(api.healthBodies, isNotEmpty);
     await tester.pump(const Duration(seconds: 1));
   });
 

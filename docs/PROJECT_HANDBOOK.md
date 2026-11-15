@@ -607,6 +607,12 @@ does not reach users by itself.
   tag / commit). A test ties `SOURCE.txt` to `XRAY_LIB_TAG` / `HEV_COMMIT` in the workflow; the manual APK run
   fails if `go-modules.txt` no longer matches the AAR's modules or the APK lacks the texts. After bumping
   `XRAY_LIB_TAG`: `python3 -I tool/go_licenses.py write <libgojni.so>` and update `SOURCE.txt`.
+- **Privacy policy and Terms of use** (release audit PRV-03): the text is `docs/legal/privacy.txt` and
+  `terms.txt` (plain English, no country named). Pleat shows it in `screens/legal.dart` from a word-for-word copy
+  in `lib/legal_text.dart` (`test/legal_test.dart` fails when they differ); the Mini App bundles the .txt files.
+  Reached from Profile's footer (PRIVACY POLICY / TERMS OF USE under the licences), the "By creating an account
+  you agree to…" line under every Create account button, and the diagnostics card. **When what the Worker keeps
+  changes (a new table with user data, a retention), change `privacy.txt` in the same PR.**
 
 ### Home tabs (PRs #71, #74, #75, #81)
 - **Route** (design D): goal cards **Auto / Stealth / Speed / Classic** + a location bar with a country sheet. Each
@@ -656,7 +662,10 @@ does not reach users by itself.
 ### Health reports and crash capture (PRs #73, #77, #79, #80)
 - `lib/state/health.dart` queues problems on the phone (survive a crash), folds repeats with a count, and sends
   batches to `POST /me/health`: critical within ~1 min, high every ≤ 10 min, rest every 6 h. Profile has a
-  **Send diagnostics** switch (off → also `&h=0` on `/me/ip`).
+  **Send diagnostics** switch (off → also `&h=0` on `/me/ip`). **Consent first** (release audit PRV-03): Home
+  shows a "Send diagnostics?" card (Send / Don't send / Privacy policy) until the person answers; until then
+  problems wait on the phone and nothing is sent (`HealthLog.asked` / `sending`, pref `health_asked`; a Profile
+  switch flipped before counts as an answer). No → the queue is emptied.
 - Types and priority (`health.js` `TYPES`): P1 `crash`, `killed`, `no_exit` (instant Telegram alert); P2
   `connect_fail`, `drop`, `silent`, `unsupported`, `loc_mismatch`, `exit_iran` (last two seen only by the Worker);
   P3 `battery`, `slow_connect`, `api_down`, `update_fail`, `app_error`; P4 `daily`.

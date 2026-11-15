@@ -1,0 +1,84 @@
+// The Privacy policy and Terms of use, word for word as in
+// docs/legal/privacy.txt and terms.txt (the Telegram Mini App bundles those
+// files). test/legal_test.dart fails when the two differ: edit the .txt
+// file, then paste it here.
+
+const privacyText = r'''
+# Privacy policy
+
+This is what Pleat collects, why, where it goes and how long it stays. It covers the Pleat app, the Pleat Telegram bot and Mini App, and the server behind them. It is written to be read, not to be a legal opinion.
+
+## What we never collect
+- What you browse, the sites or apps you open, or the content of your traffic. Our server does not carry your traffic and keeps no browsing log.
+- Your contacts, photos, files or location from the phone's GPS.
+- Advertising or tracking: the app has no analytics or advertising SDK.
+
+## Your account
+- Your email (if you use one), your Telegram ID, username and name (if you link Telegram), a hash of your password (never the password itself), the character you picked, your wallet balance, your invite code and who invited you.
+- Your orders, payments and wallet history. For a card payment this includes the receipt you send and the bank's text message about the deposit; for crypto, the transaction ID.
+- Kept while the account exists. See "Deleting your account" below.
+
+## Your devices
+- For each phone: a device ID made from the phone's Android ID (a one-way hash), the phone model and when it last used Pleat.
+- Kept until you remove the device in Profile or the account is deleted.
+
+## Connection quality (to rank servers)
+- Your network operator, province (from the address you connect from) and connection type (Wi-Fi or mobile data), and how each server worked for you on that network: whether it answered, how fast, and test speeds. Servers are named by an anonymous key, never by their address.
+- Kept for 30 days. Short-term votes that stop one account counting twice are kept for about 4 days.
+- This is what makes "Fastest for you" and server ranking work. Turning off Keep history in Activity does not stop it; Keep history only controls the session list on your phone.
+
+## Diagnostics ("Send diagnostics")
+- Only if you allow it. The app asks on first use, and you can change it any time in Profile.
+- What is sent when something goes wrong (a crash, a failed connect, a dropped tunnel, heavy battery use) and a daily count of connects: app version, Android version, phone model, network type and operator, the protocol and the anonymous server key, and the technical details of the problem. Links, keys, IDs, server and IP addresses, emails and Wi-Fi names are removed on the phone and again on the server.
+- While it is on, the server also checks once per connection that the exit is in the country its name says.
+- Kept for 14 days. Serious problems also alert our support team in Telegram, with your Telegram username (or email), and those messages stay in Telegram.
+
+## Who else sees data
+- VPN servers: your connection runs on servers run by our providers through their management panels. They see your connection (when, how much data, the device ID the app sends to enforce the device limit) and keep their own logs, which are outside our control.
+- Cloudflare runs our server and its database. It processes each request (including your IP address) and keeps request logs under its own terms.
+- Telegram: the bot, the Mini App, sign-in codes and support messages go through Telegram. Card-payment receipts you send and a daily backup of our database (accounts, orders, wallets and devices; no passwords or connection links) are kept in our support team's Telegram chat.
+- Crypto payments: our payment provider gets the order number and amount, never your name or email.
+- Privacy check (in the app) contacts outside services from your phone (Cloudflare, Google services such as YouTube and Gemini, ipinfo.io and ipwho.is) to test your connection. One test asks Cloudflare for your address without the tunnel, to compare. Results stay on your phone; only the anonymous server key and whether Google services work go to our server.
+- The app may download its typeface from Google Fonts.
+- We do not sell your data and do not share it with anyone else, unless we are legally required to.
+
+## On your phone only
+Your session history (30 days, or off), connect tries, saved servers and settings stay on the phone. Sign-in tokens and connection settings are kept in the phone's secure storage and are not backed up.
+
+## Deleting your account
+Ask Support (in Profile) to delete your account. We remove your email, your Telegram details, your character and your devices, end your plan and switch off your VPN accounts. Orders and wallet history are kept for accounting. Connection-quality data and diagnostics expire on their own within 30 days. Copies in earlier backups and Telegram messages are not removed.
+
+## Changes
+If this policy changes, the new version ships with the app and the Mini App.
+''';
+
+const termsText = r'''
+# Terms of use
+
+By creating a Pleat account or using Pleat, you agree to these terms. They are written to be read, not to be a legal opinion.
+
+## The service
+- Pleat gives you access to VPN servers for the time and data of the plan you have. Servers, countries and speeds can change, and a server can stop working for a while.
+- We work to keep Pleat reachable, but we cannot promise it will always work on every network.
+
+## Your account
+- Give a real email or Telegram account, keep your password to yourself, and tell Support if someone else may have used your account.
+- One free trial per person and per phone. The free trial needs a verified Telegram account.
+- A plan can be used on up to the number of devices it lists.
+
+## Fair use
+Do not use Pleat to break the law, to attack, scan or spam other networks, to share or resell your account, or to put so much load on a server that others cannot use it. We can stop an account that does this.
+
+## Payments
+- Prices are shown before you pay. A plan starts when the payment is confirmed.
+- If something goes wrong with a payment, ask Support.
+
+## Privacy
+What we collect and keep is described in the Privacy policy.
+
+## No warranty
+Pleat is provided as it is. To the extent the law allows, we are not responsible for losses caused by the service being slow, unavailable or interrupted.
+
+## Changes
+We may change these terms. The new version ships with the app and the Mini App. If you keep using Pleat after a change, the new terms apply.
+''';
