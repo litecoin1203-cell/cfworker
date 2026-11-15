@@ -263,9 +263,12 @@ export async function refreshUser(env, userId) {
 // account there carries this user's note ("Pleat #<id>"), it is the one made before and is adopted (set to the
 // wanted expiry and limit) instead of a second account being made. A pending row nobody finishes is settled by the
 // sync job (settlePending): adopted when the account exists and is this user's, deleted otherwise.
-export async function ensureAccount(env, user, panel, { expire, limit, hwid } = {}) {
+//
+// CF-01: a caller that has just read this user's row on this panel passes it as opts.row (null = no row), which saves
+// the read; the row of a finished account is built from what was written instead of being read back.
+export async function ensureAccount(env, user, panel, { expire, limit, hwid, row } = {}) {
   const pg = await adapterFor(env, panel);
-  const pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
+  const pa = row !== undefined ? row : await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
   const now = nowSec();
   if (pa && pa.applied !== 'pending' && (await pg.getUser(pa.remote_username))) return pa;
   const groups = await groupIdsFor(env, panel, pg);
@@ -285,8 +288,14 @@ export async function ensureAccount(env, user, panel, { expire, limit, hwid } = 
   const done = rowId && (await run(env, `UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = 'active',
       desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ?, dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ?`,
   made.username, made.id, made.subPath, limit || 0, limit || 0, expire || null, expire || null, now, rowId)).meta.changes;
+  if (done) {
+    return { ...(pa || {}), id: rowId, user_id: user.id, panel_id: panel.id, remote_username: made.username, remote_id: made.id, sub_path: made.subPath,
+      desired: 'active', applied: 'active', desired_limit_bytes: limit || 0, applied_limit_bytes: limit || 0, desired_expire: expire || null,
+      applied_expire: expire || null, dirty: 0, attempts: 0, last_error: null, applied_at: now };
+  }
   // no row to finish (none was written, or the sync job dropped a stale intent meanwhile): the account gets a new one
-  if (!done) await insertAccount(env, user.id, panel.id, made, { expire, limit, now }).run();
+  // (or another path's account that got there first stays, so the row is read back)
+  await insertAccount(env, user.id, panel.id, made, { expire, limit, now }).run();
   return first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
 }
 

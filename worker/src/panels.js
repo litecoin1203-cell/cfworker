@@ -24,12 +24,29 @@ export const credKey = (id) => `panel_cred_${id}`;
 const credPurpose = (id) => `panel-cred:${id}`;
 const _opened = new Map(); // sealed text -> cred, per isolate (decrypting is cheap, this just skips it)
 
+// CF-01 / PERF-B-03: every bot-given login is read with ONE range query (on the settings primary key) and kept by the
+// isolate for CRED_TTL_MS, so a purchase or a server list over N panels no longer costs N queries. Saving a login
+// drops this isolate's copy at once; another isolate picks a changed login up within CRED_TTL_MS.
+const CRED_TTL_MS = 30_000;
+const _sealedByDb = new WeakMap(); // env.DB -> {at, p: Promise<Map<key, sealed>>}
+function sealedCreds(env) {
+  const db = env.DB;
+  const hit = _sealedByDb.get(db);
+  if (hit && Date.now() - hit.at < CRED_TTL_MS) return hit.p;
+  const p = all(env, "SELECT key, value FROM settings WHERE key >= 'panel_cred_' AND key < 'panel_cred`'")
+    .then((rows) => new Map(rows.map((r) => [r.key, r.value])));
+  p.catch(() => _sealedByDb.delete(db)); // a failed read is not remembered
+  _sealedByDb.set(db, { at: Date.now(), p });
+  return p;
+}
+const forgetCreds = (env) => _sealedByDb.delete(env.DB);
+
 export async function credOf(env, panel) {
   if (panel.cred_ref === 'PASARGUARD') {
     if (!env.PASARGUARD_URL) return null;
     return { url: env.PASARGUARD_URL, username: env.PASARGUARD_USERNAME, password: env.PASARGUARD_PASSWORD, api_key: env.PASARGUARD_API_KEY };
   }
-  const sealed = (await first(env, 'SELECT value FROM settings WHERE key = ?', credKey(panel.id)))?.value;
+  const sealed = (await sealedCreds(env)).get(credKey(panel.id));
   if (sealed) {
     if (_opened.has(sealed)) return _opened.get(sealed);
     try {
@@ -71,6 +88,7 @@ export function parseCred(text) {
 export async function savePanelCred(env, panel, cred) {
   const sealed = await seal(env.SECRET_KEY, credPurpose(panel.id), JSON.stringify(cred));
   await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', credKey(panel.id), sealed);
+  forgetCreds(env);
 }
 
 // where a panel's login comes from, for the bot: 'bot' | 'secret' | 'env' | null

@@ -1109,6 +1109,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | PNL-02 an account created on a panel whose D1 write never ran stayed active as an orphan, and the retry made a second one | intent row first (`applied = 'pending'`), adopt own 409 by note, cron `settlePending` |
 | QA-02 branch coverage 64-74% on sms, nowpayments, chainwatch and the panel adapters (the error paths that move money) | tests for forwarder formats, odd SMS, every SMS outcome, IPN signatures, watcher filters, adapter logins/fallbacks; per-file ≥ 80% branch gate (`coverage:money`) |
 | SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |
+| CF-01 / PERF-B-03 (measured) a first purchase cost 24 + 5 queries per serving panel → over 50 from the 7th panel, after the panels were already changed | all bot-given panel logins in one range query, kept 30 s per isolate (dropped when a login is saved); `ensureAccount` takes the row the caller read and builds the result row; 8 panels: first purchase 40, renewal 28 (test) |
 
 ### App and tunnel
 | Problem | Fix |

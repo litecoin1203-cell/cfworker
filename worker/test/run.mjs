@@ -6588,6 +6588,24 @@ section('review of wave 2: a settled exit country is not rewritten; pending rows
   ok(Object.values(W.pgs[1].users).filter((u) => u.note === `Pleat #${u3}`).length === 1, 'review 3: and no second account later');
 }
 
+section('CF-01: a purchase on 8 panels (first buy and renewal) stays within the 50 D1 queries');
+{
+  const W = await world('cf1', 8);
+  const tok = await W.signupW('cf1@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'cf1@example.com'))[0].id;
+  await W.e.DB.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').bind(W.plan.price_toman * 3, uid).run();
+  const costOf = async (fn) => { const from = allInv.length; await fn(); return Math.max(0, ...allInv.slice(from).map((s) => s.q)); };
+  let buy;
+  const q1 = await costOf(async () => { buy = await W.callW('POST', '/api/v1/orders', { token: tok, json: { plan_id: W.plan.id, method: 'wallet' } }); });
+  ok(buy.status === 201 && buy.data && buy.data.status === 'paid', 'CF-01: the first wallet purchase on 8 panels is paid: ' + buy.status + ' ' + JSON.stringify(buy.data));
+  ok((await W.q('SELECT COUNT(*) c FROM panel_accounts WHERE user_id = ? AND applied = ?', uid, 'active'))[0].c === 8, 'CF-01: an account on all 8 panels');
+  const q2 = await costOf(async () => { buy = await W.callW('POST', '/api/v1/orders', { token: tok, json: { plan_id: W.plan.id, method: 'wallet' } }); });
+  ok(buy.status === 201 && buy.data && buy.data.status === 'paid', 'CF-01: the renewal on 8 panels is paid: ' + buy.status);
+  // headroom for the routes that add their own queries around settle (SMS, coupon, bot approval)
+  console.log(`    8 panels: first purchase ${q1}, renewal ${q2} D1 queries`);
+  ok(q1 <= 40 && q2 <= 40, `CF-01: 8-panel first purchase ${q1} and renewal ${q2} D1 queries (want <= 40)`);
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
