@@ -5602,6 +5602,57 @@ section('payments audit PAY-08: one on/off switch per payment method, enforced w
   ok(['trx', 'xlm'].every((id) => c.coins.some((x) => x.id === id)), 'PAY-08: and on again');
 }
 
+section('payments audit PAY-07: a bank SMS the parser cannot read reaches the admin; empty sender list is explained');
+{
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const S = await import('../src/telegram-screens.js');
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  await tgWebhook({ message: { chat: { id: 12345 }, text: '/sms' } });
+  const key = (await row("SELECT value v FROM settings WHERE key = 'sms_key'")).v;
+  env.DB.exec("DELETE FROM settings WHERE key = 'sms_unknown_notice'");
+  const sms = (text, from = '+989100') => call('POST', '/sms/' + key, { json: { from, text } });
+  const notices = (n) => fakes.tg.messages.slice(n).filter((m) => /نتوانستم بخوانم/.test(m.text || ''));
+  // a bank format with no deposit word: it used to be dropped without a word to anyone
+  let n = fakes.tg.messages.length;
+  const odd = 'بانک نمونه\nتراکنش موفق\n1,890,330\n1405/08/09-11:02';
+  let r = await sms(odd);
+  ok(r.data.result === 'not_deposit', 'PAY-07: the parser still does not take it as a deposit (nothing is confirmed by itself)');
+  let got = notices(n);
+  ok(got.length === 1 && got[0].text.includes('1,890,330') && got[0].text.includes('تراکنش موفق'), 'PAY-07: the admin gets a Persian notice with the SMS text: ' + JSON.stringify(got.map((m) => m.text)));
+  ok(got.length === 1 && flat(got[0].reply_markup && got[0].reply_markup.inline_keyboard).includes('m:sms:all') && flat(got[0].reply_markup.inline_keyboard).includes('m:or:pend:card'),
+    'PAY-07: ... with buttons to the SMS list and the unpaid card orders');
+  // a withdrawal, a one-time code and a text with no amount stay quiet
+  n = fakes.tg.messages.length;
+  await sms('بانک نمونه\nبرداشت: 500,000\nمانده: 1,000,000');
+  await sms('کد تایید شما: 482913');
+  await sms('به بانک نمونه خوش آمدید');
+  ok(notices(n).length === 0, 'PAY-07: withdrawals, one-time codes and texts without an amount do not notify');
+  // a burst of unreadable SMS: at most 5 notices an hour
+  n = fakes.tg.messages.length;
+  for (let i = 0; i < 8; i++) await sms(`بانک نمونه\nتراکنش موفق\n${(2000000 + i * 1110).toLocaleString('en-US')}`);
+  got = notices(n);
+  ok(got.length === 4, 'PAY-07: notices are capped at 5 an hour (1 + 4 here): ' + got.length);
+  ok(got.length && /یک ساعت/.test(got[got.length - 1].text), 'PAY-07: the last notice before the cap says the rest stay in the SMS list');
+  ok((await row("SELECT COUNT(*) c FROM sms_log WHERE result = 'not_deposit' AND body LIKE '%تراکنش موفق%'")).c === 9, 'PAY-07: every one is still logged');
+  // a new hour: notices again
+  const st = JSON.parse((await row("SELECT value v FROM settings WHERE key = 'sms_unknown_notice'")).v);
+  await env.DB.prepare("UPDATE settings SET value = ? WHERE key = 'sms_unknown_notice'").bind(JSON.stringify({ ...st, t: st.t - 3601 })).run();
+  n = fakes.tg.messages.length;
+  await sms('بانک نمونه\nتراکنش موفق\n3,333,330');
+  ok(notices(n).length === 1, 'PAY-07: an hour later the admin is told again');
+
+  // card auto-confirm on with no trusted bank sender: the payment screen says what to tap
+  await botSet('card_number', '6037991234567893'); await botSet('card_auto', 'auto');
+  const keep = (await row("SELECT value v FROM settings WHERE key = 'sms_senders'") || {}).v || '';
+  await env.DB.prepare("UPDATE settings SET value = '' WHERE key = 'sms_senders'").run();
+  let pay = await S.payments(env);
+  ok(/هیچ فرستنده‌ی بانکی مورد اعتماد نیست/.test(pay.text) && pay.text.includes('این فرستنده بانک من است'), 'PAY-07: auto on + no trusted sender -> the payment screen explains the one tap that fixes it');
+  await env.DB.prepare("UPDATE settings SET value = '09100' WHERE key = 'sms_senders'").run();
+  pay = await S.payments(env);
+  ok(!/هیچ فرستنده‌ی بانکی مورد اعتماد نیست/.test(pay.text), 'PAY-07: with a trusted sender the hint is gone');
+  await env.DB.prepare("UPDATE settings SET value = ? WHERE key = 'sms_senders'").bind(keep).run();
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

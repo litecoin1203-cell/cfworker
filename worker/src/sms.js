@@ -58,7 +58,41 @@ export function parseBankSms(text) {
       found.push({ n, toman: TOMAN_WORD.test(raw) && !RIAL_WORD.test(raw) });
     }
   }
-  return { deposit, amounts: [...new Set(found.map((x) => x.n))], toman: [...new Set(found.filter((x) => x.toman).map((x) => x.n))] };
+  return { deposit, withdraw: hasWithdraw, amounts: [...new Set(found.map((x) => x.n))], toman: [...new Set(found.filter((x) => x.toman).map((x) => x.n))] };
+}
+
+// PAY-07: an SMS that is not read as a deposit but may still be one in a format the parser does not know: no
+// withdrawal word, and a number that looks like money (comma groups, or 6+ digits) outside reference / balance /
+// one-time-code parts. Used only to tell the admin; it never confirms anything.
+const CODE_WORD = /(رمز|پويا|پویا|otp|password|verif)/i;
+export function maybeDeposit(text) {
+  const t = fa2en(text).replace(/[٬،]/g, ',');
+  if (WITHDRAW_WORD.test(t)) return false;
+  for (const raw of t.split(/\r?\n/)) {
+    if (CODE_WORD.test(raw)) continue;
+    const cut = raw.search(NOT_AMOUNT_WORD);
+    const line = (cut >= 0 ? raw.slice(0, cut) : raw).replace(SEPARATED_DIGITS, ' ');
+    let m;
+    AMOUNT_RE.lastIndex = 0;
+    while ((m = AMOUNT_RE.exec(line))) if (m[1] !== '-' && (m[2].includes(',') || m[2].length >= 6)) return true;
+  }
+  return false;
+}
+
+// at most UNKNOWN_MAX notices about unreadable SMS an hour (a forwarder that sends every SMS of the phone, or a
+// burst, must not flood the bot); every one stays in sms_log and the bot's 📨 list. State: settings.sms_unknown_notice.
+const UNKNOWN_MAX = 5;
+async function noticeUnknown(env, sender, body) {
+  const { notifyAdmin, untrusted } = await import('./telegram.js');
+  const now = nowSec();
+  let st = { t: now, n: 0 };
+  try { const v = JSON.parse(await getSetting(env, 'sms_unknown_notice') || 'null'); if (v && now - v.t < 3600) st = v; } catch (e) { /* start over */ }
+  if (st.n >= UNKNOWN_MAX) return;
+  st.n += 1;
+  await setSetting(env, 'sms_unknown_notice', JSON.stringify(st));
+  const last = st.n === UNKNOWN_MAX ? '\n\n(تا یک ساعت دیگر برای پیامک‌های ناخوانا پیامی نمی‌دهم؛ همه در «📨 پیامک‌های رسیده» هست.)' : '';
+  await notifyAdmin(env, `❔ پیامکی رسید که نتوانستم بخوانم؛ شاید واریز با قالبی تازه باشد. خودکار چیزی تأیید نشد.\nاگر واریز است، سفارش را از کارت‌به‌کارت‌های منتظر پرداخت پیدا و تأیید کن.\nفرستنده: ${untrusted(sender) || '—'}\n\n${untrusted(body)}${last}`,
+    { inline_keyboard: [[{ text: '🧾 کارت‌به‌کارت‌های منتظر پرداخت', callback_data: 'm:or:pend:card' }, { text: '📨 پیامک‌های رسیده', callback_data: 'm:sms:all' }]] });
 }
 
 async function trustedSenders(env) {
@@ -95,6 +129,7 @@ export async function handleBankSms(env, { sender = '', text = '', trusted = fal
   const p = parseBankSms(body);
   if (!p.deposit) {
     await run(env, 'UPDATE sms_log SET result = ? WHERE hash = ?', 'not_deposit', hash);
+    if (source === 'sms' && maybeDeposit(body)) await noticeUnknown(env, sender, body); // PAY-07: no longer dropped silently
     return { result: 'not_deposit' };
   }
   if (!p.amounts.length) {

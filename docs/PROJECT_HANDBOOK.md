@@ -420,6 +420,13 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   cancels its order instead of leaving it `pending`. `deliver` refuses a wallet order (amount > 0) with no
   `purchase` debit or with a refund (`wallet_unpaid`), and the bot card, the `oap` button and the Mini App
   `can.approve` hide approve for such an order (`WALLET_PAID_SQL`).
+- **PAY-07 unreadable SMS** (code part): an SMS that is not read as a deposit used to be dropped without a word. Now,
+  when it has no withdrawal word and a money-like number (comma groups or 6+ digits, outside reference / balance /
+  code parts; `sms.maybeDeposit`), the owner gets «❔ پیامکی رسید که نتوانستم بخوانم» with the SMS text and buttons to
+  the unpaid card orders and the SMS list. At most **5 such notices an hour** (`settings.sms_unknown_notice`); every
+  one stays in `sms_log`. Nothing is confirmed by itself. Only forwarded SMS (a pasted one gets the bot's own answer).
+  The bot payment screen (and the Mini App) say plainly when card auto-confirm is on but no bank sender is trusted
+  yet: every SMS then waits for a tap until «🏦 این فرستنده بانک من است» is tapped once.
 - **PAY-08 one switch per method** (Ali asked, 2026-11-14): settings `pay_wallet_on`, `pay_card_on`, `pay_coin_on`,
   `pay_crypto_on` (1/0, default 1, so a method that is set up keeps working after the deploy) and `pay_coins_off`
   (coin ids switched off one by one; the wallet address stays saved). Bot › 💳 روش‌های پرداخت has 🟢/🔴 buttons
