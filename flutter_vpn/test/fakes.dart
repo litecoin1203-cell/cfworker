@@ -405,11 +405,18 @@ class FakeTunnel extends Tunnel {
   String? started;
   bool stopped = false;
 
+  /// Every start asked of the service, a restart of the same exit included.
+  int starts = 0;
+
+  /// What the service does when the phone moves to another network.
+  void netChanged() => onNetChange?.call();
+
   @override
   Future<bool> available() async => true;
   @override
   Future<void> start(String config) async {
     started = config;
+    starts++;
     // As the service does: "starting" comes first, then up or failed.
     emit(TunnelState.starting);
   }

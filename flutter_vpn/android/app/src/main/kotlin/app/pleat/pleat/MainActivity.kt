@@ -63,6 +63,15 @@ class MainActivity : FlutterActivity() {
     private var pendingOpen: String? = null
     private var tunnelChannel: MethodChannel? = null
 
+    /** This activity's network-switch hook, cleared when it goes (the service then checks itself). */
+    private var netHook: (() -> Unit)? = null
+
+    override fun onDestroy() {
+        if (PleatVpnService.onNetChange === netHook) PleatVpnService.onNetChange = null
+        netHook = null
+        super.onDestroy()
+    }
+
     private var pendingConfig: String? = null
     private var pendingResult: MethodChannel.Result? = null
 
@@ -112,6 +121,10 @@ class MainActivity : FlutterActivity() {
         }
         val channel = MethodChannel(engine.dartExecutor.binaryMessenger, "pleat/tunnel")
         tunnelChannel = channel
+        // A network switch while the tunnel runs: the app checks the exit (NET-06).
+        val onNet = { main.post { channel.invokeMethod("netChanged", null) }; Unit }
+        netHook = onNet
+        PleatVpnService.onNetChange = onNet
         channel
             .setMethodCallHandler { call, result ->
                 when (call.method) {

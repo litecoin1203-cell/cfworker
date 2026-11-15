@@ -118,6 +118,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       ..onChange = _updaterChanged
       ..onGone = () => unawaited(loadConfig());
     unawaited(updater.load().then((_) => _offerUpdate()));
+    this.tunnel.onNetChange = networkChanged;
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -3281,6 +3282,52 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return steps[i];
   }
 
+  /// How long a network switch settles before the exit is asked: Android
+  /// names a new network in bursts (Wi-Fi <-> mobile data hand-offs).
+  static const netSettle = Duration(seconds: 2);
+  Timer? _netSettle;
+
+  /// The next live ping follows a network switch (see [networkChanged]).
+  bool _netSwitched = false;
+
+  /// The service saw the phone move to another network (NET-06). A live
+  /// session asks the exit at once (after [netSettle]) instead of at the
+  /// next spaced-out ping; if the exit doesn't answer on the new network,
+  /// the same exit is started again in place (the tun stays), which drops
+  /// the core's connections stuck on the old one. A held session has its
+  /// own network watch; a start in flight is left alone.
+  void networkChanged() {
+    if (phase != Phase.protected) return;
+    _netSettle?.cancel();
+    _netSettle = Timer(netSettle, _afterNetChange);
+  }
+
+  void _afterNetChange() {
+    if (phase != Phase.protected) return;
+    _netSwitched = true;
+    // a ping already running: look again once it is done
+    if (_beating) {
+      _netSettle = Timer(const Duration(seconds: 1), _afterNetChange);
+      return;
+    }
+    _beat();
+  }
+
+  /// After a switch the exit didn't answer on the new network: the same
+  /// exit again, in place. A failure there fails over (smart connect) or
+  /// holds the tun, as for any live session; nothing is stopped.
+  void _restartAfterSwitch(Exit e) {
+    _misses = 0;
+    _logSession();
+    _stopTimers();
+    _tried.clear();
+    _triedAll.clear();
+    _resynced = false;
+    _attemptAt = DateTime.now();
+    _holdOnFail = true;
+    unawaited(_connect(e.id, failover: true));
+  }
+
   void _schedulePulse() {
     _pulse?.cancel();
     if (phase != Phase.protected) return;
@@ -3305,12 +3352,15 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   Future<void> _beatOnce() async {
     unawaited(flushHealth());
     metered = await tunnel.metered();
+    final switched = _netSwitched;
+    _netSwitched = false;
     final ms = await tunnel.delay();
     final e = exit;
     if (phase != Phase.protected || e == null) return;
     if (ms != null) {
       _misses = 0;
-      _okStreak++;
+      // a new network: pings stay close for a while, as after connecting
+      _okStreak = switched ? 0 : _okStreak + 1;
       exitSilent = false;
       noNetwork = false;
       _offlineBeats = 0;
@@ -3347,6 +3397,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       noNetwork = false;
       notifyListeners();
     }
+    if (switched) return _restartAfterSwitch(e);
     if (++_misses < 2) return;
     if (!smartConnect) {
       // The person picked this exit and turned smart connect off: it isn't
@@ -3581,6 +3632,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _netWatch?.cancel();
     _watch?.cancel();
     _pulse?.cancel();
+    _netSettle?.cancel();
+    _netSwitched = false;
     _handshake?.cancel();
   }
 

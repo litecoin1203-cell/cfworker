@@ -579,6 +579,9 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
    answers takes the held tun over. It ends on reconnect, Disconnect (app, notification, widget) or a widget
    start (which then behaves like any widget start). A reopened app reads `held` and shows it. A fresh connect
    that fails still stops as before.
+   A **network switch** (Wi-Fi <-> mobile data, or a network back after none) is checked within ~2 s: the exit is
+   asked at once and, if it misses on the new network, the same exit is restarted in place (NET-06); with the app
+   closed the service does this itself.
    The config builder refuses what the shipped core removed (`h2`/`h3`/`http`/`quic`, `security=xtls`, flows
    other than `xtls-rprx-vision[-udp443]`) as "unsupported", and never writes `allowInsecure` (the core refuses
    it after 2026-08-01): an insecure link is verified like any TLS exit, or by its pin (`pcs`).
@@ -1067,6 +1070,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | NET-05 h2/http/quic/legacy-XTLS links passed the builder and failed in the core | refused as "unsupported" (failover, backup dropped) — audit fix |
 | NET-02 a short network loss ended in failover → `_stopTunnel` → apps out bare | no-network misses not counted (bounded ~2 min); a live session that lost every exit keeps the tun held, shown on the card/widget, retried with back-off, and tried at once when Android names a network again (checked every 3 s while held) — audit fix |
 | NET-04 `setMetered(false)` made the whole VPN unmetered on mobile data (Data Saver, Wi-Fi-only apps bypassed) | call removed: Android 10+ takes the metered state of the underlying network (`setUnderlyingNetworks`); source guard in `test/native_source_test.dart`; uncompiled here, effect only provable on a phone — audit fix |
+| NET-06 a Wi-Fi <-> mobile switch was only handed to Android; core connections stayed on the old network up to 300 s | the service tells the app on a real switch (`netChanged`); the app asks the exit after 2 s and, if it misses, starts the same exit again in place (tun kept; failure fails over or holds). App closed: the service does the same itself (`kick`, nothing closed on failure). `onLost` of a network not in use no longer clears the underlying network. Dart proven by `test/net_switch_test.dart`; Kotlin uncompiled here, phone test pending; hev `tcp-read-write-timeout` left at 300 s — audit fix |
 | A dead line showed as "wrong password / wrong code" | `ApiError.offline` → neutral connection card — #54 |
 | Native crash (SIGABRT) reports carried only the signal | tombstone + Go stderr + tunnel state in the report — #77, #79, #80 (root cause still open, §19) |
 | Widget: start from a fully closed app refused by Android 12+/MIUI | invisible `WidgetConnect` activity — #78 (1.2.42) |

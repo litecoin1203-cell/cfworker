@@ -58,6 +58,11 @@ class Tunnel {
     }
   }
 
+  /// Called when the service saw the phone move to another network
+  /// (Wi-Fi <-> mobile data, or a network back after none), a moment after
+  /// it settled. Set by the app; the service says it only while it runs.
+  void Function()? onNetChange;
+
   /// [onOpen] gets the screen a notification button asked for
   /// ("locations"), now or when the app was opened by it.
   Future<void> watchOpen(void Function(String) onOpen) async {
@@ -66,6 +71,7 @@ class Tunnel {
         if (call.method == 'open' && call.arguments is String) {
           onOpen(call.arguments as String);
         }
+        if (call.method == 'netChanged') onNetChange?.call();
       });
       final first = await _method.invokeMethod<String>('pendingOpen');
       if (first != null) onOpen(first);
