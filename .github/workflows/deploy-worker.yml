@@ -66,6 +66,11 @@ jobs:
           done
           if [ -n "$miss" ]; then echo "::error::Add these Workers Secrets in the Cloudflare dashboard:$miss"; exit 1; fi
           echo "Worker secrets present."
+          # CF-05: the Worker's own error log cannot record the Free-plan failures (a request past 50 D1 queries, D1 out
+          # of writes for the day): only the hourly alert from Cloudflare's analytics sees those, and it needs this token.
+          if ! printf '%s\n' "$have" | grep -qx CF_ANALYTICS_TOKEN; then
+            echo "::warning::Workers Secret CF_ANALYTICS_TOKEN is not set, so no alert reaches the bot when the Free-plan limits are hit (bot: ☁️ › token setup)."
+          fi
 
       - name: Create / find the D1 database
         run: |

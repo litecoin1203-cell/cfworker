@@ -6634,6 +6634,43 @@ section('review of wave 2: a settled exit country is not rewritten; pending rows
   ok(Object.values(W.pgs[1].users).filter((u) => u.note === `Pleat #${u3}`).length === 1, 'review 3: and no second account later');
 }
 
+section('CF-05: the Worker\'s error log survives the end of the request and a write that failed');
+{
+  // a fresh copy of the module, so the per-minute write budget other sections used up does not count here
+  const CFm = await import('../src/cfmon.js?cf05');
+  const tickF = () => new Promise((r) => setTimeout(r, 20));
+  await env.DB.prepare("DELETE FROM worker_errors WHERE message LIKE 'cf05%'").run();
+  // 1. the write is handed to ctx.waitUntil, so Cloudflare does not cancel it once the response is sent
+  const held = [];
+  CFm.recordError(env, 'cf05 kept alive', 'x', { waitUntil: (p) => held.push(p) });
+  await Promise.all(held);
+  ok(held.length === 1 && (await env.DB.prepare("SELECT COUNT(*) c FROM worker_errors WHERE message = 'cf05 kept alive'").first()).c === 1,
+    'CF-05: the error write is held open with ctx.waitUntil and lands: ' + held.length);
+  // 2. the write itself fails (the request is past its 50 queries, or D1 is out of writes): the error is kept in
+  //    the isolate and written by the next invocation, one row per invocation
+  const broken = { ...env, DB: { prepare: () => { throw new Error('Too many API requests by single worker invocation.'); } } };
+  const held2 = [];
+  CFm.recordError(broken, 'cf05 over the query cap', 'D1 refused', { waitUntil: (p) => held2.push(p) });
+  await Promise.all(held2); await tickF();
+  ok(!(await env.DB.prepare("SELECT 1 FROM worker_errors WHERE message = 'cf05 over the query cap'").first()), 'CF-05: nothing could be written by the failing invocation');
+  const held3 = [];
+  CFm.flushErrors(env, { waitUntil: (p) => held3.push(p) });
+  await Promise.all(held3);
+  const row = await env.DB.prepare("SELECT count FROM worker_errors WHERE message = 'cf05 over the query cap'").first();
+  ok(row && row.count === 1, 'CF-05: the next invocation writes the error the failed one could not: ' + JSON.stringify(row));
+  const held4 = [];
+  CFm.flushErrors(env, { waitUntil: (p) => held4.push(p) });
+  ok(!held4.length, 'CF-05: with nothing kept, the next invocation spends no query on it');
+  // 3. every request and cron run flushes (index.js), and the deploy warns when the Cloudflare alerts have no token
+  const { readFileSync } = await import('node:fs');
+  const idx = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
+  ok((idx.match(/flushErrors\(env, ctx\)/g) || []).length >= 2 && (idx.match(/recordError\(env, m, e, ctx\)/g) || []).length >= 2,
+    'CF-05: fetch and scheduled both hand ctx to the error log and flush what an earlier invocation kept');
+  const dep = readFileSync(new URL('../../.github/workflows/deploy-worker.yml', import.meta.url), 'utf8');
+  ok(/CF_ANALYTICS_TOKEN[\s\S]*::warning::[^\n]*CF_ANALYTICS_TOKEN/.test(dep), 'CF-05: Deploy says so when CF_ANALYTICS_TOKEN (the only alert that sees the Free-plan caps) is missing');
+  await env.DB.prepare("DELETE FROM worker_errors WHERE message LIKE 'cf05%'").run();
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

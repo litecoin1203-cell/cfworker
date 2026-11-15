@@ -296,7 +296,7 @@ The full list (every route, its auth, handler and limits, plus the admin API and
 | `admin-actions.js` | **every bot and Mini App write**: validate → one D1 batch → audit → undo; broadcasts (`broadcastTick`) |
 | `admin-api.js` | the Mini App admin API: `ROUTES` table `[method, regex, level, handler]`, 15-min admin token, role re-read per request |
 | `health.js` | Pleat health reports: `TYPES` + priorities, `LIMITS` (per-user caps), `scrub`, P1 Telegram alert, location mismatch (`checkExitCountry`), bot screens (🩺 سلامت اپ), crash wording (`crashGuess`), daily line, prune |
-| `cfmon.js` | Admin bot ☁️ Cloudflare monitoring: GraphQL Analytics (`CF_ANALYTICS_TOKEN`), Free-plan `LIMITS`, overview / 7-day / errors / costly queries / deploys / token screens, `alertTick` (hourly), `dailyLine`, `recordError` (the `worker_errors` log fed by `logError`) |
+| `cfmon.js` | Admin bot ☁️ Cloudflare monitoring: GraphQL Analytics (`CF_ANALYTICS_TOKEN`), Free-plan `LIMITS`, overview / 7-day / errors / costly queries / deploys / token screens, `alertTick` (hourly), `dailyLine`, `recordError` (the `worker_errors` log fed by `logError`; held open with `ctx.waitUntil`, and a write that failed is retried by the next invocation's `flushErrors`) |
 | `countries.js` | country of a config from its remark/host (`countryOfLink`): flag, English/Persian name, 2-letter token, host label |
 
 ### Auth facts
