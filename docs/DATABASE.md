@@ -126,7 +126,8 @@ Almost all runtime configuration. Defaults in `worker/src/db.js` `SETTING_DEFAUL
 
 - Payments: `card_number`, `card_holder`, `card_bank`, `card_unique`, `card_auto` (auto / detect / off), `sms_senders`,
   `sms_key`, `coin_auto`, `coin_minutes`, `wallet_<coin>` / `wallet_<coin>_memo`, `usd_rate_toman`, `referral_percent`,
-  `min_topup_toman`.
+  `min_topup_toman`. Switches per method (PAY-08, 1 = offered, 0 = off, default 1): `pay_wallet_on`, `pay_card_on`,
+  `pay_coin_on`, `pay_crypto_on`; `pay_coins_off` (coin ids switched off one by one, comma separated, default empty).
 - App: `announcement`, `support_url`, `app_api_bases` (extra Worker domains), `app_bridges` (bridge links),
   `trial_data_gb`, `trial_needs_telegram`, `app_release` (in-app update announcement).
 - Monitoring: `cf_alerts` (1/0, hourly Cloudflare alerts), `cf_alert_state` (what was already told today), `sync_manual_at` (last "sync now" tap).
@@ -135,7 +136,7 @@ Almost all runtime configuration. Defaults in `worker/src/db.js` `SETTING_DEFAUL
   user used when the panel admin gets 403 on groups/hosts — **do not delete that panel user**), `server_exit_cc`
   (exit country learned from Pleat's `/me/ip?k=`).
 - Health: `health_mode` (all / p2 / off), `health_mute`.
-- Internals: `tg_webhook_sig` (which webhook setup is registered), `stuck_old_notice` (ids of the old stuck `settling` orders the owner was already told about, PAY-01), cached coin/USD prices and similar.
+- Internals: `tg_webhook_sig` (which webhook setup is registered), `stuck_old_notice` (ids of the old stuck `settling` orders the owner was already told about, PAY-01), `sms_unknown_notice` (hour window and count of "unreadable SMS" notices, at most 5 an hour, PAY-07), cached coin/USD prices and similar.
 
 ## Backups
 The daily cron (20:30 UTC) sends a JSON backup of the main tables to the owner's Telegram. It excludes password

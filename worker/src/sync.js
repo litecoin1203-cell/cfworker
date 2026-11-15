@@ -272,33 +272,19 @@ export async function ensureAccount(env, user, panel, { expire, limit, hwid } = 
   return first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
 }
 
-// The account's name on the panel follows the user's Telegram @username (what the admin sees in the panel), so
-// it is readable there; the numeric Telegram id / user id in the database stays the identity. The name is
-// fixed at creation: a later @username change does not rename it (Marzban's subscription token depends on it).
-// Rules of all three panels: 3-32 characters of [a-zA-Z0-9_@.-] (Marzban, Rebecca), no two specials in a row
-// (PasarGuard). Telegram usernames are [a-z0-9_]{5,32}, so a sanitized one fits as it is.
-export function panelNameBase(user) {
-  const tg = String(user.tg_username || '').toLowerCase().replace(/[^a-z0-9_]/g, '').replace(/_+/g, '_').replace(/^_+|_+$/g, '').slice(0, 32).replace(/_+$/, '');
-  if (tg.length >= 3) return tg;
-  if (user.tg_id) return `tg${user.tg_id}`.slice(0, 32);
-  return null;
-}
-const fit = (base, suffix) => `${base.slice(0, 32 - suffix.length).replace(/_+$/, '')}${suffix}`;
-// The names tried in order: the @username, then with the user id, then with a random tail. Without Telegram
-// the old cg_<id>_<random> name is used.
+// PNL-07: panels can be third-party (reseller access: the panel's owner sees every account), so a new account's name
+// and note carry nothing about the person: the name is <prefix>_<random hex> and the note only "Pleat #<user id>"
+// (the bot maps an account back to its user through panel_accounts). Until 2026-11 names followed the Telegram
+// @username (PR #49) and notes held the Telegram id and email; those accounts keep their names (Marzban's
+// subscription token depends on the name, and every lookup goes by the stored remote_username). Rules of all three
+// panels: 3-32 characters of [a-zA-Z0-9_@.-], no two specials in a row (PasarGuard).
 export function panelNames(user, prefix = 'cg') {
-  const base = panelNameBase(user);
-  if (!base) return [`${prefix}_${user.id}_${randomHex(2)}`.slice(0, 32), `${prefix}_${user.id}_${randomHex(2)}`.slice(0, 32), `${prefix}_${user.id}_${randomHex(3)}`.slice(0, 32)];
-  return [base, fit(base, `_${user.id}`), fit(base, `_${randomHex(2)}`)];
+  return [`${prefix}_${randomHex(5)}`, `${prefix}_${randomHex(5)}`, `${prefix}_${randomHex(6)}`].map((n) => n.slice(0, 32));
 }
 
 // Make the account on the panel; a name the panel says is taken (409) moves on to the next one. {username, id, subPath}
 async function createRemote(env, pg, user, { expire, limit, hwid, groups, name }) {
-  const prefix = String(env.PASARGUARD_USERNAME_PREFIX || 'cg').toLowerCase().replace(/[^a-z0-9_]/g, '') || 'cg';
-  if (user.tg_id === undefined) {
-    const row = await first(env, 'SELECT tg_id, tg_username FROM users WHERE id = ?', user.id);
-    user = { ...user, tg_id: row ? row.tg_id : null, tg_username: row ? row.tg_username : null };
-  }
+  const prefix = String(env.PASARGUARD_USERNAME_PREFIX || 'cg').toLowerCase().replace(/[^a-z0-9_]/g, '').replace(/_+$/, '') || 'cg';
   const names = panelNames(user, prefix);
   if (name) names.unshift(name);
   let created = null, username = '';
@@ -315,7 +301,7 @@ async function createRemote(env, pg, user, { expire, limit, hwid, groups, name }
   if (!subPath) throw new PasarGuardError('panel created the user but returned no subscription link', 0);
   return { username, id: created.id ?? null, subPath };
 }
-const noteFor = (user) => ['Pleat', `#${user.id}`, user.tg_id ? `tg ${user.tg_id}` : '', user.email && !/@telegram\./.test(user.email) ? user.email : ''].filter(Boolean).join(' · ');
+const noteFor = (user) => `Pleat #${user.id}`; // PNL-07: no Telegram id, @username or email on a panel
 
 // The new account's row. Another path (the app opening at the same moment) may have made one first: then that
 // one stays, and this statement changes nothing instead of failing the batch it is in.

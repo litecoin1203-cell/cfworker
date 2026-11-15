@@ -420,6 +420,26 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   cancels its order instead of leaving it `pending`. `deliver` refuses a wallet order (amount > 0) with no
   `purchase` debit or with a refund (`wallet_unpaid`), and the bot card, the `oap` button and the Mini App
   `can.approve` hide approve for such an order (`WALLET_PAID_SQL`).
+- **PAY-07 unreadable SMS** (code part): an SMS that is not read as a deposit used to be dropped without a word. Now,
+  when it has no withdrawal word and a money-like number (comma groups or 6+ digits, outside reference / balance /
+  code parts; `sms.maybeDeposit`), the owner gets «❔ پیامکی رسید که نتوانستم بخوانم» with the SMS text and buttons to
+  the unpaid card orders and the SMS list. At most **5 such notices an hour** (`settings.sms_unknown_notice`); every
+  one stays in `sms_log`. Nothing is confirmed by itself. Only forwarded SMS (a pasted one gets the bot's own answer).
+  The bot payment screen (and the Mini App) say plainly when card auto-confirm is on but no bank sender is trusted
+  yet: every SMS then waits for a tap until «🏦 این فرستنده بانک من است» is tapped once.
+- **PAY-08 one switch per method** (Ali asked, 2026-11-14): settings `pay_wallet_on`, `pay_card_on`, `pay_coin_on`,
+  `pay_crypto_on` (1/0, default 1, so a method that is set up keeps working after the deploy) and `pay_coins_off`
+  (coin ids switched off one by one; the wallet address stays saved). Bot › 💳 روش‌های پرداخت has 🟢/🔴 buttons
+  (`m:ss:pay_*_on:<0|1>`, per coin `m:pcn:<coin>:<0|1>`); the Mini App › Payment methods has toggles ("Offered to
+  users", and per coin in Wallets). `app-config` offers only methods that are set up **and** on (`card_enabled`,
+  `crypto_enabled`, `coins`, new `wallet_enabled`), and `createOrder` refuses an off method **before anything is
+  stored** with `400 method_unavailable` (Pleat already shows "This payment method is off right now."). Wallet off
+  also refuses "use the wallet" and "wallet + pay the rest" (paying the whole price by card/crypto still works); a
+  free order (price 0) is not a wallet payment. The NOWPayments gateway is offered and accepted only with its key,
+  `usdt_rate_toman > 0` and its switch (`nowpayments.gatewayReady`; a 0 rate used to make a 0-dollar invoice). Orders
+  already open on a switched-off method are still confirmed (chainwatch, SMS, IPN unchanged). Pleat (≤ 1.2.50) builds
+  its list from `app-config` for card / coins / gateway but always shows the wallet row: with the wallet off a tap gets
+  the server's refusal until Pleat reads `wallet_enabled`.
 
 ---
 
@@ -455,10 +475,14 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   also overrules a remark that names another country (TR 1/TR 7 left via Hetzner/dataforest in DE): confirmed exit >
   remark > unconfirmed exit > host label. The bot's server list marks such servers with 📍.
 - PasarGuard may serve Xray JSON to a v2rayNG user agent; `collectLinks` falls back to `<sub>/links` (PR #9).
-- **Account names (#49)**: new panel accounts are named after the Telegram @username (sanitised for all three
-  panel types); a taken name (409) falls back to `<name>_<user id>`, then `<name>_<random>`; no @username →
-  `tg<numeric id>`; email-only → `cg_<id>_<random>`. Existing accounts are never renamed (Marzban's sub token
-  depends on the name). `usage_counters.online_at` keeps the panel's last-connection time (no extra writes).
+- **Account names (PNL-07, replaces #49 for new accounts)**: panels can be third-party (panel 1 is reseller access; its
+  owner sees every account), so a **new** panel account is named `<prefix>_<10 random hex>` (`PASARGUARD_USERNAME_PREFIX`,
+  default `cg`; a taken name (409) moves on to the next random one) and its note is only `Pleat #<user id>`: no
+  @username, Telegram id or email on any panel. The bot maps an account to its user through `panel_accounts`.
+  Accounts made before (named after the @username per #49, notes with Telegram id / email) are **never renamed**
+  (Marzban's sub token depends on the name; every lookup and the link flow go by the stored `remote_username`);
+  their old notes stay on the panel unless edited there by hand. `usage_counters.online_at` keeps the panel's
+  last-connection time (no extra writes).
 - **Unlink (#55)**: bot › user › 🗂 پنل‌های کاربر › "✂️ جداکردن" removes the link row (optionally switching the
   account off) so the panel account can be linked to another user. Deleting a user switches every panel account
   off and frees all links.
@@ -907,6 +931,9 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
   keep/clear history); Profile gets the Plans shelf.
 - PR #89 (1.2.49) Locations country list: Fastest-for-you bar, filter chips, regions, health pips, Not answering.
 - PR #90 (1.2.50) native crash: the code offsets inside the core, the signal's sender, stderr per process.
+- Release audit wave 1, payment controls (branch `claude/w1-payment-controls`, stacked on the PAY-01..04 branch):
+  one on/off switch per payment method (PAY-08), unrecognised bank SMS reach the admin (PAY-07), no personal data in
+  third-party panel account names or notes (PNL-07), a made-up host in a test (SEC-11).
 
 **2026-11-14 — Release audit fixes, wave 1.**
 - Branch `claude/w1-licenses-ux` (no version bump; the lead numbers the release): Open-source licences page with
@@ -1262,6 +1289,8 @@ builder still lets unknown `type=` values and REALITY over ws/httpupgrade throug
 compat-date bump (`2025-09-01`), delete `android/`,
 `app-web/`, `android.yml` and the old-app compatibility paths (`centralApp`, `sub_url`, `/vpn/sub`,
 `/pay/done` with `cloudgold://`). Not built: per-session byte usage, Cloudflare clean-IP/SNI tricks, a domestic relay for intranet-only periods, Hiddify adapter.
+Payments (after PAY-01..04, PAY-08): Pleat should hide the wallet row when `app-config.wallet_enabled` is false
+(today the server refuses it); there is no separate switch for wallet top-ups (each top-up method has its own).
 Payments (after PAY-01..04): a real sample of the owner's bank SMS is still wanted to confirm the deposit-line rule
 on his exact format (unclear SMS go to the admin, never auto-paid); an order whose settle is killed every time is
 retried every 10 minutes with no cap; a wallet order whose debit committed but whose run died before `settle`'s claim
