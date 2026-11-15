@@ -350,7 +350,8 @@ Facts to remember:
 - Migrations are forward-only and **additive only**. Two files are numbered 0015; wrangler sorts by name and it
   works. **Never rename an applied migration.** Latest: **0022** (`health_events`).
 - Backup = a daily JSON of 14 tables (no password hashes, sub URLs, panel creds, SMS key or bridges) sent to
-  the admin's Telegram. There is no restore tool; real recovery is D1 Time Travel (the Deploy prints a bookmark
+  the admin's Telegram; each daily one deletes the one before it, so only the latest stays in the chat (PRV-05; a
+  backup asked for by hand stays). There is no restore tool; real recovery is D1 Time Travel (the Deploy prints a bookmark
   before migrating).
 
 ---

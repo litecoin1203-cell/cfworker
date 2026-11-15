@@ -461,15 +461,30 @@ export async function backupJson(env) {
   out.tables.panel_accounts = out.tables.panel_accounts.map(({ sub_path, last_error, ...x }) => x);
   // undo data holds the value before a change, which can be the SMS key or a bridge config
   out.tables.admin_audit = out.tables.admin_audit.map(({ undo_json, ...x }) => x);
-  out.tables.settings = out.tables.settings.filter((x) => x.key !== 'tg_webhook_sig' && x.key !== 'bot_wait' && !x.key.startsWith('panel_cred_') && !x.key.startsWith('panel_err_') && !SECRET_SETTINGS.has(x.key));
+  out.tables.settings = out.tables.settings.filter((x) => x.key !== 'tg_webhook_sig' && x.key !== 'bot_wait' && x.key !== 'backup_msg' && !x.key.startsWith('panel_cred_') && !x.key.startsWith('panel_err_') && !SECRET_SETTINGS.has(x.key));
   return JSON.stringify(out);
 }
 
-export async function sendBackup(env, chatId) {
+// The daily backup replaces yesterday's in the chat (PRV-05): a full copy of every account must not pile up in a
+// Telegram chat for ever, where one stolen session would read years of it. D1 Time Travel keeps the history.
+// Telegram lets a bot delete its own message for 48 hours, so only the one before is deleted; a backup the owner
+// asks for by hand stays.
+export async function sendBackup(env, chatId, { daily = false } = {}) {
   const data = await backupJson(env);
   const day = new Date().toISOString().slice(0, 10);
   const users = (await first(env, 'SELECT COUNT(*) c FROM users')).c;
-  return sendDocument(env, chatId || env.TELEGRAM_CHAT_ID, `cloudgold-backup-${day}.json`, data, `💾 پشتیبان ${day} — ${users} کاربر\nاین فایل را جایی امن نگه دار.`);
+  const note = daily ? '\nفقط آخرین پشتیبان روزانه در این چت می‌ماند؛ قبلی پاک شد.' : '\nاین فایل را جایی امن نگه دار.';
+  const chat = chatId || env.TELEGRAM_CHAT_ID;
+  const sent = await sendDocument(env, chat, `cloudgold-backup-${day}.json`, data, `💾 پشتیبان ${day} — ${users} کاربر${note}`);
+  const id = sent?.result?.message_id;
+  if (daily && id) {
+    const prev = await first(env, "SELECT value FROM settings WHERE key = 'backup_msg'");
+    let old = null;
+    try { old = prev ? JSON.parse(prev.value) : null; } catch (e) { old = null; }
+    if (old?.id && old.id !== id) await tg(env, 'deleteMessage', { chat_id: old.chat, message_id: old.id });
+    await setSetting(env, 'backup_msg', JSON.stringify({ chat: String(chat), id }));
+  }
+  return sent;
 }
 
 export const HELP = `راهنمای ربات Cloud Gold

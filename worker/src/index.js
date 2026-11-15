@@ -90,7 +90,7 @@ export default {
       let health = '';
       try { const { dailyLine } = await import('./health.js'); health = '\n' + (await dailyLine(env)); } catch (e) { logError('daily health line failed', e); }
       try { await notifyAdmin(env, '🌙 گزارش روزانه\n' + (await statsText(env)) + rate + health + cf); } catch (e) { logError('daily report failed', e); }
-      try { await sendBackup(env); } catch (e) { logError('daily backup failed', e); }
+      try { await sendBackup(env, undefined, { daily: true }); } catch (e) { logError('daily backup failed', e); }
       try { const { prune } = await import('./netstats.js'); await prune(env); } catch (e) { logError('net stats prune failed', e); }
       try { const { prune } = await import('./health.js'); await prune(env); } catch (e) { logError('health prune failed', e); }
       try { const { pruneErrors } = await import('./cfmon.js'); await pruneErrors(env); } catch (e) { logError('worker error prune failed', e); }

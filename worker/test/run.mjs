@@ -5807,6 +5807,31 @@ section('OPS-06: the daily Telegram backup restores into a new database');
   ok(out === sql, 'OPS-06: node scripts/restore-backup.mjs <file> prints the same SQL');
 }
 
+section('PRV-05: only the latest daily backup stays in the Telegram chat');
+{
+  const { sendBackup } = await import('../src/telegram.js');
+  const docs = () => fakes.tg.calls.filter((c) => c.method === 'sendDocument').length;
+  const d0 = docs();
+  await sendBackup(env, undefined, { daily: true });
+  const firstId = (await env.DB.prepare("SELECT value FROM settings WHERE key = 'backup_msg'").first())?.value;
+  const n0 = fakes.tg.calls.length;
+  await sendBackup(env, undefined, { daily: true });
+  const dels = fakes.tg.calls.slice(n0).filter((c) => c.method === 'deleteMessage');
+  ok(docs() - d0 === 2 && firstId && dels.length === 1 && String(dels[0].body.message_id) === String(JSON.parse(firstId).id),
+    'PRV-05: the next daily backup deletes the one before it: ' + JSON.stringify(dels.map((d) => d.body)) + ' ' + firstId);
+  // a backup the owner asks for by hand stays, and does not delete the daily one
+  const n1 = fakes.tg.calls.length;
+  await sendBackup(env, 12345);
+  ok(!fakes.tg.calls.slice(n1).some((c) => c.method === 'deleteMessage'), 'PRV-05: a backup asked for by hand deletes nothing');
+  // the daily run itself goes the new way
+  const n2 = fakes.tg.calls.length;
+  await worker.scheduled({}, env, ctx); await drain();
+  ok(fakes.tg.calls.slice(n2).some((c) => c.method === 'deleteMessage'), 'PRV-05: the daily run deletes yesterday\'s backup');
+  const { backupJson } = await import('../src/telegram.js');
+  ok(!(await backupJson(env)).includes('backup_msg'), 'PRV-05: the backup bookkeeping is not itself in the backup');
+}
+
+
 section('payments audit PAY-08: one on/off switch per payment method, enforced when an order is made');
 {
   const { createHmac } = await import('node:crypto');
