@@ -5864,6 +5864,69 @@ section('payments audit PAY-07: a bank SMS the parser cannot read reaches the ad
   await env.DB.prepare("UPDATE settings SET value = ? WHERE key = 'sms_senders'").bind(keep).run();
 }
 
+// ================= Wave 2 audit fixes (PNL-01, PNL-02, CF-02, SEC-02): each on a fresh database =================
+// world(tag, n): a fresh database with n PasarGuard panels (1 = the env panel, the others active), its own env
+async function world(tag, n = 2, kinds = []) {
+  const bases = Array.from({ length: n }, (_, i) => `http://${tag}-p${i + 1}.test`);
+  const pgs = bases.map((b, i) => fakes.addPanel(b, `${tag}${i + 1}.example.net`, kinds[i] || 'pasarguard'));
+  const e = { ...env, DB: makeDB(new URL('../migrations/0001_init.sql', import.meta.url).pathname), PASARGUARD_URL: bases[0] };
+  e.DB.onQuery = env.DB.onQuery;
+  for (let i = 1; i < n; i++) {
+    e[`W_${tag}_${i + 1}`] = JSON.stringify({ url: bases[i], username: 'adm', password: 'pw' });
+    await e.DB.prepare("INSERT INTO panels (id, kind, label, cred_ref, state, rollout_percent, created_at) VALUES (?, ?, ?, ?, 'active', 100, 1)")
+      .bind(i + 1, kinds[i] || 'pasarguard', `p${i + 1}`, `W_${tag}_${i + 1}`).run();
+  }
+  const callW = async (method, path, { token, json: j, headers = {}, cf } = {}) => {
+    const h = { ...headers };
+    if (token) h.authorization = 'Bearer ' + token;
+    if (j !== undefined) h['content-type'] = 'application/json';
+    const req = new Request('https://api.test' + path, { method, headers: h, body: j === undefined ? undefined : JSON.stringify(asTelegram(j)) });
+    if (cf) Object.defineProperty(req, 'cf', { value: cf });
+    const res = await worker.fetch(req, e, ctx);
+    await drain();
+    let data = null;
+    try { data = await res.clone().json(); } catch (x) { /* not json */ }
+    return { status: res.status, data };
+  };
+  const bot = (text) => callW('POST', '/tg/hook', { headers: TG, json: { message: { chat: { id: 12345 }, text } } });
+  const signupW = async (email) => (await callW('POST', '/api/v1/auth/register', { json: { email, password: 'password123', device_id: 'd-' + email, device_model: 'Pixel' } })).data.access_token;
+  const q = async (sql, ...a) => (await e.DB.prepare(sql).bind(...a).all()).results;
+  await e.DB.prepare("INSERT INTO plans (name, duration_days, data_limit_gb, device_limit, price_toman, is_active) VALUES ('Ten', 30, 10, 2, 100000, 1)").run();
+  const plan = (await q("SELECT * FROM plans WHERE name = 'Ten'"))[0];
+  return { e, pgs, bases, callW, bot, signupW, q, plan };
+}
+
+section('PNL-01: a panel answering HTML with 200 fails only itself; the purchase goes through and the other panel matches D1');
+{
+  const W = await world('pnl1', 2);
+  const tok = await W.signupW('h1@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'h1@example.com'))[0].id;
+  await W.bot(`/grant h1@example.com ${W.plan.id}`);
+  ok((await W.q('SELECT COUNT(*) c FROM panel_accounts WHERE user_id = ?', uid))[0].c === 2, 'PNL-01: an account on both panels to start with');
+  await W.e.DB.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').bind(W.plan.price_toman * 3, uid).run();
+  W.pgs[1].htmlFor = /^GET \/api\/user\//;
+  const buy = await W.callW('POST', '/api/v1/orders', { token: tok, json: { plan_id: W.plan.id, method: 'wallet' } });
+  W.pgs[1].htmlFor = null;
+  ok(buy.status === 201 && buy.data && buy.data.status === 'paid', 'PNL-01: the wallet renewal is paid although panel 2 answers HTML: ' + buy.status + ' ' + JSON.stringify(buy.data));
+  const sub = (await W.q('SELECT expires_at FROM subscriptions WHERE user_id = ?', uid))[0];
+  const p1 = Object.values(W.pgs[0].users).find((u) => (u.note || '').includes(`#${uid} `) || (u.note || '').endsWith(`#${uid}`));
+  ok(p1 && p1.expire === sub.expires_at, 'PNL-01: panel 1 expiry equals the D1 expiry (no drift): ' + (p1 && p1.expire) + ' vs ' + sub.expires_at);
+  const pa2 = (await W.q('SELECT dirty, desired_expire FROM panel_accounts WHERE user_id = ? AND panel_id = 2', uid))[0];
+  ok(pa2.dirty === 1 && pa2.desired_expire === sub.expires_at, 'PNL-01: panel 2 is left for the sync job with the new expiry: ' + JSON.stringify(pa2));
+  // the adapter turns a non-JSON body into a PasarGuardError instead of a SyntaxError
+  const { PasarGuard, PasarGuardError } = await import('../src/pasarguard.js');
+  const { Marzban } = await import('../src/marzban.js');
+  W.pgs[1].htmlFor = /^(GET|PUT|POST) \/api\//;
+  const pgA = new PasarGuard(W.e, { url: W.bases[1], username: 'adm', password: 'pw' });
+  let e1 = null; try { await pgA.getUser('nobody'); } catch (x) { e1 = x; }
+  ok(e1 instanceof PasarGuardError && e1.status === 200 && /not JSON|bad_json/i.test(e1.message + e1.detail), 'PNL-01: getUser on HTML -> PasarGuardError(200, bad_json): ' + (e1 && e1.constructor.name + ' ' + e1.message));
+  let e2 = null; try { await pgA.listUsage(0, 10); } catch (x) { e2 = x; }
+  ok(e2 instanceof PasarGuardError, 'PNL-01: a usage page of HTML is an error, not an empty page: ' + (e2 && e2.constructor.name));
+  let e3 = null; try { await new Marzban(W.e, { url: W.bases[1], username: 'adm', password: 'pw' })._complete('x', {}); } catch (x) { e3 = x; }
+  ok(e3 instanceof PasarGuardError, 'PNL-01: Marzban _complete on HTML -> PasarGuardError: ' + (e3 && e3.constructor.name));
+  W.pgs[1].htmlFor = null;
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

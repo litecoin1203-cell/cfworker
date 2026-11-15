@@ -109,6 +109,8 @@ export function installFakes({ panelBase }) {
       // a panel that accepts the connection and never answers: only the caller's deadline ends the wait
       if (pg.hang) return new Promise((_, rej) => { const sg = init.signal; if (sg) sg.addEventListener('abort', () => rej(sg.reason || new Error('aborted'))); });
       const path = url.slice(base.length);
+      // a panel behind a CDN challenge or maintenance page: 200 with HTML instead of JSON (htmlFor = path pattern)
+      if (pg.htmlFor && pg.htmlFor.test(method + ' ' + path)) return new Response('<html><body>Just a moment...</body></html>', { status: 200, headers: { 'content-type': 'text/html' } });
       if (path.startsWith('/api/users?')) {
         const q = new URL(url).searchParams;
         const all = Object.values(pg.users);

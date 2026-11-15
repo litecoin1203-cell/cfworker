@@ -59,6 +59,17 @@ async function timedFetch(url, init = {}, ms) {
   return fetch(url, opts);
 }
 
+// PNL-01: a 2xx answer whose body is not JSON (a CDN challenge, a maintenance page, a panel behind the wrong reverse
+// proxy) is this panel's failure, a PasarGuardError, never a SyntaxError that would fail a whole multi-panel purchase.
+// An empty body is an empty object (some versions answer a PUT or DELETE with nothing).
+async function readJson(r, what) {
+  const text = await r.text().catch(() => '');
+  if (!text.trim()) return {};
+  try { return JSON.parse(text); } catch (e) {
+    throw new PasarGuardError(`${what} -> ${r.status}: the panel answered with a page that is not JSON (bad_json)`, r.status, 'bad_json');
+  }
+}
+
 export class PasarGuard {
   // what other code may ask of any adapter: its kind, whether new users need a group (a "service" on Rebecca),
   // and the subscription sub-path that always answers plain share links
@@ -151,7 +162,7 @@ export class PasarGuard {
       throw new PasarGuardError(`panel ${method} ${path} -> ${r.status}: ${text}`, r.status, text);
     }
     if (r.status === 204) return {};
-    return r.json().catch(() => ({}));
+    return readJson(r, `panel ${method} ${path}`);
   }
 
   async getUser(username) {
@@ -161,7 +172,7 @@ export class PasarGuard {
       const text = short(await r.text().catch(() => ''));
       throw new PasarGuardError(`get user ${username} -> ${r.status}: ${text}`, r.status, text);
     }
-    return r.json();
+    return readJson(r, `get user ${username}`);
   }
 
   // expire: unix seconds or 0; dataLimit: bytes (0 = unlimited)

@@ -94,7 +94,9 @@ export async function provision(env, user, plan, opts = {}) {
         results.push({ panel, name: pa.remote_username, subPath: pa.sub_path, used: 0 });
       }
     } catch (e) {
-      if (!(e instanceof PasarGuardError)) throw e;
+      // PNL-01: whatever went wrong on one panel fails only that panel (left dirty for the sync job); the others keep
+      // their change and the batch below records it, so the panels never run ahead of D1
+      if (!(e instanceof PasarGuardError)) logError('panel provision failed', e, { panel: panel.id, user: user.id });
       firstError = firstError || e;
       failed.push(panel.id);
       // try again from the sync job: the account (if any) must end up active with the new expiry and limit
