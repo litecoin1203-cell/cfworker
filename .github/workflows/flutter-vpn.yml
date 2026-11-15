@@ -29,6 +29,20 @@ env:
   HEV_COMMIT: 67dfba56c0a9254f401447e0751432bd36617d70
   XRAY_LIB_TAG: v26.7.5
   NDK_VERSION: 29.0.14206865
+  # Everything this job downloads into the APK, or runs to check it, is a fixed release with its SHA-256 kept here
+  # (SEC-04): this job holds the signing key, and the geo files decide which sites skip the tunnel. A newer one is
+  # taken on purpose, in a pull request that changes the tag and the sum together:
+  #   libv2ray.aar  sha256sum of the release file of XRAY_LIB_TAG (2dust/AndroidLibXrayLite)
+  #   Xray zip      the SHA2-256 line of Xray-linux-64.zip.dgst on the XRAY_CORE_TAG release (XTLS/Xray-core);
+  #                 XRAY_CORE_IMAGE is the same version's image (docker pulls it by digest and checks it)
+  #   geo files     <file>.sha256sum on the GEO_TAG release (Loyalsoldier/v2ray-rules-dat)
+  XRAY_LIB_SHA256: 24d40bfd529430c273e52cdeb9dec1c6f5c7e76db632a908052248ce2c2ec325
+  XRAY_CORE_TAG: v26.11.9
+  XRAY_ZIP_SHA256: b651f7e1d9966ee2c1b1ee1bf8b52c72771824d3065dce96bbc8bcc19ed95f82
+  XRAY_CORE_IMAGE: ghcr.io/xtls/xray-core:26.11.9@sha256:9812e382e229e9ed63fd179bf1a4e3fe244c12ff3ae4fd8128745d79c87575ab
+  GEO_TAG: '202611142203'
+  GEOIP_SHA256: 304ac8a1cbcc8166e4f5a4f32955e4d0fb77a1bd713583e371b30ee27f3659d8
+  GEOSITE_SHA256: 0eb5e3cc3ced44a4dd36eb198b4ad4252a4017971979d7faa16d5c5e184c7462
 
 jobs:
   build:
@@ -39,12 +53,21 @@ jobs:
       run:
         working-directory: flutter_vpn
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
+      # The manual run signs the APK and publishes it to pleat-latest, which the bot then offers to every user:
+      # only main may do that, so a run started on any other branch stops before anything else (OPS-02).
+      # Pull requests are not affected.
+      - name: APK only from main
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        working-directory: .
+        run: |
+          echo "::error::The APK is built only from main, not from ${GITHUB_REF}. Merge the pull request, then run this workflow with 'Use workflow from: main'."
+          exit 1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
         with:
           distribution: temurin
           java-version: '17'
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
           flutter-version: '3.47.8'
           channel: stable
@@ -54,7 +77,7 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       # The real Worker over Node's SQLite with a fake panel (worker/test/dev_server.mjs).
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '22'
       - name: Client against the local Worker
@@ -69,7 +92,7 @@ jobs:
         id: dl-week
         run: echo "week=$(date -u +%G-%V)" >> "$GITHUB_OUTPUT"
       - name: Restore cached downloads
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.cache/pleat-dl
           key: pleat-dl-${{ env.XRAY_LIB_TAG }}-${{ steps.dl-week.outputs.week }}
@@ -79,31 +102,37 @@ jobs:
           XRAY_DUMP=/tmp/xray-configs flutter test test/xray_config_test.dart
           dl=~/.cache/pleat-dl
           mkdir -p "$dl"
-          # get NAME URL...: a fresh copy into the cache from the first URL that answers, or keep the cached
-          # one when GitHub keeps failing
+          # sumok FILE SHA256: the file is exactly the pinned one
+          sumok() { test -s "$1" && echo "$2  $1" | sha256sum -c --status; }
+          # get NAME SHA256 URL...: a fresh copy into the cache from the first URL that answers with the pinned
+          # file, or keep the cached one (checked again) when GitHub keeps failing. A file with another SHA-256 is
+          # never used: a moved tag or a changed mirror stops the build instead of reaching the APK.
           get() {
-            name=$1; shift
+            name=$1; sum=$2; shift 2
             for url in "$@"; do
               if curl -fsSL --retry 10 --retry-delay 20 --retry-all-errors --max-time 300 -o "$dl/$name.new" "$url"; then
-                mv "$dl/$name.new" "$dl/$name"; return 0
+                if sumok "$dl/$name.new" "$sum"; then mv "$dl/$name.new" "$dl/$name"; return 0; fi
+                echo "::error::$name from $url is not the pinned file (SHA-256 $(sha256sum "$dl/$name.new" | cut -d' ' -f1), expected $sum)"
+                rm -f "$dl/$name.new"; return 1
               fi
             done
-            if test -s "$dl/$name"; then
-              echo "::warning::$name: GitHub did not answer, using the cached copy"
+            if sumok "$dl/$name" "$sum"; then
+              echo "::warning::$name: GitHub did not answer, using the cached copy (SHA-256 checked)"
             else
-              echo "::error::$name: download failed and there is no cached copy"; return 1
+              echo "::error::$name: download failed and there is no cached copy with the pinned SHA-256"; return 1
             fi
           }
           # XRAY_LIB_TAG is AndroidLibXrayLite's tag; Xray-core has no release by that name (404), so the
-          # desktop core for this check is Xray-core's latest release
-          if get xray.zip "https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip"; then
-            unzip -oq "$dl/xray.zip" -d /tmp/xray
+          # desktop core for this check is the Xray-core release XRAY_CORE_TAG
+          mkdir -p /tmp/xray
+          if get "xray-$XRAY_CORE_TAG.zip" "$XRAY_ZIP_SHA256" "https://github.com/XTLS/Xray-core/releases/download/$XRAY_CORE_TAG/Xray-linux-64.zip"; then
+            unzip -oq "$dl/xray-$XRAY_CORE_TAG.zip" -d /tmp/xray
           else
             # GitHub's release files answer 504 from some runners for a long time: the same core is also
-            # published as a container image on ghcr.io, which is served from elsewhere
-            echo "::warning::Xray zip unavailable, taking the core from its image ghcr.io/xtls/xray-core"
-            mkdir -p /tmp/xray /tmp/xrayimg
-            cid=$(docker create ghcr.io/xtls/xray-core:latest)
+            # published as a container image on ghcr.io, which is served from elsewhere (pulled by its digest)
+            echo "::warning::Xray zip unavailable, taking the core from its image $XRAY_CORE_IMAGE"
+            mkdir -p /tmp/xrayimg
+            cid=$(docker create "$XRAY_CORE_IMAGE")
             docker export "$cid" | tar -x -C /tmp/xrayimg
             docker rm "$cid" > /dev/null
             cp "$(find /tmp/xrayimg -type f -name xray | head -1)" /tmp/xray/xray
@@ -112,12 +141,11 @@ jobs:
           # The app's own geo files, so the Iran-direct rules are checked too (they also go into the APK).
           geo=android/app/src/main/assets/geo
           mkdir -p "$geo"
-          base="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/latest/download"
-          # second source: the same release branch through jsDelivr (listed in that project's README)
-          mirror="https://cdn.jsdelivr.net/gh/Loyalsoldier/v2ray-rules-dat@release"
-          get geoip.dat "$base/geoip.dat" "$mirror/geoip.dat"
-          get geosite.dat "$base/geosite.dat" "$mirror/geosite.dat"
-          cp "$dl/geoip.dat" "$dl/geosite.dat" "$geo/"
+          base="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/$GEO_TAG"
+          get "geoip-$GEO_TAG.dat" "$GEOIP_SHA256" "$base/geoip.dat"
+          get "geosite-$GEO_TAG.dat" "$GEOSITE_SHA256" "$base/geosite.dat"
+          cp "$dl/geoip-$GEO_TAG.dat" "$geo/geoip.dat"
+          cp "$dl/geosite-$GEO_TAG.dat" "$geo/geosite.dat"
           test -s "$geo/geoip.dat" && test -s "$geo/geosite.dat"
           export XRAY_LOCATION_ASSET="$PWD/$geo"
           for f in /tmp/xray-configs/*.json; do
@@ -132,7 +160,7 @@ jobs:
       - name: Restore libhev-socks5-tunnel
         if: github.event_name == 'workflow_dispatch'
         id: hev-cache
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: flutter_vpn/android/app/libs
           key: pleat-hev-${{ env.HEV_COMMIT }}-${{ env.NDK_VERSION }}-${{ hashFiles('flutter_vpn/android/compile-hevtun.sh') }}
@@ -148,7 +176,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         id: aar
         continue-on-error: true # a GitHub 504 falls back to the cached copy below
-        uses: robinraju/release-downloader@v1.11
+        uses: robinraju/release-downloader@a96f54c1b5f5e09e47d9504526e96febd949d4c2 # v1.11
         with:
           repository: 2dust/AndroidLibXrayLite
           tag: ${{ env.XRAY_LIB_TAG }}
@@ -160,21 +188,28 @@ jobs:
           dl=~/.cache/pleat-dl
           aar=android/app/libs/libv2ray.aar
           mkdir -p "$dl" android/app/libs
+          # only the pinned core goes into the APK (SEC-04): a download or cached copy with another SHA-256 stops here
+          sumok() { test -s "$1" && echo "$XRAY_LIB_SHA256  $1" | sha256sum -c --status; }
           if [ "${{ steps.aar.outcome }}" = success ] && test -s "$aar"; then
+            if ! sumok "$aar"; then
+              echo "::error::libv2ray.aar of $XRAY_LIB_TAG is not the pinned file (SHA-256 $(sha256sum "$aar" | cut -d' ' -f1), expected $XRAY_LIB_SHA256)"
+              rm -f "$aar"; exit 1
+            fi
             cp "$aar" "$dl/libv2ray-${XRAY_LIB_TAG}.aar"
-          elif test -s "$dl/libv2ray-${XRAY_LIB_TAG}.aar"; then
-            echo "::warning::libv2ray.aar: GitHub did not answer, using the cached copy"
+          elif sumok "$dl/libv2ray-${XRAY_LIB_TAG}.aar"; then
+            echo "::warning::libv2ray.aar: GitHub did not answer, using the cached copy (SHA-256 checked)"
             cp "$dl/libv2ray-${XRAY_LIB_TAG}.aar" "$aar"
           else
-            echo "::error::libv2ray.aar: download failed and there is no cached copy"; exit 1
+            rm -f "$aar"
+            echo "::error::libv2ray.aar: download failed and there is no cached copy with the pinned SHA-256"; exit 1
           fi
-      # The check above uses Xray-core's latest release, but the app ships the core inside libv2ray.aar,
+      # The check above uses an Xray-core desktop release, but the app ships the core inside libv2ray.aar,
       # which is built from a commit of its own (no desktop release has that version). The same core is
       # built here from the version the library itself records, and every config is checked with it too,
       # so a field the app's core doesn't know fails here instead of on the phone.
       - name: Restore Go modules for the app's core
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: |
             ~/go/pkg/mod
@@ -223,7 +258,7 @@ jobs:
       # Gradle itself is downloaded from GitHub releases too (services.gradle.org redirects there): keep it
       - name: Restore Gradle
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: ~/.gradle/wrapper/dists
           key: pleat-gradle-${{ hashFiles('flutter_vpn/android/gradle/wrapper/gradle-wrapper.properties') }}
@@ -285,6 +320,11 @@ jobs:
             curl -fsSL --retry 10 --retry-delay 20 --retry-all-errors -o "$dir/$name.zip.part" "$url"
             mv "$dir/$name.zip.part" "$dir/$name.zip"
             unzip -tq "$dir/$name.zip" > /dev/null
+          fi
+          # the same SHA-256 the wrapper checks (distributionSha256Sum, from gradle.org/release-checksums)
+          sum=$(grep '^distributionSha256Sum=' android/gradle/wrapper/gradle-wrapper.properties | cut -d= -f2)
+          if ! echo "$sum  $dir/$name.zip" | sha256sum -c --status; then
+            echo "::error::$name.zip is not the pinned Gradle (distributionSha256Sum $sum)"; rm -f "$dir/$name.zip"; exit 1
           fi
           echo "Gradle $name ready in $dir"
       - name: Build APK
@@ -358,7 +398,7 @@ jobs:
           ls -la "${files[@]}" | awk '{print "- " $9 ": " $5 " bytes"}' >> "$GITHUB_STEP_SUMMARY"
           echo "Announce it to the users in the bot: 📱 اپ Pleat › 📲 نسخه‌ی اپ" >> "$GITHUB_STEP_SUMMARY"
       # Also as a run artifact while storage allows; a full storage no longer fails the build.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: github.event_name == 'workflow_dispatch'
         continue-on-error: true
         with:

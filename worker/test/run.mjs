@@ -5671,6 +5671,44 @@ section('payments audit PAY-01..PAY-04: stuck settle recovered, SMS deposit line
   ok(acksOf(n).includes('پرداخت نشده') && !acksOf(n).includes('پیام بعدی'), 'N2: ap: on an unpaid wallet order gives the real reason: ' + acksOf(n));
 }
 
+section('CI: release workflows run only from main, on pinned actions and checked downloads (OPS-02, SEC-04)');
+{
+  const { readFileSync } = await import('node:fs');
+  const wf = (n) => readFileSync(new URL(`../../.github/workflows/${n}`, import.meta.url), 'utf8');
+  // every job that holds a secret or publishes: the product's workflows (android.yml is the retired app, make-key.yml
+  // the one-off signing key tool, both left as they are)
+  const live = ['flutter-vpn.yml', 'deploy-worker.yml', 'test-worker.yml'];
+  const unpinned = live.flatMap((n) => [...wf(n).matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)].map((m) => m[1])
+    .filter((u) => !/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(u)).map((u) => `${n}: ${u}`));
+  ok(!unpinned.length, 'SEC-04: every action is pinned to a full commit SHA; not pinned: ' + unpinned.join(', '));
+
+  // OPS-02: a deploy or an APK from a branch that was never merged is refused, with a message that says why
+  const dep = wf('deploy-worker.yml');
+  const depJob = dep.slice(dep.indexOf('\n  deploy:'));
+  ok(/\n {4}needs: main-only\n/.test(depJob) && /\n {4}if: github\.ref == 'refs\/heads\/main'\n/.test(depJob),
+    'OPS-02: the deploy job runs only after the main-only check, and only on main');
+  ok(/\n {2}main-only:\n[\s\S]*?if: github\.ref != 'refs\/heads\/main'[\s\S]*?::error::[^\n]*main[\s\S]*?exit 1/.test(dep.slice(0, dep.indexOf('\n  deploy:'))),
+    'OPS-02: deploying from another branch fails with an error that names main');
+  const fv = wf('flutter-vpn.yml');
+  const steps = fv.slice(fv.indexOf('    steps:\n'));
+  const firstStep = steps.split('\n      - ')[1] || '';
+  ok(/github\.event_name == 'workflow_dispatch' && github\.ref != 'refs\/heads\/main'/.test(firstStep) && /::error::[^\n]*main/.test(firstStep) && /exit 1/.test(firstStep),
+    'OPS-02: the APK run refuses any branch but main before anything else runs: ' + firstStep.split('\n')[0]);
+
+  // SEC-04: what goes into the APK (or checks it) is a fixed version with a SHA-256 kept in this repo
+  const envOf = (k) => ((fv.match(new RegExp(`^  ${k}: (\\S+)`, 'm')) || [])[1] || '').replace(/^'(.*)'$/, '$1');
+  const sums = ['XRAY_LIB_SHA256', 'XRAY_ZIP_SHA256', 'GEOIP_SHA256', 'GEOSITE_SHA256'];
+  ok(sums.every((k) => /^[0-9a-f]{64}$/.test(envOf(k) || '')), 'SEC-04: the core, the desktop core and both geo files have a pinned SHA-256: ' + sums.map((k) => `${k}=${envOf(k)}`).join(' '));
+  ok(/^\d{12}$/.test(envOf('GEO_TAG') || '') && /^v\d+\.\d+\.\d+$/.test(envOf('XRAY_CORE_TAG') || ''), 'SEC-04: the geo files and the desktop core come from a fixed release');
+  ok(!/releases\/latest|xray-core:latest|@release\b/.test(fv), 'SEC-04: nothing is taken from a "latest" release or a moving branch');
+  ok(sums.every((k) => fv.split('$' + k).length > 1), 'SEC-04: every pinned SHA-256 is checked in a step');
+  ok(/ghcr\.io\/xtls\/xray-core:[^\s@]+@sha256:[0-9a-f]{64}/.test(fv), 'SEC-04: the core image fallback is pinned by digest');
+  const wrapper = readFileSync(new URL('../../flutter_vpn/android/gradle/wrapper/gradle-wrapper.properties', import.meta.url), 'utf8');
+  ok(/^distributionSha256Sum=[0-9a-f]{64}$/m.test(wrapper) && /distributionSha256Sum/.test(fv), 'SEC-04: Gradle itself is checked against its SHA-256');
+  const tw = wf('test-worker.yml');
+  ok(/paths: \[[^\]]*'\.github\/workflows\/\*\*'/.test(tw), 'these checks run on every pull request that changes a workflow');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
