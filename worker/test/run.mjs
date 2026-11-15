@@ -6765,6 +6765,28 @@ section('PERF-B-01: an idle minute writes no cursor or health row; a phone openi
   ok(devs.some((d) => d.device_id === 'pb1-phone'), 'PERF-B-01: the phone is still listed');
 }
 
+section('SEC-07: Mini App probe reports cannot flood the admin chat: one a minute per Telegram user, a global hourly cap');
+{
+  const W = await world('sec7', 1);
+  const { createHmac } = await import('node:crypto');
+  const sign = (fields) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(W.e.TELEGRAM_BOT_TOKEN).digest();
+    return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+  };
+  const now = Math.floor(Date.now() / 1000);
+  const initOf = (id) => sign({ query_id: 'AAH', user: JSON.stringify({ id, first_name: 'P' + id }), auth_date: String(now - 30) });
+  const report = (id) => W.callW('POST', '/api/v1/mini/probe', { json: { init_data: initOf(id), steps: { page: { ok: true, ms: 5 } } } });
+  const toAdmin = () => fakes.tg.calls.filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '12345' && /نتیجه‌ی تست Mini App/.test(String(c.body.text))).length;
+  const n0 = toAdmin();
+  const a = await report(880001);
+  const b = await report(880001);
+  ok(a.status === 200 && b.status === 429 && toAdmin() - n0 === 1, 'SEC-07: the same Telegram user twice in a minute reaches the admin once: ' + a.status + ' ' + b.status);
+  const st = [];
+  for (let i = 0; i < 25; i++) st.push((await report(880100 + i)).status);
+  ok(toAdmin() - n0 === 20 && st.filter((x) => x === 429).length === 6, 'SEC-07: at most 20 reports an hour reach the admin from any number of users: ' + (toAdmin() - n0));
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

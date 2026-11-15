@@ -1,6 +1,6 @@
 // Public config, plans, profile, the VPN subscription (from the control plane), the unified server list, devices and the free trial.
 import { first, all, run, getSettings, getSettingInt, switchOn } from './db.js';
-import { json, err, nowSec, deadline } from './util.js';
+import { json, err, nowSec, deadline, throttled, spendBudget } from './util.js';
 import { PasarGuard, PasarGuardError } from './pasarguard.js';
 import { provision } from './billing.js';
 import { collectLinks, accountsOf, adapterFor, userPathMs } from './panels.js';
@@ -368,6 +368,9 @@ export async function miniProbeReport(env, body, request) {
   const { verifyInitData } = await import('./auth.js');
   const v = await verifyInitData(env.TELEGRAM_BOT_TOKEN, body?.init_data, 86400);
   if (!v) throw err(401, 'bad_init_data', 'Open this page from the Telegram bot.');
+  // SEC-07: one report a minute per Telegram user (isolate memory), and a global hourly cap in D1 for the admin chat
+  if (throttled('__cgProbe', v.user.id, 60000)) throw err(429, 'too_many_requests', 'One report a minute. Try again shortly.');
+  await spendBudget(env, 'probe');
   const bases = await miniBases(env);
   const host = (b) => b.replace(/^https:\/\//, '');
   const origin = String(body?.origin || '').toLowerCase();
