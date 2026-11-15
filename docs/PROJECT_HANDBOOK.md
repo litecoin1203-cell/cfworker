@@ -566,7 +566,8 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
    **WireGuard MTU is forced to 1280** (links say 1420 → no traffic).
 3. `PleatVpnService` routes all IPv4 + IPv6 + DNS into a tun → hev-socks5-tunnel → core SOCKS (127.0.0.1:10808,
    **with a random per-install login** since 1.2.23) → exit. "Protected" is shown only after a probe has
-   crossed the exit.
+   crossed the exit. The tun is `setMetered(false)` with `setUnderlyingNetworks`, so it inherits the real
+   network's meteredness (Android 10+ would otherwise call the VPN metered, even on Wi-Fi; NET-04 false positive).
 4. **Smart connect**: rank by the current network's ping + speed, start with the best; when smart connect is
    on and the exit is not pinned, the core runs a `leastPing` balancer with 2 backups (failover inside the
    core, 1.2.22). Switching exits hands over the tun without tearing it down (no leak), a failed try keeps the
