@@ -226,7 +226,7 @@ export async function learnExitCountry(env, key, cc, voter) {
   if (!old || !old.cc) next = { cc, n: 1, v: [voter] };
   else if (old.cc === cc) {
     const v = Array.isArray(old.v) ? old.v : [];
-    if (v.includes(voter) && !old.pending) return false; // nothing new: no write
+    if (!old.pending && (v.includes(voter) || (old.n || 0) >= 3)) return false; // nothing new (settled, or a vote already counted): no write
     const nv = add(v, voter);
     next = { cc, n: Math.min(3, Math.max(old.n || 0, nv.length)), v: nv };
   } else if (old.pending === cc) {
