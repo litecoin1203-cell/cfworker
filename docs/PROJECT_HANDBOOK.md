@@ -188,7 +188,7 @@ cfworker/
 │                                src/admin/ (admin panel), test/; `npm run build` → worker/public/
 ├── android/  app-web/           RETIRED old Cloud Gold app — do not extend
 ├── design-system/               the old app's "Vault & Hallmark" design docs (historical)
-├── docs/                        PROJECT_HANDBOOK.md (this file), API.md, DATABASE.md
+├── docs/                        PROJECT_HANDBOOK.md (this file), API.md, DATABASE.md, RESTORE.md (restore/rollback)
 ├── AGENTS.md, CLAUDE.md         short rule card for AI coding agents
 ├── README.md                    original Persian setup guide (partly outdated: old app); links to docs/
 └── .github/workflows/
@@ -456,6 +456,14 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   backups. Change with "🔐 ورود پنل". Panel 1 still reads `PASARGUARD_*` secrets.
 - **Accounts on a new panel**: created on demand when the app opens (`/vpn/servers`), plus up to 8 per cron run
   in the background; refused creates are kept in `panel_err_<id>` and Ali is alerted (at most every 6 h).
+- **Intent first (PNL-02)**: before an account is created on a panel its `panel_accounts` row is written as
+  `applied = 'pending'` (the name about to be made, no link, `dirty = 1`). Pending rows serve nothing and are never
+  read for usage or pushed. A retry uses the same name; a 409 whose account carries the note `Pleat #<user id>` is
+  that earlier account and is adopted (given the wanted expiry/limit), so an invocation cut between panel and D1
+  no longer leaves an orphan plus a second account. The cron's `settlePending` (2 per run, rows older than 30 min)
+  adopts or drops pending rows nobody finished.
+- **Bot deadline (CF-02)**: bot work runs in `waitUntil` (cut 30 s after the reply), so its panel calls share one
+  22 s deadline (`env.__panelDeadline`, ≤ 8 s per call); a slow panel becomes a panel failure for the sync job.
 - **Usage**: the cron reads one page of one panel per run (round-robin), adds deltas to `usage_counters`,
   `evaluate` decides over the **sum of all panels**, and the desired state (active/limited/expired) is applied
   idempotently to each panel. **Manual edits on a panel don't stick** — the Worker re-applies its state. Use the
@@ -470,8 +478,9 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   city name, a two-letter code token, then a host label like `de1.`. Before that only a flag counted, so remarks
   without a flag showed as "Unknown country". No country → `Server N`; the bot's server card shows the panel's
   remark and the admin can give a label with a flag. Since Pleat 1.2.34 the app sends `/me/ip?k=<serverKey>` while
-  connected; the Worker stores the exit's Cloudflare country in settings `server_exit_cc` (never IR; a change needs
-  two reports in a row) and uses it when the remark names no country. Once confirmed (n>=2, nothing pending) the learned exit country
+  connected; the Worker stores the exit's Cloudflare country in settings `server_exit_cc` (never IR; since SEC-02
+  only users with a running plan vote, only for servers in their own `user_skeys`, one vote per user, at most one
+  report a minute per user; a new country needs two different users) and uses it when the remark names no country. Once confirmed (n>=2, nothing pending) the learned exit country
   also overrules a remark that names another country (TR 1/TR 7 left via Hetzner/dataforest in DE): confirmed exit >
   remark > unconfirmed exit > host label. The bot's server list marks such servers with 📍.
 - PasarGuard may serve Xray JSON to a v2rayNG user agent; `collectLinks` falls back to `<sub>/links` (PR #9).
@@ -604,7 +613,8 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
    **WireGuard MTU is forced to 1280** (links say 1420 → no traffic).
 3. `PleatVpnService` routes all IPv4 + IPv6 + DNS into a tun → hev-socks5-tunnel → core SOCKS (127.0.0.1:10808,
    **with a random per-install login** since 1.2.23) → exit. "Protected" is shown only after a probe has
-   crossed the exit.
+   crossed the exit. The tun is `setMetered(false)` with `setUnderlyingNetworks`, so it inherits the real
+   network's meteredness (Android 10+ would otherwise call the VPN metered, even on Wi-Fi; NET-04 false positive).
 4. **Smart connect**: rank by the current network's ping + speed, start with the best; when smart connect is
    on and the exit is not pinned, the core runs a `leastPing` balancer with 2 backups (failover inside the
    core, 1.2.22). Switching exits hands over the tun without tearing it down (no leak), a failed try keeps the
@@ -617,6 +627,9 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
    answers takes the held tun over. It ends on reconnect, Disconnect (app, notification, widget) or a widget
    start (which then behaves like any widget start). A reopened app reads `held` and shows it. A fresh connect
    that fails still stops as before.
+   A **network switch** (Wi-Fi <-> mobile data, or a network back after none) is checked within ~2 s: the exit is
+   asked at once and, if it misses on the new network, the same exit is restarted in place (NET-06); with the app
+   closed the service does this itself.
    The config builder refuses what the shipped core removed (`h2`/`h3`/`http`/`quic`, `security=xtls`, flows
    other than `xtls-rprx-vision[-udp443]`) as "unsupported", and never writes `allowInsecure` (the core refuses
    it after 2026-08-01): an insecure link is verified like any TLS exit, or by its pin (`pcs`).
@@ -730,6 +743,10 @@ does not reach users by itself.
   between users through the existing `/net/google` + `/net/rank`; a **"Google-clean exits only"** filter narrows
   smart connect inside the Route country (never empties the pool).
 - Split tunnel and Protocol cards were removed from Protect (Route covers them).
+- **Keep Pleat running** (AND-02): shown while Android optimises Pleat's battery use (`batteryExempt` false), until
+  fixed or hidden (`battery_tip_hidden`): opens Android's battery optimisation list and Pleat's App info (where
+  Xiaomi/Oppo/Huawei keep autostart). With the app closed, the service itself checks the exit after a network switch
+  and restarts it in place (NET-06 `kick`); other live checks (failover, plan check) still need the app.
 - **Not yet proven on a phone**: YouTube/Gemini indicators, STUN over SOCKS UDP, whoami via 1.1.1.2.
 
 ### Home-screen widget (PR #78, 1.2.39 → 1.2.44)
@@ -775,7 +792,9 @@ fix / advice (`diagnose.dart`), "Copy report" (real app version), and **"Test al
 
 ### State and code notes
 - `AppState` (~3,500 lines, ChangeNotifier) is a god object; `login.dart` ~1,780 and `profile.dart` ~1,670 lines.
-  Known, not refactored. New logic goes into a plain-Dart file under `lib/state/` (testable without Flutter), as
+  Known, not refactored. Widgets high in the tree (the Shell, MaterialApp's builder) listen through `AppSelect`, which
+  rebuilds only when its selected value changes (PERF-A-01, `test/rebuild_test.dart`); a run of exit tests tells
+  the screens at most every 150 ms (`AppState.testNotifyGap`). New logic goes into a plain-Dart file under `lib/state/` (testable without Flutter), as
   `route_rules.dart`, `recommend.dart`, `protect.dart` and `health.dart` do.
 - `ApiClient` signs out only on refresh 401/403 (not on any error; fixed 1.2.20).
 - Tokens, device id, account cache and configs live in `flutter_secure_storage` (Keystore). `allowBackup=false`.
@@ -789,7 +808,8 @@ fix / advice (`diagnose.dart`), "Copy report" (real app version), and **"Test al
 ```sh
 cd worker
 npm test            # node --experimental-sqlite test/run.mjs  (Node 22)
-npm run coverage    # c8, ≥ 80% lines/functions/statements (actual ~97% lines)
+npm run coverage    # c8, ≥ 80% lines/functions/statements (actual ~97% lines), and ≥ 80% branches per file on
+                    # sms, nowpayments, chainwatch, pasarguard, marzban (QA-02; actual 85-100%)
 ```
 - `test/run.mjs` is one large file with a hand-made harness. The shim runs real Worker code on node:sqlite with
   fake panels and counts queries.
@@ -815,18 +835,34 @@ flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1
 ### Workflows
 | Workflow | Trigger | Notes |
 |---|---|---|
-| **Test Cloud Gold server** (`test-worker.yml`) | PR on `worker/**` or `miniapp/**` + manual | Worker tests with coverage gate (≥ 80 % lines), Mini App tests + build |
-| **Pleat Flutter app** (`flutter-vpn.yml`) | PR on `flutter_vpn/**` + manual (`api_base` input) | PR: format, analyze, test, live test against the local Worker, `xray -test` of generated configs. **Manual run only**: NDK + hev + Xray core, configs checked with the **exact** app core (built from libv2ray buildinfo), APK build, APK check, publish to release `pleat-latest`. ~18 min. |
-| **Deploy Cloud Gold server** (`deploy-worker.yml`) | **manual only** | tests → Cloudflare login check → secret names check → find/create D1 → **print the D1 Time Travel bookmark** → apply migrations → build the Mini App → deploy (wrangler pinned **4.158.0**) → copy `PLEAT_DL_TOKEN` |
+| **Test Cloud Gold server** (`test-worker.yml`) | PR on `worker/**`, `miniapp/**` or `.github/workflows/**` + manual | Worker tests with coverage gate (≥ 80 % lines), Mini App tests + build |
+| **Pleat Flutter app** (`flutter-vpn.yml`) | PR on `flutter_vpn/**` + manual (`api_base` input) | PR: format, analyze, test, live test against the local Worker, `xray -test` of generated configs. **Manual run only**: NDK + hev + Xray core, configs checked with the **exact** app core (built from libv2ray buildinfo), APK build, Kotlin unit tests, APK check, publish to release `pleat-latest`. ~18 min. **Manual run from `main` only.** |
+| **Deploy Cloud Gold server** (`deploy-worker.yml`) | **manual only, from `main` only** | tests → Cloudflare login check → secret names check → find/create D1 → **print the D1 Time Travel bookmark** → apply migrations → build the Mini App → deploy (wrangler pinned **4.158.0**) → copy `PLEAT_DL_TOKEN` |
 
 Since #57 nothing runs twice (only the PR, not also the push) and a newer push cancels the running PR check. The
 repo is public, so Actions minutes are effectively free; that ended the 2026-11-09 outage when the monthly free
 minutes ran out.
 
 - CI download hardening (PR #42): Actions cache of every download, Xray from `ghcr.io/xtls/xray-core` as a
-  fallback, jsDelivr mirror for geo files, Gradle prefetched with retries, Google's Maven Central mirror via an
+  fallback, jsDelivr mirror for geo files (dropped by SEC-04), Gradle prefetched with retries, Google's Maven Central mirror via an
   init script. If a run still fails on a 504, just re-run it.
 - `XRAY_LIB_TAG` (v26.7.5) is AndroidLibXrayLite's tag; Xray-core has no release by that name.
+- **Supply chain (release audit SEC-04, OPS-02):** every action in the Pleat, Deploy and Worker test workflows is
+  pinned to a commit SHA (the tag in a comment). Everything the Pleat job downloads has a fixed version and a
+  SHA-256 in `flutter-vpn.yml` `env:`: `libv2ray.aar` (`XRAY_LIB_SHA256`), the desktop Xray zip (`XRAY_CORE_TAG`,
+  `XRAY_ZIP_SHA256`), its ghcr image (by digest), the geo files (`GEO_TAG`, `GEOIP_SHA256`, `GEOSITE_SHA256`)
+  and Gradle (`distributionSha256Sum` in `gradle-wrapper.properties`). A file with another sum stops the build;
+  cached copies are checked again. The jsDelivr mirror for the geo files is gone (it serves only the moving
+  `release` branch). **To update one:** change the tag and its sum in the same PR. The sums come from the
+  release's own `.sha256sum` / `.dgst` file or gradle.org/release-checksums. The Worker test "CI: release
+  workflows ..." checks all of this. Deploy and the APK run refuse any branch but `main`.
+- **Geo files (PERF-A-03):** the APK carries only the lists the app's rules use (`GEOIP_KEEP: ir`,
+  `GEOSITE_KEEP: category-ir category-ads-all category-porn`), cut by `flutter_vpn/tool/geo_trim.dart`. Each list
+  is copied byte for byte (about 28 MB down to about 5 MB). `test/geo_trim_test.dart` fails when a rule in `lib/`
+  names a list that is not kept. A new `geosite:`/`geoip:` rule therefore goes into the keep lists in the same PR.
+- **Kotlin unit tests (QA-01):** `flutter_vpn/android/app/src/test/kotlin` (CrashNotes, Health scrubbing and
+  stderr, the update SHA-256). They run in the manual APK run (`:app:testReleaseUnitTest`, after the build,
+  before publishing). They need the AAR, so they do not run on pull requests or in the container.
 - Pleat APK download link for Ali: release `pleat-latest`, asset `pleat.apk`. Ali sends it to users by hand.
 - After a merge that touches `worker/` or `miniapp/`: run **Deploy Cloud Gold server**. After a merge touching
   `flutter_vpn/`: run **Pleat Flutter app** from `main` (with `api_base`). Build one APK at a time.
@@ -1091,6 +1127,11 @@ Grouped by area. "Proven" means reproduced or measured.
 | Panel 1 admin gets 403 on `/api/groups` and `/api/hosts` → no IR TUNNEL marks | `cgtunnel_` probe user in the Tunnel group — #61 |
 | "Unknown country" for remarks without a flag emoji | names / codes / host labels (`countries.js`) — #67; learned exit country — #72, #76 |
 | Bot: 🗂 پنل‌های کاربر ran the app-update announce (shared route `upa`) | route renamed `m:uac` — #55 |
+| PNL-01 a panel answering a 200 HTML page (CDN challenge) threw a SyntaxError → every purchase failed, panel 1 ran ahead of D1 | non-JSON body = `PasarGuardError(bad_json)`; any error fails only that panel (dirty) |
+| CF-02 bot work (approve → provision, panel test) runs in `waitUntil`, cut 30 s after the reply; 15 s per panel call could pass it | bot work carries one 22 s panel deadline, each call ≤ 8 s; a slow panel fails as a panel error (dirty → sync) and the admin still gets the answer |
+| PNL-02 an account created on a panel whose D1 write never ran stayed active as an orphan, and the retry made a second one | intent row first (`applied = 'pending'`), adopt own 409 by note, cron `settlePending` |
+| QA-02 branch coverage 64-74% on sms, nowpayments, chainwatch and the panel adapters (the error paths that move money) | tests for forwarder formats, odd SMS, every SMS outcome, IPN signatures, watcher filters, adapter logins/fallbacks; per-file ≥ 80% branch gate (`coverage:money`) |
+| SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |
 
 ### App and tunnel
 | Problem | Fix |
@@ -1116,6 +1157,9 @@ Grouped by area. "Proven" means reproduced or measured.
 | NET-01 core refuses `allowInsecure` since 2026-08-01; an insecure backup broke the whole config | never written; normal verification or the pin; insecure samples in `XRAY_DUMP` — audit fix |
 | NET-05 h2/http/quic/legacy-XTLS links passed the builder and failed in the core | refused as "unsupported" (failover, backup dropped) — audit fix |
 | NET-02 a short network loss ended in failover → `_stopTunnel` → apps out bare | no-network misses not counted (bounded ~2 min); a live session that lost every exit keeps the tun held, shown on the card/widget, retried with back-off, and tried at once when Android names a network again (checked every 3 s while held) — audit fix |
+| NET-04 (audit) "`setMetered(false)` makes the VPN unmetered on mobile data" | **false positive**: for apps targeting Android 10+ a VPN is metered by default (even on Wi-Fi); `setMetered(false)` is what makes it inherit meteredness from the underlying network (`setUnderlyingNetworks`). Kept; guarded by `test/native_source_test.dart` — do not remove |
+| NET-06 a Wi-Fi <-> mobile switch was only handed to Android; core connections stayed on the old network up to 300 s | the service tells the app on a real switch (`netChanged`); the app asks the exit after 2 s and, if it misses, starts the same exit again in place (tun kept; failure fails over or holds). App closed: the service does the same itself (`kick`, nothing closed on failure). `onLost` of a network not in use no longer clears the underlying network. Dart proven by `test/net_switch_test.dart`; Kotlin uncompiled here, phone test pending; hev `tcp-read-write-timeout` left at 300 s — audit fix |
+| AND-02 with the app closed nothing watched the session, and no word on battery optimisation / autostart | Protect card "Keep Pleat running" while optimised (`battery_tip_test.dart`); the service checks the exit itself after a network switch when the app is gone. Kotlin uncompiled; OEM behaviour only provable on phones — audit fix (partial: failover and plan check still need the app) |
 | A dead line showed as "wrong password / wrong code" | `ApiError.offline` → neutral connection card — #54 |
 | Native crash (SIGABRT) reports carried only the signal | tombstone + Go stderr + tunnel state in the report — #77, #79, #80 (root cause still open, §19) |
 | Widget: start from a fully closed app refused by Android 12+/MIUI | invisible `WidgetConnect` activity — #78 (1.2.42) |
@@ -1127,6 +1171,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | Artifact storage full | APKs to release `pleat-latest` — #23 |
 | GitHub release downloads 504 for hours (Xray, geo, Gradle, Maven) | cache + mirrors for every download in one go — #42 |
 | Free Actions minutes ran out (2026-11-09) | no double runs, APK only on manual run — #57; repo made public |
+| Deploy/APK could run from any branch; actions and downloads unpinned in the job holding the signing key | main-only guards, SHA-pinned actions, SHA-256 for every download — release audit OPS-02, SEC-04 |
 
 ---
 
@@ -1209,6 +1254,12 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - The `/credit <email> <amount> <note>` manual wallet top-up idea (offered, awaiting a yes) — if built, it must be a
   bot button flow, not a typed command.
 - PR #21 is most likely superseded by #22; check and close it.
+- **Release audit OPS-02 / OPS-06 (owner, outside the code):** a ruleset on `main` (PR required, the `Test Cloud
+  Gold server` and `Pleat Flutter app` checks required, no force-push); a GitHub Environment `production` holding
+  the Cloudflare and keystore secrets; where the keystore's two offline copies are; whether to add an encrypted
+  weekly `wrangler d1 export` (where it would be stored). After a restore from the Telegram backup, panel
+  accounts need re-linking (`sub_path` is not in the backup); not tried on real panels. `make-key.yml` still uses
+  `actions/upload-artifact@v4` by tag (left alone: it is the signing-key tool).
 
 ### Open investigation: native crash on DE 3
 One user (Xiaomi, Android 12) had 5 native SIGABRT crashes (reason 5 / status 6) in a week, each with the tunnel
@@ -1291,7 +1342,7 @@ unscored (phone-only).
 encryption / PII in backups · S11 refresh-token rotation (changes the app, needs a phone test) · S15 email
 verification · AD3/P17 panel 1 still special (always in provision, HWID, device removal, buying needs
 `PASARGUARD_URL`) · AD4 real device limit · AD6 staging (second Cloudflare account or separate D1) · P13 pin
-actions to SHAs. Also open: N6 exit domain resolved by the operator's DNS · N7 `allowInsecure=1` from the panel
+actions to SHAs (done for the live workflows, release audit SEC-04). Also open: N6 exit domain resolved by the operator's DNS · N7 `allowInsecure=1` from the panel
 (no longer written to the config; such exits are verified normally — NET-01) · P20 outdated README · Gmail one-tap sign-in (needs a Google OAuth client).
 
 ### Follow-ups (non-critical)
@@ -1342,6 +1393,10 @@ Native changes in Kotlin cannot be compiled in the container; CI is the compiler
 **Change a VPN protocol mapping.** Edit `lib/state/xray_config.dart`, mirror v2rayNG/Xray semantics, add a test
 in `test/xray_config_test.dart` with made-up values; CI runs `xray -test` on generated configs with the app's
 own core version.
+
+**Restore or roll back.** Follow [`RESTORE.md`](RESTORE.md): code → revert + Deploy (or `wrangler rollback`);
+data → D1 Time Travel first; older than that → `worker/scripts/restore-backup.mjs` on the Telegram backup into a
+new database; a bad APK → a new build with a higher build number.
 
 **Diagnose a failing exit.** Ask Ali for Connection check → "Test alone + copy core log" for that exit. Read the
 core log. Classify as app-side or server-side (§16) before writing code.

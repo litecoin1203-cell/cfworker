@@ -50,6 +50,17 @@ class PleatVpnService : VpnService() {
         var instance: PleatVpnService? = null
             private set
 
+        /** How long a network switch settles before the service checks the exit itself. */
+        private const val NET_SETTLE_MS = 2_000L
+
+        /**
+         * Set while the app (Dart) runs: told on a network switch, and it
+         * decides (NET-06). Null when the app is closed: the service checks
+         * the exit itself (see [kick]).
+         */
+        @Volatile
+        var onNetChange: (() -> Unit)? = null
+
         /** The app said more about the exit (place, IP): redraw the card. */
         fun noteChanged() {
             instance?.let { s -> s.main.post { s.redraw() } }
@@ -106,15 +117,99 @@ class PleatVpnService : VpnService() {
         }
 
         override fun onLost(network: Network) {
+            // only the network in use going: another one may be up already
+            if (network != handed) return
             handed = null
             setUnderlyingNetworks(null)
         }
     }
 
+    /** A network was handed since the watch began, so the next different one is a switch. */
+    @Volatile
+    private var handedOnce = false
+
     private fun hand(network: Network) {
         if (network == handed) return
         handed = network
         setUnderlyingNetworks(arrayOf(network))
+        // Wi-Fi <-> mobile data, or a network back after none (NET-06)
+        if (handedOnce) netChanged()
+        handedOnce = true
+    }
+
+    /** Main thread: [kick] once a burst of switches has settled. */
+    private val kickSoon = Runnable { kick() }
+
+    /** Any thread (the network callback's own). */
+    private fun netChanged() {
+        main.post {
+            val app = onNetChange
+            if (app != null) {
+                // The app checks the exit and restarts it if needed (Dart, tested there).
+                main.removeCallbacks(kickSoon)
+                app()
+                return@post
+            }
+            main.removeCallbacks(kickSoon)
+            main.postDelayed(kickSoon, NET_SETTLE_MS)
+        }
+    }
+
+    /**
+     * The app is closed (AND-02) and the phone moved to another network
+     * (NET-06): the service does what the app would. One delay check
+     * through the running core; when it doesn't answer, the same config is
+     * started again in place, so the core's connections stuck on the old
+     * network go at once. Unlike [begin], nothing is told to the app or the
+     * widget and a failure closes nothing: the tun stays (blocking), as
+     * before the switch, until the next switch, the app or a stop.
+     */
+    private fun kick() {
+        if (!up && !held) return
+        val gen = generation
+        val config = try { lastConfig.readText() } catch (e: Exception) { return }
+        ops.execute {
+            if (gen != generation) return@execute
+            val ok = try {
+                (core?.measureDelay(Engine.TEST_URL) ?: -1L) >= 0
+            } catch (e: Exception) {
+                false
+            }
+            if (ok || gen != generation) return@execute
+            WidgetTrail.step(this, "net_kick")
+            // As in begin: the old tun stays until the new one is up.
+            val old = tun
+            tun = null
+            val started = try {
+                stopEngine()
+                start(config)
+                true
+            } catch (e: Throwable) {
+                WidgetTrail.step(this, "kick_err", e)
+                false
+            } finally {
+                if (old != null && old !== tun) {
+                    if (tun != null) {
+                        try { old.close() } catch (ce: Exception) {}
+                    } else {
+                        tun = old
+                    }
+                }
+            }
+            // A held session stays held unless the exit answers again now.
+            if (!started || gen != generation) return@execute
+            // as in begin: a cold handshake gets three tries, 800 ms apart
+            if (!probe { gen == generation }) return@execute
+            main.post {
+                if (gen != generation || !held) return@post
+                held = false
+                up = true
+                upSince = System.currentTimeMillis()
+                StatusWidget.upSince = upSince
+                TunnelHub.set("up")
+                redraw()
+            }
+        }
     }
     private var core: CoreController? = null
     private var hevRunning = false
@@ -330,6 +425,10 @@ class PleatVpnService : VpnService() {
                     try { addDisallowedApplication(p) } catch (e: Exception) {}
                 }
             }
+            // Android 10+: a VPN is metered by default (even on Wi-Fi); false makes
+            // it inherit meteredness from the underlying network handed below
+            // (setUnderlyingNetworks), so mobile data stays metered and Wi-Fi
+            // doesn't. Keep it (NET-04 was a false positive).
             .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) setMetered(false) }
             .establish() ?: error("VPN permission revoked")
         tun = iface
@@ -488,7 +587,9 @@ class PleatVpnService : VpnService() {
             try { connectivity.unregisterNetworkCallback(underlying) } catch (e: Exception) {}
             watching = false
             handed = null
+            handedOnce = false
         }
+        main.removeCallbacks(kickSoon)
         stopEngine()
         try { tun?.close() } catch (e: Exception) {}
         tun = null

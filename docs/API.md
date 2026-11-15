@@ -75,7 +75,7 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | Method + path | Handler | Purpose |
 |---|---|---|
 | `GET /me` | `account.me` | account (subscription carries `plan_name` and English `plan_name_en`, UX-03; `has_password`: false for a one-tap Mini App account, PRV-04) + subscription (`status, days_left, used_bytes, data_limit_bytes, used_percent, …`). Live panel reading waits ≤ 1.5 s, else stored numbers. |
-| `GET /me/ip` | `index.js` | the request's IP, country, city (through the tunnel = the exit). `?k=<serverKey>` teaches the Worker that exit's real country (`panels.learnExitCountry`, settings `server_exit_cc`; never IR; 2 reports in a row to change) and feeds a location-mismatch health check unless `&h=0`. |
+| `GET /me/ip` | `index.js` | the request's IP, country, city (through the tunnel = the exit). `?k=<serverKey>` teaches the Worker that exit's real country (`panels.learnExitFromUser`, settings `server_exit_cc`; never IR; counted only from a user with a running plan for one of their own servers, one vote per user, a change needs 2 different users) and feeds a location-mismatch health check unless `&h=0`. |
 | `GET /me/packages` | `account.packages` | package history (`sub_periods`); each has `name` and English `name_en` |
 | `POST /me/email` | `auth.setEmail` | backup Gmail |
 | `POST /me/avatar` | `auth.setAvatar` | pick one of 14 Folk avatars (empty pick refused since PR #66) |

@@ -3,7 +3,8 @@ package app.pleat.pleat
 /**
  * Turns what Android and the Go runtime leave behind after a native crash
  * into a few lines support can act on. Plain Kotlin (no Android classes), so
- * it is tested on the JVM: flutter_vpn/android/test/CrashNotesTest.kt.
+ * it is tested on the JVM: app/src/test/kotlin/app/pleat/pleat/CrashNotesTest.kt
+ * (and by hand with crash-notes-check/Check.kt).
  *
  * Two sources:
  *

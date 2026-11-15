@@ -432,11 +432,18 @@ class FakeTunnel extends Tunnel {
   String? started;
   bool stopped = false;
 
+  /// Every start asked of the service, a restart of the same exit included.
+  int starts = 0;
+
+  /// What the service does when the phone moves to another network.
+  void netChanged() => onNetChange?.call();
+
   @override
   Future<bool> available() async => true;
   @override
   Future<void> start(String config) async {
     started = config;
+    starts++;
     // As the service does: "starting" comes first, then up or failed.
     emit(TunnelState.starting);
   }
@@ -461,6 +468,18 @@ class FakeTunnel extends Tunnel {
       alerts.add('$title|$text');
   @override
   Future<void> stop() async => stopped = true;
+
+  /// Android's battery optimisation answer for Pleat, and the pages opened.
+  bool? exempt = true;
+  final List<String> batteryPages = [];
+
+  @override
+  Future<bool?> batteryExempt() async => exempt;
+  @override
+  Future<bool> openBatterySettings({bool app = false}) async {
+    batteryPages.add(app ? 'app' : 'battery');
+    return true;
+  }
 
   /// Times the app asked the service to keep a failed start's tun.
   int holds = 0;
@@ -517,8 +536,12 @@ class FakeTunnel extends Tunnel {
   /// The core's reason for an address with no ping; default a timeout.
   Map<String, String> errors = {};
 
+  /// How long one exit test takes; zero answers at once.
+  Duration probeTakes = Duration.zero;
+
   @override
   Future<({int? ms, String? error})> probe(String config) async {
+    if (probeTakes > Duration.zero) await Future<void>.delayed(probeTakes);
     for (final e in pings.entries) {
       if (config.contains('"${e.key}"')) {
         pinged.add(e.key);

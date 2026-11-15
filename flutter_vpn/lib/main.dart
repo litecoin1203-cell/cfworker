@@ -108,16 +108,19 @@ class _PleatAppState extends State<PleatApp> with WidgetsBindingObserver {
         debugShowCheckedModeBanner: false,
         theme: pleatTheme(),
         // The in-app "Reduce motion" switch joins the OS setting.
-        builder: (context, child) {
-          final app = AppScope.of(context);
-          final mq = MediaQuery.of(context);
-          return MediaQuery(
-            data: mq.copyWith(
-              disableAnimations: mq.disableAnimations || app.reduceMotion,
-            ),
-            child: child!,
-          );
-        },
+        // Only the switch rebuilds it, not every change of the app.
+        builder: (context, child) => AppSelect(
+          select: (app) => app.reduceMotion,
+          builder: (context, app, reduce) {
+            final mq = MediaQuery.of(context);
+            return MediaQuery(
+              data: mq.copyWith(
+                disableAnimations: mq.disableAnimations || reduce,
+              ),
+              child: child!,
+            );
+          },
+        ),
         home: const SplashScreen(),
       ),
     );

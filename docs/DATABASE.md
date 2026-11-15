@@ -80,7 +80,7 @@ A txid is bound to one order by a conditional UPDATE in `chainwatch.claimTxid` (
 | `subscriptions` | **one row per user**: the Worker's truth about the package | `plan_id`, `expires_at`, `data_limit_bytes`, `device_limit`, `state` (active / stopped), `stop_reason`, `used_bytes` (sum over all panels), `period_id`, `pg_username`/`sub_url` (legacy panel-1 fields) |
 | `sub_periods` | package history (one row per bought period) | `started_at`, `expires_at`, `limit_bytes`, `ended_at`, `end_reason`, `final_used_bytes`, `source` |
 | `panels` | registered VPN panels | `kind` (pasarguard / marzban / rebecca / auto), `label`, `cred_ref`, `state` (new → testing → rollout → active → draining → disabled), `rollout_percent`, `health`, `fail_streak` |
-| `panel_accounts` | the user's account on one panel | `UNIQUE(user_id, panel_id)` and `(panel_id, remote_username)`; `desired`/`applied` state, limit and expiry; `dirty` = still to push; `attempts`, `last_error` |
+| `panel_accounts` | the user's account on one panel | `UNIQUE(user_id, panel_id)` and `(panel_id, remote_username)`; `desired`/`applied` state, limit and expiry; `dirty` = still to push; `attempts`, `last_error`. `applied = 'pending'` (no migration, PNL-02) = an intent row written before the account is created on the panel: no `sub_path`, skipped by usage, push and server list |
 | `usage_counters` | per period per panel usage ledger | `last_remote_bytes`, `accounted_bytes`, `baseline_pending`, `last_seen_at`, `stale`, `online_at` |
 | `sync_cursor` | round-robin position of the per-minute sync | `job`, `panel_id`, `offset`, `run_at` |
 | `server_overrides` | admin hides or relabels one exit | `panel_id`, `server_key`, `hidden`, `label` |
@@ -143,4 +143,6 @@ Almost all runtime configuration. Defaults in `worker/src/db.js` `SETTING_DEFAUL
 ## Backups
 The daily cron (20:30 UTC) sends a JSON backup of the main tables to the owner's Telegram. It excludes password
 hashes, subscription URLs, panel credentials, the SMS key and bridges, but still holds PII (emails, Telegram ids) in
-clear — open decision S10. There is no restore tool; real recovery is **D1 Time Travel** (7 days back on the Free plan).
+clear — open decision S10. Real recovery is **D1 Time Travel** (7 days back on the Free plan). For anything older,
+`worker/scripts/restore-backup.mjs` turns a backup file into SQL for a new, migrated database (tested on every PR);
+what it cannot bring back and the steps are in [`RESTORE.md`](RESTORE.md).

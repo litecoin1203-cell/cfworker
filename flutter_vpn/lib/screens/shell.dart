@@ -60,6 +60,9 @@ const navItems = [
 class Shell extends StatefulWidget {
   const Shell({super.key});
 
+  /// Builds of the Shell so far, counted in debug builds only (tests).
+  static int debugBuilds = 0;
+
   @override
   State<Shell> createState() => _ShellState();
 }
@@ -106,7 +109,24 @@ class _ShellState extends State<Shell> {
 
   @override
   Widget build(BuildContext context) {
-    final app = AppScope.of(context);
+    // Only what the Shell itself shows rebuilds it (PERF-A-01): the pages
+    // follow the app on their own, and a test of every exit used to
+    // rebuild the shard field and the nav once per exit.
+    return AppSelect(
+      select: (app) => (
+        avatar: app.needsAvatar,
+        tab: app.tab,
+        scene: (app.phase, app.category, app.exit?.bearing),
+      ),
+      builder: (context, app, _) => _build(context, app),
+    );
+  }
+
+  Widget _build(BuildContext context, AppState app) {
+    assert(() {
+      Shell.debugBuilds++;
+      return true;
+    }());
     // First sign-in: a character has to be picked before Home.
     if (app.needsAvatar) return const AvatarGate();
     final reduced = PMotion.reduced(context);

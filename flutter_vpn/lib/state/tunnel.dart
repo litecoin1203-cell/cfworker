@@ -58,6 +58,11 @@ class Tunnel {
     }
   }
 
+  /// Called when the service saw the phone move to another network
+  /// (Wi-Fi <-> mobile data, or a network back after none), a moment after
+  /// it settled. Set by the app; the service says it only while it runs.
+  void Function()? onNetChange;
+
   /// [onOpen] gets the screen a notification button asked for
   /// ("locations"), now or when the app was opened by it.
   Future<void> watchOpen(void Function(String) onOpen) async {
@@ -66,6 +71,7 @@ class Tunnel {
         if (call.method == 'open' && call.arguments is String) {
           onOpen(call.arguments as String);
         }
+        if (call.method == 'netChanged') onNetChange?.call();
       });
       final first = await _method.invokeMethod<String>('pendingOpen');
       if (first != null) onOpen(first);
@@ -322,6 +328,35 @@ class Tunnel {
       return null;
     } on PlatformException {
       return null;
+    }
+  }
+
+  /// Whether Android lets Pleat run in the background without battery
+  /// optimisation (AND-02): false when it is optimised (the service may be
+  /// stopped on some phones), null when Android can't say.
+  Future<bool?> batteryExempt() async {
+    try {
+      return await _method.invokeMethod<bool>('batteryExempt');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// Android's battery optimisation list, or Pleat's own App info page
+  /// ([app]: where Xiaomi, Oppo, Huawei and others keep autostart and
+  /// their own battery saver). False when neither page opened.
+  Future<bool> openBatterySettings({bool app = false}) async {
+    try {
+      return await _method.invokeMethod<bool>(
+            app ? 'appSettings' : 'batterySettings',
+          ) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
     }
   }
 

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../api/countries.dart';
@@ -35,6 +37,10 @@ class ProtectScreen extends StatelessWidget {
             const SizedBox(height: 20),
             item(_AlwaysCard(app: app)),
             const SizedBox(height: 16),
+            if (app.showBatteryTip) ...[
+              item(_BatteryCard(app: app)),
+              const SizedBox(height: 16),
+            ],
             item(_ShieldCard(app: app)),
             const SizedBox(height: 16),
             item(_PrivacyCard(app: app)),
@@ -753,6 +759,66 @@ class GoogleStat extends StatelessWidget {
           ),
         ],
       ),
+    ),
+  );
+}
+
+// ---- Keep Pleat running (AND-02) -------------------------------------------
+
+/// Shown while Android optimises Pleat's battery use, until fixed or hidden:
+/// optimised, the phone may stop Pleat in the background, and then a silent
+/// exit isn't noticed until Pleat is opened again.
+class _BatteryCard extends StatelessWidget {
+  const _BatteryCard({required this.app});
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) => SurfaceCard(
+    label: 'Keep Pleat running',
+    padding: const EdgeInsets.fromLTRB(16, 14, 14, 10),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        PHead(
+          icon: PIcon.bolt,
+          on: false,
+          title: 'Keep Pleat running',
+          sub: 'Android may stop Pleat in the background',
+          trailing: const MarkDot(Mark.warn),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Then a dropped connection isn’t noticed until you open Pleat again. '
+          'Let Pleat run without battery limits.',
+          style: PType.small(),
+        ),
+        const SizedBox(height: 4),
+        PLine(
+          lead: PTile(PIcon.bolt, size: 32),
+          title: 'Battery optimisation',
+          sub: 'Set Pleat to Not optimised',
+          onTap: () => unawaited(app.tunnel.openBatterySettings()),
+        ),
+        pRule(),
+        PLine(
+          lead: PTile(PIcon.power, size: 32),
+          title: 'Autostart and app battery',
+          sub: 'On Xiaomi, Oppo, Huawei and others: allow autostart, no restrictions',
+          onTap: () => unawaited(app.tunnel.openBatterySettings(app: true)),
+        ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: Pressable(
+            onTap: app.hideBatteryTip,
+            label: 'Hide',
+            radius: PRadius.pill,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+              child: Text('Hide', style: PType.meta(color: PColors.accentInk)),
+            ),
+          ),
+        ),
+      ],
     ),
   );
 }
