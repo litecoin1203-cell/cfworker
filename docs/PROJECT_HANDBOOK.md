@@ -775,7 +775,8 @@ fix / advice (`diagnose.dart`), "Copy report" (real app version), and **"Test al
 ```sh
 cd worker
 npm test            # node --experimental-sqlite test/run.mjs  (Node 22)
-npm run coverage    # c8, ≥ 80% lines/functions/statements (actual ~97% lines)
+npm run coverage    # c8, ≥ 80% lines/functions/statements (actual ~97% lines), and ≥ 80% branches per file on
+                    # sms, nowpayments, chainwatch, pasarguard, marzban (QA-02; actual 85-100%)
 ```
 - `test/run.mjs` is one large file with a hand-made harness. The shim runs real Worker code on node:sqlite with
   fake panels and counts queries.
@@ -1080,6 +1081,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | PNL-01 a panel answering a 200 HTML page (CDN challenge) threw a SyntaxError → every purchase failed, panel 1 ran ahead of D1 | non-JSON body = `PasarGuardError(bad_json)`; any error fails only that panel (dirty) |
 | CF-02 bot work (approve → provision, panel test) runs in `waitUntil`, cut 30 s after the reply; 15 s per panel call could pass it | bot work carries one 22 s panel deadline, each call ≤ 8 s; a slow panel fails as a panel error (dirty → sync) and the admin still gets the answer |
 | PNL-02 an account created on a panel whose D1 write never ran stayed active as an orphan, and the retry made a second one | intent row first (`applied = 'pending'`), adopt own 409 by note, cron `settlePending` |
+| QA-02 branch coverage 64-74% on sms, nowpayments, chainwatch and the panel adapters (the error paths that move money) | tests for forwarder formats, odd SMS, every SMS outcome, IPN signatures, watcher filters, adapter logins/fallbacks; per-file ≥ 80% branch gate (`coverage:money`) |
 | SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |
 
 ### App and tunnel

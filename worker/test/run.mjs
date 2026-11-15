@@ -6078,6 +6078,331 @@ section('PNL-02: an account made on a panel whose D1 write never happened is ado
   ok(W.pgs[1].users['cg_orphan01'].status === 'disabled', 'PNL-02: an adopted orphan of a user without a plan is switched off on the panel');
 }
 
+// QA-02: the error and odd-input branches of the money and panel paths, each checked for what it must do
+// unit(handler): run fn with requests to https://unit.test answered by handler(method, path, body, init)
+async function withUnit(handler, fn) {
+  const realFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.startsWith('https://unit.test')) {
+      const path = url.slice('https://unit.test'.length);
+      const method = (init.method || 'GET').toUpperCase();
+      seen.push(`${method} ${path}`);
+      const out = await handler(method, path, init.body, init);
+      if (out instanceof Response) return out;
+      if (out && out.throw) throw out.throw;
+      const [status, body, headers] = out;
+      return new Response(status === 204 ? null : typeof body === 'string' ? body : JSON.stringify(body), { status, headers: headers || { 'content-type': 'application/json' } });
+    }
+    return realFetch(input, init);
+  };
+  try { return await fn(seen); } finally { globalThis.fetch = realFetch; }
+}
+const catchErr = async (p) => { try { await p; return null; } catch (e) { return e; } };
+
+section('QA-02: NOWPayments: gateway switch, dollar maths, invoice errors and IPN signatures');
+{
+  const np = await import('../src/nowpayments.js');
+  ok(!np.gatewayReady({}, { usdt_rate_toman: '100000' }), 'no API key: not offered');
+  ok(!np.gatewayReady({ NOWPAYMENTS_API_KEY: 'k' }, { usdt_rate_toman: '0' }), 'a 0 dollar rate: not offered (no 0-dollar invoice)');
+  ok(!np.gatewayReady({ NOWPAYMENTS_API_KEY: 'k' }, { usdt_rate_toman: '100000', pay_crypto_on: ' 0 ' }), 'switched off: not offered');
+  ok(np.gatewayReady({ NOWPAYMENTS_API_KEY: 'k' }, { usdt_rate_toman: '100000' }), 'key + rate + no switch setting: on by default');
+  ok(np.tomanToUsd(500000, 0) === 0 && np.tomanToUsd(1, 100000) === 1 && np.tomanToUsd(250001, 100000) === 3, 'toman -> dollars: 0 without a rate, at least 1, rounded up');
+  // invoice: the pay currency is passed on; a refusal is an error carrying the status, never a fake invoice
+  const before = fakes.np.invoices.length;
+  const inv = await np.createInvoice({ NOWPAYMENTS_API_KEY: 'k', NOWPAYMENTS_PAY_CURRENCY: 'usdttrc20' }, 77, 5, 'plan');
+  const sent = fakes.np.invoices[before];
+  ok(inv.id && sent.pay_currency === 'usdttrc20' && sent.ipn_callback_url === '/api/v1/payments/nowpayments/ipn', 'invoice: pay currency set, relative callback without PUBLIC_BASE_URL');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => (String(typeof input === 'string' ? input : input.url).includes('api.nowpayments.io') ? new Response('{"message":"Invalid api key"}', { status: 403 }) : realFetch(input, init));
+  const e403 = await catchErr(np.createInvoice({ NOWPAYMENTS_API_KEY: 'bad' }, 78, 5, 'plan'));
+  globalThis.fetch = realFetch;
+  ok(e403 && /NOWPayments error 403/.test(e403.message), 'invoice refused -> error with the status: ' + (e403 && e403.message));
+  // IPN: keys are sorted recursively (arrays too) before the HMAC
+  const payload = { payment_status: 'finished', order_id: '9', fee: { currency: 'usd', depositFee: 0 }, outcomes: [{ b: 2, a: 1 }] };
+  const canon = '{"fee":{"currency":"usd","depositFee":0},"order_id":"9","outcomes":[{"a":1,"b":2}],"payment_status":"finished"}';
+  const sig = await hmacSha512Hex('np-secret', canon);
+  const okP = await np.verifyIpn({ NOWPAYMENTS_IPN_SECRET: 'np-secret' }, JSON.stringify(payload), sig);
+  ok(okP.order_id === '9', 'IPN with a valid signature over sorted keys (nested object and array) is accepted');
+  ok(/bad json/.test((await catchErr(np.verifyIpn({ NOWPAYMENTS_IPN_SECRET: 'np-secret' }, '{not json', sig))).message), 'IPN that is not JSON -> bad json');
+  ok(/bad signature/.test((await catchErr(np.verifyIpn({ NOWPAYMENTS_IPN_SECRET: 'np-secret' }, JSON.stringify(payload), ''))).message), 'IPN without a signature -> refused');
+  ok(/bad signature/.test((await catchErr(np.verifyIpn({ NOWPAYMENTS_IPN_SECRET: 'np-secret' }, JSON.stringify({ ...payload, order_id: '10' }), sig))).message), 'IPN with a changed field -> refused');
+  ok(np.PAID_STATES.has('confirmed') && !np.PAID_STATES.has('partially_paid') && np.FAILED_STATES.has('refunded'), 'only finished/confirmed pay; partially_paid does not');
+}
+
+section('QA-02: bank SMS: forwarder formats, odd texts, every outcome of an SMS');
+{
+  const W = await world('qasms', 1);
+  const sms = await import('../src/sms.js');
+  const key = await sms.smsKey(W.e);
+  ok(key === await sms.smsKey(W.e) && /^[0-9a-f]{24}$/.test(key), 'the SMS key is made once and kept');
+  const hook = (body, k = key, ct = 'application/json') => sms.smsWebhook(W.e, new Request('https://api.test/sms', { method: 'POST', headers: { 'content-type': ct }, body }), k).then((r) => r.json());
+  ok((await catchErr(hook('{}', 'wrong'))).status === 404, 'a wrong key is a 404');
+  ok((await hook(JSON.stringify({ number: '0912', body: '' }))).result === 'empty', 'JSON with no text: nothing to do');
+  // every field name the forwarder apps use reaches the parser
+  const tries = [
+    JSON.stringify({ sender: 'b1', message: 'سلام' }), JSON.stringify({ number: 'b2', body: 'test 1' }), JSON.stringify({ address: 'b3', msg: 'test 2' }),
+    JSON.stringify({ phone: 'b4', content: 'test 3' }),
+  ];
+  for (const t of tries) ok((await hook(t)).result === 'not_deposit', 'forwarder JSON field names read: ' + t);
+  ok((await hook('sender=b5&message=' + encodeURIComponent('test 4'), key, 'application/x-www-form-urlencoded')).result === 'not_deposit', 'form-encoded sender/message read');
+  ok((await hook('just a plain text body 5', key, 'text/plain')).result === 'not_deposit', 'a plain text body is the SMS itself');
+  // the parser on odd lines
+  const p0 = sms.parseBankSms('واریز 0,000,000 ریال');
+  ok(p0.deposit && p0.amounts.length === 0, 'a zero amount is no amount');
+  const pAcct = sms.parseBankSms('واریز به حساب 1234567890123 مبلغ 1,250,000 ریال');
+  ok(pAcct.amounts.join() === '1250000', 'a long account number on the line is not an amount: ' + pAcct.amounts);
+  const pMinus = sms.parseBankSms('واریز\n-1,000,000\n+2,500,000');
+  ok(pMinus.amounts.join() === '2500000', 'a minus amount is money leaving: ' + pMinus.amounts);
+  const pPlus = sms.parseBankSms('حساب 123\n3,750,000+\nمانده 9,999,999');
+  ok(pPlus.deposit && pPlus.amounts.join() === '3750000', 'a trailing plus marks the deposit; the balance is not an amount: ' + JSON.stringify(pPlus));
+  const pToman = sms.parseBankSms('واریز 150,000 تومان');
+  ok(pToman.toman.join() === '150000', 'a line saying تومان is toman');
+  const pBoth = sms.parseBankSms('واریز 150,000 تومان ریال');
+  ok(pBoth.toman.length === 0, 'a line saying both تومان and ریال is never read as toman');
+  ok(!sms.maybeDeposit('برداشت 1,000,000') && !sms.maybeDeposit('رمز پویا 123456') && sms.maybeDeposit('new format 1,250,000') && !sms.maybeDeposit('hi 12'), 'maybeDeposit: withdrawals and one-time codes never, money-looking numbers yes');
+  ok(sms.normSender('+98 912-000 0000') === '09120000000' && sms.normSender('۰۰۹۸۹۱۲') === '0912', 'sender numbers made uniform');
+
+  // outcomes with orders
+  const now = Math.floor(Date.now() / 1000);
+  const tok = await W.signupW('qasms@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'qasms@example.com'))[0].id;
+  const order = async (toman, status = 'pending') => (await W.e.DB.prepare("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, ?, 'card', ?, ?)").bind(uid, W.plan.id, toman, status, now).run()).meta.last_row_id;
+  const msgs = () => fakes.tg.messages.length;
+  let n = msgs();
+  ok((await sms.handleBankSms(W.e, { sender: 'bank', text: 'واریز به حساب شما' })).result === 'no_order' && msgs() > n, 'a deposit with no amount: the admin is told to look');
+  const o1 = await order(123457);
+  const o2 = await order(123457);
+  n = msgs();
+  ok((await sms.handleBankSms(W.e, { sender: 'bank', text: 'واریز 1,234,570 ریال' })).result === 'ambiguous', 'two orders with the amount: never by itself');
+  ok(JSON.stringify(fakes.tg.messages.slice(n)).includes(`ap:${o1}`) && JSON.stringify(fakes.tg.messages.slice(n)).includes(`ap:${o2}`), 'both get an approve button');
+  await W.e.DB.prepare("UPDATE orders SET status = 'cancelled' WHERE id IN (?, ?)").bind(o1, o2).run();
+  const o3 = await order(222223);
+  n = msgs();
+  const r3 = await sms.handleBankSms(W.e, { sender: 'bank', text: 'واریز 2,222,230 ریال\nواریز 5,000,000 ریال' });
+  ok(r3.result === 'ambiguous' && /چند مبلغ/.test(fakes.tg.messages[n].text), 'two deposit amounts in one SMS: the admin decides: ' + r3.result);
+  // no sender at all and auto off: review without a "trust this sender" button
+  await W.e.DB.prepare("INSERT INTO settings (key, value) VALUES ('card_auto', 'off') ON CONFLICT(key) DO UPDATE SET value = 'off'").run();
+  const o4 = await order(333334);
+  n = msgs();
+  const r4 = await sms.handleBankSms(W.e, { sender: '', text: 'واریز 3,333,340 ریال', trusted: true });
+  const kb4 = JSON.stringify(fakes.tg.messages[n].reply_markup);
+  ok(r4.result === 'review' && kb4.includes(`ap:${o4}`) && !kb4.includes('ts:'), 'auto off: review even from the bank, no trust button without a sender');
+  ok((await W.q('SELECT status FROM orders WHERE id = ?', o4))[0].status === 'review', 'the order waits for the admin');
+  // auto on, trusted sender, but delivery fails: settle_failed, the SMS is not marked paid
+  await W.e.DB.prepare("UPDATE settings SET value = 'auto' WHERE key = 'card_auto'").run();
+  const o5 = await order(444445);
+  W.pgs[0].down = true;
+  const r5 = await sms.handleBankSms(W.e, { sender: 'bank', text: 'واریز 4,444,450 ریال', trusted: true });
+  W.pgs[0].down = false;
+  ok(r5.result === 'settle_failed' && r5.orderId === o5 && r5.message, 'delivery failing after a matched SMS: settle_failed with the reason: ' + JSON.stringify(r5));
+  ok((await W.q("SELECT result FROM sms_log WHERE amount_rial = 4444450"))[0].result === 'settle_failed', 'the SMS log says settle_failed (it can be approved by hand)');
+  // unreadable SMS that may be money: at most 5 notices an hour, the 5th says so
+  n = msgs();
+  for (let i = 0; i < 7; i++) await sms.handleBankSms(W.e, { sender: 'b', text: `unknown format ${i} 1,${i}00,000` });
+  const notes = fakes.tg.messages.slice(n).filter((m) => /نتوانستم بخوانم/.test(m.text));
+  ok(notes.length === 5 && /تا یک ساعت دیگر/.test(notes[4].text), 'unreadable SMS notices stop at 5 an hour: ' + notes.length);
+  await W.e.DB.prepare("UPDATE settings SET value = 'not json' WHERE key = 'sms_unknown_notice'").run();
+  n = msgs();
+  await sms.handleBankSms(W.e, { sender: 'b', text: 'unknown format again 7,700,000' });
+  ok(fakes.tg.messages.slice(n).some((m) => /نتوانستم بخوانم/.test(m.text)), 'an unreadable counter starts over');
+  ok((await sms.handleBankSms(W.e, { sender: 'b', text: 'unknown format again 7,700,000', source: 'paste' })).result === 'duplicate', 'the same SMS again is a duplicate');
+  void tok;
+}
+
+section('QA-02: on-chain watchers drop everything that is not a confirmed native incoming transfer');
+{
+  const cw = await import('../src/chainwatch.js');
+  const A = 'GADDR';
+  ok(cw.toUnits('5', 6) === 5000000n && cw.toUnits('0.1234567', 6) === 123456n && cw.toUnits('.5', 2) === 50n, 'toUnits: whole, cut to precision, no integer part');
+  globalThis.__chain = { xlm: [], xrp: [], trx: [], ton: [], algo: [] };
+  const ch = globalThis.__chain;
+  // Stellar: only native payments to this address that succeeded
+  ch.xlm.push(
+    { type: 'payment', to: A, asset_type: 'native', amount: '1.5', transaction_hash: 'x1', created_at: '2026-11-01T00:00:00Z', transaction: { memo: 42 } },
+    { type: 'payment', to: A, asset_type: 'credit_alphanum4', amount: '9', transaction_hash: 'x2', created_at: '2026-11-01T00:00:00Z' },
+    { type: 'payment', to: 'OTHER', asset_type: 'native', amount: '9', transaction_hash: 'x3', created_at: '2026-11-01T00:00:00Z' },
+    { type: 'create_account', to: A, asset_type: 'native', amount: '9', transaction_hash: 'x4', created_at: '2026-11-01T00:00:00Z' },
+    { type: 'payment', to: A, asset_type: 'native', amount: '9', transaction_hash: 'x5', created_at: '2026-11-01T00:00:00Z', transaction_successful: false },
+  );
+  const xl = await cw.WATCHERS.xlm.incoming(A);
+  ok(xl.length === 1 && xl[0].txid === 'x1' && xl[0].memo === '42' && xl[0].units === 15000000n, 'XLM: tokens, other receivers, other types and failed ones dropped: ' + xl.map((t) => t.txid));
+  // XRP: validated tesSUCCESS Payment to us, delivered in drops (string), never an IOU object
+  ch.xrp.push(
+    { validated: true, tx: { TransactionType: 'Payment', Destination: A, hash: 'r1', DestinationTag: 7, date: 1 }, meta: { TransactionResult: 'tesSUCCESS', delivered_amount: '2000000' } },
+    { validated: false, tx: { TransactionType: 'Payment', Destination: A, hash: 'r2' }, meta: { TransactionResult: 'tesSUCCESS', delivered_amount: '1' } },
+    { validated: true, tx_json: { TransactionType: 'Payment', Destination: A, hash: 'r3' }, meta: { TransactionResult: 'tecPATH_DRY', delivered_amount: '1' } },
+    { validated: true, tx: { TransactionType: 'Payment', Destination: A, hash: 'r4' }, meta: { TransactionResult: 'tesSUCCESS', delivered_amount: { currency: 'USD', value: '5' } } },
+    { validated: true, hash: 'r5', tx_json: { TransactionType: 'Payment', Destination: A }, meta: { TransactionResult: 'tesSUCCESS', DeliveredAmount: '3' } },
+    { validated: true, tx: { TransactionType: 'OfferCreate', Destination: A, hash: 'r6' }, meta: {} },
+    { validated: true },
+  );
+  const xr = await cw.WATCHERS.xrp.incoming(A);
+  ok(xr.map((t) => t.txid).join() === 'r1,r5' && xr[0].memo === '7' && xr[1].memo === '' && xr[1].units === 3n, 'XRP: unvalidated, failed, IOU and non-payments dropped; DeliveredAmount spelling read: ' + xr.map((t) => t.txid));
+  // TRON: only successful TransferContract
+  ch.trx.push(
+    { txID: 't1', ret: [{ contractRet: 'SUCCESS' }], raw_data: { contract: [{ type: 'TransferContract', parameter: { value: { amount: 1000000 } } }] }, block_timestamp: 5000 },
+    { txID: 't2', ret: [{ contractRet: 'REVERT' }], raw_data: { contract: [{ type: 'TransferContract', parameter: { value: { amount: 1 } } }] } },
+    { txID: 't3', ret: [{ contractRet: 'SUCCESS' }], raw_data: { contract: [{ type: 'TriggerSmartContract', parameter: { value: {} } }] } },
+    { txID: 't4' }, { txID: 't5', ret: [], raw_data: {} },
+  );
+  const tr = await cw.WATCHERS.trx.incoming(A);
+  ok(tr.map((t) => t.txid).join() === 't1' && tr[0].time === 5, 'TRON: failed, token contracts and malformed rows dropped');
+  // TON: an incoming value from a source; bounced and empty ones dropped; the comment read from msg_data too
+  ch.ton.push(
+    { in_msg: { source: 'S1', value: '3000000000', message: 'memo1' }, transaction_id: { hash: btoa('\x01\x02') }, utime: 9 },
+    { in_msg: { source: 'S2', value: '1000', msg_data: { text: btoa('memo2') } }, transaction_id: { hash: 'not base64 ***' } },
+    { in_msg: { source: '', value: '5' } },
+    { in_msg: { source: 'S3', value: '0' } },
+    { in_msg: { source: 'S4', value: '7' }, out_msgs: [{ destination: 'S4', value: '7' }] },
+    { in_msg: { source: 'S5', value: '8', msg_data: { text: '%%%' } }, out_msgs: [{ destination: 'S5', value: '0' }] },
+    {},
+  );
+  const tn = await cw.WATCHERS.ton.incoming(A);
+  ok(tn.length === 3 && tn[0].txid === '0102' && tn[0].memo === 'memo1' && tn[1].memo === 'memo2' && tn[1].txid === 'not base64 ***' && tn[2].memo === '', 'TON: external, empty and bounced dropped; hash as hex; comment from msg_data: ' + JSON.stringify(tn.map((t) => [t.txid, t.memo])));
+  // Algorand: confirmed payments to us; note is base64
+  ch.algo.push(
+    { id: 'a1', 'confirmed-round': 10, 'payment-transaction': { receiver: A, amount: 500 }, note: btoa(' hi '), 'round-time': 3 },
+    { id: 'a2', 'payment-transaction': { receiver: A, amount: 1 } },
+    { id: 'a3', 'confirmed-round': 11, 'payment-transaction': { receiver: 'X', amount: 1 } },
+    { id: 'a4', 'confirmed-round': 12 },
+    { id: 'a5', 'confirmed-round': 13, 'payment-transaction': { receiver: A, amount: 2 } },
+  );
+  const al = await cw.WATCHERS.algo.incoming(A);
+  ok(al.map((t) => t.txid).join() === 'a1,a5' && al[0].memo === 'hi' && al[1].memo === '' && al[1].time === 0, 'Algorand: unconfirmed, others and non-payments dropped');
+  // a chain API that answers an error is an error (the order waits for the next minute), not "no payments"
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init) => (String(typeof input === 'string' ? input : input.url).startsWith('https://horizon.stellar.org/') ? new Response('down', { status: 503 }) : real(input, init));
+  const e503 = await catchErr(cw.WATCHERS.xlm.incoming(A));
+  globalThis.fetch = real;
+  ok(e503 && /HTTP 503/.test(e503.message), 'XLM API 503 -> error: ' + (e503 && e503.message));
+  globalThis.__chain = { xlm: [], xrp: [], trx: [], ton: [], algo: [] };
+  // mode and the quick check's early answers
+  const W = await world('qacw', 1);
+  ok(await cw.autoMode(W.e) === 'auto', 'mode: auto by default');
+  await W.e.DB.prepare("INSERT INTO settings (key, value) VALUES ('coin_auto', ' Bogus ')").run();
+  ok(await cw.autoMode(W.e) === 'auto', 'an unknown mode reads as auto');
+  await W.e.DB.prepare("UPDATE settings SET value = 'off' WHERE key = 'coin_auto'").run();
+  ok((await cw.scanAll(W.e)).length === 0, 'off: the cron scans nothing');
+  const ord = { id: 1, method: 'coin', coin: 'xlm', status: 'pending' };
+  ok(await cw.checkOrder(W.e, ord) === null, 'off: the quick check does nothing');
+  await W.e.DB.prepare("UPDATE settings SET value = 'detect' WHERE key = 'coin_auto'").run();
+  ok(await cw.checkOrder(W.e, { ...ord, status: 'review', txid: 'x' }) === null, 'detect: an order already matched waits for the admin');
+  ok(await cw.checkOrder(W.e, { ...ord, coin: 'btc' }) === null && await cw.checkOrder(W.e, { ...ord, method: 'card' }) === null && await cw.checkOrder(W.e, null) === null, 'not a watched coin order: nothing');
+  ok(await cw.checkOrder(W.e, { ...ord, id: 999999 }) === null, 'an order that is not open: nothing');
+  ok((await cw.scanAll(W.e)).length === 0, 'no open coin orders: nothing to scan');
+}
+
+section('QA-02: panel adapters: logins, refusals, fallbacks and odd answers');
+{
+  const { PasarGuard, PasarGuardError, parseExpire, panelBases, decodeSub } = await import('../src/pasarguard.js');
+  const { Marzban, Rebecca, detectKind } = await import('../src/marzban.js');
+  const C = { url: 'https://unit.test/hub/#/login', username: 'u', password: 'p' };
+  const fresh = (Cls = PasarGuard, c = C) => { globalThis.__cgPg = {}; return new Cls({}, c); };
+  ok(parseExpire(null) === null && parseExpire(0) === null && parseExpire('') === null && parseExpire(12.7) === 12 && parseExpire('1700000000') === 1700000000, 'parseExpire: never, numbers, digits');
+  ok(parseExpire('2026-01-01T00:00:00') === 1767225600 && parseExpire('2026-01-01T03:30:00+03:30') === 1767225600 && parseExpire('soon') === null, 'parseExpire: ISO is UTC unless it says otherwise; junk is null');
+  ok(panelBases('').length === 0 && panelBases('p.example.com/hub/#/login').join() === 'https://p.example.com,https://p.example.com/hub' && panelBases('https://[bad').length === 1, 'panelBases: empty, no scheme + sub-path, unparsable');
+  ok(decodeSub('').length === 0 && decodeSub('@@not base64@@').length === 0 && decodeSub(btoa('vless://a@b:1#x\nhello')).join() === 'vless://a@b:1#x', 'decodeSub: empty, junk, base64 lines');
+  // login: no password; a panel that says no; one without a token; then a sub-path that works
+  ok(/username\/password are not set/.test((await catchErr(fresh(PasarGuard, { url: 'https://unit.test' })._login())).message), 'no login in the secret: says so');
+  ok(/address is not set/.test((await catchErr(fresh(PasarGuard, { url: '' })._req('GET', '/x'))).message), 'no address: says so');
+  await withUnit((m, p) => (p === '/api/admin/token' ? [401, { detail: 'Incorrect username or password' }] : [500, 'x']), async () => {
+    const e = await catchErr(fresh()._login());
+    ok(e instanceof PasarGuardError && e.status === 401 && /Incorrect username/.test(e.message), 'login rejected: the panel\'s own reason: ' + (e && e.message));
+  });
+  await withUnit((m, p) => (p === '/api/admin/token' ? [200, { nope: 1 }] : p === '/hub/api/admin/token' ? [502, '<html>bad gateway</html>', { 'content-type': 'text/html' }] : [500, 'x']), async () => {
+    const e = await catchErr(fresh()._login());
+    ok(e instanceof PasarGuardError && /login failed \(502\)/.test(e.message), 'no token on the origin, 502 on the sub-path: the last failure is reported: ' + (e && e.message));
+  });
+  await withUnit((m, p) => (p === '/api/admin/token' ? { throw: new TypeError('connect refused') } : p === '/hub/api/admin/token' ? [200, { access_token: 'T' }] : p === '/hub/api/user/a' ? [200, { username: 'a' }] : [404, 'no']), async () => {
+    const pg = fresh();
+    ok((await pg.getUser('a')).username === 'a' && pg.base === 'https://unit.test/hub', 'an unreachable origin falls through to the pasted sub-path');
+  });
+  // API key: no login at all; 401 is not retried with a new token
+  await withUnit((m, p, b, init) => [new Headers(init.headers).get('x-api-key') === 'K' ? 401 : 200, { detail: 'expired key' }], async (seen) => {
+    const e = await catchErr(fresh(PasarGuard, { url: 'https://unit.test', api_key: ' K ' }).modifyUser('a', {}));
+    ok(e && e.status === 401 && seen.length === 1 && !seen.some((s) => s.includes('token')), 'API key: sent as x-api-key, a 401 is final: ' + seen.join());
+  });
+  // a stale token: 401 once -> logs in again and repeats the call
+  let logins = 0, firstCall = true;
+  await withUnit((m, p) => {
+    if (p === '/api/admin/token') { logins++; return [200, { access_token: 'T' + logins }]; }
+    if (p === '/api/user/b') { if (firstCall) { firstCall = false; return [401, 'expired']; } return [200, { username: 'b' }]; }
+    return [404, 'no'];
+  }, async () => {
+    const pg = fresh(PasarGuard, { url: 'https://unit.test', username: 'u', password: 'p' });
+    ok((await pg.getUser('b')).username === 'b' && logins === 2, 'an expired token: logged in again and repeated: ' + logins);
+  });
+  // creates: strict panel -> lean retry; Marzban without inbounds; Marzban/Rebecca note retry; Rebecca without service
+  const creates = [];
+  let noInbounds = true;
+  await withUnit((m, p, b) => {
+    if (p === '/api/admin/token') return [200, { access_token: 'T' }];
+    if (p === '/api/user' && m === 'POST') { const j = JSON.parse(b); creates.push(j); return 'note' in j || 'proxy_settings' in j ? [422, { detail: 'extra fields' }] : [200, { username: j.username, subscription_url: '/sub/z' }]; }
+    if (p === '/api/inbounds') return [200, noInbounds ? { vless: [], trojan: [] } : { vless: [{ tag: 'v' }], ss: [] }];
+    if (p === '/api/user/m1') return [200, { username: 'm1', subscription_url: '/sub/m1' }];
+    if (p.startsWith('/api/v2/services')) return [200, { services: [{ id: 1, name: 'broken', broken: true }, { id: 2, name: 'nohosts', has_hosts: false }] }];
+    return [404, 'no'];
+  }, async () => {
+    const lean = await fresh().createUser('p1', { expire: 5, dataLimit: 6, groupIds: [1], hwidLimit: 2, note: 'n' });
+    ok(lean.username === 'p1' && creates.length === 2 && !('note' in creates[1]) && !('hwid_limit' in creates[1]), 'PasarGuard: a strict panel gets the bare minimum on the second try');
+    const mz = fresh(Marzban);
+    ok(/no inbounds/.test((await catchErr(mz.createUser('m0', {}))).message), 'Marzban without inbounds: refused before creating');
+    noInbounds = false;
+    const m1 = await mz.createUser('m1', { note: 'n' });
+    ok(m1.subscription_url === '/sub/z' && !('note' in creates[creates.length - 1]) && 'vless' in creates[creates.length - 1].proxies && !('ss' in creates[creates.length - 1].proxies), 'Marzban: note dropped on retry; only protocols that have inbounds');
+    ok((await mz._complete('m1', { username: 'm1' })).subscription_url === '/sub/m1' && (await mz._complete('zz', { username: 'zz' })).username === 'zz', 'Marzban: an answer without a link is completed by reading the user (or kept)');
+    ok(mz.usesGroups === false && (await mz.listGroups()).length === 0 && (await mz.deleteHwid()) === false && (await mz.hostRules()) === null, 'Marzban: no groups, no device list, no tunnel marks');
+    const rb = fresh(Rebecca);
+    ok(/needs a service/.test((await catchErr(rb.createUser('r0', { groupIds: [] }))).message), 'Rebecca without a service: refused with how to fix it');
+    const r1 = await rb.createUser('r1', { groupIds: [2], note: 'n' });
+    ok(r1.username === 'r1' && creates[creates.length - 1].service_id === 2 && !('note' in creates[creates.length - 1]), 'Rebecca: note dropped on retry');
+    const g = await rb.listGroups();
+    ok(g.length === 1 && g[0].id === 2, 'Rebecca: with no service that has hosts, the unbroken ones are offered: ' + JSON.stringify(g));
+  });
+  await withUnit((m, p, b) => {
+    if (p === '/api/admin/token') return [200, { access_token: 'T' }];
+    if (p === '/api/user' && m === 'POST') return [400, { detail: 'service 9 not found' }];
+    return [404, 'no'];
+  }, async (seen) => {
+    const e = await catchErr(fresh(Rebecca).createUser('r2', { groupIds: [9] }));
+    ok(e && /service 9 not found/.test(e.message) && seen.filter((s) => s === 'POST /api/user').length === 1, 'Rebecca: a refusal about the service is not retried');
+  });
+  // groups: reseller fallback; a refusal that is not about rights is passed on
+  await withUnit((m, p) => (p === '/api/admin/token' ? [200, { access_token: 'T' }] : p === '/api/groups' ? [500, 'db down'] : [404, 'no']), async () => {
+    ok((await catchErr(fresh().listGroups())).status === 500, 'groups: a 500 is an error, not an empty list');
+  });
+  // detection: nothing recognisable -> null kind with what was seen
+  await withUnit((m, p) => (p === '/api/admin/token' ? [200, { access_token: 'T' }] : p === '/api/inbounds' ? [200, '[1]'] : p.startsWith('/api/groups/simple') ? [200, '<html>', { 'content-type': 'text/html' }] : [404, 'no']), async () => {
+    const d = await detectKind(fresh());
+    ok(d.kind === null && /\/api\/v2\/services 404/.test(d.detail) && /\/api\/inbounds 200/.test(d.detail), 'detectKind: nothing matched -> null with the statuses seen: ' + d.detail);
+  });
+  // version, hosts, HWID, subscription fallbacks
+  await withUnit((m, p) => {
+    if (p === '/api/admin/token') return [200, { access_token: 'T' }];
+    if (p === '/api/system') return [503, 'busy'];
+    if (p === '/api/user/h') return [200, { id: 5, username: 'h' }];
+    if (p === '/api/user/none') return [404, 'no'];
+    if (p.startsWith('/api/user/5/hwids/')) return [204, ''];
+    if (p === '/sub/t/links') return [500, 'no'];
+    if (p === '/sub/t') return [200, btoa('trojan://x@y:1#a')];
+    if (p === '/sub/bad') return [403, 'forbidden'];
+    if (p === '/sub/bad/links') return { throw: new TypeError('reset') };
+    return [404, 'no'];
+  }, async () => {
+    const pg = fresh(PasarGuard, { url: 'https://unit.test', username: 'u', password: 'p' });
+    ok(await pg.version() === null, 'version: a panel that does not say -> null');
+    ok(await pg.deleteHwid('h', 'dev 1') === true && await pg.deleteHwid('none', 'x') === false, 'HWID: freed on a known user, false on an unknown one');
+    ok((await pg.subscriptionLinks('/sub/t')).join() === 'trojan://x@y:1#a', 'links: /links fails -> the raw subscription is decoded');
+    const e = await catchErr(pg.subscriptionLinks('/sub/bad'));
+    ok(e instanceof PasarGuardError && e.status === 403, 'links: both fail -> error with the status');
+    ok(/no subscription url/.test((await catchErr(pg.subscriptionRaw(''))).message), 'raw subscription without a link: refused');
+    ok(pg.absoluteSubUrl('sub/x') === 'https://unit.test/sub/x' && pg.absoluteSubUrl('https://o.test/s') === 'https://o.test/s' && pg.absoluteSubUrl('') === '', 'sub links made absolute');
+    ok(pg.panelHosts().join() === 'unit.test', 'panel host names');
+  });
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
