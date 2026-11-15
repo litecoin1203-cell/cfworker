@@ -49,7 +49,8 @@ export function restoreSql(backup) {
   if (unknown.length) throw new Error(`unknown tables in the backup: ${unknown.join(', ')}`);
   if (!Array.isArray(b.tables.users)) throw new Error('not a Cloud Gold backup: no users table');
   const lines = [`-- Cloud Gold restore of the backup made at ${String(b.created_at || '?').replace(/[\r\n]/g, ' ')}`,
-    '-- For a new database with every migration applied. Rows the migrations seeded are replaced by the backup.'];
+    '-- For a new database with every migration applied. Rows the migrations seeded are replaced by the backup.',
+    '-- WARNING: this first DELETEs every row of each backed-up table. Never run it against the live database.'];
   const counts = {};
   for (const t of BACKUP_TABLES) {
     const rows = b.tables[t];

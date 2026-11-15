@@ -5719,6 +5719,10 @@ section('CI: the APK run runs the Kotlin unit tests before it publishes (QA-01)'
   ok(tests.length >= 2 && /testImplementation\("junit:junit:[\d.]+"\)/.test(gradle), 'QA-01: the app module has JVM unit tests and JUnit: ' + tests.join(', '));
   const run = fv.indexOf('testReleaseUnitTest');
   ok(run > 0 && run > fv.indexOf('name: Build APK') && run < fv.indexOf('name: Publish APKs'), 'QA-01: the manual run runs them after the build and before anything is published');
+  // AGP 9 only makes unit-test tasks for the tested build type (debug) unless this is turned off, so
+  // testReleaseUnitTest would not exist and the APK run would stop after the build
+  const props = readFileSync(new URL('../../flutter_vpn/android/gradle.properties', import.meta.url), 'utf8');
+  ok(/^android\.onlyEnableUnitTestForTheTestedBuildType=false$/m.test(props), 'QA-01: gradle.properties lets AGP 9 make testReleaseUnitTest');
 }
 
 section('OPS-06: the daily Telegram backup restores into a new database');
