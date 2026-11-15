@@ -1010,7 +1010,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | **1.2.24: no exit connected at all** (proven) — IPIfNonMatch resolved the start check's host to IPv6, which the new block rule refused | AsIs, phone-only rules scoped to `inboundTag socks`, IPv4 DNS — #48 |
 | NET-01 core refuses `allowInsecure` since 2026-08-01; an insecure backup broke the whole config | never written; normal verification or the pin; insecure samples in `XRAY_DUMP` — audit fix |
 | NET-05 h2/http/quic/legacy-XTLS links passed the builder and failed in the core | refused as "unsupported" (failover, backup dropped) — audit fix |
-| NET-02 a short network loss ended in failover → `_stopTunnel` → apps out bare | no-network misses not counted (bounded ~2 min); a live session that lost every exit keeps the tun held, shown on the card/widget, retried with back-off — audit fix |
+| NET-02 a short network loss ended in failover → `_stopTunnel` → apps out bare | no-network misses not counted (bounded ~2 min); a live session that lost every exit keeps the tun held, shown on the card/widget, retried with back-off, and tried at once when Android names a network again (checked every 3 s while held) — audit fix |
 | A dead line showed as "wrong password / wrong code" | `ApiError.offline` → neutral connection card — #54 |
 | Native crash (SIGABRT) reports carried only the signal | tombstone + Go stderr + tunnel state in the report — #77, #79, #80 (root cause still open, §19) |
 | Widget: start from a fully closed app refused by Android 12+/MIUI | invisible `WidgetConnect` activity — #78 (1.2.42) |

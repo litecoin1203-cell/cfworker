@@ -258,6 +258,44 @@ void main() {
     await tester.pump(const Duration(minutes: 3));
   });
 
+  testWidgets('a long outage: held, and back on within seconds of the '
+      'network returning', (tester) async {
+    final (app, tunnel) = await _protected(tester);
+    // The phone has no network for minutes: past the ~2 minute grace the
+    // misses count, every exit fails, and the session is held.
+    tunnel
+      ..kind = ''
+      ..live = null
+      ..pings = {};
+    for (var i = 0; i < 40 && !app.holding; i++) {
+      if (app.phase == Phase.handshaking) tunnel.emit(TunnelState.failed);
+      await _secs(tester, 5);
+    }
+    expect(app.holding, isTrue);
+    expect(tunnel.stopped, isFalse);
+    // Still no network for a long while: the retries space out.
+    await _secs(tester, 400);
+    expect(app.phase, Phase.dropped);
+    expect(tunnel.stopped, isFalse);
+    // The network is back and the exit answers: the held tunnel is taken
+    // over within seconds, not at the next 2 minute retry.
+    tunnel
+      ..kind = 'wifi'
+      ..pings = {'de1.example.com': 60}
+      ..live = 80
+      ..started = null;
+    await _secs(tester, 10);
+    expect(app.phase, Phase.handshaking);
+    expect(tunnel.started, contains('de1.example.com'));
+    expect(tunnel.stopped, isFalse);
+    tunnel.emit(TunnelState.up);
+    await tester.pump(PMotion.seal);
+    expect(app.phase, Phase.protected);
+    expect(app.holding, isFalse);
+    await app.disconnect();
+    await tester.pump(const Duration(minutes: 3));
+  });
+
   testWidgets('a held tunnel: Reconnect takes it over, the notification '
       'stop releases it', (tester) async {
     final (app, tunnel) = await _protected(tester);

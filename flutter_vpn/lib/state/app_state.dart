@@ -2634,6 +2634,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _lateUpOk = false;
     _timedOut = false;
     _holdRetry?.cancel();
+    _netWatch?.cancel();
     final attempt = ++_attempt;
     phase = Phase.checking;
     tunnelMessage = null;
@@ -2920,6 +2921,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   ];
   Timer? _holdRetry;
 
+  /// While held, how often Android is asked whether the phone has a network
+  /// again: the moment it does, the exits are tried at once instead of at
+  /// the next (up to 2 minute) back-off retry, so a long outage ends with
+  /// the VPN back on within seconds of the network returning.
+  static const netWatchGap = Duration(seconds: 3);
+  Timer? _netWatch;
+
+  /// The held session has seen "no network" since its last try.
+  bool _heldOffline = false;
+
   /// The person was told (background alert) that traffic is held.
   bool _heldAlerted = false;
 
@@ -2943,6 +2954,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     _holdOnFail = false;
     holdTries = 0;
     _holdRetry?.cancel();
+    _netWatch?.cancel();
     if (_heldAlerted) {
       _heldAlerted = false;
       unawaited(tunnel.alertClear());
@@ -2986,6 +2998,26 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
     _scheduleHoldRetry();
+    _watchNetWhileHeld();
+  }
+
+  void _watchNetWhileHeld() {
+    _netWatch?.cancel();
+    _heldOffline = false;
+    _netWatch = Timer.periodic(netWatchGap, (t) async {
+      if (!holding || phase != Phase.dropped) return t.cancel();
+      final net = await tunnel.hasNetwork();
+      if (!holding || phase != Phase.dropped) return;
+      if (net == false) {
+        _heldOffline = true;
+      } else if (net == true && _heldOffline) {
+        // The network is back: try now, and start the back-off over.
+        _heldOffline = false;
+        holdTries = 0;
+        _holdRetry?.cancel();
+        unawaited(_retryHeld());
+      }
+    });
   }
 
   void _scheduleHoldRetry() {
@@ -2998,7 +3030,19 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// tested (outside the tunnel, as on Locations); the first that answers is
   /// started, which takes the held tun over. Nothing answers: held still.
   Future<void> _retryHeld() async {
-    if (!holding || phase != Phase.dropped) return;
+    if (!holding || phase != Phase.dropped || _retryingHeld) return;
+    _retryingHeld = true;
+    try {
+      await _retryHeldOnce();
+    } finally {
+      _retryingHeld = false;
+    }
+  }
+
+  /// A held try is running (the timer and the network watch share it).
+  bool _retryingHeld = false;
+
+  Future<void> _retryHeldOnce() async {
     final attempt = _attempt;
     holdTries++;
     bool still() => holding && phase == Phase.dropped && attempt == _attempt;
@@ -3514,6 +3558,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   void _stopTimers() {
     exitSilent = false;
     _holdRetry?.cancel();
+    _netWatch?.cancel();
     _watch?.cancel();
     _pulse?.cancel();
     _handshake?.cancel();
