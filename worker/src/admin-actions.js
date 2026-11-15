@@ -95,6 +95,13 @@ export const ACTIONS = {
           return fail(`❌ این آدرس برای ${c ? c.symbol + ' (' + c.network + ')' : key} درست به نظر نمی‌رسد. دوباره از ولتت کپی کن.\nبرای خاموش کردن این ارز: /set ${key}`);
         }
       }
+      if (/^pay_(wallet|card|coin|crypto)_on$/.test(key) && !['0', '1'].includes(val)) return fail('❌ این کلید فقط 1 (روشن) یا 0 (خاموش) می‌گیرد.');
+      if (key === 'pay_coins_off') { // PAY-08: coins switched off one by one
+        const { coinById } = await import('./coins.js');
+        const ids = val.toLowerCase().split(/[\s,]+/).filter(Boolean);
+        if (ids.some((x) => !coinById(x))) return fail('❌ در لیست ارزهای خاموش، ارز ناشناخته هست. فقط شناسه‌ی ارزها مثل xlm,trx.');
+        val = [...new Set(ids)].join(',');
+      }
       if (key === 'support_url' && val && !/^(https:\/\/|tg:\/\/)[^\s<>"']{3,300}$/i.test(val)) return fail('❌ لینک پشتیبانی باید با https:// یا tg:// شروع شود، مثلاً https://t.me/your_support');
       if (key === 'trial_data_gb' && !/^\d{1,4}$/.test(val || '0')) return fail('❌ حجم تست را به گیگ و فقط عدد بنویس (0 = مثل پلن).');
       if (key === 'announcement' && val.length > 1000) return fail('❌ اطلاعیه حداکثر ۱۰۰۰ حرف است.');

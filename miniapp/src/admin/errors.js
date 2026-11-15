@@ -2,6 +2,8 @@
 // English: the ones below are translated exactly; a sentence that is not here keeps its English fallback with
 // the original after it, so nothing the server said is lost. Tested in test/errors.test.js.
 const EXACT = {
+  '❌ این کلید فقط 1 (روشن) یا 0 (خاموش) می‌گیرد.': 'This switch takes only 1 (on) or 0 (off).',
+  '❌ در لیست ارزهای خاموش، ارز ناشناخته هست. فقط شناسه‌ی ارزها مثل xlm,trx.': 'The list of switched-off coins has an unknown coin. Use coin ids only, like xlm,trx.',
   'آیدی درست نیست.': 'That id is not right.',
   'آیدی عددی تلگرام درست نیست (۵ تا ۱۵ رقم).': 'The Telegram id must be 5 to 15 digits.',
   'اجازه‌ی این کار را نداری.': 'Your admin role cannot do this.',

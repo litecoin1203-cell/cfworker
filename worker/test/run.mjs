@@ -42,6 +42,8 @@ const env = {
   TG_START_PER_HOUR: '100000',
 };
 env.DB.onQuery = () => { const s = invocation.getStore(); if (s && ++s.q === QUERY_CAP + 1) overCap.push(s); };
+// a panel account's note is "Pleat #<user id>" (PNL-07: nothing personal on a panel)
+const pleatNote = (email) => { const u = env.DB.get('SELECT id FROM users WHERE email = ?', email); return u ? `Pleat #${u.id}` : '(no such user)'; };
 const _pending = [];
 const ctx = { waitUntil: (p) => { _pending.push(Promise.resolve(p)); } };
 async function drain() { const ps = _pending.splice(0); await Promise.all(ps); }
@@ -421,7 +423,7 @@ section('used_percent on /me comes from the server');
   const tok = await signup('pct@example.com', { device: 'pct-phone' });
   const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
   await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant pct@example.com ${monthly.id}` } });
-  const u = Object.values(fakes.pg.users).find((x) => (x.note || '').includes('pct@example.com'));
+  const u = Object.values(fakes.pg.users).find((x) => x.note === pleatNote('pct@example.com'));
   ok(!!u, 'panel user for pct@example.com');
   const uid = (await env.DB.prepare("SELECT id FROM users WHERE email = 'pct@example.com'").first()).id;
   await env.DB.prepare('UPDATE subscriptions SET data_limit_bytes = 1000 WHERE user_id = ?').bind(uid).run();
@@ -437,7 +439,7 @@ section('used_percent on /me comes from the server');
   ok(s.used_percent === 100, 'capped at 100');
   const tok2 = await signup('pct2@example.com', { device: 'pct2-phone' });
   await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant pct2@example.com ${monthly.id}` } });
-  const u2 = Object.values(fakes.pg.users).find((x) => (x.note || '').includes('pct2@example.com'));
+  const u2 = Object.values(fakes.pg.users).find((x) => x.note === pleatNote('pct2@example.com'));
   u2.used_traffic = 5000;
   s = (await call('GET', '/api/v1/me', { token: tok2 })).data.subscription;
   ok(s.used_percent === null && s.unlimited_data === true && s.used_bytes === 5000, 'unlimited data has no percent');
@@ -611,8 +613,8 @@ section('telegram button menu');
 
 section('panel address normalisation + sub decoding');
 {
-  const b = panelBases('https://p.rain.rest/hub/#/login');
-  ok(b[0] === 'https://p.rain.rest' && b[1] === 'https://p.rain.rest/hub', 'hub/#/login -> origin first ' + JSON.stringify(b));
+  const b = panelBases('https://panel.example.invalid/hub/#/login');
+  ok(b[0] === 'https://panel.example.invalid' && b[1] === 'https://panel.example.invalid/hub', 'hub/#/login -> origin first ' + JSON.stringify(b));
   ok(panelBases('p.example.com:8000/dashboard/')[0] === 'https://p.example.com:8000', 'bare host + dashboard path');
   ok(panelBases('https://x.com/')[1] === undefined, 'plain origin has one base');
   const lines = decodeSub(btoa('vless://a@b:1#x\nvmess://abc\n'));
@@ -627,7 +629,7 @@ section('reseller without full group access: falls back to simple list');
   const annual = (await call('GET', '/api/v1/plans')).data.find((p) => p.trial_days > 0);
   const t = await call('POST', '/api/v1/trial', { token: tok, json: { plan_id: annual.id }, headers: { 'x-device-id': 'rs-phone' } });
   ok(t.status === 200 && t.data.subscription.active, 'trial created via groups/simple ' + JSON.stringify(t.data));
-  const pgUser = Object.values(fakes.pg.users).find((u) => (u.note || '').includes('reseller@example.com'));
+  const pgUser = Object.values(fakes.pg.users).find((u) => u.note === pleatNote('reseller@example.com'));
   ok(pgUser && pgUser.group_ids.join(',') === '1,2', 'user got the reseller groups');
   ok(t.data.subscription.remaining_bytes === null && t.data.subscription.unlimited_data === true, 'unlimited data reported');
   fakes.pg.groupsSudoOnly = false;
@@ -1422,7 +1424,7 @@ env.PANEL_3_CRED = JSON.stringify({ url: P3, username: 'admin3', password: 'pass
 const admin = (text) => tgWebhook({ message: { chat: { id: 12345 }, text } });
 const lastText = () => fakes.tg.messages[fakes.tg.messages.length - 1].text;
 const syncRounds = async (n) => { for (let i = 0; i < n; i++) await runSync(env); };
-const panelUser = (pg, email) => Object.values(pg.users).find((x) => (x.note || '').endsWith('· ' + email));
+const panelUser = (pg, email) => Object.values(pg.users).find((x) => x.note === pleatNote(email));
 const userId = async (email) => (await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first()).id;
 let tenGb;
 
@@ -1472,45 +1474,55 @@ section('acceptance: 2 + 4 + 5 GB on three panels = 11 GB; a 10 GB plan stops on
   ok(puts.join() === puts2.join(), 'stopping again changes nothing (idempotent): ' + puts + ' / ' + puts2);
 }
 
-section('panel accounts are named after the Telegram @username; taken names and users without one fall back');
+section('PNL-07: new panel accounts get an opaque name and a note with no personal data; existing names are kept');
 {
-  const { panelNames, panelNameBase } = await import('../src/sync.js');
-  ok(panelNameBase({ id: 5, tg_username: 'Ali__Gold_' }) === 'ali_gold', 'sanitized: lower case, no double or trailing underscore');
-  ok(panelNameBase({ id: 5, tg_id: 777, tg_username: null }) === 'tg777', 'no @username: tg<numeric id>');
-  ok(panelNameBase({ id: 5, email: 'a@b.c' }) === null, 'no Telegram: no Telegram name');
-  const long = panelNames({ id: 123456, tg_username: 'a'.repeat(32) });
-  ok(long.every((n) => n.length <= 32 && /^[a-z0-9_]+$/.test(n) && !/__/.test(n)) && long[1].endsWith('_123456'), 'every candidate fits all three panels: ' + long.join(','));
-  ok(/^cg_9_[0-9a-f]{4}$/.test(panelNames({ id: 9 })[0]), 'email-only users keep the old cg_<id>_<random> name');
+  const { panelNames } = await import('../src/sync.js');
+  const who = { id: 5, tg_id: 777001, tg_username: 'Ali__Gold_', email: 'ali.gold@example.com' };
+  const cands = panelNames(who);
+  ok(cands.length === 3 && new Set(cands).size === 3 && cands.every((x) => /^cg_[0-9a-f]{10,12}$/.test(x)), 'PNL-07: three opaque candidates cg_<random hex>: ' + cands.join(','));
+  ok(cands.every((x) => !/ali|gold|777001/i.test(x)), 'PNL-07: no @username or Telegram id in the name');
+  ok(panelNames({ id: 9 }).every((x) => /^cg_[0-9a-f]{10,12}$/.test(x)) && panelNames({ id: 9 }, 'pl')[0].startsWith('pl_'), 'PNL-07: the same shape without Telegram, with the configured prefix');
+  ok(panelNames(who).every((x) => x.length <= 32 && !/__/.test(x)), 'PNL-07: every candidate fits all three panel types');
 
   await signup('tgname@example.com', { device: 'tgn-phone' });
   const id1 = await userId('tgname@example.com');
   await env.DB.prepare('UPDATE users SET tg_id = 900001, tg_username = ? WHERE id = ?').bind('gold_ali', id1).run();
-  // someone made "gold_ali" on panel 2 by hand: that panel answers 409 and the next name is used
-  pg2.users['gold_ali'] = { id: 4242, username: 'gold_ali', status: 'active', expire: 0, data_limit: 0, used_traffic: 0, token: 'hand' };
+  // panel 2 says the first name is taken (409): the next candidate is used
+  const real2 = pg2.users;
+  let refused = null;
+  pg2.users = new Proxy(real2, { get(t, k) { if (!refused && typeof k === 'string' && /^cg_/.test(k) && !(k in t)) { refused = k; return { username: k }; } return t[k]; } });
   await admin(`/grant tgname@example.com ${tenGb.id}`);
+  pg2.users = real2;
   const rows = (await env.DB.prepare('SELECT panel_id, remote_username FROM panel_accounts WHERE user_id = ? ORDER BY panel_id').bind(id1).all()).results;
   ok(rows.length === 3, 'one account on each panel');
-  ok(rows[0].remote_username === 'gold_ali' && rows[2].remote_username === 'gold_ali', 'named after the @username: ' + rows.map((r) => r.remote_username));
-  ok(rows[1].remote_username === `gold_ali_${id1}` && pg2.users['gold_ali'].id === 4242, 'taken on panel 2 -> gold_ali_<id>, the hand-made account untouched');
-  ok(fakes.pg.users['gold_ali'].note.includes('tg 900001'), 'the panel note carries the numeric Telegram id');
-  // the user changes @username in Telegram: the panel name stays (it is fixed at creation)
-  await env.DB.prepare('UPDATE users SET tg_username = ? WHERE id = ?').bind('new_name', id1).run();
+  ok(refused && rows[1].remote_username !== refused && /^cg_[0-9a-f]{10,12}$/.test(rows[1].remote_username) && real2[rows[1].remote_username], 'PNL-07: a name the panel says is taken (409) moves on to the next opaque one');
+  ok(rows.every((r) => /^cg_[0-9a-f]{10,12}$/.test(r.remote_username) && !/gold|900001/.test(r.remote_username)), 'PNL-07: the panel names carry nothing about the user: ' + rows.map((r) => r.remote_username));
+  const n1 = fakes.pg.users[rows[0].remote_username].note;
+  ok(n1 === `Pleat #${id1}`, 'PNL-07: the panel note is only "Pleat #<user id>" (no Telegram id, username or email): ' + n1);
+  ok(!/900001|gold_ali|@example/.test(JSON.stringify(Object.values(pg2.users).filter((u) => rows.some((r) => r.remote_username === u.username)))), 'PNL-07: nothing personal on panel 2 either');
+  // an account made before this change keeps its old name: renewal and lookup go by the stored name
+  const old = rows[0].remote_username;
+  fakes.pg.users['gold_ali'] = { ...fakes.pg.users[old], username: 'gold_ali' };
+  delete fakes.pg.users[old];
+  await env.DB.prepare("UPDATE panel_accounts SET remote_username = 'gold_ali' WHERE user_id = ? AND panel_id = 1").bind(id1).run();
+  const created0 = Object.keys(fakes.pg.users).length;
   await admin(`/grant tgname@example.com ${tenGb.id}`);
   const again = (await env.DB.prepare('SELECT remote_username FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(id1).first()).remote_username;
-  ok(again === 'gold_ali', 'renewal keeps the same panel account after an @username change');
+  ok(again === 'gold_ali' && Object.keys(fakes.pg.users).length === created0, 'PNL-07: an existing account is renewed under its old name, never renamed or re-created');
+  const p2name = rows[1].remote_username;
 
   section('bot: per-panel usage, dates, last connection and online now');
   const now = Math.floor(Date.now() / 1000);
   fakes.pg.users['gold_ali'].used_traffic = 1 * GB;
   fakes.pg.users['gold_ali'].online_at = new Date((now - 30) * 1000).toISOString().replace('Z', '');
-  pg2.users[`gold_ali_${id1}`].used_traffic = 2 * GB;
-  pg2.users[`gold_ali_${id1}`].online_at = new Date((now - 3 * 3600) * 1000).toISOString();
+  pg2.users[p2name].used_traffic = 2 * GB;
+  pg2.users[p2name].online_at = new Date((now - 3 * 3600) * 1000).toISOString();
   await syncRounds(3);
   const stored = (await env.DB.prepare('SELECT MAX(online_at) m FROM usage_counters WHERE period_id = (SELECT period_id FROM subscriptions WHERE user_id = ?)').bind(id1).first()).m;
   ok(Math.abs(stored - (now - 30)) <= 1, 'the last connection is stored with the usage reading: ' + stored);
   const S = await import('../src/telegram-screens.js');
   const scr = await S.userPanels(env, id1);
-  ok(scr.text.includes('👤 gold_ali') && scr.text.includes(`👤 gold_ali_${id1}`), 'each panel account by name');
+  ok(scr.text.includes('👤 gold_ali') && scr.text.includes(`👤 ${p2name}`), 'each panel account by name');
   ok(scr.text.includes('🟢 الان آنلاین') && scr.text.includes('۳') === false && /3 ساعت پیش/.test(scr.text), 'online now on panel 1, 3 hours ago on panel 2');
   ok(scr.text.includes('جمع مصرف: 3.00') && scr.text.includes('ساخت: 2026-11-01'), 'total and creation date shown');
   ok(scr.kb.flat().some((x) => x.callback_data === `m:uac:${id1}`), 'refresh is a button');
@@ -1645,7 +1657,7 @@ section('bot: link an existing panel account to an app user, without creating on
 
   const pa = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(uid).first();
   ok(pa && pa.remote_username === 'ali_v2' && pa.sub_path.includes('tok_ali_v2') && pa.desired === 'active', 'the app user now owns that panel account');
-  ok(!Object.values(fakes.pg.users).some((x) => (x.note || '').endsWith('· link1@example.com') && Object.keys(fakes.pg.users).indexOf(x.username) < panelCount) && Object.keys(fakes.pg.users).length === panelCount,
+  ok(!Object.values(fakes.pg.users).some((x) => x.note === pleatNote('link1@example.com') && Object.keys(fakes.pg.users).indexOf(x.username) < panelCount) && Object.keys(fakes.pg.users).length === panelCount,
     'no account was created on panel 1');
   ok(v2.status === 'active' && v2.token === 'tok_ali_v2' && v2.used_traffic === 5 * GB && v2.data_limit === 30 * GB, 'the panel account is unchanged (v2rayNG keeps working)');
   const me = (await call('GET', '/api/v1/me', { token: tok, headers: { 'x-app-version': '1.9.0 (Android 14)' } })).data;
@@ -2315,7 +2327,7 @@ section('a new panel reaches existing users: at once when the app loads servers,
 
   // the app loads servers: the user's account on the new panel is made now and its configs are in this answer
   const r = await call('GET', '/api/v1/vpn/servers', { token: tokA });
-  ok(r.status === 200 && Object.values(np.users).some((u) => (u.note || '').endsWith('· na@example.com')), 'account made on the new panel at app load');
+  ok(r.status === 200 && Object.values(np.users).some((u) => u.note === pleatNote('na@example.com')), 'account made on the new panel at app load');
   ok(JSON.stringify(r.data).includes('nn.example.net'), 'new panel configs are in the same server list');
   const mid = await panelProgress(env, p);
   ok(mid.have === 1, 'progress moved: ' + JSON.stringify(mid));
@@ -5669,6 +5681,187 @@ section('payments audit PAY-01..PAY-04: stuck settle recovered, SMS deposit line
   n = fakes.tg.calls.length;
   await tgWebhook({ callback_query: { id: 'n2-ap', data: `ap:${legacy2}`, message: { ...A, message_id: 993, text: 'x' } } });
   ok(acksOf(n).includes('پرداخت نشده') && !acksOf(n).includes('پیام بعدی'), 'N2: ap: on an unpaid wallet order gives the real reason: ' + acksOf(n));
+}
+
+section('payments audit PAY-08: one on/off switch per payment method, enforced when an order is made');
+{
+  const { createHmac } = await import('node:crypto');
+  const sign = (fields) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(env.TELEGRAM_BOT_TOKEN).digest();
+    return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+  };
+  const A = (method, path, token, json) => call(method, '/api/v1/admin' + path, { token, json });
+  const T = (await A('POST', '/auth', null, { init_data: sign({ user: JSON.stringify({ id: 12345, first_name: 'Ali' }), auth_date: String(Math.floor(Date.now() / 1000)) }) })).data.access_token;
+  const S = await import('../src/telegram-screens.js');
+  let tapN = 0;
+  const tap = (data) => tgWebhook({ callback_query: { id: 'p8-' + (++tapN), data, message: { chat: { id: 12345 }, message_id: 995, text: 'menu' } } });
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const setv = async (k) => ((await row('SELECT value v FROM settings WHERE key = ?', k)) || {}).v;
+  const cfg = async () => (await call('GET', '/api/v1/app-config')).data;
+  const orderCount = async () => (await row('SELECT COUNT(*) c FROM orders')).c;
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.price_toman === 189000);
+  const XLM = 'G' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.repeat(2).slice(0, 55);
+  const TRX = 'T' + '123456789ABCDEFGHJKLMNPQRSTUVWXYZ'.slice(0, 33);
+  await botSet('card_number', '6037991234567893'); await botSet('wallet_xlm', XLM); await botSet('wallet_xlm_memo', ''); await botSet('wallet_trx', TRX);
+  await botSet('usd_rate_toman', '100000'); await botSet('usdt_rate_toman', '70000');
+  let u = 0;
+  const fresh = async () => { const e = `p8-${++u}@example.com`; const t = await signup(e, { device: 'p8-' + u }); return { t, id: (await row('SELECT id FROM users WHERE email = ?', e)).id }; };
+  const buy = (t, json) => call('POST', '/api/v1/orders', { token: t, json: { plan_id: monthly.id, ...json } });
+
+  // defaults: every method that is set up stays on after the deploy (no surprise outage)
+  let c = await cfg();
+  ok(c.card_enabled === true && c.wallet_enabled === true && c.crypto_enabled === true && c.coins.some((x) => x.id === 'xlm') && c.coins.some((x) => x.id === 'trx'),
+    'PAY-08: with no switch touched, wallet, card, coins and the gateway are all offered: ' + JSON.stringify({ card: c.card_enabled, wallet: c.wallet_enabled, crypto: c.crypto_enabled, coins: (c.coins || []).map((x) => x.id) }));
+
+  // the bot's payment screen has one switch per method
+  let pay = await S.payments(env);
+  for (const k of ['pay_wallet_on', 'pay_card_on', 'pay_coin_on', 'pay_crypto_on']) ok(flat(pay.kb).includes(`m:ss:${k}:0`), `PAY-08: the bot payment screen has an off switch for ${k}`);
+  ok(flat(pay.kb).includes('m:pcn:xlm:0') && flat(pay.kb).includes('m:pcn:trx:0') && !flat(pay.kb).includes('m:pcn:sol:0'), 'PAY-08: one switch per coin that has a wallet address');
+
+  // card off: not offered, refused by the server, no order row left behind
+  await tap('m:ss:pay_card_on:0');
+  ok((await setv('pay_card_on')) === '0', 'PAY-08: the bot switch turns card-to-card off');
+  ok((await cfg()).card_enabled === false, 'PAY-08: card off -> app-config does not offer card');
+  let a = await fresh();
+  let n0 = await orderCount();
+  let r = await buy(a.t, { method: 'card' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && await orderCount() === n0, 'PAY-08: card off -> a card order is refused with method_unavailable and nothing is stored: ' + r.status + JSON.stringify(r.data));
+  r = await call('POST', '/api/v1/orders', { token: a.t, json: { topup_toman: 100000, method: 'card' } });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: card off -> a card top-up is refused too');
+  await tap('m:ss:pay_card_on:1');
+  ok((await cfg()).card_enabled === true && (await buy(a.t, { method: 'card' })).status === 201, 'PAY-08: card back on -> offered and accepted again');
+
+  // wallet off: a purchase from the balance and "wallet + the rest" are refused; paying the whole price by card works
+  const rich = await fresh();
+  await env.DB.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').bind(500000, rich.id).run();
+  await tap('m:ss:pay_wallet_on:0');
+  ok((await cfg()).wallet_enabled === false, 'PAY-08: wallet off -> app-config says so');
+  n0 = await orderCount();
+  r = await buy(rich.t, { method: 'wallet' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && await orderCount() === n0, 'PAY-08: wallet off -> buying from the balance is refused: ' + r.status + JSON.stringify(r.data));
+  r = await buy(rich.t, { method: 'card', use_wallet: true });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: wallet off -> "use the wallet" on a card order is refused');
+  const half = await fresh();
+  await env.DB.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').bind(50000, half.id).run();
+  r = await buy(half.t, { method: 'card', use_wallet: true });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: wallet off -> "wallet and pay the rest" is refused');
+  ok((await row('SELECT wallet_balance b FROM users WHERE id = ?', rich.id)).b === 500000, 'PAY-08: the refused wallet purchase took no money');
+  r = await buy(half.t, { method: 'card' });
+  ok(r.status === 201 && r.data.method === 'card', 'PAY-08: wallet off -> the whole price by card still works');
+  await env.DB.prepare("INSERT INTO coupons (code, percent, max_uses, created_at) VALUES ('PAY08FREE', 100, 0, ?)").bind(Math.floor(Date.now() / 1000)).run();
+  r = await buy((await fresh()).t, { method: 'wallet', coupon_code: 'PAY08FREE' });
+  ok(r.status === 201 && r.data.status === 'paid', 'PAY-08: wallet off -> a free order (100% coupon) is not a payment and still goes through: ' + r.status + JSON.stringify(r.data));
+  await tap('m:ss:pay_card_on:0');
+  r = await buy((await fresh()).t, { method: 'card', coupon_code: 'PAY08FREE' });
+  ok(r.status === 201 && r.data.status === 'paid', 'PAY-08: card off -> a free order sent as card still goes through: ' + r.status + JSON.stringify(r.data));
+  await tap('m:ss:pay_card_on:1');
+  await tap('m:ss:pay_wallet_on:1');
+  r = await buy(rich.t, { method: 'wallet' });
+  ok(r.status === 201 && r.data.status === 'paid', 'PAY-08: wallet back on -> a wallet purchase works again: ' + r.status);
+
+  // one coin off (address kept), then all coins off
+  await tap('m:pcn:xlm:0');
+  c = await cfg();
+  ok(!c.coins.some((x) => x.id === 'xlm') && c.coins.some((x) => x.id === 'trx'), 'PAY-08: one coin off -> only that coin leaves the app list');
+  ok((await setv('wallet_xlm')) === XLM, 'PAY-08: switching a coin off keeps its wallet address');
+  a = await fresh();
+  n0 = await orderCount();
+  r = await buy(a.t, { method: 'coin', coin: 'xlm' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && await orderCount() === n0, 'PAY-08: a switched-off coin is refused before an order is stored: ' + r.status + JSON.stringify(r.data));
+  pay = await S.payments(env);
+  ok(flat(pay.kb).includes('m:pcn:xlm:1'), 'PAY-08: the bot shows the coin as off with an on switch');
+  await tap('m:ss:pay_coin_on:0');
+  ok((await cfg()).coins.length === 0, 'PAY-08: crypto off -> no coin is offered');
+  r = await buy(a.t, { method: 'coin', coin: 'trx' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: crypto off -> every coin is refused');
+  await tap('m:ss:pay_coin_on:1'); await tap('m:pcn:xlm:1');
+  ok((await cfg()).coins.some((x) => x.id === 'xlm') && (await setv('pay_coins_off')) === '', 'PAY-08: coin and crypto back on');
+
+  // the NOWPayments gateway: its switch, and never with no rate (it used to make a 0-dollar invoice)
+  await tap('m:ss:pay_crypto_on:0');
+  ok((await cfg()).crypto_enabled === false, 'PAY-08: gateway off -> not offered');
+  r = await buy(a.t, { method: 'crypto' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: gateway off -> refused');
+  await tap('m:ss:pay_crypto_on:1');
+  await botSet('usdt_rate_toman', '0');
+  ok((await cfg()).crypto_enabled === false, 'PAY-08: gateway with no rate -> not offered');
+  const inv0 = fakes.np.invoices.length;
+  n0 = await orderCount();
+  r = await buy(a.t, { method: 'crypto' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && fakes.np.invoices.length === inv0 && await orderCount() === n0,
+    'PAY-08: gateway with no rate -> refused, no invoice made: ' + r.status + JSON.stringify(r.data));
+  await botSet('usdt_rate_toman', '70000');
+
+  // the Mini App: sees every switch and sets them through setting.set; wrong values are refused
+  const mp = await A('GET', '/payments', T);
+  ok(mp.status === 200 && mp.data.methods && mp.data.methods.wallet === true && mp.data.methods.card === true && mp.data.methods.coin === true && mp.data.methods.crypto === true,
+    'PAY-08: the Mini App payment screen gets the four switches: ' + JSON.stringify(mp.data.methods));
+  ok(mp.data.ready && mp.data.ready.card === true && mp.data.ready.crypto === true, 'PAY-08: ... and whether each method is set up');
+  ok(mp.data.coins.find((x) => x.id === 'xlm').off === false, 'PAY-08: each coin says whether it is switched off');
+  r = await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_card_on', val: '0' } });
+  ok(r.status === 200 && r.data.ok && (await cfg()).card_enabled === false, 'PAY-08: the Mini App turns card off');
+  r = await A('POST', '/undo', T, { audit_id: r.data.audit_id });
+  ok(r.status === 200 && (await cfg()).card_enabled === true, 'PAY-08: and undo turns it back on');
+  ok((await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_card_on', val: 'maybe' } })).status === 422, 'PAY-08: a switch takes only 1 or 0');
+  ok((await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_coins_off', val: 'xlm,nope' } })).status === 422, 'PAY-08: the coin list takes only known coins');
+  r = await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_coins_off', val: 'TRX, xlm' } });
+  ok(r.status === 200 && (await setv('pay_coins_off')) === 'trx,xlm' && !(await cfg()).coins.some((x) => ['trx', 'xlm'].includes(x.id)) && (await cfg()).coins.length > 0, 'PAY-08: the Mini App switches coins off one by one');
+  await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_coins_off', val: '' } });
+  c = await cfg();
+  ok(['trx', 'xlm'].every((id) => c.coins.some((x) => x.id === id)), 'PAY-08: and on again');
+}
+
+section('payments audit PAY-07: a bank SMS the parser cannot read reaches the admin; empty sender list is explained');
+{
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const S = await import('../src/telegram-screens.js');
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  await tgWebhook({ message: { chat: { id: 12345 }, text: '/sms' } });
+  const key = (await row("SELECT value v FROM settings WHERE key = 'sms_key'")).v;
+  env.DB.exec("DELETE FROM settings WHERE key = 'sms_unknown_notice'");
+  const sms = (text, from = '+989100') => call('POST', '/sms/' + key, { json: { from, text } });
+  const notices = (n) => fakes.tg.messages.slice(n).filter((m) => /نتوانستم بخوانم/.test(m.text || ''));
+  // a bank format with no deposit word: it used to be dropped without a word to anyone
+  let n = fakes.tg.messages.length;
+  const odd = 'بانک نمونه\nتراکنش موفق\n1,890,330\n1405/08/09-11:02';
+  let r = await sms(odd);
+  ok(r.data.result === 'not_deposit', 'PAY-07: the parser still does not take it as a deposit (nothing is confirmed by itself)');
+  let got = notices(n);
+  ok(got.length === 1 && got[0].text.includes('1,890,330') && got[0].text.includes('تراکنش موفق'), 'PAY-07: the admin gets a Persian notice with the SMS text: ' + JSON.stringify(got.map((m) => m.text)));
+  ok(got.length === 1 && flat(got[0].reply_markup && got[0].reply_markup.inline_keyboard).includes('m:sms:all') && flat(got[0].reply_markup.inline_keyboard).includes('m:or:pend:card'),
+    'PAY-07: ... with buttons to the SMS list and the unpaid card orders');
+  // a withdrawal, a one-time code and a text with no amount stay quiet
+  n = fakes.tg.messages.length;
+  await sms('بانک نمونه\nبرداشت: 500,000\nمانده: 1,000,000');
+  await sms('کد تایید شما: 482913');
+  await sms('به بانک نمونه خوش آمدید');
+  ok(notices(n).length === 0, 'PAY-07: withdrawals, one-time codes and texts without an amount do not notify');
+  // a burst of unreadable SMS: at most 5 notices an hour
+  n = fakes.tg.messages.length;
+  for (let i = 0; i < 8; i++) await sms(`بانک نمونه\nتراکنش موفق\n${(2000000 + i * 1110).toLocaleString('en-US')}`);
+  got = notices(n);
+  ok(got.length === 4, 'PAY-07: notices are capped at 5 an hour (1 + 4 here): ' + got.length);
+  ok(got.length && /یک ساعت/.test(got[got.length - 1].text), 'PAY-07: the last notice before the cap says the rest stay in the SMS list');
+  ok((await row("SELECT COUNT(*) c FROM sms_log WHERE result = 'not_deposit' AND body LIKE '%تراکنش موفق%'")).c === 9, 'PAY-07: every one is still logged');
+  // a new hour: notices again
+  const st = JSON.parse((await row("SELECT value v FROM settings WHERE key = 'sms_unknown_notice'")).v);
+  await env.DB.prepare("UPDATE settings SET value = ? WHERE key = 'sms_unknown_notice'").bind(JSON.stringify({ ...st, t: st.t - 3601 })).run();
+  n = fakes.tg.messages.length;
+  await sms('بانک نمونه\nتراکنش موفق\n3,333,330');
+  ok(notices(n).length === 1, 'PAY-07: an hour later the admin is told again');
+
+  // card auto-confirm on with no trusted bank sender: the payment screen says what to tap
+  await botSet('card_number', '6037991234567893'); await botSet('card_auto', 'auto');
+  const keep = (await row("SELECT value v FROM settings WHERE key = 'sms_senders'") || {}).v || '';
+  await env.DB.prepare("UPDATE settings SET value = '' WHERE key = 'sms_senders'").run();
+  let pay = await S.payments(env);
+  ok(/هیچ فرستنده‌ی بانکی مورد اعتماد نیست/.test(pay.text) && pay.text.includes('این فرستنده بانک من است'), 'PAY-07: auto on + no trusted sender -> the payment screen explains the one tap that fixes it');
+  await env.DB.prepare("UPDATE settings SET value = '09100' WHERE key = 'sms_senders'").run();
+  pay = await S.payments(env);
+  ok(!/هیچ فرستنده‌ی بانکی مورد اعتماد نیست/.test(pay.text), 'PAY-07: with a trusted sender the hint is gone');
+  await env.DB.prepare("UPDATE settings SET value = ? WHERE key = 'sms_senders'").bind(keep).run();
 }
 
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
