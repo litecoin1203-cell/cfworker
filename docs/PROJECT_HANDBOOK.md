@@ -289,7 +289,7 @@ The full list (every route, its auth, handler and limits, plus the admin API and
 | `coins.js`, `usdrate.js`, `nowpayments.js`, `banks.js` | coin prices, USD→toman rate, gateway invoices, bank name from card number |
 | `sms.js` | parses bank SMS (rial vs toman!), auto-confirms card-to-card orders |
 | `netstats.js` | crowd ranking of exits per operator (Cloudflare ASN), province, network kind; per-user experience |
-| `appupdate.js` | reads the private `pleat-latest` release with `PLEAT_DL_TOKEN`, serves version info, proxies the APK, `checkNewBuild` |
+| `appupdate.js` | reads the `pleat-latest` release (public, like the repo) with `PLEAT_DL_TOKEN`, serves version info, proxies the APK, `checkNewBuild` |
 | `telegram.js` | Telegram client, admin roles, order callbacks, `ensureWebhook`, `sendBackup`, legacy text commands, `buttonize` |
 | `telegram-menu.js` | button menu router, forms (`bot_session`), confirms |
 | `telegram-screens.js` | read-only bot screens |
@@ -657,8 +657,10 @@ Measured with fake time: screen-off pings/h 180 → 20, `/me`/h 60 → 6, shard 
 networks: no auto speed tests, rarer pings. Never mix metered and unmetered results in a report.
 
 ### In-app update (PR #40, 1.2.19)
-The workflow uploads per-ABI APKs `pleat-<ver>-<build>-<abi>.apk` to the private release `pleat-latest`
-(keeps the last 3; `pleat.apk` = arm64). The Worker reads the release with `PLEAT_DL_TOKEN` and proxies a
+The workflow uploads per-ABI APKs `pleat-<ver>-<build>-<abi>.apk` to the release `pleat-latest`
+(keeps the last 3; `pleat.apk` = arm64). The repo is public, so the release and the APK in it (with whatever the
+build baked in, e.g. `PLEAT_BRIDGE`) can be downloaded by anyone; phones in Iran still go through the Worker
+because GitHub is often unreachable there. The Worker reads the release with `PLEAT_DL_TOKEN` and proxies a
 resumable download; the app checks SHA-256 and hands it to Android's installer (`Updates.kt`). Ali announces /
 forces / withdraws from the bot. **No chunking** (Ali refused KV/R2 splitting). Installed build =
 `versionCode % 1000`. The app only offers the version Ali **announces** in the bot, so a test APK on the release

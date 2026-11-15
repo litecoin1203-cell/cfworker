@@ -295,7 +295,7 @@ async function route(request, env, p, ctx) {
     return json({ ip: String(request.headers.get('cf-connecting-ip') || '').slice(0, 45), cc: /^[A-Z]{2}$/.test(cf.country || '') ? cf.country : '',
       city: String(cf.city || '').slice(0, 60), region: String(cf.region || '').slice(0, 60) });
   }
-  // the announced Pleat update (appupdate.js), passed through from the private release; limited per user (resumes are new requests)
+  // the announced Pleat update (appupdate.js), passed through from the (public) release pleat-latest; limited per user (resumes are new requests)
   if (p === '/app/apk' && m === 'GET') {
     await rateLimit(env, 'RL_IP', 'apk:' + user.id, { open: true }); // a read: open if the limiter fails
     const { apkDownload } = await import('./appupdate.js');

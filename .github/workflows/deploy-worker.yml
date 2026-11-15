@@ -96,8 +96,8 @@ jobs:
         # the account id is not a secret; the bot's ☁️ section uses it to read Cloudflare's analytics (cfmon.js)
         run: $WRANGLER deploy --var CF_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID
 
-      # Pleat's in-app update reads the private release pleat-latest with a read-only token (fine-grained, this repo
-      # only, Contents: Read). It lives in the GitHub secret PLEAT_DL_TOKEN and is copied to the Worker here.
+      # Pleat's in-app update reads the release pleat-latest (public, like the repo) with a read-only token (fine-grained,
+      # this repo only, Contents: Read): it lifts GitHub's per-IP rate limit for the Worker's shared addresses. It lives in the GitHub secret PLEAT_DL_TOKEN and is copied to the Worker here.
       - name: Give the Worker the update download token
         env:
           PLEAT_DL_TOKEN: ${{ secrets.PLEAT_DL_TOKEN }}

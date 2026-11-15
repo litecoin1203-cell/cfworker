@@ -5047,6 +5047,13 @@ section('developer docs name every migration and every API route');
   const named = (p) => new RegExp('[` ]' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '`').test(apiDoc);
   const noApi = [...authed, ...admin].filter((p) => !named(p));
   ok(authed.length > 20 && admin.length > 30 && !noApi.length, 'docs/API.md names every app and admin route; missing: ' + noApi.join(', '));
+
+  // ARC-01: the repo (and so the release pleat-latest and every Actions log) is public. A comment or doc that calls
+  // it private leads the next developer or agent to treat something as safe that is not.
+  const said = ['../src/appupdate.js', '../src/index.js', '../../docs/API.md', '../../docs/PROJECT_HANDBOOK.md',
+    '../../.github/workflows/flutter-vpn.yml', '../../.github/workflows/deploy-worker.yml', '../../AGENTS.md', '../../README.md']
+    .filter((f) => /\b(?:repo(?:sitory)? is private|private `?(?:repo|repository|release|pleat-latest))\b/i.test(readFileSync(rel(f), 'utf8')));
+  ok(!said.length, 'ARC-01: no comment or doc calls the public repo or its release private: ' + said.join(', '));
 }
 
 section('admin bot: ☁️ Cloudflare monitoring (quota, errors, queries, deploys, alerts) and panel sync by hand');

@@ -4,7 +4,7 @@
 # the same one the Cloud Gold Android build uses.
 name: Pleat Flutter app
 
-# Actions minutes are limited on this private repo: a pull request runs only the checks (format, analyze, tests,
+# Actions minutes are limited (the repo is public, so every run's log is public too): a pull request runs only the checks (format, analyze, tests,
 # the client against the local Worker, the configs through the real Xray core), once per change and never twice
 # (no separate push run). The APK (NDK, core, Gradle: most of the minutes) is built only by the manual run.
 on:
