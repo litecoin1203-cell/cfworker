@@ -414,10 +414,32 @@ class FakeTunnel extends Tunnel {
     emit(TunnelState.starting);
   }
 
+  /// What the service says it is doing when the app opens.
+  TunnelState now = TunnelState.down;
+
   @override
-  Future<TunnelState> current() async => TunnelState.down;
+  Future<TunnelState> current() async => now;
+
+  /// The service holds a failed start's tun for the app (see [hold]).
+  bool heldNow = false;
+
+  @override
+  Future<bool> held() async => heldNow;
+
+  /// Background alerts, as "title|text".
+  final List<String> alerts = [];
+
+  @override
+  Future<void> alert(String title, String text) async =>
+      alerts.add('$title|$text');
   @override
   Future<void> stop() async => stopped = true;
+
+  /// Times the app asked the service to keep a failed start's tun.
+  int holds = 0;
+
+  @override
+  Future<void> hold() async => holds++;
 
   /// Sign-out told the widget to forget the last exit.
   bool forgot = false;
@@ -548,6 +570,12 @@ class FakeTunnel extends Tunnel {
 
   @override
   Future<String> netKind() async => kind;
+
+  /// Android failed to say whether there is a network.
+  bool netError = false;
+
+  @override
+  Future<bool?> hasNetwork() async => netError ? null : kind.isNotEmpty;
 
   @override
   Future<int?> delay() async {
