@@ -133,11 +133,19 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   bool _updateFailNoted = false;
   DateTime? _appErrorAt;
 
-  /// Profile's "Send diagnostics".
-  bool get sendDiagnostics => health.enabled;
+  /// Profile's "Send diagnostics": on only after the person said yes.
+  bool get sendDiagnostics => health.sending;
   void setSendDiagnostics(bool on) {
     health.setEnabled(on);
     notifyListeners();
+  }
+
+  /// Home asks "Send diagnostics?" until the person answers (PRV-03).
+  bool get diagnosticsUndecided => !health.asked;
+  void answerDiagnostics(bool on) {
+    health.answer(on);
+    notifyListeners();
+    if (on) unawaited(flushHealth());
   }
 
   void _healthQueued() => unawaited(flushHealth());
@@ -145,7 +153,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// Sends the waiting reports when a batch is due ([force]: now). Never
   /// throws; a batch that didn't go stays for the next try.
   Future<bool> flushHealth({bool force = false}) async {
-    if (!signedIn || !health.enabled) return false;
+    if (!signedIn || !health.sending) return false;
     health.meta
       ..['app'] = updater.known ? updater.version : ''
       ..['os'] = api.osVersion.isEmpty ? '' : 'Android ${api.osVersion}'
@@ -676,7 +684,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final at = connectedAt;
     final key = exit?.server.key ?? '';
     final path = RegExp(r'^[a-z0-9]{6,16}$').hasMatch(key)
-        ? '/me/ip?k=$key${health.enabled ? '' : '&h=0'}'
+        ? '/me/ip?k=$key${health.sending ? '' : '&h=0'}'
         : '/me/ip';
     for (var i = 0; i < 2; i++) {
       if (phase != Phase.protected || connectedAt != at) return;

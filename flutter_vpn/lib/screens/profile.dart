@@ -18,6 +18,7 @@ import '../licenses.dart';
 import '../state/app_state.dart';
 import 'avatar_gate.dart';
 import 'check.dart';
+import 'legal.dart';
 import 'login.dart';
 import 'checkout.dart';
 import 'plan_usage.dart';
@@ -434,6 +435,28 @@ class _VersionFooterState extends State<_VersionFooter> {
               style: PType.button(color: PColors.accentInk),
             ),
           ),
+        ),
+        // What is kept and for how long, and the rules (PRV-03).
+        Wrap(
+          alignment: WrapAlignment.center,
+          children: [
+            for (final d in LegalDoc.values)
+              Pressable(
+                onTap: () => openLegal(context, d),
+                label: d.title,
+                radius: PRadius.pill,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 11,
+                  ),
+                  child: Text(
+                    d.title.toUpperCase(),
+                    style: PType.button(color: PColors.accentInk),
+                  ),
+                ),
+              ),
+          ],
         ),
       ],
     );

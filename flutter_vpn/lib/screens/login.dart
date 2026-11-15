@@ -13,6 +13,7 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
+import 'legal.dart';
 import 'shell.dart';
 import 'states.dart';
 
@@ -480,6 +481,7 @@ class _LoginScreenState extends State<LoginScreen> {
             : (_offline ? 'Try again' : 'Create account'),
         onTap: _busy ? null : _submit,
       ),
+      const AgreeLine(),
     ],
   );
 }
@@ -1037,6 +1039,7 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen>
             : (_offline ? 'Try again' : 'Create account'),
         onTap: _busy ? null : _create,
       ),
+      const AgreeLine(),
     ],
   );
 }

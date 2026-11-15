@@ -6,6 +6,7 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
+import 'legal.dart';
 import 'location_detail.dart';
 import 'plan_usage.dart';
 import 'shell.dart';
@@ -345,6 +346,11 @@ class _Privacy extends StatelessWidget {
             'What our server keeps',
             'No browsing log. Your network operator, province and how each '
                 'server worked for you (30 days), and problem reports (14 days).',
+            trailing: Text(
+              'POLICY',
+              style: PType.button(color: PColors.accentInk),
+            ),
+            onTap: () => openLegal(context, LegalDoc.privacy),
           ),
           row(
             PIcon.clock,
