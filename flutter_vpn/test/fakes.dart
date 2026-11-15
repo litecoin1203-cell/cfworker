@@ -442,6 +442,18 @@ class FakeTunnel extends Tunnel {
   @override
   Future<void> stop() async => stopped = true;
 
+  /// Android's battery optimisation answer for Pleat, and the pages opened.
+  bool? exempt = true;
+  final List<String> batteryPages = [];
+
+  @override
+  Future<bool?> batteryExempt() async => exempt;
+  @override
+  Future<bool> openBatterySettings({bool app = false}) async {
+    batteryPages.add(app ? 'app' : 'battery');
+    return true;
+  }
+
   /// Times the app asked the service to keep a failed start's tun.
   int holds = 0;
 

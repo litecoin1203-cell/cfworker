@@ -119,7 +119,33 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       ..onGone = () => unawaited(loadConfig());
     unawaited(updater.load().then((_) => _offerUpdate()));
     this.tunnel.onNetChange = networkChanged;
+    unawaited(readBattery());
     WidgetsBinding.instance.addObserver(this);
+  }
+
+  // ---- background running (AND-02) ---------------------------------------
+
+  /// Whether Android exempts Pleat from battery optimisation; null when it
+  /// can't say. Optimised, Android (and Xiaomi, Oppo, Huawei and others
+  /// more so) may stop Pleat in the background, and with it the checks
+  /// that notice a silent exit. Protect says so (see [batteryTipHidden]).
+  bool? batteryExempt;
+
+  /// The person hid Protect's "Keep Pleat running" card.
+  bool get batteryTipHidden => _prefs.getBool('battery_tip_hidden') ?? false;
+
+  bool get showBatteryTip => batteryExempt == false && !batteryTipHidden;
+
+  Future<void> readBattery() async {
+    final v = await tunnel.batteryExempt();
+    if (v == batteryExempt) return;
+    batteryExempt = v;
+    notifyListeners();
+  }
+
+  void hideBatteryTip() {
+    unawaited(_prefs.setBool('battery_tip_hidden', true));
+    notifyListeners();
   }
 
   // ---- health reports (health.dart) --------------------------------------
@@ -523,6 +549,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _beat();
     }
     if (signedIn && !me.loading) loadMe();
+    // back from Android's battery page, maybe exempted now
+    unawaited(readBattery());
     unawaited(updater.resumed());
     final at = _configAt;
     if (at == null || DateTime.now().difference(at) > configEvery) {

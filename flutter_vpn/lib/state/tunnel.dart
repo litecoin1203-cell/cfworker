@@ -331,6 +331,35 @@ class Tunnel {
     }
   }
 
+  /// Whether Android lets Pleat run in the background without battery
+  /// optimisation (AND-02): false when it is optimised (the service may be
+  /// stopped on some phones), null when Android can't say.
+  Future<bool?> batteryExempt() async {
+    try {
+      return await _method.invokeMethod<bool>('batteryExempt');
+    } on MissingPluginException {
+      return null;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  /// Android's battery optimisation list, or Pleat's own App info page
+  /// ([app]: where Xiaomi, Oppo, Huawei and others keep autostart and
+  /// their own battery saver). False when neither page opened.
+  Future<bool> openBatterySettings({bool app = false}) async {
+    try {
+      return await _method.invokeMethod<bool>(
+            app ? 'appSettings' : 'batterySettings',
+          ) ??
+          false;
+    } on MissingPluginException {
+      return false;
+    } on PlatformException {
+      return false;
+    }
+  }
+
   /// Whether the service holds a session's tun for the app (see [hold]),
   /// so a reopened app shows it held instead of idle.
   Future<bool> held() async {

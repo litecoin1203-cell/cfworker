@@ -686,6 +686,10 @@ does not reach users by itself.
   between users through the existing `/net/google` + `/net/rank`; a **"Google-clean exits only"** filter narrows
   smart connect inside the Route country (never empties the pool).
 - Split tunnel and Protocol cards were removed from Protect (Route covers them).
+- **Keep Pleat running** (AND-02): shown while Android optimises Pleat's battery use (`batteryExempt` false), until
+  fixed or hidden (`battery_tip_hidden`): opens Android's battery optimisation list and Pleat's App info (where
+  Xiaomi/Oppo/Huawei keep autostart). With the app closed, the service itself checks the exit after a network switch
+  and restarts it in place (NET-06 `kick`); other live checks (failover, plan check) still need the app.
 - **Not yet proven on a phone**: YouTube/Gemini indicators, STUN over SOCKS UDP, whoami via 1.1.1.2.
 
 ### Home-screen widget (PR #78, 1.2.39 → 1.2.44)
@@ -1071,6 +1075,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | NET-02 a short network loss ended in failover → `_stopTunnel` → apps out bare | no-network misses not counted (bounded ~2 min); a live session that lost every exit keeps the tun held, shown on the card/widget, retried with back-off, and tried at once when Android names a network again (checked every 3 s while held) — audit fix |
 | NET-04 `setMetered(false)` made the whole VPN unmetered on mobile data (Data Saver, Wi-Fi-only apps bypassed) | call removed: Android 10+ takes the metered state of the underlying network (`setUnderlyingNetworks`); source guard in `test/native_source_test.dart`; uncompiled here, effect only provable on a phone — audit fix |
 | NET-06 a Wi-Fi <-> mobile switch was only handed to Android; core connections stayed on the old network up to 300 s | the service tells the app on a real switch (`netChanged`); the app asks the exit after 2 s and, if it misses, starts the same exit again in place (tun kept; failure fails over or holds). App closed: the service does the same itself (`kick`, nothing closed on failure). `onLost` of a network not in use no longer clears the underlying network. Dart proven by `test/net_switch_test.dart`; Kotlin uncompiled here, phone test pending; hev `tcp-read-write-timeout` left at 300 s — audit fix |
+| AND-02 with the app closed nothing watched the session, and no word on battery optimisation / autostart | Protect card "Keep Pleat running" while optimised (`battery_tip_test.dart`); the service checks the exit itself after a network switch when the app is gone. Kotlin uncompiled; OEM behaviour only provable on phones — audit fix (partial: failover and plan check still need the app) |
 | A dead line showed as "wrong password / wrong code" | `ApiError.offline` → neutral connection card — #54 |
 | Native crash (SIGABRT) reports carried only the signal | tombstone + Go stderr + tunnel state in the report — #77, #79, #80 (root cause still open, §19) |
 | Widget: start from a fully closed app refused by Android 12+/MIUI | invisible `WidgetConnect` activity — #78 (1.2.42) |
