@@ -251,6 +251,33 @@ const DAY = 86400;
 export const DELETED_EMAIL = (id) => `deleted+${id}@invalid`;
 export const isDeleted = (u) => /^deleted\+\d+@invalid$/.test(String(u && u.email));
 
+// Deleting an account, by the admin (user.delete) or by the user (POST /me/delete, account.deleteMe; release audit
+// PRV-04). Removed: email (rewritten to DELETED_EMAIL, so it is free again), password hash, Telegram id / username /
+// name, character, last sign-in, devices, the per-user connection-quality rows (user_net, user_net_srv, net_votes,
+// net_speed_votes, google_votes, user_skeys), health reports and pending Telegram links. Every session ends
+// (token_version), the plan stops, and every panel account is switched off (never deleted there) and let go, so
+// the admin can link it to another app account later. Kept for accounting: orders, wallet history, plan periods,
+// coupon uses and the invite code / inviter. One batch plus the panel push: well inside 50 D1 queries.
+export async function eraseUser(env, u) {
+  await env.DB.batch([
+    st(env, `UPDATE users SET email = ?, password_hash = '', tg_id = NULL, tg_username = NULL, tg_name = '', avatar = NULL, is_active = 0,
+      last_login_at = NULL, token_version = token_version + 1 WHERE id = ?`, DELETED_EMAIL(u.id), u.id),
+    st(env, "UPDATE subscriptions SET state = 'stopped', stop_reason = 'admin' WHERE user_id = ?", u.id),
+    st(env, "UPDATE sub_periods SET ended_at = ?, end_reason = 'admin' WHERE user_id = ? AND ended_at IS NULL", nowSec(), u.id),
+    st(env, "UPDATE panel_accounts SET desired = 'removed', dirty = 1, attempts = 0 WHERE user_id = ? AND desired != 'removed'", u.id),
+    st(env, "UPDATE subscriptions SET pg_username = '', sub_url = '' WHERE user_id = ?", u.id),
+    ...['devices', 'user_net', 'user_net_srv', 'net_votes', 'net_speed_votes', 'google_votes', 'user_skeys', 'health_events']
+      .map((t) => st(env, `DELETE FROM ${t} WHERE user_id = ?`, u.id)),
+    st(env, 'DELETE FROM tg_logins WHERE link_user_id = ? OR (tg_id IS NOT NULL AND tg_id = ?)', u.id, u.tg_id ?? -1),
+  ]);
+  // switch every account off on its panel, then let go of all of them
+  const { pushPending } = await import('./sync.js');
+  await pushPending(env, { userId: u.id });
+  const accts = await all(env, 'SELECT panel_id, remote_username, dirty FROM panel_accounts WHERE user_id = ? ORDER BY panel_id', u.id);
+  if (accts.length) await run(env, 'DELETE FROM panel_accounts WHERE user_id = ?', u.id);
+  return { accts, stuck: accts.filter((a) => a.dirty) };
+}
+
 const userRow = (env, userId) => first(env, 'SELECT * FROM users WHERE id = ?', parseInt(userId, 10));
 const subRow = (env, userId) => first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', parseInt(userId, 10));
 async function settle(env, userId) {
@@ -517,29 +544,14 @@ Object.assign(ACTIONS, {
       return true;
     },
   },
-  // soft delete: panels off, email and Telegram freed, sessions ended; orders and wallet history stay
+  // soft delete (eraseUser): panels off, personal data removed, sessions ended; orders and wallet history stay
   'user.delete': {
     risk: 'destructive', target: 'user',
     async apply(env, { userId }) {
       const u = await userRow(env, userId);
       if (!u) return fail('کاربر پیدا نشد.');
       if (isDeleted(u)) return fail('این کاربر قبلاً حذف شده است.');
-      await env.DB.batch([
-        st(env, `UPDATE users SET email = ?, tg_id = NULL, tg_username = NULL, tg_name = '', avatar = NULL, is_active = 0,
-          token_version = token_version + 1 WHERE id = ?`, DELETED_EMAIL(u.id), u.id),
-        st(env, "UPDATE subscriptions SET state = 'stopped', stop_reason = 'admin' WHERE user_id = ?", u.id),
-        st(env, "UPDATE sub_periods SET ended_at = ?, end_reason = 'admin' WHERE user_id = ? AND ended_at IS NULL", nowSec(), u.id),
-        st(env, "UPDATE panel_accounts SET desired = 'removed', dirty = 1, attempts = 0 WHERE user_id = ? AND desired != 'removed'", u.id),
-        st(env, "UPDATE subscriptions SET pg_username = '', sub_url = '' WHERE user_id = ?", u.id),
-        st(env, 'DELETE FROM devices WHERE user_id = ?', u.id),
-      ]);
-      // switch every account off on its panel, then let go of all of them: a panel account is never kept by a
-      // deleted user, so the admin can link it to another app account later (switched off, never deleted)
-      const { pushPending } = await import('./sync.js');
-      await pushPending(env, { userId: u.id });
-      const accts = await all(env, 'SELECT panel_id, remote_username, dirty FROM panel_accounts WHERE user_id = ? ORDER BY panel_id', u.id);
-      if (accts.length) await run(env, 'DELETE FROM panel_accounts WHERE user_id = ?', u.id);
-      const stuck = accts.filter((a) => a.dirty);
+      const { accts, stuck } = await eraseUser(env, u);
       const lines = [`🗑 کاربر حذف شد. سفارش‌ها و تاریخچه‌ی کیف پولش (موجودی ${fa(u.wallet_balance)} تومان) برای حساب‌رسی می‌ماند.`];
       if (accts.length) lines.push(`🔓 ${fa(accts.length)} اکانت پنلش (${accts.map((a) => `${a.remote_username} روی #${a.panel_id}`).join('، ')}) از این کاربر جدا شد و آزاد است؛ می‌توانی هر کدام را به کاربر دیگری وصل کنی.`);
       if (stuck.length) lines.push(`⚠️ این‌ها روی پنل خاموش نشدند (پنل جواب نداد)؛ دستی خاموششان کن: ${stuck.map((a) => `${a.remote_username} روی #${a.panel_id}`).join('، ')}`);

@@ -15,7 +15,7 @@ in the `CG_API_BASE` repo variable / the Pleat workflow's `api_base` input). The
 location and only roughly counted: they slow one client's burst, they are not a security boundary. Over the limit:
 `429 too_many_requests`. If the limiter itself fails (SEC-08):
 - **fail closed** (`429 too_many_requests`), where a secret can be guessed or someone without an account writes:
-  `/auth/login`, `/auth/tg/verify`, `/auth/change-password`, `/me/email`, `/me/telegram/verify`, `/coupons/check`,
+  `/auth/login`, `/auth/tg/verify`, `/auth/change-password`, `/me/delete`, `/me/email`, `/me/telegram/verify`, `/coupons/check`,
   `/admin/auth` and admin ops, `/auth/register`, `/auth/tg/start`, `/auth/tg/register`, `/auth/tg/webapp`,
   `/auth/tg/webapp/register`, `POST /mini/probe`, `/trial`, `/me/telegram/start`;
 - **fail open** (the request goes through), where closing would stop people connecting or paying and saves nothing:
@@ -100,6 +100,7 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | `GET /app/apk` | `appupdate.apkDownload` | proxies the announced APK from the private `pleat-latest` release (resumable) |
 | `POST /auth/change-password` | `auth.changePassword` | 5/min per user (`RL_LOGIN`; it checks the current password) |
 | `POST /auth/logout-all` | `auth.logoutAll` | bumps `token_version` |
+| `POST /me/delete` | `auth.deleteMe` | the user deletes their own account (PRV-04). Body `{confirm: "DELETE", password}`; the password is required unless the account has none (one-tap Mini App account) or the call carries a Mini App token. `422 confirm_required`, `400 wrong_password`; 5/min per user (`RL_LOGIN`). Runs `admin-actions.eraseUser` (the admin delete's erase: email, password hash, Telegram, character, devices, per-user network and health rows, pending Telegram links removed; plan stopped; panel accounts switched off and let go; every session ended; orders and wallet history kept) and logs `user.self_delete` without email or username. → `{deleted: true}` |
 
 ## Admin API (Telegram Mini App admin panel) — `admin-api.js`
 

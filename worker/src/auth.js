@@ -135,6 +135,26 @@ export async function logoutAll(env, user) {
   return new Response(null, { status: 204 });
 }
 
+// The user deletes their own account (Pleat Profile, Mini App; release audit PRV-04). The body must carry
+// confirm: "DELETE"; an account with a password must also give it (a stolen access token alone cannot delete),
+// a one-tap Mini App account has none and was proven by Telegram. The erase itself is the admin delete's
+// (admin-actions.eraseUser); the admin log gets one row without the email or Telegram username.
+export async function deleteMe(env, user, body) {
+  if (!body || body.confirm !== 'DELETE') throw err(422, 'confirm_required', 'Type DELETE to confirm.', 'confirm');
+  if (user.password_hash !== DUMMY_HASH && !user._mini
+      && !(await verifyPassword(body.password || '', user.password_hash, env.SECRET_KEY))) {
+    throw err(400, 'wrong_password', 'رمز فعلی اشتباه است.', 'password');
+  }
+  const { eraseUser } = await import('./admin-actions.js');
+  const { accts } = await eraseUser(env, user);
+  // panel names are often made from the Telegram username: only the panel numbers go in the log
+  const freed = accts.length ? ` · اکانت‌های پنل خاموش و آزاد شدند: ${accts.map((a) => `#${a.panel_id}`).join(', ')}` : '';
+  await insert(env, 'admin_audit', { admin_id: 'user', action: 'user.self_delete', target_type: 'user', target_id: String(user.id),
+    summary: `حذف حساب توسط خود کاربر · موجودی کیف پول ${Number(user.wallet_balance || 0).toLocaleString('en-US')} تومان${freed}`.slice(0, 300),
+    created_at: nowSec() });
+  return json({ deleted: true });
+}
+
 // ---------------- Telegram sign-up / login ----------------
 // 1. app: POST /auth/tg/start -> { nonce, bot_url }. The app keeps the nonce and opens the bot with it.
 // 2. bot: "/start L<nonce>" -> the bot sends a 6-digit code to the Telegram user who opened the link. Telegram

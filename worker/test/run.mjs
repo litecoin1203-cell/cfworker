@@ -5671,6 +5671,85 @@ section('payments audit PAY-01..PAY-04: stuck settle recovered, SMS deposit line
   ok(acksOf(n).includes('پرداخت نشده') && !acksOf(n).includes('پیام بعدی'), 'N2: ap: on an unpaid wallet order gives the real reason: ' + acksOf(n));
 }
 
+section('PRV-04: a user can delete their own account (Pleat and Mini App), and a delete leaves no personal data behind');
+{
+  const row = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first());
+  const exec = (sql, ...a) => env.DB.prepare(sql).bind(...a).run();
+  const count = async (t, id) => (await row(`SELECT COUNT(*) c FROM ${t} WHERE user_id = ?`, id)).c;
+  const PERSONAL = ['devices', 'user_net', 'user_net_srv', 'net_votes', 'net_speed_votes', 'google_votes', 'user_skeys', 'health_events'];
+  const seed = async (id) => {
+    const t = Math.floor(Date.now() / 1000);
+    await exec("INSERT INTO user_net (user_id, asn, kind, isp, geo, first_at, last_at, reports) VALUES (?, 64500, 'cell', 'Example Mobile', 'Tehran', ?, ?, 3)", id, t, t);
+    await exec("INSERT INTO user_net_srv (user_id, asn, kind, skey, ok, at) VALUES (?, 64500, 'cell', 'k0000001', 1, ?)", id, t);
+    await exec("INSERT INTO net_votes (user_id, asn, geo, skey, bucket) VALUES (?, 64500, 'Tehran', 'k0000001', 1)", id);
+    await exec("INSERT INTO net_speed_votes (user_id, asn, geo, skey, bucket) VALUES (?, 64500, 'Tehran', 'k0000001', 1)", id);
+    await exec("INSERT INTO google_votes (user_id, skey, day) VALUES (?, 'k0000001', 1)", id);
+    await exec("INSERT OR REPLACE INTO user_skeys (user_id, keys, at) VALUES (?, '{}', ?)", id, t);
+    await exec("INSERT INTO health_events (user_id, day, fp, prio, type, first_at, last_at, model) VALUES (?, 1, 'f00000001', 2, 'connect_fail', ?, ?, 'Pixel')", id, t, t);
+    await exec("INSERT INTO tg_logins (nonce_hash, created_at, expires_at, link_user_id) VALUES (?, ?, ?, ?)", 'prv04-' + id, t, t + 600, id);
+  };
+
+  // Pleat: email + password account with a trial running on a panel and a Telegram link
+  const tok = await signup('prv04@example.com', { device: 'prv04-phone' });
+  const id = await userId('prv04@example.com');
+  await exec("UPDATE users SET tg_id = 770001, tg_username = 'prv04_tg', tg_name = 'Prv', avatar = 'folk-3', wallet_balance = 5000 WHERE id = ?", id);
+  await exec("INSERT INTO wallet_tx (user_id, amount, balance_after, reason, created_at) VALUES (?, 5000, 5000, 'admin', ?)", id, Math.floor(Date.now() / 1000));
+  const trialPlan = await row('SELECT id FROM plans WHERE trial_days > 0 AND is_active = 1 ORDER BY id LIMIT 1');
+  const tr = await call('POST', '/api/v1/trial', { token: tok, json: { plan_id: trialPlan.id }, headers: { 'x-device-id': 'prv04-phone' } });
+  ok(tr.status === 200 || tr.status === 201, 'PRV-04 setup: trial started: ' + tr.status + ' ' + JSON.stringify(tr.data));
+  await drain();
+  const acct = await row('SELECT remote_username FROM panel_accounts WHERE user_id = ? AND panel_id = 1', id);
+  ok(!!acct, 'PRV-04 setup: the user has a panel account');
+  await seed(id);
+
+  const r0 = await call('POST', '/api/v1/me/delete', { token: tok, json: { password: 'password123' } });
+  ok(r0.status === 422 && (await row('SELECT is_active FROM users WHERE id = ?', id)).is_active === 1, 'PRV-04: no delete without the typed confirmation: ' + r0.status);
+  const r1 = await call('POST', '/api/v1/me/delete', { token: tok, json: { confirm: 'DELETE', password: 'wrong-password' } });
+  ok(r1.status === 400 && r1.data?.detail?.code === 'wrong_password' && (await row('SELECT is_active FROM users WHERE id = ?', id)).is_active === 1, 'PRV-04: a Pleat account with a password must give it: ' + r1.status);
+  const r2 = await call('POST', '/api/v1/me/delete', { token: tok, json: { confirm: 'DELETE', password: 'password123' } });
+  await drain();
+  ok(r2.status === 200 && r2.data?.deleted === true, 'PRV-04: POST /me/delete deletes the account: ' + r2.status + ' ' + JSON.stringify(r2.data));
+  const u = await row('SELECT * FROM users WHERE id = ?', id);
+  ok(u.email === `deleted+${id}@invalid` && u.is_active === 0 && u.tg_id === null && u.tg_username === null && u.tg_name === '' && u.avatar === null,
+    'PRV-04: email, Telegram and character are gone, account off');
+  ok(!String(u.password_hash).startsWith('pbkdf2$'), 'PRV-04: the password hash is erased');
+  for (const t of PERSONAL) ok(await count(t, id) === 0, `PRV-04: ${t} rows of the deleted user are removed`);
+  ok(!(await row('SELECT 1 x FROM tg_logins WHERE link_user_id = ?', id)), 'PRV-04: pending Telegram links of the user are removed');
+  ok(await count('panel_accounts', id) === 0 && fakes.pg.users[acct.remote_username]?.status === 'disabled', 'PRV-04: the panel account is switched off and let go');
+  ok((await row('SELECT state FROM subscriptions WHERE user_id = ?', id)).state === 'stopped', 'PRV-04: the plan is ended');
+  ok(await count('wallet_tx', id) === 1, 'PRV-04: wallet history stays for accounting (as the policy says)');
+  ok((await call('GET', '/api/v1/me', { token: tok })).status === 401, 'PRV-04: the old session no longer works');
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 'prv04@example.com', password: 'password123' } })).status === 401, 'PRV-04: the old email no longer signs in');
+  const aud = await row("SELECT * FROM admin_audit WHERE action = 'user.self_delete' AND target_id = ?", String(id));
+  ok(aud && !String(aud.summary).includes('prv04') && !String(aud.summary).includes('@'), 'PRV-04: the admin log records the self-delete without the email or username: ' + JSON.stringify(aud));
+  ok((await call('POST', '/api/v1/me/delete', { token: tok, json: { confirm: 'DELETE', password: 'password123' } })).status === 401, 'PRV-04: a second delete with the old token is refused');
+
+  // Mini App: an account made with one tap has no password; Telegram proved who it is, the typed confirmation is enough
+  const { createHmac } = await import('node:crypto');
+  const sign = (fields) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(env.TELEGRAM_BOT_TOKEN).digest();
+    return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+  };
+  const init = sign({ query_id: 'AA', user: JSON.stringify({ id: 770002, first_name: 'Mini', username: 'prv04_mini' }), auth_date: String(Math.floor(Date.now() / 1000)) });
+  const mreg = await call('POST', '/api/v1/auth/tg/webapp/register', { json: { init_data: init } });
+  const mid = (await row('SELECT id FROM users WHERE tg_id = 770002')).id;
+  await seed(mid);
+  const m1 = await call('POST', '/api/v1/me/delete', { token: mreg.data.access_token, json: { confirm: 'DELETE' } });
+  ok(m1.status === 200 && (await row('SELECT is_active, tg_id FROM users WHERE id = ?', mid)).tg_id === null, 'PRV-04: the Mini App deletes its account with the confirmation alone: ' + m1.status);
+  for (const t of PERSONAL) ok(await count(t, mid) === 0, `PRV-04: Mini App delete removes ${t}`);
+
+  // the admin delete (bot / Mini App admin) removes the same personal data
+  await signup('prv04-admin@example.com', { device: 'prv04-a' });
+  const aid = await userId('prv04-admin@example.com');
+  await seed(aid);
+  const acts = await import('../src/admin-actions.js');
+  const ad = await acts.runAction(env, '12345', 'user.delete', { userId: aid });
+  ok(ad.ok !== false, 'PRV-04: admin delete runs: ' + JSON.stringify(ad).slice(0, 200));
+  for (const t of PERSONAL) ok(await count(t, aid) === 0, `PRV-04: admin delete removes ${t} too`);
+  ok(!String((await row('SELECT password_hash FROM users WHERE id = ?', aid)).password_hash).startsWith('pbkdf2$'), 'PRV-04: admin delete erases the password hash');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

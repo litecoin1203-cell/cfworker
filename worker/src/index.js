@@ -260,7 +260,7 @@ async function route(request, env, p, ctx) {
   // everything below needs a logged-in user
   const authed = [
     '/me', '/trial', '/vpn', '/vpn/sub', '/vpn/servers', '/devices', '/orders', '/wallet', '/referral', '/coupons/check',
-    '/app/apk', '/auth/change-password', '/auth/logout-all', '/me/packages', '/me/email', '/me/avatar', '/me/telegram/start', '/me/telegram/verify', '/me/ip', '/me/health', '/net/report', '/net/rank', '/net/google',
+    '/app/apk', '/auth/change-password', '/auth/logout-all', '/me/delete', '/me/packages', '/me/email', '/me/avatar', '/me/telegram/start', '/me/telegram/verify', '/me/ip', '/me/health', '/net/report', '/net/rank', '/net/google',
   ];
   const needsAuth = authed.includes(p) || p.startsWith('/devices/') || p.startsWith('/orders/');
   if (!needsAuth) return json({ detail: { code: 'not_found', message: 'پیدا نشد.' } }, 404);
@@ -273,6 +273,10 @@ async function route(request, env, p, ctx) {
     return auth.changePassword(env, user, await body(request));
   }
   if (p === '/auth/logout-all' && m === 'POST') return auth.logoutAll(env, user);
+  if (p === '/me/delete' && m === 'POST') {
+    await rateLimit(env, 'RL_LOGIN', 'del:' + user.id); // it checks the password: no guessing with a stolen token
+    return auth.deleteMe(env, user, await body(request));
+  }
   if (p === '/me' && m === 'GET') return account.me(env, user, request, ctx);
   // the address this request came from and where Cloudflare places it: through the VPN, the exit's public IP,
   // country and city (Pleat's Home shows them while connected); nothing is stored
