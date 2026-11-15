@@ -366,9 +366,6 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// A new Pleat is out: the same card as the system notification. The
-/// three-part line (Download, Check, Install) carries the Pleat mark along
-/// as it goes; the button does whatever is next.
 /// "Send diagnostics?", once (release audit PRV-03): nothing is sent before
 /// a yes. The answer is kept; Profile's switch changes it later.
 class _DiagnosticsAsk extends StatelessWidget {
@@ -433,6 +430,9 @@ class _DiagnosticsAsk extends StatelessWidget {
   }
 }
 
+/// A new Pleat is out: the same card as the system notification. The
+/// three-part line (Download, Check, Install) carries the Pleat mark along
+/// as it goes; the button does whatever is next.
 class _UpdateBanner extends StatelessWidget {
   const _UpdateBanner({required this.app});
   final AppState app;

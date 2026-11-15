@@ -9,6 +9,7 @@ This is what Pleat collects, why, where it goes and how long it stays. It covers
 
 ## Your account
 - Your email (if you use one), your Telegram ID, username and name (if you link Telegram), a hash of your password (never the password itself), the character you picked, your wallet balance, your invite code and who invited you.
+- Your plans, how much data each plan period used, and when you last signed in.
 - Your orders, payments and wallet history. For a card payment this includes the receipt you send and the bank's text message about the deposit; for crypto, the transaction ID.
 - Kept while the account exists. See "Deleting your account" below.
 
@@ -30,7 +31,7 @@ This is what Pleat collects, why, where it goes and how long it stays. It covers
 ## Who else sees data
 - VPN servers: your connection runs on servers run by our providers through their management panels. They see your connection (when, how much data, the device ID the app sends to enforce the device limit) and keep their own logs, which are outside our control.
 - Cloudflare runs our server and its database. It processes each request (including your IP address) and keeps request logs under its own terms.
-- Telegram: the bot, the Mini App, sign-in codes and support messages go through Telegram. Card-payment receipts you send and a daily backup of our database (accounts, orders, wallets and devices; no passwords or connection links) are kept in our support team's Telegram chat.
+- Telegram: the bot, the Mini App, sign-in codes and support messages go through Telegram. Card-payment receipts you send and a daily backup of our database (accounts, plans and data used, orders, wallets, devices and our admin action log; no passwords or connection links) are kept in our support team's Telegram chat.
 - Crypto payments: our payment provider gets the order number and amount, never your name or email.
 - Privacy check (in the app) contacts outside services from your phone (Cloudflare, Google services such as YouTube and Gemini, ipinfo.io and ipwho.is) to test your connection. One test asks Cloudflare for your address without the tunnel, to compare. Results stay on your phone; only the anonymous server key and whether Google services work go to our server.
 - The app may download its typeface from Google Fonts.
@@ -40,7 +41,7 @@ This is what Pleat collects, why, where it goes and how long it stays. It covers
 Your session history (30 days, or off), connect tries, saved servers and settings stay on the phone. Sign-in tokens and connection settings are kept in the phone's secure storage and are not backed up.
 
 ## Deleting your account
-Ask Support (in Profile) to delete your account. We remove your email, your Telegram details, your character and your devices, end your plan and switch off your VPN accounts. Orders and wallet history are kept for accounting. Connection-quality data and diagnostics expire on their own within 30 days. Copies in earlier backups and Telegram messages are not removed.
+Ask Support (in Profile) to delete your account. We remove your email and Telegram details from your account, your character and your devices, end your plan and switch off your VPN accounts. Orders, wallet history and plan history are kept for accounting. Our admin action log, which records what our support team did (for example "deleted" with the account's email or Telegram username), is kept and is part of later backups. Connection-quality data and diagnostics expire on their own within 30 days. Copies in earlier backups and Telegram messages are not removed.
 
 ## Changes
 If this policy changes, the new version ships with the app and the Mini App.
