@@ -281,11 +281,11 @@ async function route(request, env, p, ctx) {
     // ?k=<serverKey>: the exit this phone is on, so its real country is learned (panels.learnExitCountry)
     const k = new URL(request.url).searchParams.get('k');
     if (k && /^[A-Z]{2}$/.test(cf.country || '')) {
-      const { learnExitCountry } = await import('./panels.js');
+      const { learnExitFromUser } = await import('./panels.js');
       // &h=0: the person turned Pleat's diagnostics off, so no location report (the country is still learned)
       const report = new URL(request.url).searchParams.get('h') !== '0';
       const job = (async () => {
-        await learnExitCountry(env, k, cf.country).catch(() => {});
+        await learnExitFromUser(env, user, k, cf.country).catch(() => {});
         if (report) { const { checkExitCountry } = await import('./health.js'); await checkExitCountry(env, user, request, k, cf.country).catch(() => {}); }
       })();
       if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;

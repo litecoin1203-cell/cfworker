@@ -470,8 +470,9 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   city name, a two-letter code token, then a host label like `de1.`. Before that only a flag counted, so remarks
   without a flag showed as "Unknown country". No country → `Server N`; the bot's server card shows the panel's
   remark and the admin can give a label with a flag. Since Pleat 1.2.34 the app sends `/me/ip?k=<serverKey>` while
-  connected; the Worker stores the exit's Cloudflare country in settings `server_exit_cc` (never IR; a change needs
-  two reports in a row) and uses it when the remark names no country. Once confirmed (n>=2, nothing pending) the learned exit country
+  connected; the Worker stores the exit's Cloudflare country in settings `server_exit_cc` (never IR; since SEC-02
+  only users with a running plan vote, only for servers in their own `user_skeys`, one vote per user, at most one
+  report a minute per user; a new country needs two different users) and uses it when the remark names no country. Once confirmed (n>=2, nothing pending) the learned exit country
   also overrules a remark that names another country (TR 1/TR 7 left via Hetzner/dataforest in DE): confirmed exit >
   remark > unconfirmed exit > host label. The bot's server list marks such servers with 📍.
 - PasarGuard may serve Xray JSON to a v2rayNG user agent; `collectLinks` falls back to `<sub>/links` (PR #9).
@@ -1068,6 +1069,8 @@ Grouped by area. "Proven" means reproduced or measured.
 | Panel 1 admin gets 403 on `/api/groups` and `/api/hosts` → no IR TUNNEL marks | `cgtunnel_` probe user in the Tunnel group — #61 |
 | "Unknown country" for remarks without a flag emoji | names / codes / host labels (`countries.js`) — #67; learned exit country — #72, #76 |
 | Bot: 🗂 پنل‌های کاربر ran the app-update announce (shared route `upa`) | route renamed `m:uac` — #55 |
+| PNL-01 a panel answering a 200 HTML page (CDN challenge) threw a SyntaxError → every purchase failed, panel 1 ran ahead of D1 | non-JSON body = `PasarGuardError(bad_json)`; any error fails only that panel (dirty) |
+| SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |
 
 ### App and tunnel
 | Problem | Fix |

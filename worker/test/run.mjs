@@ -2127,10 +2127,19 @@ section('the exit\'s real country is learned from /me/ip?k= and fills servers wh
   const { exitCountries, unify, countryOfLink } = await import('../src/panels.js');
   const { serverKey } = await import('../src/netstats.js');
   await env.DB.prepare("DELETE FROM settings WHERE key = 'server_exit_cc'").run();
-  const tok = await signup('exitcc@example.com', { device: 'ecd' });
   const link = 'vless://00000000-0000-4000-8000-000000000000@t1.example.org:2083?security=tls&type=ws#Tunnel%20%5B%20Stable%20%5D';
   const k = serverKey(link);
-  const ask = async (cc, key = k) => { await call('GET', '/api/v1/me/ip?k=' + key, { token: tok, cf: { country: cc } }); await Promise.all(_pending.splice(0)); };
+  // SEC-02: only users with a running plan vote, only for servers they have, and a vote counts once per user
+  const voters = [];
+  for (const em of ['exitcc@example.com', 'exitcc2@example.com']) {
+    const t = await signup(em, { device: 'ecd-' + em });
+    const id = await userId(em);
+    await env.DB.prepare("INSERT INTO subscriptions (user_id, pg_username, plan_id, expires_at, state, updated_at) VALUES (?, '', 1, ?, 'active', 0)").bind(id, Math.floor(Date.now() / 1000) + 86400).run();
+    await env.DB.prepare('INSERT INTO user_skeys (user_id, keys, at) VALUES (?, ?, 0)').bind(id, JSON.stringify({ [k]: 'x' })).run();
+    voters.push(t);
+  }
+  let who = 0;
+  const ask = async (cc, key = k) => { globalThis.__cgExitVote = null; await call('GET', '/api/v1/me/ip?k=' + key, { token: voters[who++ % 2], cf: { country: cc } }); await Promise.all(_pending.splice(0)); };
   ok(countryOfLink(link, {}) === '', 'no flag, no name, no host hint: unknown before');
   await ask('IR');
   ok(!(await exitCountries(env))[k], 'Iran is never learned (the request did not go through an exit)');
@@ -2138,10 +2147,11 @@ section('the exit\'s real country is learned from /me/ip?k= and fills servers wh
   ok((await exitCountries(env))[k]?.cc === 'DE', 'learned DE: ' + JSON.stringify((await exitCountries(env))[k]));
   const names = unify([link], {}, null, await exitCountries(env)).map((l) => decodeURIComponent(l.split('#')[1]));
   ok(names[0] === '🇩🇪 DE 1', 'the server is named by its learned country: ' + names[0]);
+  who = 0;
   await ask('NL');
   ok((await exitCountries(env))[k].cc === 'DE', 'one different answer does not move it');
   await ask('NL');
-  ok((await exitCountries(env))[k].cc === 'NL', 'two in a row do');
+  ok((await exitCountries(env))[k].cc === 'NL', 'two different users in a row do');
   await ask('FR', 'BAD KEY');
   ok(Object.keys(await exitCountries(env)).length === 1, 'a malformed key is ignored');
   const tr = 'vless://u@x.example.org:443#%F0%9F%87%B9%F0%9F%87%B7%20TR%201';
@@ -5925,6 +5935,58 @@ section('PNL-01: a panel answering HTML with 200 fails only itself; the purchase
   let e3 = null; try { await new Marzban(W.e, { url: W.bases[1], username: 'adm', password: 'pw' })._complete('x', {}); } catch (x) { e3 = x; }
   ok(e3 instanceof PasarGuardError, 'PNL-01: Marzban _complete on HTML -> PasarGuardError: ' + (e3 && e3.constructor.name));
   W.pgs[1].htmlFor = null;
+}
+
+
+section('SEC-02: a free account cannot rename servers for everyone through /me/ip?k=, nor flood the learned map out');
+{
+  const W = await world('sec2', 1);
+  const { exitCountries, countryOfLink } = await import('../src/panels.js');
+  const { serverKey } = await import('../src/netstats.js');
+  const link = 'vless://00000000-0000-4000-8000-000000000000@x.example.org:443?security=tls#%F0%9F%87%A9%F0%9F%87%AA%20DE%201';
+  const k = serverKey(link);
+  const now = Math.floor(Date.now() / 1000);
+  const mk = async (em, { sub = true, keys = [k] } = {}) => {
+    const t = await W.signupW(em);
+    const id = (await W.q('SELECT id FROM users WHERE email = ?', em))[0].id;
+    if (sub) await W.e.DB.prepare("INSERT INTO subscriptions (user_id, pg_username, plan_id, expires_at, state, updated_at) VALUES (?, '', ?, ?, 'active', 0)").bind(id, W.plan.id, now + 86400).run();
+    if (keys) await W.e.DB.prepare('INSERT INTO user_skeys (user_id, keys, at) VALUES (?, ?, 0)').bind(id, JSON.stringify(Object.fromEntries(keys.map((x) => [x, 'x'])))).run();
+    return t;
+  };
+  const ask = async (tok, cc, key = k) => { globalThis.__cgExitVote = null; await W.callW('GET', '/api/v1/me/ip?k=' + key, { token: tok, cf: { country: cc } }); };
+  const map = async () => exitCountries(W.e);
+  const honest = [await mk('s2a@example.com'), await mk('s2b@example.com'), await mk('s2c@example.com')];
+  for (const t of honest) await ask(t, 'DE');
+  ok((await map())[k]?.cc === 'DE' && (await map())[k].n >= 2, 'SEC-02: three subscribed users who have the server confirm DE: ' + JSON.stringify((await map())[k]));
+  // the audit's PoC: a free account (no plan) asks three times from a US address
+  const free = await mk('s2free@example.com', { sub: false });
+  for (let i = 0; i < 3; i++) await ask(free, 'US');
+  ok((await map())[k].cc === 'DE' && !(await map())[k].pending && countryOfLink(link, await map()) === 'DE', 'SEC-02: a free account\'s reports do not count: ' + JSON.stringify((await map())[k]));
+  // a paying user, but for a server that is not one of theirs
+  const other = await mk('s2other@example.com', { keys: ['abcdef123456'] });
+  for (let i = 0; i < 3; i++) await ask(other, 'US');
+  ok((await map())[k].cc === 'DE' && !(await map())[k].pending, 'SEC-02: a server the user does not have is not theirs to report');
+  // a paying user who has the server, three times: one user is one vote
+  const one = await mk('s2one@example.com');
+  for (let i = 0; i < 3; i++) await ask(one, 'US');
+  ok((await map())[k].cc === 'DE', 'SEC-02: one user asking again and again is one vote: ' + JSON.stringify((await map())[k]));
+  // a second, different user agreeing does move it (the feature still works)
+  await ask(await mk('s2two@example.com'), 'US');
+  ok((await map())[k].cc === 'US', 'SEC-02: two different users with the server do move it: ' + JSON.stringify((await map())[k]));
+  // flood: 801 made-up keys from an account cannot push the real key out
+  const fake = Array.from({ length: 801 }, (_, i) => 'f' + String(i).padStart(9, '0'));
+  const flooder = await mk('s2flood@example.com', { keys: [k] });
+  for (const x of fake.slice(0, 40)) await ask(flooder, 'NL', x);
+  ok((await map())[k] && Object.keys(await map()).every((x) => !x.startsWith('f')), 'SEC-02: keys that are not the user\'s servers are never added');
+  // and one user asking many times in a row writes D1 at most once a minute
+  let writes = 0;
+  const prep = W.e.DB.prepare;
+  W.e.DB.prepare = (sql) => { if (/server_exit_cc/.test(sql) && /INSERT/.test(sql)) writes++; return prep.call(W.e.DB, sql); };
+  const rapid = await mk('s2rapid@example.com', { keys: [k] });
+  globalThis.__cgExitVote = null;
+  for (let i = 0; i < 5; i++) { await W.callW('GET', '/api/v1/me/ip?k=' + k, { token: rapid, cf: { country: ['FR', 'IT', 'ES', 'PL', 'SE'][i] } }); }
+  W.e.DB.prepare = prep;
+  ok(writes <= 1, 'SEC-02: rapid reports from one user are throttled: ' + writes + ' writes');
 }
 
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
