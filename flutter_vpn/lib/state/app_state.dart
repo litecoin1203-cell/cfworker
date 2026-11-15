@@ -3426,6 +3426,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (phase != Phase.protected) return;
     if (net == false && ++_offlineBeats <= _offlineGraceBeats) {
       _misses = 0;
+      // switched to a network not usable yet: restart once it shows
+      if (switched) _netSwitched = true;
       if (!noNetwork) {
         noNetwork = true;
         notifyListeners();
@@ -3437,7 +3439,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       noNetwork = false;
       notifyListeners();
     }
-    if (switched) return _restartAfterSwitch(e);
+    if (switched && net != false) return _restartAfterSwitch(e);
+    // still no network past the grace: misses count as before (NET-02),
+    // and the restart waits for the network
+    if (switched) _netSwitched = true;
     if (++_misses < 2) return;
     if (!smartConnect) {
       // The person picked this exit and turned smart connect off: it isn't

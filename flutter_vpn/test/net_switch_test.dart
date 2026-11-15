@@ -128,6 +128,31 @@ void main() {
     await tester.pump(const Duration(minutes: 3));
   });
 
+  testWidgets('a switch to no network yet restarts once the network shows', (
+    tester,
+  ) async {
+    final (app, tunnel) = await _protected(tester);
+    final id = app.exitId;
+    final starts = tunnel.starts;
+    // Android hands over before the new network is usable
+    tunnel
+      ..kind = ''
+      ..live = null
+      ..netChanged();
+    await _secs(tester, 4);
+    expect(app.noNetwork, isTrue);
+    expect(tunnel.starts, starts);
+    // the network shows, the exit still silent on the old connections:
+    // the next ping restarts it in place, not after two counted misses
+    tunnel.kind = 'cell';
+    await _secs(tester, 21);
+    expect(tunnel.starts, starts + 1);
+    expect(app.exitId, id);
+    expect(tunnel.stopped, isFalse);
+    await app.disconnect();
+    await tester.pump(const Duration(minutes: 3));
+  });
+
   testWidgets('switches in a burst are checked once', (tester) async {
     final (app, tunnel) = await _protected(tester);
     await _settle(tester, app);
