@@ -2434,6 +2434,29 @@ section('panel test names the config types and flags ones the app cannot use');
   ok(lastText().includes('نوع کانفیگ‌ها:') && lastText().includes('vless·reality·tcp') && !lastText().includes('پشتیبانی نمی‌کند'), 'paneltest shows the types: ' + lastText());
 }
 
+section('ARC-02: every share-link reader agrees, and vmess remarks are read as UTF-8 (golden shared with Pleat)');
+{
+  const { readFileSync } = await import('node:fs');
+  const NS = await import('../src/netstats.js');
+  const { countryOfLink, unify, linkKinds, isPlaceholder } = await import('../src/panels.js');
+  const { maskBridge } = await import('../src/admin-actions.js');
+  const golden = JSON.parse(readFileSync(new URL('../../flutter_vpn/test/links_golden.json', import.meta.url), 'utf8')).links;
+  for (const g of golden) {
+    const ep = NS.linkEndpoint(g.link);
+    ok(ep && ep.type === g.type && ep.host === g.host && ep.port === g.port && NS.serverKey(g.link) === g.key, `ARC-02 golden ${g.type} ${g.host}: endpoint and key ` + JSON.stringify(ep));
+    ok(typeof NS.linkRemark === 'function' && NS.linkRemark(g.link) === g.remark, `ARC-02 golden ${g.type} ${g.host}: remark ${JSON.stringify(g.remark)} read as ` + JSON.stringify(NS.linkRemark && NS.linkRemark(g.link)));
+    ok(countryOfLink(g.link, {}) === g.cc, `ARC-02 golden ${g.type} ${g.host}: country ${g.cc} (was "${countryOfLink(g.link, {})}")`);
+    ok(!isPlaceholder(g.link), `ARC-02 golden ${g.type} ${g.host}: not a placeholder`);
+  }
+  const vm2 = golden[1].link; // urlsafe, no padding, a "#..." after it, Persian remark and path
+  const renamed = unify([vm2])[0];
+  const j = NS.vmessJson(renamed);
+  ok(j && j.ps === '🇩🇪 DE 1' && j.path === '/مسیر' && j.add === '203.0.113.10', 'ARC-02: renaming a vmess link keeps its other non-ASCII fields intact: ' + JSON.stringify(j));
+  ok(linkKinds([vm2]).counts['vmess·tcp'] === 1, 'ARC-02: linkKinds reads a vmess link with a #fragment: ' + JSON.stringify(linkKinds([vm2]).counts));
+  ok(maskBridge(vm2) === 'vmess://20•••.10', 'ARC-02: maskBridge reads the same vmess link: ' + maskBridge(vm2));
+  ok(NS.vmessJson('vmess://not-base64!') === null && NS.vmessJson('vless://x@y:1') === null && NS.vmessJson('vmess://' + btoa('[1]')) === null, 'ARC-02: vmessJson is null for anything that is not a vmess JSON object');
+}
+
 section('sign up and log in with Telegram (6-digit code from the bot)');
 {
   env.TELEGRAM_BOT_USERNAME = 'PleatBot';

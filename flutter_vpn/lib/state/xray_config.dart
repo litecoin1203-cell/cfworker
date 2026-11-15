@@ -8,6 +8,8 @@ library;
 import 'dart:convert';
 import 'dart:math' as math;
 
+import '../api/models.dart' show vmessObject;
+
 const socksPort = 10808;
 
 /// The SOCKS port needs a login: without one any app on the phone could
@@ -562,11 +564,7 @@ Map<String, Object?> _trojan(Uri u, Map<String, String> q) {
 }
 
 Map<String, Object?> _vmess(String body) {
-  var raw = body.split('#').first.trim();
-  raw = raw.replaceAll('-', '+').replaceAll('_', '/');
-  raw += '=' * ((4 - raw.length % 4) % 4);
-  final j = jsonDecode(utf8.decode(base64.decode(raw)));
-  if (j is! Map) throw const FormatException('bad vmess');
+  final j = vmessObject(body);
   String s(String k) => '${j[k] ?? ''}';
   final address = s('add');
   if (address.isEmpty) throw const FormatException('no host');

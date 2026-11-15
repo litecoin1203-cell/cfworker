@@ -288,7 +288,7 @@ The full list (every route, its auth, handler and limits, plus the admin API and
 | `chainwatch.js` | reads five chains, matches deposits to orders, `claimTxid` (one txid = one order, atomic) |
 | `coins.js`, `usdrate.js`, `nowpayments.js`, `banks.js` | coin prices, USD→toman rate, gateway invoices, bank name from card number |
 | `sms.js` | parses bank SMS (rial vs toman!), auto-confirms card-to-card orders |
-| `netstats.js` | crowd ranking of exits per operator (Cloudflare ASN), province, network kind; per-user experience |
+| `netstats.js` | crowd ranking of exits per operator (Cloudflare ASN), province, network kind; per-user experience; **the one share-link reader** (`vmessJson` UTF-8, `linkRemark`, `linkEndpoint`, `serverKey`), matched by Pleat's `models.dart` (`vmessObject`, `endpointOf`) through `flutter_vpn/test/links_golden.json` |
 | `appupdate.js` | reads the `pleat-latest` release (public, like the repo) with `PLEAT_DL_TOKEN`, serves version info, proxies the APK, `checkNewBuild` |
 | `telegram.js` | Telegram client, admin roles, order callbacks, `ensureWebhook`, `sendBackup`, legacy text commands, `buttonize` |
 | `telegram-menu.js` | button menu router, forms (`bot_session`), confirms |

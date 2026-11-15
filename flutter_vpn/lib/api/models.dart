@@ -252,6 +252,30 @@ class Endpoint {
 }
 
 /// Protocol, host and port of a share link, the way v2rayNG stores them.
+/// The JSON object in a vmess link body (the part after "vmess://"):
+/// base64 or base64url, padded or not, "#..." ignored, read as UTF-8.
+/// Throws [FormatException] when it is not a readable JSON object. The one
+/// vmess reader of the app (config, endpoint, diagnostics), the same as the
+/// Worker's `vmessJson` (test/links_golden.json is checked by both).
+Map<dynamic, dynamic> vmessObject(String body) {
+  var raw = body.split('#').first.trim();
+  raw = raw.replaceAll('-', '+').replaceAll('_', '/');
+  raw += '=' * ((4 - raw.length % 4) % 4);
+  final j = jsonDecode(utf8.decode(base64.decode(raw)));
+  if (j is! Map) throw const FormatException('bad vmess');
+  return j;
+}
+
+/// [vmessObject] of a whole link; null when it is not a readable vmess link.
+Map<dynamic, dynamic>? vmessJson(String link) {
+  if (!link.toLowerCase().startsWith('vmess://')) return null;
+  try {
+    return vmessObject(link.substring(8));
+  } on FormatException {
+    return null;
+  }
+}
+
 Endpoint? endpointOf(String link) {
   final i = link.indexOf('://');
   if (i <= 0) return null;
@@ -263,19 +287,9 @@ Endpoint? endpointOf(String link) {
   };
   var rest = link.substring(i + 3);
   if (scheme == 'vmess') {
-    try {
-      var raw = rest.split('#').first;
-      raw += '=' * ((4 - raw.length % 4) % 4);
-      final j = jsonDecode(
-        utf8.decode(
-          base64.decode(raw.replaceAll('-', '+').replaceAll('_', '/')),
-        ),
-      );
-      if (j is! Map) return null;
-      return Endpoint(type, _str(j['add']), _str(j['port']));
-    } on FormatException {
-      return null;
-    }
+    final j = vmessJson(link);
+    if (j == null) return null;
+    return Endpoint(type, _str(j['add']), _str(j['port']));
   }
   rest = rest.split('#').first.split('?').first.split('/').first;
   final at = rest.lastIndexOf('@');

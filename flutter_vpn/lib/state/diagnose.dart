@@ -5,8 +5,6 @@
 /// native side blanks them before the text reaches Dart.
 library;
 
-import 'dart:convert';
-
 import '../api/models.dart';
 import 'exits.dart';
 import 'xray_config.dart';
@@ -320,11 +318,7 @@ String linkShape(String link) {
   final scheme = link.substring(0, i).toLowerCase();
   if (scheme == 'vmess') {
     try {
-      var raw = link.substring(i + 3).split('#').first.trim();
-      raw = raw.replaceAll('-', '+').replaceAll('_', '/');
-      raw += '=' * ((4 - raw.length % 4) % 4);
-      final j = jsonDecode(utf8.decode(base64.decode(raw)));
-      if (j is! Map) return 'vmess (unreadable)';
+      final j = vmessObject(link.substring(i + 3));
       final ep = endpointOf(link);
       final parts = <String>[
         'vmess',

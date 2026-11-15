@@ -56,6 +56,30 @@ export function serverKey(link) {
   return 'k' + h.toString(16).padStart(8, '0');
 }
 
+// ---------------- share links: the one reader (ARC-02) ----------------
+// Every part of the Worker that looks inside a share link uses these, so they all agree with each other and with
+// Pleat (api/models.dart). flutter_vpn/test/links_golden.json holds links both test suites read.
+const b64 = (raw) => { raw += '='.repeat((4 - (raw.length % 4)) % 4); return atob(raw.replace(/-/g, '+').replace(/_/g, '/')); };
+
+// The JSON object inside a vmess:// link (base64 or base64url, padded or not, a "#..." after it ignored), its text
+// read as UTF-8 so a remark like "🇩🇪" or "آلمان" survives; null when the link is not a readable vmess object.
+export function vmessJson(link) {
+  const s = String(link || '');
+  if (!/^vmess:\/\//i.test(s)) return null;
+  try {
+    const j = JSON.parse(new TextDecoder().decode(Uint8Array.from(b64(s.slice(8).split('#')[0].trim()), (c) => c.charCodeAt(0))));
+    return j && typeof j === 'object' && !Array.isArray(j) ? j : null;
+  } catch (e) { return null; }
+}
+
+// The panel's name for a config: vmess keeps it in "ps", every other scheme in the "#..." fragment.
+export function linkRemark(link) {
+  const s = String(link || '');
+  if (/^vmess:\/\//i.test(s)) { const j = vmessJson(s); return j && j.ps != null ? String(j.ps) : ''; }
+  const frag = s.split('#')[1] || '';
+  try { return decodeURIComponent(frag); } catch (e) { return frag; }
+}
+
 // {type, host, port} of a share link, read the way v2rayNG reads it; null when it is not one.
 export function linkEndpoint(link) {
   const i = String(link || '').indexOf('://');
@@ -63,13 +87,10 @@ export function linkEndpoint(link) {
   const scheme = link.slice(0, i).toLowerCase();
   const type = scheme === 'ss' ? 'shadowsocks' : scheme === 'hy2' ? 'hysteria2' : scheme;
   let rest = link.slice(i + 3), host, port;
-  const b64 = (raw) => { raw += '='.repeat((4 - (raw.length % 4)) % 4); return atob(raw.replace(/-/g, '+').replace(/_/g, '/')); };
   if (scheme === 'vmess') {
-    try {
-      const j = JSON.parse(new TextDecoder().decode(Uint8Array.from(b64(rest.split('#')[0]), (c) => c.charCodeAt(0))));
-      if (!j || typeof j !== 'object') return null;
-      host = j.add == null ? '' : String(j.add); port = j.port == null ? '' : String(j.port);
-    } catch (e) { return null; }
+    const j = vmessJson(link);
+    if (!j) return null;
+    host = j.add == null ? '' : String(j.add); port = j.port == null ? '' : String(j.port);
   } else {
     rest = rest.split('#')[0].split('?')[0].split('/')[0];
     const at = rest.lastIndexOf('@');
