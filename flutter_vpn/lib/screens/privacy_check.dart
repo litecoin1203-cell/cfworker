@@ -105,7 +105,7 @@ class PrivacyCheckScreen extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
                   child: Text(
-                    'Every test goes through the exit, like an app’s traffic. Pleat sends no account, address or link to the test servers (Cloudflare, Google, ipinfo, ipwho.is).',
+                    'The tests go through the exit, like an app’s traffic. One test asks Cloudflare for your home address directly, to compare; it stays on this phone. Pleat sends no account, address or link to the test servers (Cloudflare, Google, ipinfo, ipwho.is).',
                     style: PType.meta(color: PColors.muted),
                   ),
                 ),
