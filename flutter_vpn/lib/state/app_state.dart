@@ -2955,6 +2955,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     holdTries = 0;
     _holdRetry?.cancel();
     _netWatch?.cancel();
+    // a try of an earlier hold still running must not block this one's
+    _retryingHeld = false;
     if (_heldAlerted) {
       _heldAlerted = false;
       unawaited(tunnel.alertClear());
@@ -3010,7 +3012,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       if (!holding || phase != Phase.dropped) return;
       if (net == false) {
         _heldOffline = true;
-      } else if (net == true && _heldOffline) {
+      } else if (net == true && _heldOffline && !_retryingHeld) {
+        // (a try already running: look again on the next tick)
         // The network is back: try now, and start the back-off over.
         _heldOffline = false;
         holdTries = 0;
