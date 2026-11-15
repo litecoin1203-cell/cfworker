@@ -66,7 +66,7 @@ class _PlansScreenState extends State<PlansScreen> {
                 padding: const EdgeInsets.only(right: 96),
                 child: Text(
                   me == null
-                      ? 'Prices from the Cloud Gold store.'
+                      ? 'Prices from the Pleat store.'
                       : 'Wallet ${toman(me.wallet)}. Pay with the wallet, card or crypto.',
                   style: PType.small(),
                 ),

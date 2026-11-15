@@ -2151,7 +2151,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
     if (config.announcement.trim().isNotEmpty) {
-      out.add(Notice('From Cloud Gold', config.announcement.trim()));
+      out.add(Notice('From Pleat', config.announcement.trim()));
     }
     final s = subscription;
     if (me.ready && s == null) {

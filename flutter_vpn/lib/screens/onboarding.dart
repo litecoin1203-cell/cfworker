@@ -22,13 +22,13 @@ class _Beat {
 }
 
 const _beats = [
-  _Beat('Your Cloud Gold', 'account, on Pleat', 11, SceneTone.dusk),
+  _Beat('One tap,', 'every country', 11, SceneTone.dusk),
   _Beat('Every exit', 'flagged by country', 37, SceneTone.dawn),
   _Beat('Your plan and usage', 'always in view', 83, SceneTone.night),
 ];
 
 /// Three beats around one circular scene that never leaves. Orbit bubbles
-/// swap icons every 900ms, the metric disk trades "28 ms" for "AES-256",
+/// swap icons every 900ms, the metric disk trades "Exits / Flags" for "Usage / Live",
 /// and a beat change shifts the shards and wipes the headline.
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
