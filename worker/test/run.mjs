@@ -5906,6 +5906,18 @@ async function world(tag, n = 2, kinds = []) {
   return { e, pgs, bases, callW, bot, signupW, q, plan };
 }
 
+// counts writes of the learned exit-country map (its key is a bound value, not in the SQL text)
+function countExitWrites(e) {
+  const prep = e.DB.prepare;
+  let n = 0;
+  e.DB.prepare = (sql) => {
+    const stmt = prep.call(e.DB, sql);
+    if (/INSERT INTO settings/.test(sql)) { const b = stmt.bind.bind(stmt); stmt.bind = (...a) => { if (a[0] === 'server_exit_cc') n++; return b(...a); }; }
+    return stmt;
+  };
+  return { get n() { return n; }, stop() { e.DB.prepare = prep; } };
+}
+
 section('PNL-01: a panel answering HTML with 200 fails only itself; the purchase goes through and the other panel matches D1');
 {
   const W = await world('pnl1', 2);
@@ -5979,14 +5991,13 @@ section('SEC-02: a free account cannot rename servers for everyone through /me/i
   for (const x of fake.slice(0, 40)) await ask(flooder, 'NL', x);
   ok((await map())[k] && Object.keys(await map()).every((x) => !x.startsWith('f')), 'SEC-02: keys that are not the user\'s servers are never added');
   // and one user asking many times in a row writes D1 at most once a minute
-  let writes = 0;
-  const prep = W.e.DB.prepare;
-  W.e.DB.prepare = (sql) => { if (/server_exit_cc/.test(sql) && /INSERT/.test(sql)) writes++; return prep.call(W.e.DB, sql); };
   const rapid = await mk('s2rapid@example.com', { keys: [k] });
   globalThis.__cgExitVote = null;
+  const cw = countExitWrites(W.e);
   for (let i = 0; i < 5; i++) { await W.callW('GET', '/api/v1/me/ip?k=' + k, { token: rapid, cf: { country: ['FR', 'IT', 'ES', 'PL', 'SE'][i] } }); }
-  W.e.DB.prepare = prep;
-  ok(writes <= 1, 'SEC-02: rapid reports from one user are throttled: ' + writes + ' writes');
+  cw.stop();
+  const writes = cw.n;
+  ok(writes === 1, 'SEC-02: rapid reports from one user are throttled: ' + writes + ' writes');
 }
 
 section('CF-02: bot work on slow panels finishes inside the 30 s waitUntil window and still reports to the admin');
@@ -6401,6 +6412,66 @@ section('QA-02: panel adapters: logins, refusals, fallbacks and odd answers');
     ok(pg.absoluteSubUrl('sub/x') === 'https://unit.test/sub/x' && pg.absoluteSubUrl('https://o.test/s') === 'https://o.test/s' && pg.absoluteSubUrl('') === '', 'sub links made absolute');
     ok(pg.panelHosts().join() === 'unit.test', 'panel host names');
   });
+}
+
+section('review of wave 2: a settled exit country is not rewritten; pending rows rotate, survive a race and adopt as stopped');
+{
+  // 1. a confirmed country with its voters full (or a legacy entry) is not rewritten by one more agreeing user
+  const W = await world('rev1', 2);
+  const { learnExitCountry } = await import('../src/panels.js');
+  let cw = countExitWrites(W.e);
+  for (const id of [1, 2, 3]) await learnExitCountry(W.e, 'abcdef1234', 'DE', id);
+  const w3 = cw.n;
+  await learnExitCountry(W.e, 'abcdef1234', 'DE', 4);
+  await learnExitCountry(W.e, 'abcdef1234', 'DE', 5);
+  cw.stop();
+  let writes = cw.n;
+  await W.e.DB.prepare("UPDATE settings SET value = ? WHERE key = 'server_exit_cc'").bind(JSON.stringify({ abcdef1234: { cc: 'DE', n: 3, v: [1, 2, 3] }, legacy99999: { cc: 'NL', n: 3 } })).run();
+  cw = countExitWrites(W.e);
+  await learnExitCountry(W.e, 'legacy99999', 'NL', 7);
+  cw.stop();
+  writes += cw.n;
+  ok(w3 === 3 && writes === 3, 'review 1: a settled country (3 voters, or a legacy entry) is not rewritten by another agreeing user: ' + writes + ' writes');
+
+  // 2. stale pending rows on a dead panel do not hold up the rest
+  const now = Math.floor(Date.now() / 1000), old = now - 7200;
+  const uids = [];
+  for (const em of ['rv2a@example.com', 'rv2b@example.com', 'rv2c@example.com']) { await W.signupW(em); uids.push((await W.q('SELECT id FROM users WHERE email = ?', em))[0].id); }
+  await W.e.DB.prepare("INSERT INTO panels (id, kind, label, cred_ref, state, rollout_percent, created_at) VALUES (9, 'pasarguard', 'dead', 'W_rev1_dead', 'disabled', 0, 1)").run();
+  W.e.W_rev1_dead = JSON.stringify({ url: 'http://rev1-dead.test', username: 'a', password: 'b' });
+  const dead = fakes.addPanel('http://rev1-dead.test', 'dead.example.net'); dead.down = true;
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, dirty, created_at) VALUES (?, 9, 'cg_dead1', '', 'active', 'pending', 1, ?), (?, 9, 'cg_dead2', '', 'active', 'pending', 1, ?), (?, 2, 'cg_gone1', '', 'active', 'pending', 1, ?)")
+    .bind(uids[0], old, uids[1], old, uids[2], old).run();
+  for (let i = 0; i < 3; i++) await runSync(W.e);
+  ok(!(await W.q("SELECT 1 FROM panel_accounts WHERE remote_username = 'cg_gone1'")).length, 'review 2: a stale intent behind two on a dead panel is still settled');
+  await W.e.DB.prepare('DELETE FROM panel_accounts WHERE panel_id = 9').run(); // the rest below on their own
+
+  // 4. an orphan of a user with no running plan (a refunded wallet buyer) is adopted switched off, never active
+  await W.signupW('rv4@example.com');
+  const u4 = (await W.q('SELECT id FROM users WHERE email = ?', 'rv4@example.com'))[0].id;
+  W.pgs[1].users['cg_refund01'] = { id: 9903, username: 'cg_refund01', status: 'active', expire: now + 30 * 86400, data_limit: 0, used_traffic: 0, token: 'rf1', note: `Pleat #${u4}` };
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, desired_expire, dirty, created_at) VALUES (?, 2, 'cg_refund01', '', 'active', 'pending', ?, 1, ?)").bind(u4, now + 30 * 86400, old).run();
+  await runSync(W.e); await runSync(W.e);
+  const r4 = (await W.q('SELECT desired, applied FROM panel_accounts WHERE user_id = ?', u4))[0];
+  ok(r4 && r4.desired === 'stopped' && W.pgs[1].users['cg_refund01'].status === 'disabled', 'review 4: adopted as stopped and switched off on the panel: ' + JSON.stringify(r4) + ' ' + W.pgs[1].users['cg_refund01'].status);
+
+  // 3. a purchase finishing a stale intent while the sync job settles it: the account keeps its D1 row
+  await W.signupW('rv3@example.com');
+  const u3 = (await W.q('SELECT id FROM users WHERE email = ?', 'rv3@example.com'))[0].id;
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, dirty, created_at) VALUES (?, 2, 'cg_race0001', '', 'active', 'pending', 1, ?)").bind(u3, old).run();
+  const realFetch = globalThis.fetch;
+  let raced = false;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (!raced && url === W.bases[1] + '/api/user' && (init.method || '') === 'POST') { raced = true; await runSync(W.e); } // the sync job runs right before the create
+    return realFetch(input, init);
+  };
+  try { await W.bot(`/grant rv3@example.com ${W.plan.id}`); } finally { globalThis.fetch = realFetch; }
+  const on2 = Object.values(W.pgs[1].users).filter((u) => u.note === `Pleat #${u3}`);
+  const r3 = (await W.q('SELECT remote_username, applied FROM panel_accounts WHERE user_id = ? AND panel_id = 2', u3))[0];
+  ok(raced && on2.length === 1 && r3 && r3.remote_username === on2[0].username && r3.applied === 'active', 'review 3: the account made during the race has its row: ' + JSON.stringify(r3) + ' ' + on2.map((u) => u.username));
+  await runSync(W.e); await runSync(W.e);
+  ok(Object.values(W.pgs[1].users).filter((u) => u.note === `Pleat #${u3}`).length === 1, 'review 3: and no second account later');
 }
 
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');

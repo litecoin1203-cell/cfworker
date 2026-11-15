@@ -282,13 +282,11 @@ export async function ensureAccount(env, user, panel, { expire, limit, hwid } = 
     if (r.meta.changes) { rowId = r.meta.last_row_id; recorded = name; }
   };
   const made = await createRemote(env, pg, user, { expire, limit, hwid, groups, name: pa ? pa.remote_username : null, intent });
-  if (rowId) {
-    await run(env, `UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = 'active',
+  const done = rowId && (await run(env, `UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = 'active',
       desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ?, dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ?`,
-      made.username, made.id, made.subPath, limit || 0, limit || 0, expire || null, expire || null, now, rowId);
-  } else {
-    await insertAccount(env, user.id, panel.id, made, { expire, limit, now }).run();
-  }
+  made.username, made.id, made.subPath, limit || 0, limit || 0, expire || null, expire || null, now, rowId)).meta.changes;
+  // no row to finish (none was written, or the sync job dropped a stale intent meanwhile): the account gets a new one
+  if (!done) await insertAccount(env, user.id, panel.id, made, { expire, limit, now }).run();
   return first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
 }
 
@@ -438,8 +436,8 @@ export async function linkAccount(env, user, panel, remote, { planId = null } = 
   await env.DB.batch(stmts);
 
   let replaced = null, disabled = false;
-  if (old && old.remote_username !== remote.username) {
-    replaced = old.remote_username;
+  if (old && old.remote_username !== remote.username && (old.applied !== 'pending' || ownedBy(await pg.getUser(old.remote_username).catch(() => null), user.id))) {
+    replaced = old.remote_username; // a pending intent's name is switched off only when that account is this user's (PNL-02)
     try { await pg.setStatus(replaced, 'disabled'); disabled = true; } catch (e) { /* the admin is told to switch it off by hand */ }
   }
   await evaluate(env, user.id); // stops at once if the account is already out of time or data
@@ -484,8 +482,8 @@ async function mergeAccount(env, user, panel, remote, { planId }) {
   }
   await env.DB.batch(stmts);
   let replaced = null, disabled = false;
-  if (old && old.remote_username !== remote.username) {
-    replaced = old.remote_username;
+  if (old && old.remote_username !== remote.username && (old.applied !== 'pending' || ownedBy(await pg.getUser(old.remote_username).catch(() => null), user.id))) {
+    replaced = old.remote_username; // a pending intent's name is switched off only when that account is this user's (PNL-02)
     try { await pg.setStatus(replaced, 'disabled'); disabled = true; } catch (e) { /* the admin is told to switch it off by hand */ }
   }
   // evaluate() only rewrites limits that drifted, so make every account's limit be recomputed now
@@ -673,20 +671,29 @@ export async function ensureMissingFor(env, userId) {
 const PENDING_STALE = 1800;
 async function settlePending(env, adapter, max = 2) {
   const rows = await all(env, `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json FROM panel_accounts a JOIN panels p ON p.id = a.panel_id
-    WHERE a.dirty = 1 AND a.applied = 'pending' AND a.created_at < ? ORDER BY a.id LIMIT ?`, nowSec() - PENDING_STALE, max);
+    WHERE a.dirty = 1 AND a.applied = 'pending' AND a.created_at < ? ORDER BY a.attempts, a.id LIMIT ?`, nowSec() - PENDING_STALE, max);
   const stmts = [];
   for (const pa of rows) {
     try {
       const pg = await adapter(panelOf(pa));
       const u = await pg.getUser(pa.remote_username);
       if (ownedBy(u, pa.user_id)) {
+        // kept running only for a user whose plan is running now; otherwise (a refunded purchase, a plan that ended)
+        // it is taken over switched off
         stmts.push(st(env, `UPDATE panel_accounts SET remote_id = ?, sub_path = ?, applied = ?, applied_limit_bytes = -1, applied_expire = ?, dirty = 1, attempts = 0,
-          last_error = NULL, applied_at = ? WHERE id = ? AND applied = 'pending'`, u.id ?? null, pg.absoluteSubUrl(u.subscription_url || ''),
-        String(u.status || 'active') === 'active' ? 'active' : 'stopped', parseExpire(u.expire), nowSec(), pa.id));
+          last_error = NULL, applied_at = ?, desired = CASE WHEN EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = panel_accounts.user_id AND s.state = 'active'
+            AND (s.expires_at IS NULL OR s.expires_at > ?)) THEN desired ELSE 'stopped' END
+          WHERE id = ? AND applied = 'pending'`, u.id ?? null, pg.absoluteSubUrl(u.subscription_url || ''),
+        String(u.status || 'active') === 'active' ? 'active' : 'stopped', parseExpire(u.expire), nowSec(), nowSec(), pa.id));
       } else {
-        stmts.push(st(env, "DELETE FROM panel_accounts WHERE id = ? AND applied = 'pending'", pa.id));
+        // only the intent as it was read: one a purchase is finishing right now has moved on (and re-inserts if not)
+        stmts.push(st(env, "DELETE FROM panel_accounts WHERE id = ? AND applied = 'pending' AND remote_username = ? AND attempts = ?", pa.id, pa.remote_username, pa.attempts));
       }
-    } catch (e) { /* panel not answering: next time */ }
+    } catch (e) {
+      // panel not answering: tried again later, after the others (a dead panel must not hold up the rest)
+      stmts.push(st(env, "UPDATE panel_accounts SET attempts = attempts + 1, last_error = ? WHERE id = ? AND applied = 'pending'",
+        e instanceof PasarGuardError ? `panel_${e.status || 'net'}` : 'error', pa.id));
+    }
   }
   await batch(env, stmts);
   return stmts.length;
