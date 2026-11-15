@@ -188,7 +188,7 @@ cfworker/
 │                                src/admin/ (admin panel), test/; `npm run build` → worker/public/
 ├── android/  app-web/           RETIRED old Cloud Gold app — do not extend
 ├── design-system/               the old app's "Vault & Hallmark" design docs (historical)
-├── docs/                        PROJECT_HANDBOOK.md (this file), API.md, DATABASE.md
+├── docs/                        PROJECT_HANDBOOK.md (this file), API.md, DATABASE.md, RESTORE.md (restore/rollback)
 ├── AGENTS.md, CLAUDE.md         short rule card for AI coding agents
 ├── README.md                    original Persian setup guide (partly outdated: old app); links to docs/
 └── .github/workflows/
@@ -768,18 +768,34 @@ flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1
 ### Workflows
 | Workflow | Trigger | Notes |
 |---|---|---|
-| **Test Cloud Gold server** (`test-worker.yml`) | PR on `worker/**` or `miniapp/**` + manual | Worker tests with coverage gate (≥ 80 % lines), Mini App tests + build |
-| **Pleat Flutter app** (`flutter-vpn.yml`) | PR on `flutter_vpn/**` + manual (`api_base` input) | PR: format, analyze, test, live test against the local Worker, `xray -test` of generated configs. **Manual run only**: NDK + hev + Xray core, configs checked with the **exact** app core (built from libv2ray buildinfo), APK build, APK check, publish to release `pleat-latest`. ~18 min. |
-| **Deploy Cloud Gold server** (`deploy-worker.yml`) | **manual only** | tests → Cloudflare login check → secret names check → find/create D1 → **print the D1 Time Travel bookmark** → apply migrations → build the Mini App → deploy (wrangler pinned **4.158.0**) → copy `PLEAT_DL_TOKEN` |
+| **Test Cloud Gold server** (`test-worker.yml`) | PR on `worker/**`, `miniapp/**` or `.github/workflows/**` + manual | Worker tests with coverage gate (≥ 80 % lines), Mini App tests + build |
+| **Pleat Flutter app** (`flutter-vpn.yml`) | PR on `flutter_vpn/**` + manual (`api_base` input) | PR: format, analyze, test, live test against the local Worker, `xray -test` of generated configs. **Manual run only**: NDK + hev + Xray core, configs checked with the **exact** app core (built from libv2ray buildinfo), APK build, Kotlin unit tests, APK check, publish to release `pleat-latest`. ~18 min. **Manual run from `main` only.** |
+| **Deploy Cloud Gold server** (`deploy-worker.yml`) | **manual only, from `main` only** | tests → Cloudflare login check → secret names check → find/create D1 → **print the D1 Time Travel bookmark** → apply migrations → build the Mini App → deploy (wrangler pinned **4.158.0**) → copy `PLEAT_DL_TOKEN` |
 
 Since #57 nothing runs twice (only the PR, not also the push) and a newer push cancels the running PR check. The
 repo is public, so Actions minutes are effectively free; that ended the 2026-11-09 outage when the monthly free
 minutes ran out.
 
 - CI download hardening (PR #42): Actions cache of every download, Xray from `ghcr.io/xtls/xray-core` as a
-  fallback, jsDelivr mirror for geo files, Gradle prefetched with retries, Google's Maven Central mirror via an
+  fallback, jsDelivr mirror for geo files (dropped by SEC-04), Gradle prefetched with retries, Google's Maven Central mirror via an
   init script. If a run still fails on a 504, just re-run it.
 - `XRAY_LIB_TAG` (v26.7.5) is AndroidLibXrayLite's tag; Xray-core has no release by that name.
+- **Supply chain (release audit SEC-04, OPS-02):** every action in the Pleat, Deploy and Worker test workflows is
+  pinned to a commit SHA (the tag in a comment). Everything the Pleat job downloads has a fixed version and a
+  SHA-256 in `flutter-vpn.yml` `env:`: `libv2ray.aar` (`XRAY_LIB_SHA256`), the desktop Xray zip (`XRAY_CORE_TAG`,
+  `XRAY_ZIP_SHA256`), its ghcr image (by digest), the geo files (`GEO_TAG`, `GEOIP_SHA256`, `GEOSITE_SHA256`)
+  and Gradle (`distributionSha256Sum` in `gradle-wrapper.properties`). A file with another sum stops the build;
+  cached copies are checked again. The jsDelivr mirror for the geo files is gone (it serves only the moving
+  `release` branch). **To update one:** change the tag and its sum in the same PR. The sums come from the
+  release's own `.sha256sum` / `.dgst` file or gradle.org/release-checksums. The Worker test "CI: release
+  workflows ..." checks all of this. Deploy and the APK run refuse any branch but `main`.
+- **Geo files (PERF-A-03):** the APK carries only the lists the app's rules use (`GEOIP_KEEP: ir`,
+  `GEOSITE_KEEP: category-ir category-ads-all category-porn`), cut by `flutter_vpn/tool/geo_trim.dart`. Each list
+  is copied byte for byte (about 28 MB down to about 5 MB). `test/geo_trim_test.dart` fails when a rule in `lib/`
+  names a list that is not kept. A new `geosite:`/`geoip:` rule therefore goes into the keep lists in the same PR.
+- **Kotlin unit tests (QA-01):** `flutter_vpn/android/app/src/test/kotlin` (CrashNotes, Health scrubbing and
+  stderr, the update SHA-256). They run in the manual APK run (`:app:testReleaseUnitTest`, after the build,
+  before publishing). They need the AAR, so they do not run on pull requests or in the container.
 - Pleat APK download link for Ali: release `pleat-latest`, asset `pleat.apk`. Ali sends it to users by hand.
 - After a merge that touches `worker/` or `miniapp/`: run **Deploy Cloud Gold server**. After a merge touching
   `flutter_vpn/`: run **Pleat Flutter app** from `main` (with `api_base`). Build one APK at a time.
@@ -1077,6 +1093,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | Artifact storage full | APKs to release `pleat-latest` — #23 |
 | GitHub release downloads 504 for hours (Xray, geo, Gradle, Maven) | cache + mirrors for every download in one go — #42 |
 | Free Actions minutes ran out (2026-11-09) | no double runs, APK only on manual run — #57; repo made public |
+| Deploy/APK could run from any branch; actions and downloads unpinned in the job holding the signing key | main-only guards, SHA-pinned actions, SHA-256 for every download — release audit OPS-02, SEC-04 |
 
 ---
 
@@ -1159,6 +1176,12 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - The `/credit <email> <amount> <note>` manual wallet top-up idea (offered, awaiting a yes) — if built, it must be a
   bot button flow, not a typed command.
 - PR #21 is most likely superseded by #22; check and close it.
+- **Release audit OPS-02 / OPS-06 (owner, outside the code):** a ruleset on `main` (PR required, the `Test Cloud
+  Gold server` and `Pleat Flutter app` checks required, no force-push); a GitHub Environment `production` holding
+  the Cloudflare and keystore secrets; where the keystore's two offline copies are; whether to add an encrypted
+  weekly `wrangler d1 export` (where it would be stored). After a restore from the Telegram backup, panel
+  accounts need re-linking (`sub_path` is not in the backup); not tried on real panels. `make-key.yml` still uses
+  `actions/upload-artifact@v4` by tag (left alone: it is the signing-key tool).
 
 ### Open investigation: native crash on DE 3
 One user (Xiaomi, Android 12) had 5 native SIGABRT crashes (reason 5 / status 6) in a week, each with the tunnel
@@ -1241,7 +1264,7 @@ unscored (phone-only).
 encryption / PII in backups · S11 refresh-token rotation (changes the app, needs a phone test) · S15 email
 verification · AD3/P17 panel 1 still special (always in provision, HWID, device removal, buying needs
 `PASARGUARD_URL`) · AD4 real device limit · AD6 staging (second Cloudflare account or separate D1) · P13 pin
-actions to SHAs. Also open: N6 exit domain resolved by the operator's DNS · N7 `allowInsecure=1` from the panel
+actions to SHAs (done for the live workflows, release audit SEC-04). Also open: N6 exit domain resolved by the operator's DNS · N7 `allowInsecure=1` from the panel
 (no longer written to the config; such exits are verified normally — NET-01) · P20 outdated README · Gmail one-tap sign-in (needs a Google OAuth client).
 
 ### Follow-ups (non-critical)
@@ -1290,6 +1313,10 @@ Native changes in Kotlin cannot be compiled in the container; CI is the compiler
 **Change a VPN protocol mapping.** Edit `lib/state/xray_config.dart`, mirror v2rayNG/Xray semantics, add a test
 in `test/xray_config_test.dart` with made-up values; CI runs `xray -test` on generated configs with the app's
 own core version.
+
+**Restore or roll back.** Follow [`RESTORE.md`](RESTORE.md): code → revert + Deploy (or `wrangler rollback`);
+data → D1 Time Travel first; older than that → `worker/scripts/restore-backup.mjs` on the Telegram backup into a
+new database; a bad APK → a new build with a higher build number.
 
 **Diagnose a failing exit.** Ask Ali for Connection check → "Test alone + copy core log" for that exit. Read the
 core log. Classify as app-side or server-side (§16) before writing code.
