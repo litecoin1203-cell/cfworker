@@ -6724,6 +6724,33 @@ section('PNL-05: a panel that refuses hwid_limit still gets the account, and the
   ok(fakes.tg.messages.slice(t0).some((m) => /hwid_limit/.test(m.text || '') && /API/.test(m.text || '')), 'PNL-05: the panel test reports the API document\'s gaps');
 }
 
+section('PERF-B-01: an idle minute writes no cursor or health row; a phone opening the app does not rewrite its device every time');
+{
+  const W = await world('pfb1', 1);
+  const tok = await W.signupW('pb1@example.com');
+  await W.bot(`/grant pb1@example.com ${W.plan.id}`);
+  const countWrites = (re) => { const prep = W.e.DB.prepare; let n = 0; W.e.DB.prepare = (sql) => { if (re.test(sql)) n++; return prep.call(W.e.DB, sql); }; return { get n() { return n; }, stop() { W.e.DB.prepare = prep; } }; };
+  await runSync(W.e); await runSync(W.e);
+  const cw = countWrites(/INSERT INTO sync_cursor|UPDATE panels SET fail_streak = 0/);
+  for (let i = 0; i < 5; i++) await runSync(W.e);
+  cw.stop();
+  ok(cw.n === 0, 'PERF-B-01: 5 idle cron runs on a healthy panel write no cursor or health row: ' + cw.n);
+  const h = await W.callW('GET', '/health');
+  ok(h.status === 200 && h.data.ok, 'PERF-B-01: /health still sees the cron alive: ' + JSON.stringify(h.data));
+  // the heartbeat is kept: an old stamp is written again
+  await W.e.DB.prepare('UPDATE sync_cursor SET run_at = run_at - 200').run();
+  const cw2 = countWrites(/INSERT INTO sync_cursor/);
+  await runSync(W.e);
+  cw2.stop();
+  ok(cw2.n >= 1, 'PERF-B-01: a cursor stamp older than 2 minutes is refreshed: ' + cw2.n);
+  const dv = countWrites(/INSERT INTO devices/);
+  for (let i = 0; i < 3; i++) await W.callW('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'pb1-phone', 'x-device-model': 'Pixel', 'x-app-version': '1.2.52' } });
+  dv.stop();
+  ok(dv.n === 1, 'PERF-B-01: three /vpn calls from the same phone write its device row once: ' + dv.n);
+  const devs = (await W.callW('GET', '/api/v1/devices', { token: tok })).data;
+  ok(devs.some((d) => d.device_id === 'pb1-phone'), 'PERF-B-01: the phone is still listed');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

@@ -589,13 +589,25 @@ const healthWrite = (env, panelId, okNow, now = nowSec()) => okNow
   ? st(env, 'UPDATE panels SET fail_streak = 0, health = MIN(100, health + 20), last_ok_at = ?, last_check_at = ? WHERE id = ?', now, now, panelId)
   : st(env, 'UPDATE panels SET fail_streak = fail_streak + 1, health = MAX(0, health - 34), last_check_at = ? WHERE id = ?', now, panelId);
 
+// PERF-B-01: a cursor that did not move is written again only when its stamp is CURSOR_BEAT old (run_at is the cron's
+// heartbeat for /health and the bot, which call it late after 300 s), and a healthy panel's health row only when it
+// changes or its last_ok_at is HEALTH_BEAT old. On a quiet day this saves ~2 rows a minute.
+const CURSOR_BEAT = 120;
+const HEALTH_BEAT = 600;
+const healthUnchanged = (panel, now) => !panel.fail_streak && panel.health >= 100 && panel.last_ok_at && now - panel.last_ok_at < HEALTH_BEAT;
+
 // Read one page of one panel (round robin over panels that still have accounts to count): one read for the
 // cursors, one for every account on the page, and one batch for all the writes. Returns the page's users.
 async function syncPage(env, allPanels, adapter) {
   const panels = allPanels.filter((p) => ['active', 'rollout', 'draining'].includes(p.state));
   if (!panels.length) return null;
-  const cur = await all(env, "SELECT job, panel_id, offset FROM sync_cursor WHERE job IN ('rr', 'usage')");
+  const cur = await all(env, "SELECT job, panel_id, offset, run_at FROM sync_cursor WHERE job IN ('rr', 'usage')");
   const at = (job, id) => cur.find((c) => c.job === job && c.panel_id === id)?.offset || 0;
+  const moveCursor = (job, id, offset) => {
+    const c = cur.find((x) => x.job === job && x.panel_id === id);
+    if (c && c.offset === offset && nowSec() - (c.run_at || 0) < CURSOR_BEAT) return [];
+    return [setCursor(env, job, id, offset)];
+  };
   const turn = at('rr', 0) % panels.length;
   const panel = panels[turn];
   const offset = at('usage', panel.id);
@@ -611,10 +623,10 @@ async function syncPage(env, allPanels, adapter) {
       stmts.push(...ledgerWrites(env, rows, (r) => byName.get(r.remote_username), now, { spread: true }));
       users = rows.map((r) => r.user_id);
     }
-    stmts.push(healthWrite(env, panel.id, true, now));
+    if (!healthUnchanged(panel, now)) stmts.push(healthWrite(env, panel.id, true, now));
     const next = offset + page.users.length;
     wrapped = !page.users.length || next >= page.total;
-    stmts.push(setCursor(env, 'usage', panel.id, wrapped ? 0 : next));
+    stmts.push(...moveCursor('usage', panel.id, wrapped ? 0 : next));
   } catch (e) {
     stmts.push(healthWrite(env, panel.id, false, now));
     // this panel's accounts stay counted at their last reading; mark them stale
@@ -622,7 +634,7 @@ async function syncPage(env, allPanels, adapter) {
     wrapped = true; // do not stay stuck on a broken panel
   }
   if (wrapped) {
-    stmts.push(setCursor(env, 'rr', 0, turn + 1));
+    stmts.push(...moveCursor('rr', 0, (turn + 1) % panels.length));
     // a draining panel has been read one last time: switch its accounts off (kept in the database) and disable it
     if (panel.state === 'draining') {
       stmts.push(st(env, "UPDATE panel_accounts SET desired = 'removed', dirty = 1, attempts = 0 WHERE panel_id = ? AND desired != 'removed'", panel.id));

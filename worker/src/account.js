@@ -213,9 +213,13 @@ async function checkDevice(env, user, sub, deviceId, model) {
     const countRow = await first(env, 'SELECT COUNT(*) c FROM devices WHERE user_id = ? AND last_seen >= ?', user.id, since);
     if (countRow.c >= sub.device_limit) throw err(403, 'device_limit', `این پلن روی ${sub.device_limit} گوشی کار می‌کند. یک گوشی قدیمی را از «اشتراک من» حذف کن.`);
   }
+  // PERF-B-01: a known phone is stamped at most once a day (the device limit counts the last 30 days; the lists show
+  // the day), which saves a write on every /vpn and /vpn/sub
+  if (dev && nowSec() - (dev.last_seen || 0) < DEVICE_STAMP_SEC) return;
   await run(env, `INSERT INTO devices (user_id, device_id, model, last_seen) VALUES (?, ?, ?, ?)
     ON CONFLICT(user_id, device_id) DO UPDATE SET last_seen = excluded.last_seen`, user.id, deviceId, model || '', nowSec());
 }
+const DEVICE_STAMP_SEC = 86400;
 
 export async function vpn(env, user, request, ctx = null) {
   const sub = await activeSub(env, user);
