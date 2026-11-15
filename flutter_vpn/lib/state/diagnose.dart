@@ -124,7 +124,7 @@ Diagnosis diagnose(String? error) {
     return _path;
   }
   if (has(
-    r'failed to (build|parse|load)|unknown (cipher|method|transport|security)|unsupported|not supported',
+    r'failed to (build|parse|load)|unknown (cipher|method|transport|security)|unsupported|not supported|has been removed',
   )) {
     return _config;
   }

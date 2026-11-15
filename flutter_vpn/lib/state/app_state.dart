@@ -225,14 +225,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final started = _attemptAt;
     final proto = protoOf(e.server.link);
     final kind = network?.kind ?? '';
-    unawaited(() async {
+    final note = () async {
       final why = type == 'connect_fail'
           ? (await tunnel.startError()) ?? e.failure
           : e.failure;
+      final cause = diagnose(why).cause.name;
+      if (type == 'connect_fail') _triedWhy[e.id] = cause;
       health.record(
         type,
         k: e.id,
-        c: type == 'silent' ? '' : diagnose(why).cause.name,
+        c: type == 'silent' ? '' : cause,
         d: {
           'proto': proto,
           'err': ?why,
@@ -243,7 +245,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         },
       );
       if (type == 'connect_fail') health.count(proto: proto, ok: false);
-    }());
+    }();
+    _failNoted = note;
+    unawaited(note);
   }
 
   /// Nothing in the chosen route came up: the person is left without the
@@ -254,36 +258,51 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       netRoutes.note(_net, n.label, routeMode, ok: false);
       _save();
     }
-    health.record(
-      'no_exit',
-      c: routeMode.name,
-      d: {
-        'route': routeMode.name,
-        'country': routeCountry,
-        'tried': [
-          for (final id in _triedAll.take(6)) {'k': id},
-        ],
-        // why each exit of the route was left out: its last test on this
-        // network ("timeout", "refused", "tls" ...), so support sees which
-        // server failed and how, not only that none answered
-        'why': [
-          for (final e in routePool.take(6))
-            {
-              'k': e.id,
-              'c': e.measured == null
-                  ? 'untested'
-                  : e.unreachable
-                  ? diagnose(e.failure).cause.name
-                  : 'ok',
-            },
-        ],
-        if (testedAt != null)
-          'age': DateTime.now().difference(testedAt!).inSeconds,
-        'exits': routePool.length,
-        'net': network?.kind ?? '',
-        'smart': smartConnect,
-      },
-    );
+    final tried = [..._triedAll.take(6)];
+    final d = {
+      'route': routeMode.name,
+      'country': routeCountry,
+      // why each exit of the route was left out: its last test on this
+      // network ("timeout", "refused", "tls" ...), so support sees which
+      // server failed and how, not only that none answered
+      'why': [
+        for (final e in routePool.take(6))
+          {
+            'k': e.id,
+            'c': e.measured == null
+                ? 'untested'
+                : e.unreachable
+                ? diagnose(e.failure).cause.name
+                : 'ok',
+          },
+      ],
+      if (testedAt != null)
+        'age': DateTime.now().difference(testedAt!).inSeconds,
+      'exits': routePool.length,
+      // exits smart connect left out: they fail for nearly everyone on
+      // this operator and this phone never reached them
+      'skipped': routePool.where((e) => !e.autoOk && !e.unreachable).length,
+      'net': network?.kind ?? '',
+      'smart': smartConnect,
+    };
+    // Each try's own failure (the core's start error), so support sees why
+    // exits that answered a test still did not connect. The last try's
+    // reason is read from the service just before.
+    final noted = _failNoted;
+    final why = _triedWhy;
+    unawaited(() async {
+      if (noted != null) await noted.catchError((_) {});
+      health.record(
+        'no_exit',
+        c: routeMode.name,
+        d: {
+          ...d,
+          'tried': [
+            for (final id in tried) {'k': id, 'c': ?why[id]},
+          ],
+        },
+      );
+    }());
   }
 
   void _noteUp() {
@@ -773,6 +792,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// Every exit really tried in this connect, kept across the resync (which
   /// clears [_tried] to try again), so a "none answered" report lists them.
   final List<String> _triedAll = [];
+
+  /// Why each exit in [_triedAll] failed (a [Cause] name), for the report.
+  final Map<String, String> _triedWhy = {};
+  Future<void>? _failNoted;
   bool _resynced = false;
   int _misses = 0;
 
@@ -2631,22 +2654,31 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Best exit not yet tried: one that works for nearly everyone on this
   /// operator, else the best measured here (the Cloud Gold app's rule).
+  ///
+  /// Only the first pick of a connect may skip the test, and never with an
+  /// exit that failed on this phone. After a failure only exits that
+  /// answered a fresh test here are picked, and never one already tried in
+  /// this connect (it answered a test and still did not come up).
   Future<Exit?> _best() async {
-    if (_tried.isEmpty) {
+    if (_triedAll.isEmpty) {
       final strong =
           routePool
               .where(
                 (e) =>
-                    (e.rank?.reports ?? 0) >= 8 && (e.rank?.score ?? 0) >= 0.8,
+                    !e.unreachable &&
+                    (e.rank?.reports ?? 0) >= 8 &&
+                    (e.rank?.score ?? 0) >= 0.8,
               )
               .toList()
             ..sort((a, b) => b.rank!.score.compareTo(a.rank!.score));
       if (strong.isNotEmpty) return strong.first;
     }
-    if (!_pingsFresh) await testAll(enough: 3);
+    // exits already tried may answer the test again: test until enough
+    // others answered
+    if (!_pingsFresh) await testAll(enough: 3 + _triedAll.length);
     final ok =
         routePool
-            .where((e) => (e.measured ?? 0) > 0 && !_tried.contains(e.id))
+            .where((e) => (e.measured ?? 0) > 0 && !_triedAll.contains(e.id))
             .toList()
           ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
     return ok.isEmpty ? null : ok.first;
@@ -2679,6 +2711,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (!failover) {
       _tried.clear();
       _triedAll.clear();
+      _triedWhy.clear();
+      _failNoted = null;
       _resynced = false;
       _attemptAt = DateTime.now();
       // Reconnect from a held tunnel: it stays held if this try fails too.
@@ -2754,7 +2788,11 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         if (best != null) {
           exitId = best.id;
           _save();
-        } else if (routePool.every((e) => e.unreachable)) {
+        } else if (_triedAll.isNotEmpty ||
+            routePool.every((e) => e.unreachable)) {
+          // nothing that answered here is left untried: trying the failed
+          // exit again only fails again
+
           _noteNoExit();
           if (lockActive) return _askLock();
           return _fail(_noneAnswered);
@@ -2787,6 +2825,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           c: target.protocol,
           d: {'proto': protoOf(target.server.link), 'what': x.message},
         );
+        _triedWhy[target.id] = Cause.config.name;
         if (smartConnect && _failover(as: '')) return;
         if (lockActive) return _askLock();
         return _fail(
@@ -2837,11 +2876,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (cur == null) return;
     // Exits that answered last first; the rest after them, since the
     // network may have changed since they were tested.
-    final next = routePool.where((e) => e.id != cur.id).toList()
-      ..sort((a, b) {
-        if (a.unreachable != b.unreachable) return a.unreachable ? 1 : -1;
-        return b.smartScore.compareTo(a.smartScore);
-      });
+    // Never one that fails for nearly everyone on this operator and did
+    // not answer here.
+    final next =
+        routePool
+            .where((e) => e.id != cur.id && (e.autoOk || e.unreachable))
+            .toList()
+          ..sort((a, b) {
+            if (a.unreachable != b.unreachable) return a.unreachable ? 1 : -1;
+            return b.smartScore.compareTo(a.smartScore);
+          });
     final spares = <({String config, String flag, String place})>[];
     for (final e in next) {
       if (spares.length == 3) break;
@@ -2873,11 +2917,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     // balancer would hop between exits (each its own IP) every few
     // minutes. The app's live pings move on only when this exit stops.
     if (!smartConnect || pinned || lockActive) return const [];
+    // Only exits that answered a test on this network: an untested one may
+    // be down, or carry a setting the core refuses, and a backup the core
+    // refuses fails the whole start, the picked exit with it.
     final next =
         routePool
             .where(
               (e) =>
-                  e.id != target.id && !e.unreachable && !_tried.contains(e.id),
+                  e.id != target.id &&
+                  (e.measured ?? 0) > 0 &&
+                  !_triedAll.contains(e.id),
             )
             .toList()
           ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
@@ -2898,10 +2947,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       ]);
     }
     if (!smartConnect) return false;
-    if (_tried.length < 3) {
+    // The next try is an exit that answered a fresh test here. With no
+    // fresh test (the first pick skipped it) the list is fetched and
+    // tested below first, instead of trying exits by other people's
+    // results alone.
+    if (_tried.length < 3 && _pingsFresh) {
       final next =
           routePool
-              .where((e) => !_tried.contains(e.id) && !e.unreachable)
+              .where((e) => !_triedAll.contains(e.id) && (e.measured ?? 0) > 0)
               .toList()
             ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
       if (next.isNotEmpty) {
@@ -3123,6 +3176,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         e.measured = r.ms;
         e.measuredAt = DateTime.now();
         _tried.clear();
+        _triedAll.clear();
+        _triedWhy.clear();
         _resynced = false;
         if (lockAsk != null) {
           lockAsk = null;
@@ -3215,6 +3270,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       unawaited(loadExitAddress());
       unawaited(_googleAfterConnect());
       _noteUp();
+      // A new connect's bookkeeping: if this session later stops answering,
+      // its failover starts fresh (the exits that failed before it came up
+      // were marked then, and are tested again before any is reused).
+      _tried.clear();
+      _triedAll.clear();
+      _triedWhy.clear();
+      final up = exitId;
+      if (up != null) {
+        _tried.add(up);
+        _triedAll.add(up);
+      }
+      _resynced = false;
       _clearHold();
       noNetwork = false;
       _offlineBeats = 0;

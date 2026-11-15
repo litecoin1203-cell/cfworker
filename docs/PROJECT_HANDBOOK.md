@@ -560,7 +560,7 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.49+52** (`flutter_vpn/pubspec.yaml`). PR #90 (open) is 1.2.50+53.
+Version on main: **1.2.52+55** (`flutter_vpn/pubspec.yaml`). The smart-connect fix ("only exits that answered here") is 1.2.53+56.
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
 Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLibXrayLite tag **v26.7.5**
 (Xray 26.6.27 inside), hev-socks5-tunnel commit `67dfba56`.
@@ -621,6 +621,15 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
    it after 2026-08-01): an insecure link is verified like any TLS exit, or by its pin (`pcs`).
 5. Smart connect, its backups and failover only use exits that match the **Route** choice (goal family and
    country, §Home tabs) and say so instead of silently switching protocol.
+   **What smart connect offers (1.2.53):** the first pick may skip the test only for an exit that works for nearly
+   everyone on this operator (8+ results, score ≥ 0.8) *and* did not fail this phone's own last test. After any
+   failure, and for the core's 2 backups and the failover, only exits that **answered a fresh test on this
+   network** are used, and an exit already tried in this connect is never tried again (it answered a test and still
+   did not come up). With no fresh test, the failover re-fetches the list and tests first. `Exit.failsForPeople`
+   (8+ results, score < 0.3: fails for nearly everyone on this operator) is never offered by itself — not picked,
+   not a backup, not a widget spare — unless this phone reached it in its own last test; a tap on it still connects.
+   Before 1.2.53 an untested exit could outrank one that answered (score = isp × 0.55 with no local result), the
+   strong pick ignored a local failure, and the resync retry tried the same failed exits again (6 tries, 3 exits).
 6. Iran split (now Home › Route › Split route): Iranian sites/IPs direct (geo files from Loyalsoldier, fetched in
    CI), plus the person's own sites and chosen Android apps (`addDisallowedApplication`). QUIC blocked.
 
@@ -956,6 +965,11 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
   keep/clear history); Profile gets the Plans shelf.
 - PR #89 (1.2.49) Locations country list: Fastest-for-you bar, filter chips, regions, health pips, Not answering.
 - PR #90 (1.2.50) native crash: the code offsets inside the core, the signal's sender, stderr per process.
+
+**2026-11-15 — "No server connected" with servers that answered.**
+- Pleat 1.2.53: smart connect offers only exits that answered here after a failure, never retries a failed exit in
+  the same connect, never offers one that fails for nearly everyone on the operator; `no_exit` says why each try
+  failed; "has been removed" core errors read as a setting problem.
 - Release audit wave 1, payment controls (branch `claude/w1-payment-controls`, stacked on the PAY-01..04 branch):
   one on/off switch per payment method (PAY-08), unrecognised bank SMS reach the admin (PAY-07), no personal data in
   third-party panel account names or notes (PNL-07), a made-up host in a test (SEC-11).
@@ -1059,6 +1073,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 88 | 11-13 | Activity account hub (data and days, sessions, keep/clear history) + Profile Plans shelf (1.2.48) |
 | 89 | 11-13 | Locations country list: Fastest for you, chips, regions, health pips, Not answering (1.2.49) |
 | 90 | 11-13 | Native crash: offsets inside the core (pc, lr, Go frame chain), signal sender, stderr matched per process (1.2.50) |
+| — | 11-15 | Smart connect offers only exits that answered here, skips ones failing for everyone, `no_exit` says why each try failed (1.2.53) |
 
 ---
 
@@ -1259,6 +1274,16 @@ again), so an empty list did not mean nothing was tried. Earlier reports named t
 1.2.47 keeps every exit tried in the connect, adds `why` (each route exit's last test result on that network:
 timeout / refused / tls / reality / ok / untested) and `age`, and the bot shows server names instead of keys. Which
 DE server fails and why is known only from the next report.
+
+2026-11-15 (1.2.50, 3 users, Xiaomi M2010J19CI + 24117RN76G, MCI data, Dadeh Gostar, Hetzner): Auto tried TR 4,
+TR 3, MX 1 while FI 1, GB 3, DE 2, FI 2 had answered the test and were never tried. Proven from the code (and a test
+that fails on 1.2.51): the first pick took a strongly ranked exit without checking this phone's result; failover
+ranked untested exits by other people's results above exits that answered here; backups could be untested exits;
+the resync retry tried the same three again. Not proven: why TR 4 / TR 3 / MX 1 failed on these phones (a refused
+backup in 1.2.50, `allowInsecure` or a removed transport, would fail the whole start; 1.2.51 already removes both).
+1.2.53 fixes the choice (§10 item 5) and each `tried` entry carries that try's own failure (`c`, from the core's
+start error), plus `skipped` = exits left out for failing for nearly everyone. DE 1 "path" = the server answered
+40x to the test: a path / host / XHTTP-mode mismatch on the server.
 
 ### Telegram Mini App (user stage 1 + full admin panel built, PRs #50–#52)
 - Stage 0 result (Ali's phone, 2026-11-08): with only Telegram's proxy the Mini App did **not** open; it opens with a

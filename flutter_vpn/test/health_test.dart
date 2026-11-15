@@ -342,6 +342,64 @@ void main() {
       }
     });
 
+    testWidgets('nothing connects: after a failure only exits that answered '
+        'a test here are tried, each once, and the report says why each try '
+        'failed', (tester) async {
+      final (app, api, tunnel) = await boot(tester);
+      tunnel.startReason = 'infra/conf: The feature x has been removed';
+      await app.connect();
+      final tries = <({String id, int? ms, String config})>[];
+      for (var i = 0; i < 12; i++) {
+        if (app.phase == Phase.handshaking && tunnel.started != null) {
+          tries.add((
+            id: app.exitId!,
+            ms: app.exit!.measured,
+            config: tunnel.started!,
+          ));
+          tunnel.started = null;
+          tunnel.emit(TunnelState.failed);
+        }
+        await tester.pump(const Duration(seconds: 1));
+      }
+      expect(tries, isNotEmpty);
+      // no exit is tried twice in one connect
+      expect(tries.map((t) => t.id).toSet(), hasLength(tries.length));
+      // after the first pick, only exits that answered the test here
+      for (final t in tries.skip(1)) {
+        expect(t.ms, greaterThan(0));
+        expect(t.config, isNot(contains('us1.example.com')));
+      }
+      // nl1 and de1 answered the test: both were tried
+      expect(tries.length, greaterThanOrEqualTo(2));
+      final all = [...events(api), ...app.health.queued.map((e) => e.toJson())];
+      final none = all.firstWhere((e) => e['t'] == 'no_exit');
+      final tried = ((none['d'] as Map)['tried'] as List).cast<Map>();
+      expect(tried.map((t) => t['k']), tries.map((t) => t.id));
+      expect(tried.map((t) => t['c']).toSet(), {'config'});
+      expect(jsonEncode(none), isNot(contains('example.com')));
+      await app.disconnect();
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(seconds: 10));
+      }
+    });
+
+    testWidgets('an exit that fails for nearly everyone on this operator is '
+        'not offered by smart connect, even as a backup', (tester) async {
+      final (app, api, tunnel) = await boot(tester);
+      api.rankScore = 0.2;
+      tunnel.pings = {'nl1.example.com': 240};
+      await app.loadServers();
+      final dead = app.exits.firstWhere((e) => e.id == 'k53ca1f60');
+      expect(dead.failsForPeople, isTrue);
+      expect(dead.autoOk, isFalse);
+      await app.connect();
+      expect(app.exitId, isNot(dead.id));
+      final link = dead.server.link;
+      final host = Uri.parse(link).host;
+      expect(tunnel.started, isNot(contains(host)));
+      await app.cancel();
+    });
+
     testWidgets('a crash Android noted reaches the Worker on the next launch', (
       tester,
     ) async {
