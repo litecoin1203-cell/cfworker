@@ -5807,6 +5807,16 @@ section('OPS-06: the daily Telegram backup restores into a new database');
   ok(out === sql, 'OPS-06: node scripts/restore-backup.mjs <file> prints the same SQL');
 }
 
+section('PRV-06: Cloudflare keeps request metadata for a sample only, and no subrequest traces');
+{
+  const { readFileSync } = await import('node:fs');
+  const w = readFileSync(new URL('../wrangler.jsonc', import.meta.url), 'utf8').replace(/^\s*\/\/.*$/gm, '');
+  const obs = JSON.parse(w.replace(/,(\s*[}\]])/g, '$1')).observability || {};
+  ok(obs.logs && obs.logs.head_sampling_rate > 0 && obs.logs.head_sampling_rate <= 0.1,
+    'PRV-06: Workers Logs sample at most 10% of requests (errors are also kept in D1 by logError): ' + JSON.stringify(obs.logs));
+  ok(!obs.traces || obs.traces.enabled === false, 'PRV-06: traces (which record every subrequest URL, panel addresses too) are off: ' + JSON.stringify(obs.traces));
+}
+
 section('PRV-05: only the latest daily backup stays in the Telegram chat');
 {
   const { sendBackup } = await import('../src/telegram.js');

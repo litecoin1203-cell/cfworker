@@ -549,6 +549,8 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   Without the token the section still shows DB size (D1 `meta.size_after`), the Worker's own error log and cron.
 - **Worker error log**: `logError` also feeds `worker_errors` (migration 0023; one row per kind of error, scrubbed,
   at most once a minute per kind and 12 writes a minute per isolate, kept 14 days). Bot › ☁️ › 🐞.
+- **Cloudflare Workers Logs** keep a 10% sample of requests (`wrangler.jsonc` `observability`), and Traces are off
+  (they record every subrequest URL, panel addresses too). The error log above has every error (PRV-06).
 - System › 🩺 health has "⚡ همگام‌سازی همین حالا" (`sync.manualSync`: one `runSync` in the tap's invocation, once a minute; shared with the Mini App's `POST /admin/sync`) and
   "🔁 تلاش دوباره" for panel accounts stuck after 3+ failed pushes.
 - **Screens are drawn from data functions** (PR #85): `cfmon.js` `overviewData / historyData / errorsData /
