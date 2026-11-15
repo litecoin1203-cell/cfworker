@@ -131,6 +131,24 @@ void main() {
     }
   });
 
+  test('shadowsocks 2022 in SIP002 form: percent-encoded, not base64 (NET-08)', () {
+    const key = 'AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=';
+    final link =
+        'ss://${Uri.encodeComponent('2022-blake3-aes-256-gcm:$key')}@1.2.3.4:443#x';
+    expect(link.contains('%3A'), isTrue);
+    expect(_out(link)['settings']['servers'][0], {
+      'address': '1.2.3.4',
+      'port': 443,
+      'method': '2022-blake3-aes-256-gcm',
+      'password': key,
+    });
+    // a password that itself holds an escaped percent sign keeps it
+    final pct = _out(
+      'ss://${Uri.encodeComponent('2022-blake3-aes-128-gcm:a%b')}@1.2.3.4:443#x',
+    );
+    expect(pct['settings']['servers'][0]['password'], 'a%b');
+  });
+
   test('hysteria2: auth, TLS, salamander, port hopping, pin', () {
     final o = outboundOf(
       'hysteria2://p%40ss@hy.example.com:443,20000-30000/?sni=cdn.example.com'
@@ -483,6 +501,9 @@ void main() {
           'vless://$uuid@de1.example.com:443?security=tls&type=tcp&sni=de1.example.com&fm=%7B%22tcp%22%3A%5B%7B%22type%22%3A%22fragment%22%2C%22settings%22%3A%7B%22packets%22%3A%22tlshello%22%2C%22length%22%3A%22100-200%22%2C%22delay%22%3A%2210-20%22%7D%7D%5D%7D#x',
       'ss2022':
           'ss://2022-blake3-aes-256-gcm:${Uri.encodeComponent('AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=')}@de1.example.com:443#x',
+      // SIP002's own form for a 2022 key: method and key percent-encoded
+      'ss2022_sip002':
+          'ss://${Uri.encodeComponent('2022-blake3-aes-128-gcm:AAECAwQFBgcICQoLDA0ODw==')}@de1.example.com:443#x',
       'trojan': 'trojan://pass@us1.example.com:443#x',
       'vmess_ws': 'vmess://$vmess',
       'ss': 'ss://YWVzLTI1Ni1nY206cHc@1.2.3.4:8388#x',

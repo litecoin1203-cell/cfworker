@@ -620,11 +620,22 @@ Map<String, Object?> _vmess(String body) {
 Map<String, Object?> _shadowsocks(String link) {
   var body = link.substring(5).split('#').first;
   String userinfo, hostPort;
+  // SIP002 writes a 2022 key as plain percent-encoded `method%3Apassword`;
+  // that one is already decoded and must not be decoded again (NET-08).
+  String? plain;
   final at = body.lastIndexOf('@');
   if (at >= 0) {
     userinfo = body.substring(0, at);
     hostPort = body.substring(at + 1).split('?').first.split('/').first;
-    if (!userinfo.contains(':')) userinfo = _b64(Uri.decodeComponent(userinfo));
+    if (!userinfo.contains(':')) {
+      final decoded = Uri.decodeComponent(userinfo);
+      if (decoded.contains(':')) {
+        plain = decoded;
+        userinfo = decoded;
+      } else {
+        userinfo = _b64(decoded);
+      }
+    }
   } else {
     final dec = _b64(body.split('?').first);
     final a = dec.lastIndexOf('@');
@@ -652,7 +663,9 @@ Map<String, Object?> _shadowsocks(String link) {
           'address': _host(u),
           'port': _port(u.port),
           'method': userinfo.substring(0, colon),
-          'password': Uri.decodeComponent(userinfo.substring(colon + 1)),
+          'password': plain != null
+              ? userinfo.substring(colon + 1)
+              : Uri.decodeComponent(userinfo.substring(colon + 1)),
         },
       ],
     },
