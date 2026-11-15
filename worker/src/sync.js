@@ -174,7 +174,8 @@ export async function evaluate(env, userId) {
 
 // ---------------- enforcement ----------------
 const panelOf = (a) => ({ id: a.panel_id, kind: a.kind, state: a.panel_state, cred_ref: a.cred_ref, options_json: a.options_json, label: a.panel_label });
-const PENDING_SQL = `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json, p.label AS panel_label
+const PENDING_SQL = `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json, p.label AS panel_label,
+    (SELECT s.device_limit FROM subscriptions s WHERE s.user_id = a.user_id) AS sub_device_limit
   FROM panel_accounts a JOIN panels p ON p.id = a.panel_id AND a.applied != 'pending'`; // PNL-02: a pending row is settled by ensureAccount / settlePending
 
 // One adapter per panel for a whole invocation: opening a panel's login costs a D1 read, so it is done once.
@@ -189,12 +190,20 @@ function adapterCache(env, timeoutMs = 0) {
 // Push accounts' desired state to their panels, then record every result in one batch. Idempotent: disabling
 // twice or rewriting the same limit is harmless. The applied row is written only if nothing changed the desired
 // state meanwhile, so a newer decision is pushed again on the next run.
+//
+// PNL-03: an account the panel no longer has (deleted there by its owner or a clean-up; the panel answers 404 and a
+// lookup confirms it) is made again under the same name with the wanted state, and its new link is recorded; one
+// that should be off is recorded as off. At most REMAKE_PER_RUN per call (each costs a few panel calls); the admin
+// hears about it at most every 6 h per panel.
+const REMAKE_PER_RUN = 3;
 async function pushRows(env, rows, adapter = adapterCache(env)) {
   const stmts = [];
-  let done = 0;
+  const remade = new Map(); // panel id -> {panel, n}
+  let done = 0, remakes = 0;
   for (const pa of rows) {
+    let pg = null;
     try {
-      const pg = await adapter(panelOf(pa));
+      pg = await adapter(panelOf(pa));
       if (pa.desired === 'active') {
         await pg.modifyUser(pa.remote_username, { status: 'active', data_limit: pa.desired_limit_bytes || 0, expire: pa.desired_expire || 0, data_limit_reset_strategy: 'no_reset' });
       } else {
@@ -204,14 +213,59 @@ async function pushRows(env, rows, adapter = adapterCache(env)) {
         dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ? AND desired = ? AND desired_limit_bytes = ?`,
       nowSec(), pa.id, pa.desired, pa.desired_limit_bytes));
       done++;
-    } catch (e) {
+    } catch (e0) {
+      let e = e0;
+      if (pg && e instanceof PasarGuardError && e.status === 404 && remakes < REMAKE_PER_RUN) {
+        remakes++;
+        try {
+          stmts.push(...await remakeGone(env, pg, pa));
+          done++;
+          if (pa.desired === 'active') {
+            const r = remade.get(pa.panel_id) || { panel: panelOf(pa), n: 0 };
+            r.n++; remade.set(pa.panel_id, r);
+          }
+          continue;
+        } catch (e1) { e = e1; }
+      }
       const code = e instanceof PasarGuardError ? `panel_${e.status || 'net'}` : 'error';
       stmts.push(st(env, 'UPDATE panel_accounts SET attempts = attempts + 1, last_error = ? WHERE id = ?', code, pa.id));
       if (!(e instanceof PasarGuardError)) logError('panel push failed', e, { account: pa.id });
     }
   }
   await batch(env, stmts);
+  for (const r of remade.values()) await noteRemade(env, r.panel, r.n);
   return done;
+}
+
+// PNL-03: the statements that record an account the panel answered 404 for (see pushRows). Throws when the account
+// is in fact there (a 404 from somewhere else) or the panel refuses the create; only the stored name is ever used,
+// so a refusal never leads to a second account under another name.
+async function remakeGone(env, pg, pa) {
+  if (await pg.getUser(pa.remote_username)) throw new PasarGuardError('panel answered 404 for an account it has', 404);
+  const now = nowSec();
+  const applied = st(env, `UPDATE panel_accounts SET applied = desired, applied_limit_bytes = desired_limit_bytes, applied_expire = desired_expire,
+    dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ? AND desired = ? AND desired_limit_bytes = ?`,
+  now, pa.id, pa.desired, pa.desired_limit_bytes);
+  if (pa.desired !== 'active') return [applied]; // nothing left to switch off
+  const groups = await groupIdsFor(env, panelOf(pa), pg);
+  const hwid = pa.panel_id === 1 ? pa.sub_device_limit || null : null;
+  const made = await pg.createUser(pa.remote_username, { expire: pa.desired_expire || 0, dataLimit: pa.desired_limit_bytes || 0, groupIds: groups, hwidLimit: hwid, note: noteFor({ id: pa.user_id }) });
+  const subPath = pg.absoluteSubUrl((made && made.subscription_url) || '');
+  if (!subPath) throw new PasarGuardError('panel created the user but returned no subscription link', 0);
+  return [st(env, 'UPDATE panel_accounts SET remote_id = ?, sub_path = ? WHERE id = ?', made.id ?? null, subPath, pa.id), applied];
+}
+
+async function noteRemade(env, panel, n) {
+  const key = `panel_remade_${panel.id}`, now = nowSec();
+  try {
+    const last = parseInt((await first(env, 'SELECT value FROM settings WHERE key = ?', key))?.value || '0', 10) || 0;
+    if (now - last < 6 * 3600) return;
+    await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, String(now));
+    const { notifyAdmin, untrusted } = await import('./telegram.js');
+    await notifyAdmin(env, `♻️ روی پنل #${panel.id} (${untrusted(panel.label || '')}) اکانت ${n} کاربر روی خود پنل پاک شده بود و با همان نام دوباره ساخته شد، با همان تاریخ و حجم.
+
+اگر کسی روی پنل کاربرها را پاک می‌کند (یا پنل پاک‌سازی خودکار دارد)، آن را بررسی کنید. این پیام حداکثر هر ۶ ساعت یک بار می‌آید.`);
+  } catch (e) { logError('panel remake notice failed', e, { panel: panel.id }); }
 }
 
 export async function pushPending(env, { userId = null, limit = PUSH_PER_RUN, adapter } = {}) {
@@ -229,13 +283,14 @@ export async function refreshUser(env, userId) {
   const adapter = adapterCache(env, USER_PATH_MS);
   const readings = new Map();
   let reached = 0, missing = 0;
+  const gone = []; // PNL-03: active accounts the panel no longer has: the push below makes them again
   await Promise.all(accounts.filter((a) => a.panel_state !== 'disabled').map(async (a) => {
     try {
       const pg = await adapter({ id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref, options_json: a.options_json });
       pg.timeoutMs = userPathMs(a);
       const u = await pg.getUser(a.remote_username);
       noteUserPathOk(a.panel_id);
-      if (!u) { missing++; return; }
+      if (!u) { missing++; if (a.desired === 'active') gone.push(a.id); return; }
       reached++;
       readings.set(a.id, { used: parseInt(u.used_traffic || 0, 10) || 0, expire: parseExpire(u.expire), data_limit: parseInt(u.data_limit || 0, 10) || 0, online: parseExpire(u.online_at) });
     } catch (e) {
@@ -245,7 +300,10 @@ export async function refreshUser(env, userId) {
   }));
   if (readings.size) {
     const rows = await all(env, `${LEDGER_SQL} WHERE a.user_id = ?`, userId);
-    await batch(env, ledgerWrites(env, rows, (r) => readings.get(r.id), nowSec()));
+    await batch(env, [...ledgerWrites(env, rows, (r) => readings.get(r.id), nowSec()),
+      ...gone.map((id) => st(env, "UPDATE panel_accounts SET dirty = 1 WHERE id = ? AND desired = 'active'", id))]);
+  } else if (gone.length) {
+    await batch(env, gone.map((id) => st(env, "UPDATE panel_accounts SET dirty = 1 WHERE id = ? AND desired = 'active'", id)));
   }
   const sub = await evaluate(env, userId);
   if (sub) await pushPending(env, { userId, adapter });

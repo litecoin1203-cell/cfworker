@@ -6606,6 +6606,40 @@ section('CF-01: a purchase on 8 panels (first buy and renewal) stays within the 
   ok(q1 <= 40 && q2 <= 40, `CF-01: 8-panel first purchase ${q1} and renewal ${q2} D1 queries (want <= 40)`);
 }
 
+section('PNL-03: an account deleted on the panel is made again under the same name; the admin is told once');
+{
+  const W = await world('pnl3', 2);
+  const tok = await W.signupW('p3@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'p3@example.com'))[0].id;
+  await W.bot(`/grant p3@example.com ${W.plan.id}`);
+  const row0 = (await W.q('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 2', uid))[0];
+  delete W.pgs[1].users[row0.remote_username]; // the panel's owner (or its clean-up) removed it
+  const told0 = fakes.tg.messages.length;
+  const sv = await W.callW('GET', '/api/v1/vpn/servers', { token: tok });
+  await W.callW('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'd-p3@example.com', 'x-app-version': '1.2.52' } });
+  await runSync(W.e); await runSync(W.e);
+  const again = W.pgs[1].users[row0.remote_username];
+  const row1 = (await W.q('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 2', uid))[0];
+  const sub = (await W.q('SELECT expires_at FROM subscriptions WHERE user_id = ?', uid))[0];
+  ok(sv.status === 200, 'PNL-03: the server list still answers from panel 1: ' + sv.status);
+  ok(again && again.note === `Pleat #${uid}` && again.expire === sub.expires_at && again.status === 'active', 'PNL-03: the account is made again on the panel, same name, the plan\'s expiry: ' + JSON.stringify(again && { e: again.expire, s: again.status }));
+  ok(row1.applied === 'active' && row1.dirty === 0 && again && row1.sub_path.includes(again.token), 'PNL-03: D1 holds the new link: ' + JSON.stringify({ a: row1.applied, d: row1.dirty, e: row1.last_error }));
+  const sv2 = await W.callW('GET', '/api/v1/vpn/servers', { token: tok });
+  ok(sv2.status === 200 && (Array.isArray(sv2.data) ? sv2.data : []).some((x) => x.panel === 2), 'PNL-03: panel 2\'s configs are back in the list');
+  const told = fakes.tg.messages.slice(told0).filter((m) => /#2/.test(m.text || '') && /دوباره ساخته/.test(m.text || ''));
+  ok(told.length === 1, 'PNL-03: the admin is told once: ' + told.length);
+  // a switched-off account that is gone is already off: the push stops instead of failing forever
+  await W.signupW('p3b@example.com');
+  const u2 = (await W.q('SELECT id FROM users WHERE email = ?', 'p3b@example.com'))[0].id;
+  await W.bot(`/grant p3b@example.com ${W.plan.id}`);
+  const r2 = (await W.q('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 2', u2))[0];
+  delete W.pgs[1].users[r2.remote_username];
+  await W.e.DB.prepare("UPDATE panel_accounts SET desired = 'stopped', dirty = 1 WHERE id = ?").bind(r2.id).run();
+  await runSync(W.e); await runSync(W.e);
+  const r3 = (await W.q('SELECT applied, dirty, attempts FROM panel_accounts WHERE id = ?', r2.id))[0];
+  ok(r3.applied === 'stopped' && r3.dirty === 0 && !W.pgs[1].users[r2.remote_username], 'PNL-03: a gone account that should be off is recorded off, not made again: ' + JSON.stringify(r3));
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

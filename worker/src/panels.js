@@ -431,6 +431,7 @@ export async function collectLinks(env, userId, fwd = {}) {
   const ov = await overridesFor(env, accounts.map((a) => a.panel_id));
   const rules = await hostRulesFor(env, accounts.map((a) => a.panel_id));
   let reached = 0, deviceLimit = false, missing = 0;
+  const gone = [];
   // every panel is asked at the same time; the answers are then read in panel order, so the list stays stable
   const fetchOne = async (a) => {
     const pg = await adapterFor(env, panelOfAccount(a), { timeoutMs: userPathMs(a) }).catch(() => null);
@@ -456,7 +457,7 @@ export async function collectLinks(env, userId, fwd = {}) {
     if (!answers[i]) continue;
     const { raw, found } = answers[i];
     if (raw.status === 403 || raw.status === 429) { deviceLimit = true; continue; }
-    if (raw.status === 404) { missing++; continue; }
+    if (raw.status === 404) { missing++; gone.push(a.id); continue; }
     if (raw.status < 200 || raw.status >= 300) continue;
     reached++;
     for (const l of found) {
@@ -468,6 +469,9 @@ export async function collectLinks(env, userId, fwd = {}) {
       if (lab && !labels[k]) labels[k] = lab;
     }
   }
+  // PNL-03: a link the panel no longer knows (its account was deleted there): the sync job's push checks the account
+  // and makes it again
+  if (gone.length) await env.DB.batch(gone.map((id) => env.DB.prepare("UPDATE panel_accounts SET dirty = 1 WHERE id = ? AND desired = 'active'").bind(id)));
   const kept = [];
   const merged = unify(links, labels, kept, await exitCountries(env));
   // meta[i] = where merged link i came from: {panel: panel id, tunnel: it is in that panel's "Tunnel" group}

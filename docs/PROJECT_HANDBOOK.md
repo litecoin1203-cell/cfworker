@@ -505,6 +505,9 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 - **Dead panels (#58, #62)**: `/me` and `/vpn` wait at most 1.5 s for a live reading (stored numbers otherwise,
   finished in `waitUntil`); a panel that just failed is remembered by the isolate for 60 s so later requests wait
   1.5 s, not 5 s; the per-minute "missing accounts" look is skipped for 10 min after a look that found none.
+- **Account deleted on the panel (PNL-03)**: the Worker makes it again under the stored name (never another name), with
+  the wanted expiry and limit, and tells Ali (♻️, at most every 6 h per panel). The user's link changes; the app gets it
+  on its next server-list load.
 - Panel 1 is still special in a few places (always in provision, HWID only for panel 1, device removal only on
   panel 1, buying needs `PASARGUARD_URL`). Audit items AD3/P17, not yet fixed.
 - Ali's panels are **https**. Since PR #45 only https panel logins are accepted.
@@ -1110,6 +1113,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | QA-02 branch coverage 64-74% on sms, nowpayments, chainwatch and the panel adapters (the error paths that move money) | tests for forwarder formats, odd SMS, every SMS outcome, IPN signatures, watcher filters, adapter logins/fallbacks; per-file ≥ 80% branch gate (`coverage:money`) |
 | SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |
 | CF-01 / PERF-B-03 (measured) a first purchase cost 24 + 5 queries per serving panel → over 50 from the 7th panel, after the panels were already changed | all bot-given panel logins in one range query, kept 30 s per isolate (dropped when a login is saved); `ensureAccount` takes the row the caller read and builds the result row; 8 panels: first purchase 40, renewal 28 (test) |
+| PNL-03 an account deleted on the panel (by its owner or a clean-up) was never made again: its configs silently left the user's list, pushes failed `panel_404` forever | a 404 on `/me`, `/vpn` or the server list marks the row dirty; the push confirms the account is gone (`getUser`), makes it again under the **same name** with the wanted expiry/limit and records the new link (an account that should be off is recorded off); ≤ 3 per run; bot alert ♻️ at most every 6 h per panel (`panel_remade_<id>`) |
 
 ### App and tunnel
 | Problem | Fix |
