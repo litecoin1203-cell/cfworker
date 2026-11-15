@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -571,10 +572,17 @@ class RegionBadge extends StatelessWidget {
 /// rim turns bright blue (fast), ice (fair) or grey (slow), and a light
 /// shard sweeps across it, quicker on a faster exit. While the test runs
 /// the rim breathes in ice. Untested exits show the plain coin.
+///
+/// A measured exit's shard crosses once, then rests for [rest] with no
+/// ticker running, so a list of measured exits does not keep the screen
+/// drawing frames (PERF-A-02). Only a running test pulses without a break.
 class SpeedBadge extends StatefulWidget {
   const SpeedBadge(this.exit, {super.key, this.size = 44});
   final Exit exit;
   final double size;
+
+  /// The pause between two sweeps of a measured exit.
+  static const rest = Duration(seconds: 8);
 
   static Color? ringOf(Exit e) {
     if (e.busy) return PColors.ice;
@@ -600,10 +608,17 @@ class SpeedBadge extends StatefulWidget {
 
 class _SpeedBadgeState extends State<SpeedBadge>
     with SingleTickerProviderStateMixin {
+  /// The sweep has crossed the coin at this point of the beat and draws
+  /// nothing more (see [_SweepPainter]).
+  static const _crossed = 0.6;
+
   late final AnimationController _t = AnimationController(
     vsync: this,
     duration: SpeedBadge.beatOf(widget.exit),
+    value: _crossed,
   );
+  Timer? _next;
+  bool? _wasBusy;
 
   bool get _live => widget.exit.busy || widget.exit.speed != null;
 
@@ -622,15 +637,40 @@ class _SpeedBadgeState extends State<SpeedBadge>
 
   void _sync() {
     final still = MediaQuery.of(context).disableAnimations;
-    if (_live && !still) {
-      if (!_t.isAnimating) _t.repeat();
-    } else {
-      _t.stop();
+    final busy = widget.exit.busy;
+    if (!_live || still) {
+      _stop();
+    } else if (busy) {
+      _next?.cancel();
+      _next = null;
+      if (!_t.isAnimating || _wasBusy != true) _t.repeat();
+    } else if (_wasBusy != false || (_next == null && !_t.isAnimating)) {
+      // Just measured (or first shown): one sweep now, then on a timer.
+      _sweep();
     }
+    _wasBusy = _live && !still ? busy : null;
+  }
+
+  void _sweep() {
+    _next?.cancel();
+    _t.value = 0;
+    _t.animateTo(_crossed);
+    _next = Timer(SpeedBadge.rest, () {
+      _next = null;
+      if (mounted && _live && !widget.exit.busy) _sweep();
+    });
+  }
+
+  void _stop() {
+    _next?.cancel();
+    _next = null;
+    _t.stop();
+    _t.value = _crossed;
   }
 
   @override
   void dispose() {
+    _next?.cancel();
     _t.dispose();
     super.dispose();
   }
@@ -644,27 +684,29 @@ class _SpeedBadgeState extends State<SpeedBadge>
     final word = e.busy ? 'testing' : '${e.speed!.word} speed';
     return Semantics(
       label: word,
-      child: AnimatedBuilder(
-        animation: _t,
-        builder: (context, child) => Stack(
-          children: [
-            child!,
-            Positioned.fill(
-              child: IgnorePointer(
-                child: ClipOval(
-                  child: CustomPaint(
-                    painter: _SweepPainter(
-                      _t.value,
-                      testing: e.busy,
-                      slow: e.speed == Speed.slow,
+      child: RepaintBoundary(
+        child: AnimatedBuilder(
+          animation: _t,
+          builder: (context, child) => Stack(
+            children: [
+              child!,
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: ClipOval(
+                    child: CustomPaint(
+                      painter: _SweepPainter(
+                        _t.value,
+                        testing: e.busy,
+                        slow: e.speed == Speed.slow,
+                      ),
                     ),
                   ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
+          child: badge,
         ),
-        child: badge,
       ),
     );
   }
