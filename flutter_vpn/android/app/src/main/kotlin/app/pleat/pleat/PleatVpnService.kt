@@ -180,19 +180,38 @@ class PleatVpnService : VpnService() {
             // As in begin: the old tun stays until the new one is up.
             val old = tun
             tun = null
-            try {
+            val started = try {
                 stopEngine()
                 start(config)
+                true
             } catch (e: Throwable) {
                 WidgetTrail.step(this, "kick_err", e)
+                false
             } finally {
                 if (old != null && old !== tun) {
                     if (tun != null) {
-                        try { old.close() } catch (e: Exception) {}
+                        try { old.close() } catch (ce: Exception) {}
                     } else {
                         tun = old
                     }
                 }
+            }
+            // A held session stays held unless the exit answers again now.
+            if (!started || gen != generation) return@execute
+            val back = try {
+                (core?.measureDelay(Engine.TEST_URL) ?: -1L) >= 0
+            } catch (e: Exception) {
+                false
+            }
+            if (!back) return@execute
+            main.post {
+                if (gen != generation || !held) return@post
+                held = false
+                up = true
+                upSince = System.currentTimeMillis()
+                StatusWidget.upSince = upSince
+                TunnelHub.set("up")
+                redraw()
             }
         }
     }
