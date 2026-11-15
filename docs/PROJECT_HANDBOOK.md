@@ -674,6 +674,8 @@ does not reach users by itself.
 - `ApiError.offline` (Worker never reached) shows a neutral "No connection to Pleat" card; only a real
   `bad_credentials` marks fields red. The screen warms the route (address race, bridge) as it opens.
 - A few working exits are kept through sign-out so the bridge can still open on a filtered line.
+- **Start** (release audit UX-05): someone already onboarded and signed in opens straight on the Shell (Android's
+  own launch screen covers the start); the drawn splash (~2 s) plays only before onboarding or sign-in.
 - **AvatarGate** (1.2.30): a new account must pick one of the 14 Folk characters before the app opens (no skip).
   The Telegram profile photo is not used anywhere.
 - App version is a signature at the end of Profile (Pleat mark, "Up to date · checked …", Check for updates).

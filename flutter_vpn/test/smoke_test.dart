@@ -48,6 +48,25 @@ Future<(AppState, FakeApi)> _boot(
 }
 
 void main() {
+  testWidgets('a signed-in launch opens the app at once, no splash (UX-05)', (
+    tester,
+  ) async {
+    PType.familyOverride = 'PleatTest';
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.reset);
+    SharedPreferences.setMockInitialValues({'onboarded': true});
+    final api = FakeApi(MemoryTokens(signedIn: true))..avatar = 'vesper';
+    final state = AppState(await SharedPreferences.getInstance(), api);
+    await state.refreshAccount();
+    await tester.pumpWidget(PleatApp(state: state));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(Shell), findsOneWidget);
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+  });
+
   testWidgets('first launch goes from splash to onboarding', (tester) async {
     await _boot(tester, {}, signedIn: false);
     expect(find.byType(OnboardingScreen), findsOneWidget);
