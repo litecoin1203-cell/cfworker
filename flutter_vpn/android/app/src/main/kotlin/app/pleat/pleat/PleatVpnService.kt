@@ -487,7 +487,7 @@ class PleatVpnService : VpnService() {
               log-file: /dev/null
             """.trimIndent() + "\n"
         )
-        TProxyService.TProxyStartService(yaml.absolutePath, iface.fd)
+        TProxyService.start(this, yaml.absolutePath, iface.fd)
         WidgetTrail.step(this, "hev")
         hevRunning = true
     }
@@ -574,10 +574,11 @@ class PleatVpnService : VpnService() {
     /** The core and hev only; the tun and the network watch stay. */
     private fun stopEngine() {
         if (hevRunning) {
-            try { TProxyService.TProxyStopService() } catch (e: Exception) {}
+            TProxyService.stop(this)
             hevRunning = false
         }
-        running = null
+        // a newer service may already have put its own core here (AND-06)
+        if (running === core) running = null
         try { core?.stopLoop() } catch (e: Exception) {}
         core = null
     }
