@@ -43,6 +43,10 @@ env:
   GEO_TAG: '202611142203'
   GEOIP_SHA256: 304ac8a1cbcc8166e4f5a4f32955e4d0fb77a1bd713583e371b30ee27f3659d8
   GEOSITE_SHA256: 0eb5e3cc3ced44a4dd36eb198b4ad4252a4017971979d7faa16d5c5e184c7462
+  # The geo lists the APK keeps: exactly the `geoip:` / `geosite:` lists lib/ puts in a rule (geo_trim_test.dart
+  # fails when the two differ). A new list in a rule goes here in the same pull request.
+  GEOIP_KEEP: ir
+  GEOSITE_KEEP: category-ir category-ads-all category-porn
 
 jobs:
   build:
@@ -144,8 +148,10 @@ jobs:
           base="https://github.com/Loyalsoldier/v2ray-rules-dat/releases/download/$GEO_TAG"
           get "geoip-$GEO_TAG.dat" "$GEOIP_SHA256" "$base/geoip.dat"
           get "geosite-$GEO_TAG.dat" "$GEOSITE_SHA256" "$base/geosite.dat"
-          cp "$dl/geoip-$GEO_TAG.dat" "$geo/geoip.dat"
-          cp "$dl/geosite-$GEO_TAG.dat" "$geo/geosite.dat"
+          # Only the lists the app's rules use go into the APK (PERF-A-03; about 28 MB down to about 5 MB per APK):
+          # each kept list is copied byte for byte, so it matches exactly what it did in the full file
+          dart run tool/geo_trim.dart "$dl/geoip-$GEO_TAG.dat" "$geo/geoip.dat" $GEOIP_KEEP
+          dart run tool/geo_trim.dart "$dl/geosite-$GEO_TAG.dat" "$geo/geosite.dat" $GEOSITE_KEEP
           test -s "$geo/geoip.dat" && test -s "$geo/geosite.dat"
           export XRAY_LOCATION_ASSET="$PWD/$geo"
           for f in /tmp/xray-configs/*.json; do
@@ -351,6 +357,9 @@ jobs:
           for abi in arm64-v8a armeabi-v7a x86_64; do
             apk=build/app/outputs/flutter-apk/app-$abi-release.apk
             echo "== $abi: $(du -h "$apk" | cut -f1)"
+            # where the size comes from: the biggest entries (stored size, uncompressed size, name)
+            unzip -v "$apk" | awk 'NF >= 8 && $1 ~ /^[0-9]+$/ {print $3, $1, $8}' | sort -rn | head -8 \
+              | awk '{printf "   %8.1f MB stored  %8.1f MB  %s\n", $1/1048576, $2/1048576, $3}'
             "$aapt" dump badging "$apk" | grep -E "^(package|minSdkVersion|sdkVersion|targetSdkVersion|native-code)"
             libs=$(unzip -l "$apk" | grep -E "lib/$abi/lib(hev-socks5-tunnel|gojni|flutter)\.so" | awk '{print $4}')
             echo "$libs"
