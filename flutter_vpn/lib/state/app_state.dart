@@ -628,7 +628,8 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   List<Session> sessions = [];
 
   /// Activity > Your privacy: sessions are kept on this phone for
-  /// [historyDays] and then delete themselves. Off: nothing is logged.
+  /// [historyDays] and then delete themselves. Off: nothing new is saved on
+  /// this phone (server ranking and Send diagnostics are separate).
   bool keepHistory = true;
   static const historyDays = 30;
   String noticesSeen = '';

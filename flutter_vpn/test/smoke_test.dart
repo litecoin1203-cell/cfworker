@@ -1043,13 +1043,52 @@ void main() {
     for (var i = 0; i < 10; i++) {
       await tester.pump(const Duration(milliseconds: 100));
     }
-    // Keep history off: what was kept goes, nothing new is logged
+    // Keep history off: what was kept goes, nothing new is saved here
     await tester.scrollUntilVisible(find.text('Keep history'), 200);
+    await tester.ensureVisible(find.bySemanticsLabel('Keep history'));
+    await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(find.bySemanticsLabel('Keep history'));
     await tester.pump(const Duration(milliseconds: 300));
     expect(app.keepHistory, isFalse);
     expect(app.sessions, isEmpty);
-    expect(find.text('Off. Nothing is logged.'), findsOneWidget);
+    expect(
+      find.text('Off. Nothing new is saved on this phone.'),
+      findsOneWidget,
+    );
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('PRV-01: Your privacy says what the server keeps, never '
+      '"no log"', (tester) async {
+    final (app, _) = await _boot(tester, {
+      'onboarded': true,
+    }, tunnel: FakeTunnel());
+    app.setTab(3);
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    await tester.scrollUntilVisible(find.text('What our server keeps'), 200);
+    // the old promise was not true: the Worker keeps per-user network data
+    expect(find.textContaining('keep no session log'), findsNothing);
+    expect(find.textContaining('Nothing is logged'), findsNothing);
+    expect(
+      find.text(
+        'No browsing log. Your network operator, province and how each '
+        'server worked for you (30 days), and problem reports (14 days).',
+      ),
+      findsOneWidget,
+    );
+    await tester.ensureVisible(find.bySemanticsLabel('Keep history'));
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.bySemanticsLabel('Keep history'));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(app.keepHistory, isFalse);
+    // off turns off this phone's history only, and says so
+    expect(find.textContaining('Nothing is logged'), findsNothing);
+    expect(
+      find.text('Off. Nothing new is saved on this phone.'),
+      findsOneWidget,
+    );
     await tester.pump(const Duration(seconds: 3));
   });
 
