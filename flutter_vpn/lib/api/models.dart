@@ -405,6 +405,8 @@ class AppConfig {
       ],
       minTopup = _int(j['min_topup_toman']),
       referralPercent = _int(j['referral_percent']),
+      // an older Worker doesn't say: it needs Telegram unless switched off
+      trialNeedsTelegram = j['trial_needs_telegram'] != false,
       update = j['update'] is Map
           ? AppUpdate.fromJson((j['update'] as Map).cast<String, dynamic>())
           : null;
@@ -417,12 +419,16 @@ class AppConfig {
       coins = const [],
       minTopup = 0,
       referralPercent = 0,
+      trialNeedsTelegram = true,
       update = null;
   final String supportUrl, announcement;
 
   /// The Pleat build the store announced; null when there is none.
   final AppUpdate? update;
   final bool cardEnabled, cardAuto, cryptoEnabled;
+
+  /// The free trial needs a verified Telegram (the store's switch).
+  final bool trialNeedsTelegram;
   final List<CoinOption> coins;
   final int minTopup, referralPercent;
 
