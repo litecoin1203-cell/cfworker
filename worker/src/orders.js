@@ -1,8 +1,8 @@
 // Orders (plan purchase & wallet top-up), receipts, crypto webhook, wallet and referral.
-import { first, all, run, insert, getSettings, getSettingInt } from './db.js';
+import { first, all, run, insert, getSettings, getSettingInt, switchOn, coinsOff } from './db.js';
 import { json, err, nowSec, allowed } from './util.js';
 import { payWithWallet, settle, BillingError } from './billing.js';
-import { cryptoEnabled, tomanToUsd, createInvoice, verifyIpn, PAID_STATES, FAILED_STATES } from './nowpayments.js';
+import { cryptoEnabled, gatewayReady, tomanToUsd, createInvoice, verifyIpn, PAID_STATES, FAILED_STATES } from './nowpayments.js';
 import { sendReceipt, notifyAdmin } from './telegram.js';
 import { planName } from './account.js';
 import { bankOf, cardDigits } from './banks.js';
@@ -181,11 +181,28 @@ export async function checkCoupon(env, user, body) {
   return json({ code: c.code, percent: c.percent, price_toman: plan.price_toman, final_toman: discounted(plan.price_toman, c) });
 }
 
+// PAY-08: why a method cannot be ordered right now ('' = it can). The wallet's own check needs the price and the
+// balance, so it is in createOrder.
+const WALLET_OFF = 'پرداخت از کیف پول الان فعال نیست. با روش دیگری پرداخت کن.';
+const METHOD_OFF = {
+  wallet: (env, s) => (switchOn(s, 'pay_wallet_on') ? '' : WALLET_OFF),
+  card: (env, s) => (s.card_number && switchOn(s, 'pay_card_on') ? '' : 'کارت‌به‌کارت الان فعال نیست.'),
+  coin: (env, s, body) => (switchOn(s, 'pay_coin_on') && !coinsOff(s).includes(String(body.coin || '').toLowerCase()) ? '' : 'پرداخت با این ارز دیجیتال الان فعال نیست.'),
+  crypto: (env, s) => (gatewayReady(env, s) ? '' : 'پرداخت کریپتو الان فعال نیست.'),
+};
+
 export async function createOrder(env, user, body) {
   const method = body.method;
   if (!['wallet', 'card', 'crypto', 'coin'].includes(method)) throw err(422, 'invalid_input', 'روش پرداخت را انتخاب کن.', 'method');
   if (method === 'coin' && !coinById(body.coin)) throw err(422, 'invalid_input', 'یک ارز دیجیتال انتخاب کن.', 'coin');
-  if (method !== 'wallet') await makeRoomFor(env, user, method);
+  // PAY-08: a method the admin switched off (or that is not set up) is refused before anything is stored
+  const s = await getSettings(env);
+  const off = METHOD_OFF[method](env, s, body);
+  // a plan order waits for its price: a free one (100% coupon) is no payment, so no switch applies to it
+  if (off && !body.plan_id) throw err(400, 'method_unavailable', off);
+  // an off method only gets this far for a plan order that may turn out free (stored as a wallet order), so nothing is
+  // cancelled to make room for an order that is then refused
+  if (method !== 'wallet' && !off) await makeRoomFor(env, user, method);
   let orderId;
   if (body.plan_id) {
     const plan = await first(env, 'SELECT * FROM plans WHERE id = ?', body.plan_id);
@@ -194,6 +211,10 @@ export async function createOrder(env, user, body) {
     const price = discounted(plan.price_toman, coupon);
     const fresh = await first(env, 'SELECT wallet_balance FROM users WHERE id = ?', user.id);
     const bal = fresh.wallet_balance;
+    if (off && price > 0) throw err(400, 'method_unavailable', off);
+    // paying from the balance (all of it, or the wallet part of "wallet + pay the rest") needs the wallet switch; a free
+    // order (price 0) is not a wallet payment
+    if (price > 0 && !switchOn(s, 'pay_wallet_on') && (method === 'wallet' || (body.use_wallet && bal > 0))) throw err(400, 'method_unavailable', WALLET_OFF);
     if (body.use_wallet && method !== 'wallet' && bal > 0 && bal < price && price > 0) {
       // pay only the difference by card/crypto; when it lands the plan is bought from the wallet automatically
       orderId = await insert(env, 'orders', {
@@ -220,7 +241,6 @@ export async function createOrder(env, user, body) {
   let order = await first(env, 'SELECT * FROM orders WHERE id = ?', orderId);
 
   if (order.method === 'card') {
-    const s = await getSettings(env);
     if (!s.card_number) {
       await run(env, "UPDATE orders SET status = 'cancelled' WHERE id = ?", order.id);
       throw err(400, 'method_unavailable', 'کارت‌به‌کارت الان فعال نیست.');

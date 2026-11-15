@@ -258,12 +258,28 @@ export function Payments({ nav }) {
       <Loading st={st} rows={5}>
         {(d) => (
           <>
+            <Section title="Offered to users" />
+            <List>
+              {[
+                ['wallet', 'wallet', 'Pay from wallet', 'Buying with the balance, also "wallet and pay the rest"', true],
+                ['card', 'card', 'Card to card', d.ready.card ? 'Transfer to your card' : 'No card number yet', d.ready.card],
+                ['coin', 'coin', 'Crypto to your wallets', d.ready.coin ? 'Every coin with an address (switch coins one by one in Wallets)' : 'No wallet address yet', d.ready.coin],
+                ['crypto', 'globe', 'Crypto gateway (NOWPayments)', !d.ready.crypto_key ? 'No NOWPayments key on the server' : d.ready.crypto ? 'Pay on the gateway page' : 'No Tether price set: not offered', d.ready.crypto],
+              ].map(([k, icon, title, sub, ready]) => (
+                <Row icon={icon} title={title} sub={d.methods[k] && !ready ? `${sub} · on, but not set up` : sub}
+                  end={owner ? <Toggle on={d.methods[k]} label={title} onChange={(v) => setting(`pay_${k}_on`, v ? '1' : '0', `${title}: ${v ? 'on' : 'off'}`, st.reload)} /> : <Tag tone={d.methods[k] ? 'ok' : ''}>{d.methods[k] ? 'On' : 'Off'}</Tag>} />
+              ))}
+            </List>
+            <p class="note" style={{ marginTop: '8px' }}>Off = not offered in the app, and new orders with it are refused. Orders already open are still confirmed.</p>
             <Section title="Card to card" />
             <List>
               <Row icon="card" title={d.card.number ? d.card.number.replace(/(\d{4})(?=\d)/g, '$1 ') : 'No card yet'} sub={d.card.holder || 'Card holder not set'} onClick={owner ? () => cardForm(d, st.reload) : undefined} end={owner ? <Act>Edit</Act> : null} />
               <Row icon="message" title="Confirm by bank SMS" sub={`${AUTO[d.card_auto] || d.card_auto} · ${plural(d.sender_count, 'trusted sender')}`} />
             </List>
             {owner ? <Chips items={MODES} value={d.card_auto} onChange={(v) => setting('card_auto', v, `Card SMS: ${AUTO[v]}`, st.reload)} /> : null}
+            {d.card.number && d.card_auto !== 'off' && !d.sender_count ? (
+              <p class="note" style={{ marginTop: '8px' }}>SMS confirm cannot work yet: no bank sender is trusted, so every deposit SMS waits for you. Once is enough: under the first deposit SMS from your bank in the bot, tap "this sender is my bank".</p>
+            ) : null}
             <List>
               <Row icon="filter" title="Unique amount" sub="A few toman added to each card order so the SMS matches exactly one" end={owner ? <Toggle on={d.settings.card_unique} label="Unique amount" onChange={(v) => setting('card_unique', v ? '1' : '0', v ? 'Unique amount on' : 'Unique amount off', st.reload)} /> : <Tag>{d.settings.card_unique ? 'On' : 'Off'}</Tag>} />
               <Row icon="message" title="Bank SMS received" sub="What was read from each SMS" onClick={() => nav.push('sms', {})} chevron />
@@ -320,7 +336,13 @@ export function Coins({ nav }) {
   return (
     <Page title="Crypto wallets" sub="A coin without an address is hidden in the app" nav={nav}>
       <Loading st={st} rows={6}>
-        {(d) => <List>{d.coins.map((c) => <Row icon="coin" title={`${c.symbol} · ${c.name}`} sub={owner ? (c.address ? c.address : 'No address') : c.network} end={<Tag tone={c.on ? 'ok' : ''}>{c.on ? 'On' : 'Off'}</Tag>} onClick={owner ? () => edit(c) : undefined} />)}</List>}
+        {(d) => {
+          const offIds = d.coins.filter((x) => x.off).map((x) => x.id);
+          const flip = (c, on) => setting('pay_coins_off', (on ? offIds.filter((x) => x !== c.id) : [...offIds, c.id]).join(','), `${c.symbol} ${on ? 'on' : 'off'} for users`, st.reload);
+          return <List>{d.coins.map((c) => <Row icon="coin" title={`${c.symbol} · ${c.name}`} sub={owner ? (c.address ? c.address : 'No address') : c.network}
+            end={owner && c.on ? <Toggle on={!c.off} label={`${c.symbol} for users`} onChange={(v) => flip(c, v)} /> : <Tag tone={c.on && !c.off ? 'ok' : ''}>{c.on && !c.off ? 'On' : 'Off'}</Tag>}
+            onClick={owner ? () => edit(c) : undefined} />)}</List>;
+        }}
       </Loading>
     </Page>
   );

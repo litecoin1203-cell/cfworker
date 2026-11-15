@@ -56,9 +56,21 @@ export const SETTING_DEFAULTS = {
   wallet_bnb: '',
   wallet_pol: '',
   wallet_algo: '',
+  // PAY-08: one on/off switch per payment method (1 = offered, 0 = off; bot › 💳 روش‌های پرداخت, Mini App › Payment
+  // methods). A method still needs its own setup to be offered (card number, a wallet address, the NOWPayments key and
+  // usdt_rate_toman). Default 1, so a method that is set up keeps working as before. createOrder refuses an off method.
+  pay_wallet_on: '1',  // buying a plan from the wallet balance (also "wallet + pay the rest")
+  pay_card_on: '1',    // card to card
+  pay_coin_on: '1',    // crypto to the admin's own wallets, all coins
+  pay_coins_off: '',   // coins switched off one by one (ids, comma separated); their addresses stay saved
+  pay_crypto_on: '1',  // the NOWPayments gateway
   // the admin bot's hourly Cloudflare alerts (cfmon.js): 1 = on, 0 = off
   cf_alerts: '1',
 };
+
+// PAY-08: a method's switch (anything but '0' is on) and the coins switched off one by one
+export const switchOn = (s, key) => String(s[key] ?? '1').trim() !== '0';
+export const coinsOff = (s) => String(s.pay_coins_off || '').toLowerCase().split(/[\s,]+/).filter(Boolean);
 
 export async function getSettings(env) {
   const rows = await all(env, 'SELECT key, value FROM settings');

@@ -94,6 +94,8 @@ export const SETTING = {
   app_bridges: 'App bridges', trial_data_gb: 'Trial data (GB, 0 = as plan)', trial_needs_telegram: 'Trial needs verified Telegram', cf_alerts: 'Hourly Cloudflare alerts (1 = on)', usd_rate_toman: 'Manual dollar price (0 = auto)',
   coin_minutes: 'Crypto payment time (min)', card_unique: 'Unique card amount (1 on, 0 off)', card_auto: 'Card SMS confirm', sms_senders: 'Trusted bank senders',
   sms_key: 'SMS address key', coin_auto: 'Crypto confirm',
+  pay_wallet_on: 'Pay from wallet (1 = on)', pay_card_on: 'Card to card (1 = on)', pay_coin_on: 'Crypto to own wallets (1 = on)',
+  pay_crypto_on: 'NOWPayments gateway (1 = on)', pay_coins_off: 'Coins switched off (e.g. xlm,trx)',
 };
 
 // a setting's name; the crypto wallets are one key per coin (wallet_usdt_trc20, wallet_xlm_memo, ...)
