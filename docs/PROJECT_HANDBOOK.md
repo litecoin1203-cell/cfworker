@@ -1170,6 +1170,13 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - **TR 1 / TR 7** are named Turkey on the panel but leave through German hosting (Hetzner, dataforest); since #76
   the Worker lists them as DE. Ali may want to fix the remarks.
 - The app forces WireGuard MTU 1280 (links say 1420); that is the proven fix for DE 7 / DE 10.
+- **Bridge account (release audit NET-07)**: links in `PLEAT_BRIDGE` (and, less so, `app_bridges`) can be read out
+  of the public APK or by any phone, and the "only the Worker's hosts" rule lives in the app's own config, so
+  someone else's client can use that account as an unlimited VPN. The app cannot stop this; the panel must. Give
+  the bridge its **own panel account** with a small data cap and a low speed / IP limit, rotate it now and then
+  (set the new link with the bot's `app_bridges`; it reaches phones without a new APK), and, best, put it on its own
+  inbound whose **server-side** routing lets through only the Worker's hosts — the custom domain and the
+  `workers.dev` address, the same list as `api_base` / `CG_API_BASE` — and blocks everything else.
 
 ---
 
@@ -1395,7 +1402,8 @@ version in §10, move finished items out of §19.
 - Rotating `SECRET_KEY` invalidates stored panel logins (and sessions if `JWT_SECRET` is unset).
 - The app's build list `PLEAT_API` comes from the workflow input or `CG_API_BASE`; an APK built without it has
   no server address.
-- Bridge links baked into the APK (`PLEAT_BRIDGE`) can be extracted from the APK; prefer bot-set `app_bridges`.
+- Bridge links baked into the APK (`PLEAT_BRIDGE`) can be extracted from the APK; prefer bot-set `app_bridges`,
+  and lock the bridge account down on the panel (§16, NET-07).
 - The core's log handler is global: a previous probe's line can leak into the next trace.
 - Calling a MethodChannel during `AppState.refreshAccount` before `pumpWidget` deadlocks widget tests;
   `Tunnel.netKind` returns '' until `available()` answered.
