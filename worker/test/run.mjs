@@ -6654,6 +6654,76 @@ section('PNL-04: removing a device frees it on every panel the user is on, not o
   ok(W.pgs[1].deletedHwids.some((x) => x[1] === 'p4-phone-b'), 'PNL-04: freed on panel 2 as well');
 }
 
+// made-up OpenAPI documents in the shape FastAPI panels publish (no real panel's document)
+function fakeOpenApi(kind, { hwid = true, extra = {} } = {}) {
+  const op = { responses: { 200: { description: 'ok' } } };
+  const paths = {
+    '/api/admin/token': { post: op }, '/api/user': { post: { ...op, requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/UserCreate' } } } } } },
+    '/api/user/{username}': { get: op, put: op, delete: op }, '/api/user/{username}/reset': { post: op }, '/api/users': { get: op }, '/api/system': { get: op },
+  };
+  const props = { username: { type: 'string' }, expire: { anyOf: [{ type: 'string', format: 'date-time' }, { type: 'integer' }, { type: 'null' }] }, data_limit: { type: 'integer' }, note: { type: 'string' } };
+  if (kind === 'pasarguard') { paths['/api/groups'] = { get: op }; paths['/api/hosts'] = { get: op }; props.group_ids = { type: 'array' }; if (hwid) { props.hwid_limit = { type: 'integer' }; paths['/api/user/{user_id}/hwids/{hwid}'] = { delete: op }; } }
+  if (kind === 'marzban') { paths['/api/inbounds'] = { get: op }; props.proxies = { type: 'object' }; }
+  if (kind === 'rebecca') { paths['/api/v2/services'] = { get: op }; props.service_id = { type: 'integer' }; }
+  Object.assign(props, extra);
+  return { openapi: '3.1.0', info: { title: 'Panel', version: '9.9.9-test' }, paths, components: { schemas: { UserCreate: { allOf: [{ properties: props }] } }, securitySchemes: { k: { type: 'apiKey', in: 'header', name: 'X-API-Key' } } } };
+}
+
+section('PNL-05 / PNL-06: panel API assumptions are checked against the panel\'s own OpenAPI document, read-only, nothing secret printed');
+{
+  const { analyseOpenApi, userFacts, problems } = await import('../src/panelapi.js');
+  const pgDoc = analyseOpenApi(fakeOpenApi('pasarguard'), 'pasarguard');
+  ok(pgDoc && !pgDoc.missing.length && pgDoc.hwid.path && pgDoc.hwid.field && pgDoc.create.expire === 'date-time|integer' && pgDoc.apiKeyHeader, 'PNL-05: a PasarGuard document with HWID: nothing missing, hwid path + field, expire types: ' + JSON.stringify(pgDoc));
+  const noHwid = analyseOpenApi(fakeOpenApi('pasarguard', { hwid: false }), 'pasarguard');
+  const pr = problems(noHwid, null, 'pasarguard');
+  ok(!noHwid.hwid.path && !noHwid.hwid.field && pr.some((x) => /hwid_limit/.test(x)) && pr.some((x) => /removing a device does nothing/.test(x)), 'PNL-05: a panel without HWID support is named as such: ' + pr.join(' | '));
+  const reb = analyseOpenApi(fakeOpenApi('marzban'), 'rebecca');
+  ok(reb.missing.includes('GET /api/v2/services') && problems(reb, null, 'rebecca').some((x) => /service_id/.test(x)), 'PNL-06: a Rebecca assumption the document lacks is listed: ' + reb.missing);
+  ok(!analyseOpenApi(fakeOpenApi('marzban'), 'marzban').missing.length && analyseOpenApi(null) === null, 'PNL-06: a Marzban document passes; no document = null');
+  const f = userFacts({ id: 1, username: 'x', status: 'active', expire: '2026-12-01T00:00:00', used_traffic: 5, subscription_url: '/sub/x', online_at: null });
+  ok(f.expire === 'iso-date' && f.hwid_limit === 'absent' && f.online_at === 'null' && !problems(null, f).length, 'PNL-06: a user record is described by field kinds only: ' + JSON.stringify(f));
+
+  // the owner's script against a fake panel: what it reports, and that no address, login, user name or link leaks
+  const { verifyPanel } = await import('../scripts/verify-panel-api.mjs');
+  const base = 'http://verify-p1.test';
+  const fp = fakes.addPanel(base, 'verifynodes.example.net', 'pasarguard');
+  fp.openapi = fakeOpenApi('pasarguard', { hwid: false });
+  fp.users['cg_verifyuser1'] = { id: 77, username: 'cg_verifyuser1', status: 'active', expire: 1767225600, data_limit: 0, used_traffic: 3, token: 'verifysubtoken9', note: 'Pleat #77' };
+  const writes = [];
+  const spy = (u, init = {}) => { if ((init.method || 'GET') !== 'GET') writes.push(`${init.method} ${new URL(u).pathname}`); return globalThis.fetch(u, init); };
+  const out = await verifyPanel({ url: base, username: 'verify-admin-x', password: 'verify-pass-x' }, spy);
+  const rep = JSON.parse(out);
+  ok(rep.login === 'ok' && rep.kind === 'pasarguard' && rep.system.version === '1.0.0-test' && rep.openapi && rep.openapi.hwid.field === false, 'PNL-05: the script logs in, detects the type and reads the document: ' + JSON.stringify({ l: rep.login, k: rep.kind, o: !!rep.openapi }));
+  ok(rep.user && rep.user.expire === 'number' && rep.user.hwid_limit === 'absent' && rep.problems.some((x) => /hwid_limit/.test(x)), 'PNL-05: a real user record is described and the HWID gap reported');
+  ok(writes.length === 1 && writes[0] === 'POST /api/admin/token', 'PNL-05: read-only: the only non-GET call is the login: ' + writes);
+  ok(!/verify-p1|verify-admin-x|verify-pass-x|cg_verifyuser1|verifysubtoken9|tok\d/.test(out), 'PNL-05: the report has no address, login, token, user name or link');
+  const fr = fakes.addPanel('http://verify-p2.test', 'verifyreb.example.net', 'rebecca');
+  fr.openapi = fakeOpenApi('rebecca');
+  fr.users['cg_verifyuser2'] = { id: 78, username: 'cg_verifyuser2', status: 'active', expire: 0, data_limit: 0, used_traffic: 0, token: 'verifysubtoken8', note: 'x' };
+  const rr = JSON.parse(await verifyPanel({ url: 'http://verify-p2.test', apiKey: 'verify-key-x' }));
+  ok(rr.kind === 'rebecca' && rr.apiKeyHeader === true && rr.services.has_hosts && rr.services.broken && rr.v2ray && rr.v2ray.status === 200 && rr.v2ray.links === 3, 'PNL-06: Rebecca: services fields and the /v2ray links are checked: ' + JSON.stringify({ k: rr.kind, s: rr.services, v: rr.v2ray }));
+}
+
+section('PNL-05: a panel that refuses hwid_limit still gets the account, and the admin learns the device limit was dropped');
+{
+  const W = await world('pnl5', 1);
+  W.pgs[0].rejectHwid = true;
+  await W.signupW('p5@example.com');
+  const told0 = fakes.tg.messages.length;
+  await W.bot(`/grant p5@example.com ${W.plan.id}`);
+  const made = Object.values(W.pgs[0].users).find((u) => /^Pleat #/.test(u.note || '') || u.username.startsWith('cg_'));
+  ok(made && !('hwid_limit' in made), 'PNL-05: the account was made without hwid_limit (lean retry)');
+  const told = fakes.tg.messages.slice(told0).filter((m) => /hwid_limit/.test(m.text || ''));
+  ok(told.length === 1, 'PNL-05: the admin is told the device limit was dropped: ' + told.length);
+  await W.signupW('p5b@example.com');
+  await W.bot(`/grant p5b@example.com ${W.plan.id}`);
+  ok(fakes.tg.messages.slice(told0).filter((m) => /hwid_limit/.test(m.text || '')).length === 1, 'PNL-05: and only once in 6 hours');
+  W.pgs[0].openapi = fakeOpenApi('pasarguard', { hwid: false });
+  const t0 = fakes.tg.messages.length;
+  await W.bot('/paneltest 1');
+  ok(fakes.tg.messages.slice(t0).some((m) => /hwid_limit/.test(m.text || '') && /API/.test(m.text || '')), 'PNL-05: the panel test reports the API document\'s gaps');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

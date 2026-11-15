@@ -7,6 +7,7 @@ import { PasarGuard, PasarGuardError, decodeSub } from './pasarguard.js';
 import { Marzban, Rebecca, detectKind } from './marzban.js';
 import { serverKey, linkEndpoint } from './netstats.js';
 import { flagToCc, countryFromRemark, countryFromHost } from './countries.js';
+import { analyseOpenApi, problems } from './panelapi.js';
 
 export { flagToCc };
 
@@ -655,6 +656,9 @@ export async function testPanel(env, panel) {
     if (!pg.apiKey) await pg._login();
     out.login = true;
     out.version = await pg.version();
+    // PNL-05 / PNL-06: what the adapter assumes, against the panel's own API document (when this admin may read it)
+    const doc = pg.openApi ? await pg.openApi() : null;
+    if (doc) out.apiProblems = problems(analyseOpenApi(doc, panel.kind), null, panel.kind);
     const ids = await groupIdsFor(env, panel, pg);
     const name = `cgtest_${Math.floor(Math.random() * 1e6)}`;
     const u = await pg.createUser(name, { expire: nowSec() + 3600, dataLimit: 10 * 1024 * 1024, groupIds: ids, note: 'Cloud Gold test, safe to delete' });
@@ -676,7 +680,7 @@ export async function testPanel(env, panel) {
   await recordHealth(env, panel.id, healthy);
   // the last result, for the panel card in the admin bot (facts only: no address, user name or link)
   const last = { at: nowSec(), healthy, configs: out.configs, kinds: out.kinds?.counts || null, unusable: out.kinds?.unusable || 0,
-    error: out.error ? String(out.error).slice(0, 160) : null };
+    error: out.error ? String(out.error).slice(0, 160) : null, api: out.apiProblems ? out.apiProblems.slice(0, 8) : null };
   await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     `panel_test_${panel.id}`, JSON.stringify(last));
   await run(env, 'UPDATE panels SET version = COALESCE(?, version) WHERE id = ?', out.version, panel.id);

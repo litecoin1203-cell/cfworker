@@ -285,6 +285,7 @@ The full list (every route, its auth, handler and limits, plus the admin API and
 | `sync.js` | usage ledger (`observe`), `evaluate` (quota/expiry over ALL panels), idempotent apply, create missing accounts, `linkAccount`, `runSync` (cron slice) |
 | `pasarguard.js` | PasarGuard API client (login, token cache in isolate, timeouts), subscription decode, `/links` fallback |
 | `marzban.js` | Marzban + Rebecca adapters, `detectKind` |
+| `panelapi.js` | what the adapters assume of each panel API, checked against its `/openapi.json` (panel test, `scripts/verify-panel-api.mjs`) |
 | `chainwatch.js` | reads five chains, matches deposits to orders, `claimTxid` (one txid = one order, atomic) |
 | `coins.js`, `usdrate.js`, `nowpayments.js`, `banks.js` | coin prices, USD→toman rate, gateway invoices, bank name from card number |
 | `sms.js` | parses bank SMS (rial vs toman!), auto-confirms card-to-card orders |
@@ -513,6 +514,17 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   wait for Ali's OK. Device removal runs on every panel the user is on since PNL-04 (panels without a device list
   answer false).
 - Ali's panels are **https**. Since PR #45 only https panel logins are accepted.
+- **Panel API assumptions (PNL-05, PNL-06)**: the adapters were written against the project's own fake panel. The
+  HWID contract (`hwid_limit` on create, `DELETE /api/user/{id}/hwids/{hwid}`), the Rebecca adapter (`/api/v2/services`
+  with `has_hosts`/`broken`, `service_id`, `<sub>/v2ray`) and the `x-api-key` login are **not yet confirmed on a real
+  panel**. `src/panelapi.js` lists what is assumed and compares it with a panel's `/openapi.json`; the panel test
+  (bot and Mini App) shows the gaps it finds (`api_problems`). A panel that refuses `hwid_limit` still gets the account
+  (lean retry) and Ali is told (at most every 6 h per panel). To confirm on a real panel, Ali runs the read-only
+  script on his own computer (it only logs in and reads; it prints field names, types and counts, never an address,
+  login, user name or link):
+  `cd worker && PANEL_URL=https://<panel> PANEL_USERNAME=<admin> PANEL_PASSWORD='<pass>' node scripts/verify-panel-api.mjs`
+  (`PANEL_API_KEY=` instead of the login to check the key header; `PANEL_KIND=` to skip detection). Its `problems`
+  list is what to fix.
 
 ---
 
@@ -1116,6 +1128,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |
 | CF-01 / PERF-B-03 (measured) a first purchase cost 24 + 5 queries per serving panel → over 50 from the 7th panel, after the panels were already changed | all bot-given panel logins in one range query, kept 30 s per isolate (dropped when a login is saved); `ensureAccount` takes the row the caller read and builds the result row; 8 panels: first purchase 40, renewal 28 (test) |
 | PNL-03 an account deleted on the panel (by its owner or a clean-up) was never made again: its configs silently left the user's list, pushes failed `panel_404` forever | a 404 on `/me`, `/vpn` or the server list marks the row dirty; the push confirms the account is gone (`getUser`), makes it again under the **same name** with the wanted expiry/limit and records the new link (an account that should be off is recorded off); ≤ 3 per run; bot alert ♻️ at most every 6 h per panel (`panel_remade_<id>`) |
+| PNL-05 / PNL-06 HWID, Rebecca and API-key assumptions only ever checked against the project's own fake; a refused `hwid_limit` was dropped silently | `panelapi.js` + panel test compare with the panel's `/openapi.json`; admin alert when `hwid_limit` is dropped; read-only `scripts/verify-panel-api.mjs` for Ali to run on real panels (open until he does) |
 
 ### App and tunnel
 | Problem | Fix |
@@ -1214,6 +1227,8 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
   country list (Fastest bar, chips, regions, pips, Not answering).
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
+- **Run `worker/scripts/verify-panel-api.mjs` once per real panel** (panel 1, panel 2, and the first Rebecca) and send
+  the printed report (it holds no secrets): it confirms or refutes the HWID, Rebecca and API-key assumptions (PNL-05, PNL-06).
 - **Licence of the repo's own code** (audit LEG-04): there is no top-level `LICENSE`, so the Worker, Mini App and
   Pleat are all rights reserved. Choose one (or a proprietary notice); `android/` stays GPL-3.0.
 - **GeoLite2 terms** (LEG-02): the APK carries MaxMind's attribution, but the GeoLite2 EULA may also require

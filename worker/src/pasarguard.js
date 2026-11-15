@@ -214,7 +214,10 @@ export class PasarGuard {
       // some panel versions are strict about optional fields; retry once with the bare minimum
       if (e instanceof PasarGuardError && (e.status === 422 || e.status === 400)) {
         const lean = { username, status: 'active', expire: body.expire, data_limit: body.data_limit, data_limit_reset_strategy: 'no_reset', group_ids: groupIds };
-        return this._json('POST', '/api/user', lean);
+        const made = await this._json('POST', '/api/user', lean);
+        // PNL-05: the account exists, but without the device limit (and note) asked for; the caller tells the admin
+        if (hwidLimit) this.hwidDropped = true;
+        return made;
       }
       throw e;
     }
@@ -360,6 +363,16 @@ export class PasarGuard {
   // active | disabled (stop without deleting: the account and its usage stay on the panel)
   setStatus(username, status) {
     return this._json('PUT', `/api/user/${encodeURIComponent(username)}`, { status });
+  }
+
+  // the panel's OpenAPI document (FastAPI serves it at /openapi.json), for the health test; null when not readable
+  async openApi() {
+    try {
+      const r = await this._req('GET', '/openapi.json');
+      if (!r.ok) return null;
+      const j = await r.json().catch(() => null);
+      return j && j.paths ? j : null;
+    } catch (e) { return null; }
   }
 
   // panel version for the health test; null when the panel does not say

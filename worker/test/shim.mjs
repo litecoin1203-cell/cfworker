@@ -118,6 +118,7 @@ export function installFakes({ panelBase }) {
         return resJson({ users: all.slice(off, off + lim).map(outUser), total: all.length });
       }
       if (path === '/api/system') return resJson({ version: '1.0.0-test' });
+      if (path === '/openapi.json' && pg.openapi) return resJson(pg.openapi);
       if (path === '/api/admin/token' && pg.kind === 'none') return resText('{"detail":"Not Found"}', 404);
       if (path === '/api/admin/token') { const t = 'tok' + ++pg.seq; pg.tokens.add(t); return resJson({ access_token: t, token_type: 'bearer' }); }
       if (pg.kind !== 'pasarguard' && (path === '/api/groups' || path.startsWith('/api/groups/'))) return resText('{"detail":"Not Found"}', 404);
@@ -132,6 +133,7 @@ export function installFakes({ panelBase }) {
         const b = JSON.parse(body);
         pg.createLog.push(b);
         if (pg.failCreate) return resText(JSON.stringify({ detail: pg.failCreate }), 400);
+        if (pg.rejectHwid && 'hwid_limit' in b) return resText('{"detail":[{"loc":["body","hwid_limit"],"msg":"extra fields not permitted"}]}', 422);
         if (pg.users[b.username]) return resText('{"detail":"User already exists"}', 409);
         if (pg.kind === 'rebecca') {
           if (!(b.service_id > 0)) return resText('{"detail":"service_id is required. Users must be assigned to a service."}', 400);

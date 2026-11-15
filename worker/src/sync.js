@@ -255,6 +255,22 @@ async function remakeGone(env, pg, pa) {
   return [st(env, 'UPDATE panel_accounts SET remote_id = ?, sub_path = ? WHERE id = ?', made.id ?? null, subPath, pa.id), applied];
 }
 
+// PNL-05: the panel refused hwid_limit and the account was made without it (the lean retry): the device limit is not
+// enforced on this panel. Told at most every 6 h per panel.
+async function noteHwidDropped(env, panel) {
+  const key = `panel_hwid_dropped_${panel.id}`, now = nowSec();
+  try {
+    const last = parseInt((await first(env, 'SELECT value FROM settings WHERE key = ?', key))?.value || '0', 10) || 0;
+    if (now - last < 6 * 3600) return;
+    await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', key, String(now));
+    logError('panel refused hwid_limit', new Error('account made without a device limit'), { panel: panel.id });
+    const { notifyAdmin } = await import('./telegram.js');
+    await notifyAdmin(env, `⚠️ پنل #${panel.id} فیلد hwid_limit (محدودیت دستگاه) را قبول نکرد. اکانت ساخته شد ولی بدون محدودیت دستگاه.
+
+یعنی روی این پنل تعداد دستگاه کنترل نمی‌شود. نسخه‌ی پنل را بررسی کنید (🗂 پنل‌ها › #${panel.id} › 🧪 تست). این پیام حداکثر هر ۶ ساعت یک بار می‌آید.`);
+  } catch (e) { logError('hwid notice failed', e, { panel: panel.id }); }
+}
+
 async function noteRemade(env, panel, n) {
   const key = `panel_remade_${panel.id}`, now = nowSec();
   try {
@@ -343,6 +359,7 @@ export async function ensureAccount(env, user, panel, { expire, limit, hwid, row
     if (r.meta.changes) { rowId = r.meta.last_row_id; recorded = name; }
   };
   const made = await createRemote(env, pg, user, { expire, limit, hwid, groups, name: pa ? pa.remote_username : null, intent });
+  if (pg.hwidDropped) await noteHwidDropped(env, panel);
   const done = rowId && (await run(env, `UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = 'active',
       desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ?, dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ?`,
   made.username, made.id, made.subPath, limit || 0, limit || 0, expire || null, expire || null, now, rowId)).meta.changes;
