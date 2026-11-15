@@ -564,6 +564,11 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
 - **Day/Night**: day = original sky blue (`PPalette.sky`), night = same blue on dark navy (`PPalette.skyNight`).
   ONE "Night mode" toggle in Profile, follows the phone until the user touches it. WCAG AA contrast test in
   `test/theme_test.dart`. Every colour comes from `PColors` (palette-driven) — never hardcode colours.
+- Plan names in English (release audit UX-03): the owner writes plans in Persian in the bot; Pleat and the Mini App
+  show only `name_en` / `badge_en` / `description_en` (`worker/src/plan-en.js`). The owner sets the English name and
+  badge on the bot's plan card (🔤 نام انگلیسی / 🔤 نشان انگلیسی; `-` = automatic) or in the Mini App admin; without
+  one the name is the Latin original or is made from the numbers (`1 month · 50 GB`), a known Persian badge is
+  translated, others are dropped. Stored in the setting `plan_names_en` (no migration).
 - Plans: Ali sells **monthly data-volume plans**; the **big number is the GB** (∞ for no cap), days on a small
   line (`planBig`/`planUnit` in `screens/store_kit.dart`). Bot lists also lead with GB.
 - Profile: mandatory verified Telegram username + optional backup Gmail, then the **Plans shelf** (1.2.48, Ali's

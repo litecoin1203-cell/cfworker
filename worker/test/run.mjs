@@ -5945,6 +5945,66 @@ section('PRV-04: a user can delete their own account (Pleat and Mini App), and a
   ok(!String((await row('SELECT password_hash FROM users WHERE id = ?', aid)).password_hash).startsWith('pbkdf2$'), 'PRV-04: admin delete erases the password hash');
 }
 
+section('UX-03: Pleat and the Mini App get English plan names and badges (the owner sets them in the bot), with a safe fallback');
+{
+  const row = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first());
+  const acts = await import('../src/admin-actions.js');
+  const PERSIAN = /[؀-ۿ]/;
+  const A = { chat: { id: 12345 } };
+  let mid = 7000;
+  const tap = (data) => tgWebhook({ callback_query: { id: 'ux3-' + (mid++), data, message: { ...A, message_id: 970, text: 'menu' } } });
+  const say = (text) => tgWebhook({ message: { ...A, text, message_id: mid++ } });
+  // a plan the owner named and badged in Persian, with a Persian description
+  const c = await acts.runAction(env, '12345', 'plan.create', { name: 'طلایی', days: 30, gb: 50, devices: 2, price: 150000 });
+  const pid = c.targetId;
+  await acts.runAction(env, '12345', 'plan.set', { id: pid, field: 'badge', raw: 'پیشنهاد ویژه' });
+  await acts.runAction(env, '12345', 'plan.set', { id: pid, field: 'desc', raw: 'برای همه' });
+  const pl = async () => (await call('GET', '/api/v1/plans')).data.find((p) => p.id === pid);
+  let p = await pl();
+  ok(p.name === 'طلایی', 'UX-03: name stays as the owner wrote it (the old app reads it)');
+  ok(p.name_en === '1 month · 50 GB' && p.badge_en === 'Recommended' && p.description_en === '',
+    'UX-03: without an English name the fallback is made from the numbers; a known Persian badge is translated; Persian description dropped: ' + JSON.stringify(p));
+  const all = (await call('GET', '/api/v1/plans')).data;
+  ok(all.every((x) => !PERSIAN.test(x.name_en + x.badge_en + x.description_en) && x.name_en), 'UX-03: no plan has Persian in an English field');
+
+  // the owner sets the English name and badge from the plan card (buttons, then a typed value)
+  const scr = await (await import('../src/telegram-screens.js')).plan(env, pid);
+  const btns = scr.kb.flat().map((x) => x.callback_data);
+  ok(btns.includes(`m:w:plan:${pid}:name_en`) && btns.includes(`m:w:plan:${pid}:badge_en`), 'UX-03: the plan card has buttons for the English name and badge');
+  await tap(`m:w:plan:${pid}:name_en`);
+  await say('Gold');
+  await tap(`m:w:plan:${pid}:badge_en`);
+  await say('Best pick');
+  p = await pl();
+  ok(p.name_en === 'Gold' && p.badge_en === 'Best pick' && p.name === 'طلایی', 'UX-03: the English name and badge set from the bot reach the app: ' + JSON.stringify(p));
+  const bad = await acts.runAction(env, '12345', 'plan.set', { id: pid, field: 'name_en', raw: 'طلایی' });
+  ok(bad.ok === false && (await pl()).name_en === 'Gold', 'UX-03: a Persian "English name" is refused');
+  const und = await acts.runAction(env, '12345', 'plan.set', { id: pid, field: 'name_en', raw: 'Gold Plus' });
+  ok((await pl()).name_en === 'Gold Plus', 'UX-03: renamed');
+  await acts.undoAction(env, '12345', und.auditId);
+  ok((await pl()).name_en === 'Gold', 'UX-03: undo puts the English name back');
+  ok((await (await import('../src/telegram-screens.js')).plan(env, pid)).text.includes('Gold'), 'UX-03: the plan card shows the English name');
+
+  // the same English name on the subscription, orders and packages
+  await signup('ux03@example.com', { device: 'ux03' });
+  const uid = await userId('ux03@example.com');
+  const tok = (await call('POST', '/api/v1/auth/login', { json: { email: 'ux03@example.com', password: 'password123' } })).data.access_token;
+  await acts.runAction(env, '12345', 'user.grant', { userId: uid, planId: pid });
+  await drain();
+  const me = (await call('GET', '/api/v1/me', { token: tok })).data;
+  ok(me.subscription && me.subscription.plan_name_en === 'Gold', 'UX-03: /me subscription has plan_name_en: ' + JSON.stringify(me.subscription && me.subscription.plan_name_en));
+  const pk = (await call('GET', '/api/v1/me/packages', { token: tok })).data;
+  ok(pk.length && pk[0].name_en === 'Gold', 'UX-03: packages have name_en');
+  const o = (await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: pid, method: 'card' } })).data;
+  ok(o && o.plan_name_en === 'Gold', 'UX-03: an order has plan_name_en: ' + JSON.stringify(o).slice(0, 200));
+  // a cleared English name falls back again
+  await acts.runAction(env, '12345', 'plan.set', { id: pid, field: 'name_en', raw: '' });
+  ok((await pl()).name_en === '1 month · 50 GB', 'UX-03: an emptied English name falls back to the numbers');
+  ok((await import('../src/plan-en.js')).planEnName({ name: 'یک ساله', duration_days: 365, data_limit_gb: 0 }) === '1 year · Unlimited'
+    && (await import('../src/plan-en.js')).planEnName({ name: 'x', duration_days: 90, data_limit_gb: 100 }) === 'x'
+    && (await import('../src/plan-en.js')).planEnName({ name: 'هفتگی', duration_days: 7, data_limit_gb: 5 }) === '7 days · 5 GB', 'UX-03: fallback names');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

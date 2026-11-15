@@ -351,11 +351,15 @@ export async function plans(env) {
   const rows = await all(env, `SELECT p.*, (SELECT COUNT(*) FROM orders WHERE status = 'paid' AND (plan_id = p.id OR activate_plan_id = p.id)) sold,
       (SELECT COALESCE(SUM(amount_toman), 0) FROM orders WHERE status = 'paid' AND kind = 'plan' AND plan_id = p.id) income
     FROM plans p ORDER BY COALESCE(p.archived, 0), p.sort, p.id`);
+  const { loadPlanEn, planEnName, planEnBadge, planEnOwn } = await import('./plan-en.js');
+  const en = await loadPlanEn(env);
   return json({
     plans: rows.map((p) => ({
       id: p.id, name: p.name, price: p.price_toman, old_price: p.old_price_toman || 0, days: p.duration_days, gb: p.data_limit_gb || 0,
       devices: p.device_limit || 0, trial_days: p.trial_days || 0, badge: p.badge || '', description: p.description || '',
       sort: p.sort, on: !!p.is_active, archived: !!p.archived, sold: p.sold, income: p.income,
+      // UX-03: the owner's English name / badge ('' = automatic) and what Pleat shows
+      name_en: planEnOwn(en, p.id, 'name'), badge_en: planEnOwn(en, p.id, 'badge'), shown_name: planEnName(p, en), shown_badge: planEnBadge(p, en),
       // the names stay as the plan has them; the page also keeps the old shape (duration_days, ...) for the grant list
       duration_days: p.duration_days, data_limit_gb: p.data_limit_gb || 0, price_toman: p.price_toman, is_active: p.is_active,
     })),

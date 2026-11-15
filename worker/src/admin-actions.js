@@ -12,8 +12,10 @@ export const UNDO_SECONDS = 600;
 const fa = (n) => Number(n || 0).toLocaleString('en-US');
 
 export const PLAN_FIELDS = { name: 'name', price: 'price_toman', old: 'old_price_toman', days: 'duration_days', gb: 'data_limit_gb', devices: 'device_limit',
-  trial: 'trial_days', badge: 'badge', sort: 'sort', on: 'is_active', desc: 'description' };
-const PLAN_COLS = new Set(Object.values(PLAN_FIELDS));
+  trial: 'trial_days', badge: 'badge', sort: 'sort', on: 'is_active', desc: 'description', name_en: 'name_en', badge_en: 'badge_en' };
+// UX-03: the English name and badge Pleat and the Mini App show live in a setting (plan-en.js), not in a column
+const EN_COLS = { name_en: 'name', badge_en: 'badge' };
+const PLAN_COLS = new Set(Object.values(PLAN_FIELDS).filter((c) => !(c in EN_COLS)));
 const TEXT_COLS = new Set(['name', 'badge', 'description']);
 const MASKED = new Set(['sms_key', 'app_bridges']); // never shown in the log (bridges are working configs)
 const show = (key, v) => (MASKED.has(key) && v ? '•••' : v === '' || v == null ? '(خالی)' : String(v).slice(0, 80));
@@ -28,12 +30,23 @@ export const ACTIONS = {
       if (!col) return fail('فیلد ناشناخته. فیلدها: ' + Object.keys(PLAN_FIELDS).join(' '));
       const p = await first(env, 'SELECT * FROM plans WHERE id = ?', parseInt(id, 10));
       if (!p) return fail('پلن پیدا نشد.');
+      if (col in EN_COLS) {
+        const { PERSIAN_RE, EN_MAX, setPlanEn } = await import('./plan-en.js');
+        let v = String(raw || '').trim();
+        if (v === '-') v = ''; // a dash clears it (the fallback is used again)
+        if (PERSIAN_RE.test(v)) return fail('فقط حروف انگلیسی؛ اپ Pleat و Mini App انگلیسی هستند.');
+        if (v.length > EN_MAX) return fail(`حداکثر ${EN_MAX} حرف.`);
+        const before = await setPlanEn(env, p.id, EN_COLS[col], v);
+        return { targetId: p.id, summary: `${col}: ${show(col, before)} → ${show(col, v)}`, undo: { id: p.id, col, value: before },
+          text: `✅ پلن #${p.id}: ${field} = ${v || '(خالی، از روی حجم و مدت ساخته می‌شود)'}` };
+      }
       const val = TEXT_COLS.has(col) ? String(raw || '').trim() : parseInt(String(raw || '').replace(/[^\d]/g, '') || '0', 10);
       await run(env, `UPDATE plans SET ${col} = ? WHERE id = ?`, val, p.id);
       return { targetId: p.id, summary: `${col}: ${show(col, p[col])} → ${show(col, val)}`, undo: { id: p.id, col, value: p[col] },
         text: `✅ پلن #${p.id}: ${field} = ${val === '' ? '(خالی)' : val}` };
     },
     async undo(env, u) {
+      if (u.col in EN_COLS) { await (await import('./plan-en.js')).setPlanEn(env, u.id, EN_COLS[u.col], u.value || ''); return true; }
       if (!PLAN_COLS.has(u.col)) return false;
       await run(env, `UPDATE plans SET ${u.col} = ? WHERE id = ?`, u.value, u.id);
       return true;

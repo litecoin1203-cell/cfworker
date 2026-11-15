@@ -5,6 +5,7 @@ import { payWithWallet, settle, BillingError } from './billing.js';
 import { cryptoEnabled, gatewayReady, tomanToUsd, createInvoice, verifyIpn, PAID_STATES, FAILED_STATES } from './nowpayments.js';
 import { sendReceipt, notifyAdmin } from './telegram.js';
 import { planName } from './account.js';
+import { loadPlanEn, planEnName } from './plan-en.js';
 import { bankOf, cardDigits } from './banks.js';
 import { coinById, walletKey, memoKey, enabledCoins, usdRate, prices, quoteAmount, cleanTxid } from './coins.js';
 import { sendCoinNotice } from './telegram.js';
@@ -22,7 +23,8 @@ async function outContext(env, rows) {
   const results = new Map(resultIds.length
     ? (await all(env, 'SELECT id, status FROM orders WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(resultIds))).map((r) => [r.id, r.status]) : []);
   const settings = rows.some(cardOpen) ? await getSettings(env) : null;
-  return { plans, results, settings };
+  const en = plans.size ? await loadPlanEn(env) : {};
+  return { plans, results, settings, en };
 }
 
 async function orderOut(env, o, ctx = null) {
@@ -47,6 +49,8 @@ async function orderOut(env, o, ctx = null) {
   return {
     id: o.id, kind: o.kind, plan_id: o.plan_id, plan_name: plan ? planName(plan.name) : null,
     activate_plan_id: o.activate_plan_id || null, activate_plan_name: target ? planName(target.name) : null, plan_activated: activated,
+    // UX-03: the English names Pleat shows (plan-en.js)
+    plan_name_en: plan ? planEnName(plan, ctx.en) : null, activate_plan_name_en: target ? planEnName(target, ctx.en) : null,
     amount_toman: o.amount_toman, list_price_toman: o.list_price_toman || null, method: o.method, status: o.status === 'settling' ? 'review' : o.status, // 'settling' lasts a moment; the app knows it as review
     created_at: new Date(o.created_at * 1000).toISOString(),
     paid_at: o.paid_at ? new Date(o.paid_at * 1000).toISOString() : null,
