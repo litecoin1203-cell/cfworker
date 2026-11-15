@@ -548,7 +548,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       // longer-spaced ping is due.
       _beat();
     }
-    if (signedIn && !me.loading) loadMe();
+    final meAge = meAt == null ? null : DateTime.now().difference(meAt!);
+    if (signedIn && !me.loading && (meAge == null || meAge > meOnResumeGap)) {
+      loadMe();
+    }
     // back from Android's battery page, maybe exempted now
     unawaited(readBattery());
     unawaited(updater.resumed());
@@ -1516,8 +1519,16 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// When `/me` last answered. Coming back to the app reads it again only
+  /// after [meOnResumeGap]: every read makes the Worker ask the panels live
+  /// (PERF-A-04).
+  @visibleForTesting
+  DateTime? meAt;
+  static const meOnResumeGap = Duration(seconds: 60);
+
   Future<void> loadMe() => _fetch(me, () async {
     final data = await api.get('/me');
+    meAt = DateTime.now();
     final value = _meFrom(data);
     api.tokens.cache('me', data);
     meFresh = true;
