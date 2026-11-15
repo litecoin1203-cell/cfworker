@@ -71,6 +71,8 @@ class Me {
       wallet = _int(j['wallet_balance']),
       referralCode = _str(j['referral_code']),
       trialAvailable = j['trial_available'] == true,
+      // Older Workers do not say; then the password is asked for.
+      hasPassword = j['has_password'] != false,
       subscription = j['subscription'] is Map
           ? Subscription.fromJson(
               (j['subscription'] as Map).cast<String, dynamic>(),
@@ -103,6 +105,10 @@ class Me {
   final int wallet;
   final String referralCode;
   final bool trialAvailable;
+
+  /// False for an account made with one tap in the Telegram Mini App: it
+  /// has no password, so deleting it asks only for the typed word.
+  final bool hasPassword;
   final Subscription? subscription;
 }
 

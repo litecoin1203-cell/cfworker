@@ -7,6 +7,8 @@ const ACCESS_MIN = 30;
 const REFRESH_DAYS = 60;
 // same shape as a real hash (pbkdf2$iterations$salt$hash); never matches anything
 const DUMMY_HASH = `pbkdf2$5000$${'0'.repeat(32)}$${'0'.repeat(64)}`;
+// false for a one-tap Mini App account (DUMMY_HASH): it has no password to confirm a delete with
+export const hasPassword = (user) => Boolean(user.password_hash) && user.password_hash !== DUMMY_HASH;
 
 async function makeTokens(env, user) {
   const base = { sub: String(user.id), ver: user.token_version };
@@ -141,7 +143,7 @@ export async function logoutAll(env, user) {
 // (admin-actions.eraseUser); the admin log gets one row without the email or Telegram username.
 export async function deleteMe(env, user, body) {
   if (!body || body.confirm !== 'DELETE') throw err(422, 'confirm_required', 'Type DELETE to confirm.', 'confirm');
-  if (user.password_hash !== DUMMY_HASH && !user._mini
+  if (hasPassword(user) && !user._mini
       && !(await verifyPassword(body.password || '', user.password_hash, env.SECRET_KEY))) {
     throw err(400, 'wrong_password', 'رمز فعلی اشتباه است.', 'password');
   }

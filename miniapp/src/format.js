@@ -39,3 +39,6 @@ export function dayDots(sub) {
 export function firstName(name) {
   return String(name || '').trim().split(/\s+/)[0].slice(0, 24);
 }
+
+// PRV-04: deleting the account needs the word DELETE typed (any case, spaces ignored)
+export const confirmsDelete = (typed) => String(typed ?? '').trim().toUpperCase() === 'DELETE';

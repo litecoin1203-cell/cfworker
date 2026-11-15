@@ -9,6 +9,7 @@ import { refreshUser, usedBytes, ensureMissingFor } from './sync.js';
 import { cryptoEnabled } from './nowpayments.js';
 import { enabledCoins, coinOut } from './coins.js';
 import { notifyAdmin, untrusted } from './telegram.js';
+import { hasPassword } from './auth.js';
 import { profileOut } from './auth.js';
 
 export async function appConfig(env) {
@@ -132,6 +133,7 @@ export async function me(env, user, request, ctx = null) {
     wallet_balance: user.wallet_balance, referral_code: user.referral_code,
     created_at: new Date(user.created_at * 1000).toISOString(),
     trial_available: await trialAvailable(env, user),
+    has_password: hasPassword(user), // Pleat's Delete account asks for it only when there is one
     // the Mini App never gets the panel subscription address (only the old app did)
     subscription: await subscriptionOut(env, user, true, { withSubUrl: !user._mini && !centralApp(request), ctx }),
   });

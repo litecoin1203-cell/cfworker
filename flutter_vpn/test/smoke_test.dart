@@ -26,13 +26,16 @@ Future<(AppState, FakeApi)> _boot(
   bool signedIn = true,
   Tunnel? tunnel,
   String? avatar = 'vesper',
+  bool hasPassword = true,
 }) async {
   PType.familyOverride = 'PleatTest';
   tester.view.physicalSize = const Size(1080, 2340);
   tester.view.devicePixelRatio = 2.75;
   addTearDown(tester.view.reset);
   SharedPreferences.setMockInitialValues(prefs);
-  final api = FakeApi(MemoryTokens(signedIn: signedIn))..avatar = avatar;
+  final api = FakeApi(MemoryTokens(signedIn: signedIn))
+    ..avatar = avatar
+    ..hasPassword = hasPassword;
   final state = AppState(
     await SharedPreferences.getInstance(),
     api,
@@ -1277,6 +1280,106 @@ void main() {
     expect(find.byType(LicensePage), findsOneWidget);
     expect(find.textContaining('Pleat: source code'), findsWidgets);
     expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  Future<void> openDelete(WidgetTester tester) async {
+    await tester.tap(find.textContaining(', Ali'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    final entry = find.byKey(const ValueKey('profile.delete'));
+    await tester.scrollUntilVisible(
+      entry,
+      300,
+      scrollable: find
+          .descendant(
+            of: find.byType(ProfileScreen),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.ensureVisible(entry);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(entry);
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+  }
+
+  testWidgets('PRV-04: Profile deletes the account after the typed confirm '
+      'and the password', (tester) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, tunnel: FakeTunnel());
+    await openDelete(tester);
+    // what is lost is said before anything happens
+    expect(find.textContaining('can’t be undone'), findsOneWidget);
+    expect(find.textContaining('wallet balance'), findsOneWidget);
+    final go = find.byKey(const ValueKey('delete.go'));
+    // without the typed word nothing is sent
+    await tester.enterText(
+      find.byKey(const ValueKey('delete.password')),
+      'password1',
+    );
+    await tester.tap(go);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(api.deleteBodies, isEmpty);
+    // a wrong password is refused and the person stays signed in
+    await tester.enterText(
+      find.byKey(const ValueKey('delete.confirm')),
+      'DELETE',
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('delete.password')),
+      'nope-nope',
+    );
+    await tester.tap(go);
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(api.deleteBodies.length, 1);
+    expect(find.textContaining('password is wrong'), findsOneWidget);
+    expect(app.api.tokens.access, isNotNull);
+    // the right one deletes, signs out and goes to sign-in
+    await tester.enterText(
+      find.byKey(const ValueKey('delete.password')),
+      'password1',
+    );
+    await tester.tap(go);
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(api.deleteBodies.last, {
+      'confirm': 'DELETE',
+      'password': 'password1',
+    });
+    expect(app.api.tokens.access, isNull);
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('PRV-04: an account without a password confirms with the '
+      'typed word alone', (tester) async {
+    final (_, api) = await _boot(
+      tester,
+      {'onboarded': true},
+      tunnel: FakeTunnel(),
+      hasPassword: false,
+    );
+    await openDelete(tester);
+    expect(find.byKey(const ValueKey('delete.password')), findsNothing);
+    await tester.enterText(
+      find.byKey(const ValueKey('delete.confirm')),
+      'delete',
+    );
+    await tester.tap(find.byKey(const ValueKey('delete.go')));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(api.deleteBodies.single, {'confirm': 'DELETE'});
+    expect(find.byType(LoginScreen), findsOneWidget);
     await tester.pump(const Duration(seconds: 1));
   });
 

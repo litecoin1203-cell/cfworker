@@ -5702,6 +5702,7 @@ section('PRV-04: a user can delete their own account (Pleat and Mini App), and a
   ok(!!acct, 'PRV-04 setup: the user has a panel account');
   await seed(id);
 
+  ok((await call('GET', '/api/v1/me', { token: tok })).data.has_password === true, 'PRV-04: /me says the account has a password (Pleat asks for it)');
   const r0 = await call('POST', '/api/v1/me/delete', { token: tok, json: { password: 'password123' } });
   ok(r0.status === 422 && (await row('SELECT is_active FROM users WHERE id = ?', id)).is_active === 1, 'PRV-04: no delete without the typed confirmation: ' + r0.status);
   const r1 = await call('POST', '/api/v1/me/delete', { token: tok, json: { confirm: 'DELETE', password: 'wrong-password' } });
@@ -5735,6 +5736,7 @@ section('PRV-04: a user can delete their own account (Pleat and Mini App), and a
   const mreg = await call('POST', '/api/v1/auth/tg/webapp/register', { json: { init_data: init } });
   const mid = (await row('SELECT id FROM users WHERE tg_id = 770002')).id;
   await seed(mid);
+  ok((await call('GET', '/api/v1/me', { token: mreg.data.access_token })).data.has_password === false, 'PRV-04: /me says a one-tap Mini App account has no password');
   const m1 = await call('POST', '/api/v1/me/delete', { token: mreg.data.access_token, json: { confirm: 'DELETE' } });
   ok(m1.status === 200 && (await row('SELECT is_active, tg_id FROM users WHERE id = ?', mid)).tg_id === null, 'PRV-04: the Mini App deletes its account with the confirmation alone: ' + m1.status);
   for (const t of PERSONAL) ok(await count(t, mid) === 0, `PRV-04: Mini App delete removes ${t}`);

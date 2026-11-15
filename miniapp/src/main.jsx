@@ -1,9 +1,9 @@
 import { render } from 'preact';
 import { useEffect, useState, useCallback } from 'preact/hooks';
 import { ready, haptic } from './tg.js';
-import { signIn, createAccount, me } from './api.js';
+import { signIn, createAccount, me, deleteAccount } from './api.js';
 import { gb, money, statusOf, pleatsLeft, dayDots, firstName } from './format.js';
-import { Mark, Avatar, Hero, Button, Tag, Pleats, Dots, List, Row, Section, Skeleton, ErrorState, EmptyState, Overlays } from './ui.jsx';
+import { Mark, Avatar, Hero, Button, Tag, Pleats, Dots, List, Row, Section, Skeleton, ErrorState, EmptyState, Overlays, openForm } from './ui.jsx';
 import { AdminApp } from './admin/App.jsx';
 
 const TONE = { safe: 'ok', alert: 'bad', muted: '' };
@@ -39,7 +39,19 @@ function PlanCard({ sub }) {
   );
 }
 
-function Home({ data }) {
+// PRV-04: the account is deleted for good after the word DELETE is typed; what is lost is said first
+async function askDelete(onDeleted) {
+  const v = await openForm({
+    title: 'Delete account', danger: true, submit: 'Delete',
+    lead: 'This can’t be undone. Your plan ends now, and its remaining days and data, and any wallet balance, are lost. '
+      + 'Your Telegram link, character and devices are erased and every phone is signed out. Orders and wallet history are kept for accounting.',
+    fields: [{ key: 'confirm', label: 'Type DELETE to confirm', required: true, placeholder: 'DELETE' }],
+    onSubmit: async (x) => { await deleteAccount(x.confirm); },
+  });
+  if (v) { haptic('success'); onDeleted(); }
+}
+
+function Home({ data, onDeleted }) {
   const sub = data.subscription;
   const name = (data.telegram && data.telegram.name) || '';
   return (
@@ -59,6 +71,7 @@ function Home({ data }) {
       <List>
         <Row icon="wallet" title="Wallet" sub="Top up and pay in the Pleat app" end={<b>{money(data.wallet_balance)} toman</b>} />
         <Row icon="phone" title="Connect" sub="Open the Pleat app and tap Connect" />
+        <Row icon="close" title="Delete account" sub="Erases your account for good" danger onClick={() => askDelete(onDeleted)} chevron />
       </List>
     </>
   );
@@ -87,7 +100,8 @@ function App() {
   let body;
   if (state.phase === 'loading') body = <Skeleton />;
   else if (state.phase === 'welcome') body = <Welcome name={state.name} onCreate={load} />;
-  else if (state.phase === 'home') body = <Home data={state.data} />;
+  else if (state.phase === 'home') body = <Home data={state.data} onDeleted={() => setState({ phase: 'deleted' })} />;
+  else if (state.phase === 'deleted') body = <EmptyState icon="check" title="Account deleted" text="Your Pleat account was deleted. You can close this page." />;
   else if (state.code === 'no_telegram') body = <EmptyState title="Open Pleat in Telegram" text="This page works inside the Pleat bot. Open the bot and tap the Pleat button." />;
   else body = <ErrorState message={state.message} onRetry={load} />;
 

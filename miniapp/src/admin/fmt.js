@@ -79,7 +79,7 @@ const ACTION = {
   'user.grant': 'Plan given', 'user.link': 'Panel account linked', 'user.reset_password': 'Password changed', 'user.add_days': 'Days added', 'user.add_gb': 'Data added',
   'user.reset_usage': 'Usage reset', 'user.pause': 'Pause / resume', 'user.end': 'Subscription ended', 'user.plan_name': 'Plan name changed', 'user.wallet': 'Wallet changed',
   'user.device_remove': 'Device removed', 'user.logout_all': 'Signed out everywhere', 'user.block': 'Block / unblock', 'user.unlink_tg': 'Telegram unlinked', 'user.unlink_panel': 'Panel account unlinked',
-  'user.avatar_reset': 'Avatar reset', 'user.email': 'Email changed', 'user.delete': 'User deleted', 'user.create': 'User created',
+  'user.avatar_reset': 'Avatar reset', 'user.email': 'Email changed', 'user.delete': 'User deleted', 'user.self_delete': 'Account deleted by the user', 'user.create': 'User created',
   'order.approve': 'Order approved', 'order.reject': 'Order rejected', 'order.cancel': 'Order cancelled', 'order.refund': 'Order refunded',
   'server.hide': 'Server shown / hidden', 'server.rename': 'Server renamed', 'app.list': 'App list changed', 'app.release': 'App release', 'net.reset': 'Network stats cleared',
   'broadcast.create': 'Broadcast drafted', 'broadcast.start': 'Broadcast started', 'broadcast.stop': 'Broadcast stopped', 'admin.add': 'Admin added', 'admin.remove': 'Admin removed',

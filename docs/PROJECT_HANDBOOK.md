@@ -489,7 +489,7 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   network ranking, broadcast, stats, system (audit log, backup, health).
 - Risk levels: read / reversible (applied + 10-minute undo) / money or access (confirm, 2 min) / destructive
   (confirm with an impact summary). Every write goes through `admin-actions.js` with an audit row.
-- Notable screens: user card (subscription, wallet, devices, security, soft delete, "🔗 وصل اکانت پنل",
+- Notable screens: user card (subscription, wallet, devices, security, soft delete (`eraseUser`, same erase as the user's own delete), "🔗 وصل اکانت پنل",
   "📶 تجربه اتصال"), "👥 کاربران و اپراتورهایشان", "📱 اپ Pleat › 📲 نسخه‌ی اپ" (announce / mandatory /
   withdraw an update), panel list with rollout progress.
 - Broadcasts are sent 25 messages per `*/2` cron run (own invocation, own subrequest budget).
@@ -641,6 +641,15 @@ does not reach users by itself.
 - A few working exits are kept through sign-out so the bridge can still open on a filtered line.
 - **AvatarGate** (1.2.30): a new account must pick one of the 14 Folk characters before the app opens (no skip).
   The Telegram profile photo is not used anywhere.
+- **Delete account** (release audit PRV-04): a card under "Sign out everywhere" opens a sheet that says what is
+  lost (plan, remaining days and data, wallet balance; orders and wallet history kept), asks for the password
+  (only when `/me` says `has_password`) and the typed word DELETE, then `POST /me/delete` and back to sign-in.
+  The Mini App Home has the same row (word only; a Mini App token needs no password). Worker: `auth.deleteMe` →
+  `admin-actions.eraseUser`, shared with the bot's soft delete: email rewritten, password hash, Telegram, character,
+  last sign-in, devices, `user_net*`, `net_votes`, `net_speed_votes`, `google_votes`, `user_skeys`,
+  `health_events` and pending `tg_logins` removed; plan stopped; panel accounts switched off (never deleted) and
+  let go; sessions ended. The admin log gets `user.self_delete` with the wallet balance and panel numbers, no email,
+  username or panel names.
 - App version is a signature at the end of Profile (Pleat mark, "Up to date · checked …", Check for updates).
   Long-press the version to send a test health report. Night mode toggle placement: **leave it as it is** (Ali
   rejected three alternatives).

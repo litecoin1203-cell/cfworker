@@ -1,6 +1,7 @@
 // Talks to the Worker that serves this page (same origin, so no CORS and no address to configure).
 // The access token lives only in memory: when it runs out (30 min) the app signs in again with initData.
 import { initData } from './tg.js';
+import { confirmsDelete } from './format.js';
 
 let token = '';
 
@@ -67,3 +68,11 @@ export async function authed(path, opts) {
 }
 
 export const me = () => authed('/me', { timeoutMs: 20000 });
+
+// PRV-04: the user deletes their own account. A Mini App token needs no password (Telegram proved who it is).
+export async function deleteAccount(typed) {
+  if (!confirmsDelete(typed)) throw new ApiError(0, 'confirm_required', 'Type DELETE to confirm.');
+  const r = await authed('/me/delete', { method: 'POST', body: { confirm: 'DELETE' } });
+  token = '';
+  return r;
+}
