@@ -33,7 +33,7 @@ Read **[`docs/PROJECT_HANDBOOK.md`](docs/PROJECT_HANDBOOK.md)** before changing 
 
 ## Checks
 ```sh
-cd worker && npm test                 # Node 22; ~1,450 checks incl. the 50-query guard and the docs check
+cd worker && npm test                 # Node 22; ~1,850 checks incl. the 50-query guard and the docs check
 cd miniapp && npm ci && npm test && npm run build
 cd flutter_vpn && flutter analyze && flutter test   # no Android SDK in cloud containers; CI builds the APK
 ```

@@ -158,7 +158,7 @@ cfworker/
 ├── worker/                      THE BACKEND (active)
 │   ├── src/                     ~10,800 lines, 27 files (see §5)
 │   ├── migrations/              0001 … 0023 (two files share 0015 — harmless, never rename) → docs/DATABASE.md
-│   ├── test/run.mjs             the whole test suite (hand-made harness, ~1,450 checks)
+│   ├── test/run.mjs             the whole test suite (hand-made harness, ~1,850 checks)
 │   ├── test/shim.mjs            D1 on node:sqlite (batch is transactional like D1), fake panels
 │   ├── test/dev_server.mjs      the Worker + a fake panel on http://127.0.0.1:8787 (for Pleat's live test)
 │   ├── wrangler.jsonc           crons, rate limiters, D1 binding (id filled by the deploy workflow), static assets
@@ -560,7 +560,8 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.49+52** (`flutter_vpn/pubspec.yaml`). PR #90 (open) is 1.2.50+53.
+Version on main: **1.2.52+55** (`flutter_vpn/pubspec.yaml`; a Worker test fails when this line and pubspec differ, so
+update it in the same PR as every version bump).
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
 Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLibXrayLite tag **v26.7.5**
 (Xray 26.6.27 inside), hev-socks5-tunnel commit `67dfba56`.

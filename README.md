@@ -14,7 +14,7 @@
 > AndroidLibXrayLite LGPL-3.0, hev-socks5-tunnel MIT, geo data GPL-3.0) are listed with their full licence
 > texts and source links in the app (Profile › Open-source licences, from `flutter_vpn/assets/licenses/`).
 >
-> **توجه:** بقیه‌ی این README راهنمای نصب اولیه است و بخش‌هایی از آن قدیمی است (اپ قدیمی Cloud Gold، «۵۳ تست»). اپ فعلی **Pleat** در `flutter_vpn/` است، Mini App در `miniapp/`، و تست‌های Worker حدود ۱۴۵۰ مورد است. هر جا این README با مستندات بالا فرق داشت، مستندات درست است.
+> **توجه:** بقیه‌ی این README راهنمای نصب اولیه است و بخش‌هایی از آن قدیمی است (اپ قدیمی Cloud Gold، «۵۳ تست»). اپ فعلی **Pleat** در `flutter_vpn/` است، Mini App در `miniapp/`، و تست‌های Worker حدود ۱۸۵۰ مورد است. هر جا این README با مستندات بالا فرق داشت، مستندات درست است.
 
 کل فروشگاه روی **Cloudflare** اجرا می‌شود و **هیچ VPS‌ای لازم ندارد**. فقط هزینه‌ی یک دامنه در سال.
 
@@ -144,7 +144,7 @@ cfworker/
 - **کد تخفیف:** `/coupon YALDA 20 100 7` (۲۰٪، ۱۰۰ بار، ۷ روز). `/coupons` و `/delcoupon`.
 - **کیف پول + پرداخت مابقی:** اگر موجودی کم باشد، کاربر فقط مابقی را کارت‌به‌کارت می‌کند و بعد از تأیید، پلن خودکار فعال می‌شود.
 - **ویرایش پلن‌ها از ربات:** `/plans`، `/plan 1 price 199000`، `/newplan`.
-- **پشتیبان خودکار:** هر شب ساعت ۰۰:۰۰ فایل پشتیبان و گزارش فروش در تلگرام. دستی: `/backup`. هش رمزها در این فایل نیست؛ برای بازگرداندن کامل دیتابیس از Time Travel خود D1 استفاده کن (`wrangler d1 time-travel restore cloudgold --timestamp=...`، تا ۳۰ روز قبل).
+- **پشتیبان خودکار:** هر شب ساعت ۰۰:۰۰ فایل پشتیبان و گزارش فروش در تلگرام. دستی: در ربات دکمه‌ی «🛡 سیستم › 💾 پشتیبان» (یا Mini App › System › Backup). هش رمزها در این فایل نیست؛ برای بازگرداندن کامل دیتابیس از Time Travel خود D1 استفاده کن (`wrangler d1 time-travel restore cloudgold --timestamp=...`، در پلن رایگان تا ۷ روز قبل؛ جزئیات در `docs/RESTORE.md`).
 - `/set trial_data_gb 2` = حجم تست رایگان (۰ = مثل پلن).
 
 ---

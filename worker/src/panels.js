@@ -271,7 +271,7 @@ function withRemark(link, name) {
 }
 
 // What kinds of configs a panel serves, for the admin ("vless·reality·tcp ×6"). Pleat's core takes vless,
-// vmess, trojan and shadowsocks; anything else (hysteria2, wireguard, tuic...) is counted as unusable.
+// vmess, trojan, shadowsocks, hysteria2 (hy2) and wireguard (wg); anything else (tuic, ...) is counted as unusable.
 export const APP_SCHEMES = ['vless', 'vmess', 'trojan', 'ss', 'hysteria2', 'hy2', 'wireguard', 'wg'];
 export function linkKinds(links) {
   const counts = {};

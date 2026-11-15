@@ -5054,6 +5054,19 @@ section('developer docs name every migration and every API route');
     '../../.github/workflows/flutter-vpn.yml', '../../.github/workflows/deploy-worker.yml', '../../AGENTS.md', '../../README.md']
     .filter((f) => /\b(?:repo(?:sitory)? is private|private `?(?:repo|repository|release|pleat-latest))\b/i.test(readFileSync(rel(f), 'utf8')));
   ok(!said.length, 'ARC-01: no comment or doc calls the public repo or its release private: ' + said.join(', '));
+  // ARC-07: the handbook's "Version on main" is what the next developer trusts; it must be pubspec's version
+  const pubVer = (readFileSync(rel('../../flutter_vpn/pubspec.yaml'), 'utf8').match(/^version: (\S+)/m) || [])[1];
+  const hbVer = (readFileSync(rel('../../docs/PROJECT_HANDBOOK.md'), 'utf8').match(/^Version on main: \*\*([^*]+)\*\*/m) || [])[1];
+  ok(pubVer && hbVer === pubVer, `ARC-07: handbook §10 "Version on main" (${hbVer}) is flutter_vpn/pubspec.yaml's version (${pubVer})`);
+  // ARC-07: panels.js once said hysteria2/wireguard are "unusable" right above the list that makes them usable
+  const pj = readFileSync(rel('../src/panels.js'), 'utf8');
+  const schemeNote = (pj.match(/((?:\/\/[^\n]*\n)+)export const APP_SCHEMES/) || ['', ''])[1];
+  const { APP_SCHEMES } = await import('../src/panels.js');
+  const notTaken = (schemeNote.split(/anything else/)[1] || '').replace(/\s*\/\/\s*/g, ' ');
+  ok(/hysteria2/.test(schemeNote) && !APP_SCHEMES.some((x) => new RegExp('\\b' + x + '\\b').test(notTaken)), 'ARC-07: the APP_SCHEMES comment matches the list: ' + schemeNote.trim());
+  // ARC-07: the README's Time Travel window is the Free plan's (7 days, docs/RESTORE.md), and backups are a button
+  const readme = readFileSync(rel('../../README.md'), 'utf8');
+  ok(!/۳۰ روز قبل/.test(readme) && !/دستی: `\/backup`/.test(readme), 'ARC-07: README gives D1 Time Travel as 7 days and the backup as a bot button');
 }
 
 section('admin bot: ☁️ Cloudflare monitoring (quota, errors, queries, deploys, alerts) and panel sync by hand');
@@ -6598,6 +6611,18 @@ section('review of wave 2: a settled exit country is not rewritten; pending rows
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
+
+section('ARC-07: the docs give the real size of this suite');
+{
+  const { readFileSync } = await import('node:fs');
+  const claims = ['../../AGENTS.md', '../../docs/PROJECT_HANDBOOK.md'].map((f) => {
+    const m = readFileSync(new URL(f, import.meta.url), 'utf8').match(/~([\d,]+) checks/);
+    return [f, m ? Number(m[1].replace(/,/g, '')) : 0];
+  });
+  const total = pass + fail + 1;
+  const off = claims.filter(([, n]) => !(n > total * 0.85 && n < total * 1.15));
+  ok(!off.length, `ARC-07: "~N checks" in AGENTS.md and the handbook is within 15% of the real ${total}: ` + off.map(([f, n]) => `${f}=${n}`).join(', '));
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
