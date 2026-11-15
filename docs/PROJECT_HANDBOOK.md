@@ -921,6 +921,11 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 - Branch `claude/w1-licenses-ux` (no version bump; the lead numbers the release): Open-source licences page with
   the engines' licence texts, Go module list and source offer (LEG-01..03), README licence note (LEG-04), and the
   no-plan Connect failure / Now tile offer the trial or Plans (UX-01).
+- Branch `claude/w1-privacy-ux` (stacked on `claude/w1-licenses-ux`, no version bump): Activity's privacy text
+  says what the Worker really keeps instead of "no session log" (PRV-01); Privacy policy and Terms of use in Pleat
+  and the Mini App from `docs/legal/`, "you agree" line at sign-up, Send diagnostics asked once before anything is
+  sent (PRV-03); the trial's Telegram requirement said up front on Plans and sign-up, `trial_needs_telegram` in
+  `/app-config`, Forgot password says what an email-only account does (UX-02).
 
 ---
 
@@ -1155,6 +1160,14 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
   country list (Fastest bar, chips, regions, pips, Not answering).
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
+- **Privacy policy / Terms** (audit PRV-03): `docs/legal/*.txt` are plain-English drafts that follow the code's
+  data map, not legal advice; have them reviewed before a store listing. Keep `privacy.txt` true: when PRV-02
+  (bundled font) lands, drop its Google Fonts line; when a self-service account delete lands (PRV-04), update
+  "Deleting your account".
+- **Diagnostics consent** (PRV-03): after this update existing users send no health reports until they answer the
+  Home card, so reports dip at first.
+- **Password reset by email** (UX-02): there is none (the Worker has no mail sender); email-only accounts depend on
+  support (`user.reset_password`). Needs a decision on a mail provider.
 - **Licence of the repo's own code** (audit LEG-04): there is no top-level `LICENSE`, so the Worker, Mini App and
   Pleat are all rights reserved. Choose one (or a proprietary notice); `android/` stays GPL-3.0.
 - **GeoLite2 terms** (LEG-02): the APK carries MaxMind's attribution, but the GeoLite2 EULA may also require
