@@ -1341,11 +1341,20 @@ void main() {
     expect(api.deleteBodies.length, 1);
     expect(find.textContaining('password is wrong'), findsOneWidget);
     expect(app.api.tokens.access, isNotNull);
-    // the right one deletes, signs out and goes to sign-in
+    // a payment in progress: refused, said plainly, still signed in
+    api.openOrders = true;
     await tester.enterText(
       find.byKey(const ValueKey('delete.password')),
       'password1',
     );
+    await tester.tap(go);
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.textContaining('payment in progress'), findsOneWidget);
+    expect(app.api.tokens.access, isNotNull);
+    api.openOrders = false;
+    // the right one deletes, signs out and goes to sign-in
     await tester.tap(go);
     for (var i = 0; i < 20; i++) {
       await tester.pump(const Duration(milliseconds: 100));

@@ -5900,6 +5900,14 @@ section('PRV-04: a user can delete their own account (Pleat and Mini App), and a
   ok(r0.status === 422 && (await row('SELECT is_active FROM users WHERE id = ?', id)).is_active === 1, 'PRV-04: no delete without the typed confirmation: ' + r0.status);
   const r1 = await call('POST', '/api/v1/me/delete', { token: tok, json: { confirm: 'DELETE', password: 'wrong-password' } });
   ok(r1.status === 400 && r1.data?.detail?.code === 'wrong_password' && (await row('SELECT is_active FROM users WHERE id = ?', id)).is_active === 1, 'PRV-04: a Pleat account with a password must give it: ' + r1.status);
+  // a payment in progress (pending / review / settling) would later be paid into a deleted account: refused
+  for (const status of ['pending', 'review', 'settling']) {
+    const oid = (await exec("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, 1000, 'card', ?, ?)", id, trialPlan.id, status, Math.floor(Date.now() / 1000))).meta.last_row_id;
+    const ro = await call('POST', '/api/v1/me/delete', { token: tok, json: { confirm: 'DELETE', password: 'password123' } });
+    ok(ro.status === 409 && ro.data?.detail?.code === 'open_orders' && (await row('SELECT is_active FROM users WHERE id = ?', id)).is_active === 1,
+      `PRV-04: no delete while an order is ${status}: ` + ro.status + ' ' + JSON.stringify(ro.data));
+    await exec("UPDATE orders SET status = 'cancelled' WHERE id = ?", oid);
+  }
   const r2 = await call('POST', '/api/v1/me/delete', { token: tok, json: { confirm: 'DELETE', password: 'password123' } });
   await drain();
   ok(r2.status === 200 && r2.data?.deleted === true, 'PRV-04: POST /me/delete deletes the account: ' + r2.status + ' ' + JSON.stringify(r2.data));
@@ -5941,6 +5949,8 @@ section('PRV-04: a user can delete their own account (Pleat and Mini App), and a
   const acts = await import('../src/admin-actions.js');
   const ad = await acts.runAction(env, '12345', 'user.delete', { userId: aid });
   ok(ad.ok !== false, 'PRV-04: admin delete runs: ' + JSON.stringify(ad).slice(0, 200));
+  const adAud = await row("SELECT summary FROM admin_audit WHERE action = 'user.delete' AND target_id = ? ORDER BY id DESC LIMIT 1", String(aid));
+  ok(adAud && !adAud.summary.includes('prv04-admin') && !adAud.summary.includes('@'), 'PRV-04: the admin delete log has no email or username: ' + JSON.stringify(adAud));
   for (const t of PERSONAL) ok(await count(t, aid) === 0, `PRV-04: admin delete removes ${t} too`);
   ok(!String((await row('SELECT password_hash FROM users WHERE id = ?', aid)).password_hash).startsWith('pbkdf2$'), 'PRV-04: admin delete erases the password hash');
 }

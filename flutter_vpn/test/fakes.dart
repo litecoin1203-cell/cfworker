@@ -65,6 +65,9 @@ class FakeApi extends ApiClient {
   /// False for a one-tap Mini App account (no password to confirm with).
   bool hasPassword = true;
 
+  /// POST /me/delete answers 409 open_orders (a payment in progress).
+  bool openOrders = false;
+
   /// The bodies POST /me/delete got.
   final deleteBodies = <Map<String, Object?>>[];
 
@@ -273,6 +276,14 @@ class FakeApi extends ApiClient {
         }
         if (hasPassword && body?['password'] != 'password1') {
           throw ApiError(400, 'wrong_password', 'The password is wrong.');
+        }
+        if (openOrders) {
+          throw ApiError(
+            409,
+            'open_orders',
+            'You have a payment in progress. Delete your account after it is '
+                'done or cancelled.',
+          );
         }
         return {'deleted': true};
       case 'POST /me/email':

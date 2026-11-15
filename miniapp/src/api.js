@@ -69,10 +69,16 @@ export async function authed(path, opts) {
 
 export const me = () => authed('/me', { timeoutMs: 20000 });
 
+export const OPEN_ORDERS = 'You have a payment in progress. Delete your account after it is done or cancelled.';
+
 // PRV-04: the user deletes their own account. A Mini App token needs no password (Telegram proved who it is).
 export async function deleteAccount(typed) {
   if (!confirmsDelete(typed)) throw new ApiError(0, 'confirm_required', 'Type DELETE to confirm.');
-  const r = await authed('/me/delete', { method: 'POST', body: { confirm: 'DELETE' } });
+  let r;
+  try { r = await authed('/me/delete', { method: 'POST', body: { confirm: 'DELETE' } }); } catch (e) {
+    if (e.code === 'open_orders') throw new ApiError(e.status, e.code, OPEN_ORDERS);
+    throw e;
+  }
   token = '';
   return r;
 }

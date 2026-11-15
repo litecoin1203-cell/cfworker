@@ -147,6 +147,10 @@ export async function deleteMe(env, user, body) {
       && !(await verifyPassword(body.password || '', user.password_hash, env.SECRET_KEY))) {
     throw err(400, 'wrong_password', 'رمز فعلی اشتباه است.', 'password');
   }
+  // a payment still in progress would later be paid (SMS, chain, admin) into a deleted account: finish or cancel it first
+  if (await first(env, "SELECT 1 x FROM orders WHERE user_id = ? AND status IN ('pending', 'review', 'settling') LIMIT 1", user.id)) {
+    throw err(409, 'open_orders', 'یک پرداخت هنوز در جریان است؛ بعد از تمام یا لغو شدنش حساب را حذف کن.');
+  }
   const { eraseUser } = await import('./admin-actions.js');
   const { accts } = await eraseUser(env, user);
   // panel names are often made from the Telegram username: only the panel numbers go in the log

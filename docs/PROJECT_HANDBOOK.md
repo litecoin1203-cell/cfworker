@@ -679,7 +679,7 @@ does not reach users by itself.
   The Telegram profile photo is not used anywhere.
 - **Delete account** (release audit PRV-04): a card under "Sign out everywhere" opens a sheet that says what is
   lost (plan, remaining days and data, wallet balance; orders and wallet history kept), asks for the password
-  (only when `/me` says `has_password`) and the typed word DELETE, then `POST /me/delete` and back to sign-in.
+  (only when `/me` says `has_password`) and the typed word DELETE, then `POST /me/delete` and back to sign-in. Refused (`409 open_orders`, shown in plain English) while an order is pending, in review or settling.
   The Mini App Home has the same row (word only; a Mini App token needs no password). Worker: `auth.deleteMe` →
   `admin-actions.eraseUser`, shared with the bot's soft delete: email rewritten, password hash, Telegram, character,
   last sign-in, devices, `user_net*`, `net_votes`, `net_speed_votes`, `google_votes`, `user_skeys`,
