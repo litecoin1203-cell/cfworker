@@ -74,7 +74,9 @@ export async function provision(env, user, plan, opts = {}) {
           user.id, sub.pg_username, sub.sub_url || '', now);
         pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1', user.id);
       }
-      const remote = pa ? await pg.getUser(pa.remote_username) : null;
+      // a pending row (PNL-02: an earlier create that never reached D1) is finished by ensureAccount, which only takes
+      // over an account carrying this user's note
+      const remote = pa && pa.applied !== 'pending' ? await pg.getUser(pa.remote_username) : null;
       if (remote) {
         const status = String(remote.status || '');
         let used = parseInt(remote.used_traffic || 0, 10) || 0;

@@ -456,6 +456,14 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   backups. Change with "🔐 ورود پنل". Panel 1 still reads `PASARGUARD_*` secrets.
 - **Accounts on a new panel**: created on demand when the app opens (`/vpn/servers`), plus up to 8 per cron run
   in the background; refused creates are kept in `panel_err_<id>` and Ali is alerted (at most every 6 h).
+- **Intent first (PNL-02)**: before an account is created on a panel its `panel_accounts` row is written as
+  `applied = 'pending'` (the name about to be made, no link, `dirty = 1`). Pending rows serve nothing and are never
+  read for usage or pushed. A retry uses the same name; a 409 whose account carries the note `Pleat #<user id>` is
+  that earlier account and is adopted (given the wanted expiry/limit), so an invocation cut between panel and D1
+  no longer leaves an orphan plus a second account. The cron's `settlePending` (2 per run, rows older than 30 min)
+  adopts or drops pending rows nobody finished.
+- **Bot deadline (CF-02)**: bot work runs in `waitUntil` (cut 30 s after the reply), so its panel calls share one
+  22 s deadline (`env.__panelDeadline`, ≤ 8 s per call); a slow panel becomes a panel failure for the sync job.
 - **Usage**: the cron reads one page of one panel per run (round-robin), adds deltas to `usage_counters`,
   `evaluate` decides over the **sum of all panels**, and the desired state (active/limited/expired) is applied
   idempotently to each panel. **Manual edits on a panel don't stick** — the Worker re-applies its state. Use the
@@ -1071,6 +1079,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | Bot: 🗂 پنل‌های کاربر ran the app-update announce (shared route `upa`) | route renamed `m:uac` — #55 |
 | PNL-01 a panel answering a 200 HTML page (CDN challenge) threw a SyntaxError → every purchase failed, panel 1 ran ahead of D1 | non-JSON body = `PasarGuardError(bad_json)`; any error fails only that panel (dirty) |
 | CF-02 bot work (approve → provision, panel test) runs in `waitUntil`, cut 30 s after the reply; 15 s per panel call could pass it | bot work carries one 22 s panel deadline, each call ≤ 8 s; a slow panel fails as a panel error (dirty → sync) and the admin still gets the answer |
+| PNL-02 an account created on a panel whose D1 write never ran stayed active as an orphan, and the retry made a second one | intent row first (`applied = 'pending'`), adopt own 409 by note, cron `settlePending` |
 | SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |
 
 ### App and tunnel

@@ -6023,6 +6023,61 @@ section('CF-02: bot work on slow panels finishes inside the 30 s waitUntil windo
   ok(fakes.tg.messages.length > n, 'CF-02: the admin hears the result');
 }
 
+section('PNL-02: an account made on a panel whose D1 write never happened is adopted on the next try, never doubled');
+{
+  const W = await world('pnl2', 2);
+  const mine = (pg, id) => Object.values(pg.users).filter((u) => (u.note || '') === `Pleat #${id}`);
+  // the invocation "ends" right after panel 2 created the account: the next D1 statement fails
+  const realFetch = globalThis.fetch, prep = W.e.DB.prepare, prepB = W.e.DB.batch;
+  let die = false;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const r = await realFetch(input, init);
+    if (url === W.bases[1] + '/api/user' && (init.method || '') === 'POST' && r.status === 201) die = true;
+    return r;
+  };
+  W.e.DB.prepare = (sql) => { if (die) { die = false; throw new Error('invocation ended'); } return prep.call(W.e.DB, sql); };
+  W.e.DB.batch = (stmts) => { if (die) { die = false; return Promise.reject(new Error('invocation ended')); } return prepB.call(W.e.DB, stmts); };
+  await W.signupW('pn2@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'pn2@example.com'))[0].id;
+  try { await W.bot(`/grant pn2@example.com ${W.plan.id}`); }
+  finally { globalThis.fetch = realFetch; W.e.DB.prepare = prep; W.e.DB.batch = prepB; }
+  ok(mine(W.pgs[1], uid).length === 1, 'PNL-02: the account exists on panel 2 after the cut');
+  // the next try (a renewal, the app opening, or the sync job) finds it instead of making a second one
+  await W.bot(`/grant pn2@example.com ${W.plan.id}`);
+  await runSync(W.e); await runSync(W.e);
+  const on2 = mine(W.pgs[1], uid);
+  const row = (await W.q('SELECT remote_username, applied, dirty, sub_path FROM panel_accounts WHERE user_id = ? AND panel_id = 2', uid))[0];
+  ok(on2.length === 1, 'PNL-02: still exactly one account on panel 2: ' + on2.map((u) => u.username));
+  ok(row && on2[0] && row.remote_username === on2[0].username && row.applied === 'active' && row.dirty === 0 && row.sub_path, 'PNL-02: D1 records that account: ' + JSON.stringify(row));
+  const sub = (await W.q('SELECT expires_at FROM subscriptions WHERE user_id = ?', uid))[0];
+  ok(on2[0] && on2[0].expire === sub.expires_at, 'PNL-02: the adopted account carries the current expiry: ' + (on2[0] && on2[0].expire) + ' vs ' + sub.expires_at);
+  ok(mine(W.pgs[0], uid).length === 1, 'PNL-02: panel 1 has one account too');
+
+  // a pending name that someone made by hand on the panel (no "Pleat #<id>" note) is never taken over
+  await W.signupW('pn2b@example.com');
+  const u2 = (await W.q('SELECT id FROM users WHERE email = ?', 'pn2b@example.com'))[0].id;
+  W.pgs[1].users['cg_handmade1'] = { id: 9901, username: 'cg_handmade1', status: 'active', expire: 0, data_limit: 0, used_traffic: 5, token: 'hm1', note: 'someone else' };
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, dirty, created_at) VALUES (?, 2, 'cg_handmade1', '', 'active', 'pending', 1, ?)").bind(u2, Math.floor(Date.now() / 1000)).run();
+  await W.bot(`/grant pn2b@example.com ${W.plan.id}`);
+  const r2 = (await W.q('SELECT remote_username, applied FROM panel_accounts WHERE user_id = ? AND panel_id = 2', u2))[0];
+  ok(W.pgs[1].users['cg_handmade1'].expire === 0 && W.pgs[1].users['cg_handmade1'].note === 'someone else', 'PNL-02: the hand-made account is left alone');
+  ok(r2.remote_username !== 'cg_handmade1' && r2.applied === 'active' && mine(W.pgs[1], u2).length === 1, 'PNL-02: the user gets an account of their own: ' + JSON.stringify(r2));
+
+  // the sync job settles intents nobody finished: an account that is the user's is adopted (and switched off when
+  // the plan is over); a name with no account is dropped
+  await W.signupW('pn2c@example.com');
+  const u3 = (await W.q('SELECT id FROM users WHERE email = ?', 'pn2c@example.com'))[0].id;
+  W.pgs[1].users['cg_orphan01'] = { id: 9902, username: 'cg_orphan01', status: 'active', expire: 0, data_limit: 0, used_traffic: 0, token: 'or1', note: `Pleat #${u3}` };
+  const old = Math.floor(Date.now() / 1000) - 7200;
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, dirty, created_at) VALUES (?, 2, 'cg_orphan01', '', 'stopped', 'pending', 1, ?)").bind(u3, old).run();
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, dirty, created_at) VALUES (?, 1, 'cg_never01', '', 'active', 'pending', 1, ?)").bind(u3, old).run();
+  await runSync(W.e); await runSync(W.e);
+  const r3 = await W.q('SELECT panel_id, remote_username, applied, dirty FROM panel_accounts WHERE user_id = ? ORDER BY panel_id', u3);
+  ok(r3.length === 1 && r3[0].panel_id === 2 && r3[0].applied === 'stopped' && r3[0].dirty === 0, 'PNL-02: the orphan is adopted and the never-made intent dropped: ' + JSON.stringify(r3));
+  ok(W.pgs[1].users['cg_orphan01'].status === 'disabled', 'PNL-02: an adopted orphan of a user without a plan is switched off on the panel');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

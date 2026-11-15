@@ -158,7 +158,7 @@ export const userPathMs = (a) => ((a.fail_streak || 0) >= 3 || (slowSeen().get(a
 
 export async function accountsOf(env, userId) {
   return all(env, `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json, p.fail_streak FROM panel_accounts a
-    JOIN panels p ON p.id = a.panel_id WHERE a.user_id = ? ORDER BY a.panel_id`, userId);
+    JOIN panels p ON p.id = a.panel_id WHERE a.user_id = ? AND a.applied != 'pending' ORDER BY a.panel_id`, userId); // PNL-02: not yet made
 }
 
 const panelOfAccount = (a) => ({ id: a.panel_id, kind: a.kind, state: a.panel_state, cred_ref: a.cred_ref, options_json: a.options_json });

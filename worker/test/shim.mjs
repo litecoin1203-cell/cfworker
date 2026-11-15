@@ -94,7 +94,7 @@ export function installFakes({ panelBase }) {
   }
   function outUser(u) {
     return { id: u.id, username: u.username, status: u.status, expire: u.expire, data_limit: u.data_limit,
-      used_traffic: u.used_traffic || 0, subscription_url: `/sub/${u.token}/`, online_at: u.online_at ?? null, created_at: u.created_at ?? '2026-11-01T10:00:00' };
+      used_traffic: u.used_traffic || 0, note: u.note ?? null, subscription_url: `/sub/${u.token}/`, online_at: u.online_at ?? null, created_at: u.created_at ?? '2026-11-01T10:00:00' };
   }
 
   globalThis.fetch = async (input, init = {}) => {
