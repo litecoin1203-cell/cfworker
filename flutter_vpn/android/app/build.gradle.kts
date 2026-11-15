@@ -82,4 +82,8 @@ flutter {
 
 dependencies {
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
+    // JVM unit tests of the code that needs no phone (src/test/kotlin; QA-01). The real org.json, because
+    // android.jar's copy only throws in unit tests.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

@@ -5709,6 +5709,18 @@ section('CI: release workflows run only from main, on pinned actions and checked
   ok(/paths: \[[^\]]*'\.github\/workflows\/\*\*'/.test(tw), 'these checks run on every pull request that changes a workflow');
 }
 
+section('CI: the APK run runs the Kotlin unit tests before it publishes (QA-01)');
+{
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const fv = readFileSync(new URL('../../.github/workflows/flutter-vpn.yml', import.meta.url), 'utf8');
+  const gradle = readFileSync(new URL('../../flutter_vpn/android/app/build.gradle.kts', import.meta.url), 'utf8');
+  let tests = [];
+  try { tests = readdirSync(new URL('../../flutter_vpn/android/app/src/test/kotlin/app/pleat/pleat/', import.meta.url)).filter((f) => f.endsWith('Test.kt')); } catch (e) {}
+  ok(tests.length >= 2 && /testImplementation\("junit:junit:[\d.]+"\)/.test(gradle), 'QA-01: the app module has JVM unit tests and JUnit: ' + tests.join(', '));
+  const run = fv.indexOf('testReleaseUnitTest');
+  ok(run > 0 && run > fv.indexOf('name: Build APK') && run < fv.indexOf('name: Publish APKs'), 'QA-01: the manual run runs them after the build and before anything is published');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

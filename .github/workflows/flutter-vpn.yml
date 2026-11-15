@@ -350,6 +350,13 @@ jobs:
           # One APK per phone type: each carries only its own engine, about a third of the old all-in-one file.
           # Flutter adds 1000 x the type's number to the version code (arm64 2xxx), so they install over the old one.
           flutter build apk --release --split-per-abi --dart-define=PLEAT_API="$API" --dart-define=PLEAT_BRIDGE="$PLEAT_BRIDGE"
+      # JVM unit tests of the Kotlin that needs no phone (crash notes, scrubbing, the update SHA-256), on the classes
+      # the build just compiled: they need libv2ray.aar and Flutter's Gradle setup, so only this run has them.
+      # A failure stops the run before anything is published (QA-01).
+      - name: Kotlin unit tests
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: flutter_vpn/android
+        run: ./gradlew --no-daemon :app:testReleaseUnitTest
       - name: Check APKs
         if: github.event_name == 'workflow_dispatch'
         run: |
