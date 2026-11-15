@@ -2,7 +2,7 @@ import { render } from 'preact';
 import { useEffect, useState, useCallback } from 'preact/hooks';
 import { ready, haptic } from './tg.js';
 import { signIn, createAccount, me, deleteAccount } from './api.js';
-import { gb, money, statusOf, pleatsLeft, dayDots, firstName } from './format.js';
+import { gb, money, statusOf, pleatsLeft, dayDots, firstName, planLabel } from './format.js';
 import { Mark, Avatar, Hero, Button, Tag, Pleats, Dots, List, Row, Section, Skeleton, ErrorState, EmptyState, Overlays, openForm } from './ui.jsx';
 import { AdminApp } from './admin/App.jsx';
 
@@ -29,7 +29,7 @@ function PlanCard({ sub }) {
   const dots = dayDots(sub);
   return (
     <div class="card">
-      <div class="cap">{sub.plan_name || 'Your plan'} <span class="of"><Tag tone={TONE[st.tone]}>{st.label}</Tag></span></div>
+      <div class="cap">{planLabel(sub)} <span class="of"><Tag tone={TONE[st.tone]}>{st.label}</Tag></span></div>
       <Pleats left={pleatsLeft(sub, 12)} total={12} />
       {!sub.unlimited_data ? <p class="note">{gb(sub.used_bytes)} of {gb(sub.data_limit_bytes)} GB used</p> : <p class="note">Unlimited data</p>}
       <div class="cap" style={{ marginTop: '14px' }}>{sub.unlimited_time ? 'No end date' : `${sub.days_left} ${sub.days_left === 1 ? 'day' : 'days'} left`}

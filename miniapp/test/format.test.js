@@ -34,3 +34,26 @@ test('first name', () => {
   assert.equal(firstName('  Sara Ahmadi '), 'Sara');
   assert.equal(firstName(''), '');
 });
+
+// UX-03: the Mini App is English only; a Persian plan name from the server never shows
+test('UX-03: plan label prefers the English name and never shows Persian', async () => {
+  const { planLabel } = await import('../src/format.js');
+  assert.equal(planLabel({ plan_name: 'یک ماهه', plan_name_en: 'Gold' }), 'Gold');
+  assert.equal(planLabel({ plan_name: 'یک ماهه' }), 'Your plan');
+  assert.equal(planLabel({ plan_name: 'Monthly' }), 'Monthly');
+  assert.equal(planLabel({ plan_name: 'Monthly', plan_name_en: '' }), 'Monthly');
+  assert.equal(planLabel({}), 'Your plan');
+  assert.equal(planLabel(null), 'Your plan');
+});
+test('UX-03: the Home plan card uses planLabel', async () => {
+  const { readFileSync } = await import('node:fs');
+  const main = readFileSync(new URL('../src/main.jsx', import.meta.url), 'utf8');
+  assert.match(main, /\{planLabel\(sub\)\}/);
+  assert.doesNotMatch(main, /sub\.plan_name/);
+});
+test('UX-03: the admin plan page edits the English name and badge', async () => {
+  const { readFileSync } = await import('node:fs');
+  const sales = readFileSync(new URL('../src/admin/sales.jsx', import.meta.url), 'utf8');
+  assert.match(sales, /f: 'name_en'/);
+  assert.match(sales, /f: 'badge_en'/);
+});

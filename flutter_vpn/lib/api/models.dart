@@ -11,12 +11,43 @@ int? _intOrNull(Object? v) => v == null ? null : _int(v);
 String _str(Object? v) => v == null ? '' : '$v';
 DateTime? _date(Object? v) => v == null ? null : DateTime.tryParse('$v');
 
+final _persian = RegExp(
+  r'[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]',
+);
+
+/// True when [s] is mostly Persian / Arabic script (the admin's free text,
+/// like the announcement), so it is laid out right to left.
+bool rtlText(String s) => _persian.hasMatch(s);
+
+/// Release audit UX-03: Pleat is English only. The Worker sends `<key>_en`
+/// next to the owner's (often Persian) text; an older Worker does not, and
+/// then Persian text is replaced by [persian].
+String _english(Map<String, dynamic> j, String key, {String persian = ''}) {
+  final en = _str(j['${key}_en']).trim();
+  if (en.isNotEmpty) return en;
+  final v = _str(j[key]).trim();
+  return _persian.hasMatch(v) ? persian : v;
+}
+
+/// The Worker's fallback plan name ("1 month · 50 GB"), for an older Worker.
+String _planAutoName(Map<String, dynamic> j) {
+  final d = _int(j['duration_days']);
+  String n(int x, String w) => '$x $w${x == 1 ? '' : 's'}';
+  final time = d >= 365 && d % 365 == 0
+      ? n(d ~/ 365, 'year')
+      : d >= 30 && d % 30 == 0
+      ? n(d ~/ 30, 'month')
+      : n(d, 'day');
+  final gb = _int(j['data_limit_gb']);
+  return '$time · ${gb > 0 ? '$gb GB' : 'Unlimited'}';
+}
+
 class Subscription {
   Subscription.fromJson(Map<String, dynamic> j)
     : active = j['active'] == true,
       status = _str(j['status']),
       stopReason = j['stop_reason'] as String?,
-      planName = _str(j['plan_name']),
+      planName = _english(j, 'plan_name'),
       expiresAt = _date(j['expires_at']),
       daysLeft = _intOrNull(j['days_left']),
       unlimitedTime = j['unlimited_time'] == true,
@@ -119,7 +150,7 @@ class Package {
     : id = _int(j['id']),
       source = _str(j['source']),
       current = j['current'] == true,
-      name = _str(j['name']),
+      name = _english(j, 'name', persian: 'Package'),
       orderId = _intOrNull(j['order_id']),
       purchasedAt = _date(j['purchased_at']),
       activatedAt = _date(j['activated_at']),
@@ -170,15 +201,15 @@ class Package {
 class PlanInfo {
   PlanInfo.fromJson(Map<String, dynamic> j)
     : id = _int(j['id']),
-      name = _str(j['name']),
+      name = _english(j, 'name', persian: _planAutoName(j)),
       durationDays = _int(j['duration_days']),
       dataLimitGb = _int(j['data_limit_gb']),
       deviceLimit = _int(j['device_limit']),
       priceToman = _int(j['price_toman']),
       oldPriceToman = _int(j['old_price_toman']),
       savePercent = _int(j['save_percent']),
-      badge = _str(j['badge']),
-      description = _str(j['description']),
+      badge = _english(j, 'badge'),
+      description = _english(j, 'description'),
       trialDays = _int(j['trial_days']);
 
   final int id;
@@ -533,9 +564,13 @@ class Order {
   Order.fromJson(Map<String, dynamic> j)
     : id = _int(j['id']),
       kind = _str(j['kind']),
-      planName = _str(j['plan_name']),
+      planName = _english(j, 'plan_name', persian: 'Your plan'),
       activatePlanId = _intOrNull(j['activate_plan_id']),
-      activatePlanName = _str(j['activate_plan_name']),
+      activatePlanName = _english(
+        j,
+        'activate_plan_name',
+        persian: 'Your plan',
+      ),
       planActivated = j['plan_activated'] as bool?,
       amountToman = _int(j['amount_toman']),
       method = _str(j['method']),

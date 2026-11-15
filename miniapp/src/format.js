@@ -36,6 +36,15 @@ export function dayDots(sub) {
   return { total, left: Math.min(total, sub.days_left) };
 }
 
+// UX-03: the plan's English name; a Persian name (an older Worker) never shows
+export function planLabel(sub) {
+  if (!sub) return 'Your plan';
+  const en = String(sub.plan_name_en || '').trim();
+  if (en) return en;
+  const n = String(sub.plan_name || '').trim();
+  return n && !/[\u0600-\u06FF]/.test(n) ? n : 'Your plan';
+}
+
 export function firstName(name) {
   return String(name || '').trim().split(/\s+/)[0].slice(0, 24);
 }
