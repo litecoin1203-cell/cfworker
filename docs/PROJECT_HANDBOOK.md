@@ -534,7 +534,9 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
 
 ### Look and feel
 - Design DNA: pale-blue ground, white radius-30 cards, navy/blue/ice/mist diagonal "shards", Plus Jakarta Sans,
-  pill controls. Name and mark (two offset folded planes) are original.
+  pill controls. The font is **bundled** (`assets/fonts/`, six static weights, SIL OFL 1.1 on the licence page;
+  release audit PRV-02): no `google_fonts`, nothing fetched at run time (that request went outside the tunnel
+  from the real IP). `test/fonts_test.dart` keeps it so. Name and mark (two offset folded planes) are original.
 - **Day/Night**: day = original sky blue (`PPalette.sky`), night = same blue on dark navy (`PPalette.skyNight`).
   ONE "Night mode" toggle in Profile, follows the phone until the user touches it. WCAG AA contrast test in
   `test/theme_test.dart`. Every colour comes from `PColors` (palette-driven) — never hardcode colours.
@@ -646,7 +648,7 @@ does not reach users by itself.
   Flutter's `showLicensePage`. Besides the Dart packages Flutter lists itself, `lib/licenses.dart` registers the
   native parts from `assets/licenses/` with `LicenseRegistry`: AndroidLibXrayLite (LGPL-3.0 + GPL-3.0),
   Xray-core (MPL-2.0), hev-socks5-tunnel and its submodules (MIT, lwIP BSD), the geo data (GPL-3.0 + the
-  MaxMind GeoLite2 attribution, domain-list-community MIT), every Go module inside `libgojni.so`
+  MaxMind GeoLite2 attribution, domain-list-community MIT), the Plus Jakarta Sans font (OFL), every Go module inside `libgojni.so`
   (`go-modules.txt`) and the source offer (`SOURCE.txt`, entry "Pleat: source code", with the exact upstream
   tag / commit). A test ties `SOURCE.txt` to `XRAY_LIB_TAG` / `HEV_COMMIT` in the workflow; the manual APK run
   fails if `go-modules.txt` no longer matches the AAR's modules or the APK lacks the texts. After bumping
