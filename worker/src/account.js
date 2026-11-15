@@ -3,7 +3,7 @@ import { first, all, run, getSettings, getSettingInt, switchOn } from './db.js';
 import { json, err, nowSec, deadline } from './util.js';
 import { PasarGuard, PasarGuardError } from './pasarguard.js';
 import { provision } from './billing.js';
-import { collectLinks } from './panels.js';
+import { collectLinks, accountsOf, adapterFor, userPathMs } from './panels.js';
 import { countryFromRemark } from './countries.js';
 import { refreshUser, usedBytes, ensureMissingFor } from './sync.js';
 import { gatewayReady } from './nowpayments.js';
@@ -276,9 +276,19 @@ export async function devices(env, user) {
 export async function removeDevice(env, user, devId) {
   const dev = await first(env, 'SELECT * FROM devices WHERE id = ?', devId);
   if (!dev || dev.user_id !== user.id) throw err(404, 'not_found', 'این دستگاه پیدا نشد.');
-  const sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
-  if (sub && env.PASARGUARD_URL) {
-    try { await new PasarGuard(env).deleteHwid(sub.pg_username, dev.device_id); } catch (e) {}
+  // PNL-04: freed on every panel the user has an account on (panels without a device list answer false), all at once
+  // with the user-path deadline; a panel that fails keeps its slot until the panel frees it itself
+  const accounts = (await accountsOf(env, user.id)).filter((a) => a.panel_state !== 'disabled');
+  await Promise.all(accounts.map(async (a) => {
+    try {
+      const pg = await adapterFor(env, { id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref, options_json: a.options_json }, { timeoutMs: userPathMs(a) });
+      await pg.deleteHwid(a.remote_username, dev.device_id);
+    } catch (e) { /* see above */ }
+  }));
+  if (!accounts.some((a) => a.panel_id === 1) && env.PASARGUARD_URL) {
+    // a subscription from before the control plane that has no panel_accounts row yet
+    const sub = await first(env, 'SELECT pg_username FROM subscriptions WHERE user_id = ?', user.id);
+    if (sub && sub.pg_username) { try { await new PasarGuard(env).deleteHwid(sub.pg_username, dev.device_id); } catch (e) { /* as above */ } }
   }
   await run(env, 'DELETE FROM devices WHERE id = ?', devId);
   return new Response(null, { status: 204 });

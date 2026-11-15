@@ -6640,6 +6640,20 @@ section('PNL-03: an account deleted on the panel is made again under the same na
   ok(r3.applied === 'stopped' && r3.dirty === 0 && !W.pgs[1].users[r2.remote_username], 'PNL-03: a gone account that should be off is recorded off, not made again: ' + JSON.stringify(r3));
 }
 
+section('PNL-04: removing a device frees it on every panel the user is on, not only panel 1');
+{
+  const W = await world('pnl4', 2);
+  const tok = await W.signupW('p4@example.com');
+  await W.bot(`/grant p4@example.com ${W.plan.id}`);
+  await W.callW('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'p4-phone-b', 'x-app-version': '1.2.52' } });
+  const devs = (await W.callW('GET', '/api/v1/devices', { token: tok })).data;
+  const dev = devs.find((d) => d.device_id === 'p4-phone-b');
+  const del = await W.callW('DELETE', `/api/v1/devices/${dev.id}`, { token: tok });
+  ok(del.status === 204, 'PNL-04: the device is removed: ' + del.status);
+  ok(W.pgs[0].deletedHwids.some((x) => x[1] === 'p4-phone-b'), 'PNL-04: freed on panel 1');
+  ok(W.pgs[1].deletedHwids.some((x) => x[1] === 'p4-phone-b'), 'PNL-04: freed on panel 2 as well');
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

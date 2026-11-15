@@ -508,8 +508,10 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 - **Account deleted on the panel (PNL-03)**: the Worker makes it again under the stored name (never another name), with
   the wanted expiry and limit, and tells Ali (♻️, at most every 6 h per panel). The user's link changes; the app gets it
   on its next server-list load.
-- Panel 1 is still special in a few places (always in provision, HWID only for panel 1, device removal only on
-  panel 1, buying needs `PASARGUARD_URL`). Audit items AD3/P17, not yet fixed.
+- Panel 1 is still special in a few places (always in provision, HWID only for panel 1, buying needs
+  `PASARGUARD_URL`). Audit items AD3/P17 / release audit PNL-04: these change who a purchase is delivered to and
+  wait for Ali's OK. Device removal runs on every panel the user is on since PNL-04 (panels without a device list
+  answer false).
 - Ali's panels are **https**. Since PR #45 only https panel logins are accepted.
 
 ---
