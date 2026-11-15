@@ -575,7 +575,8 @@ Object.assign(ACTIONS, {
       const lines = [`🗑 کاربر حذف شد. سفارش‌ها و تاریخچه‌ی کیف پولش (موجودی ${fa(u.wallet_balance)} تومان) برای حساب‌رسی می‌ماند.`];
       if (accts.length) lines.push(`🔓 ${fa(accts.length)} اکانت پنلش (${accts.map((a) => `${a.remote_username} روی #${a.panel_id}`).join('، ')}) از این کاربر جدا شد و آزاد است؛ می‌توانی هر کدام را به کاربر دیگری وصل کنی.`);
       if (stuck.length) lines.push(`⚠️ این‌ها روی پنل خاموش نشدند (پنل جواب نداد)؛ دستی خاموششان کن: ${stuck.map((a) => `${a.remote_username} روی #${a.panel_id}`).join('، ')}`);
-      return { targetId: u.id, summary: `حذف ${u.email}${u.tg_username ? ' @' + u.tg_username : ''}${accts.length ? ` · آزاد: ${accts.map((a) => `#${a.panel_id} ${a.remote_username}`).join(', ')}` : ''}`,
+      // no email or @username in the log (it outlives the account and goes into backups): the user id is the target
+      return { targetId: u.id, summary: `حذف کاربر #${u.id}${accts.length ? ` · آزاد: ${accts.map((a) => `#${a.panel_id} ${a.remote_username}`).join(', ')}` : ''}`,
         text: lines.join('\n') };
     },
   },
