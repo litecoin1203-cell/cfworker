@@ -410,6 +410,10 @@ class PleatVpnService : VpnService() {
                     try { addDisallowedApplication(p) } catch (e: Exception) {}
                 }
             }
+            // Android 10+: a VPN is metered by default (even on Wi-Fi); false makes
+            // it inherit meteredness from the underlying network handed below
+            // (setUnderlyingNetworks), so mobile data stays metered and Wi-Fi
+            // doesn't. Keep it (NET-04 was a false positive).
             .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) setMetered(false) }
             .establish() ?: error("VPN permission revoked")
         tun = iface
