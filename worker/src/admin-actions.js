@@ -35,7 +35,7 @@ export const ACTIONS = {
         let v = String(raw || '').trim();
         if (v === '-') v = ''; // a dash clears it (the fallback is used again)
         if (PERSIAN_RE.test(v)) return fail('فقط حروف انگلیسی؛ اپ Pleat و Mini App انگلیسی هستند.');
-        if (v.length > EN_MAX) return fail(`حداکثر ${EN_MAX} حرف.`);
+        if (v.length > EN_MAX) return fail('حداکثر ۴۰ حرف.');
         const before = await setPlanEn(env, p.id, EN_COLS[col], v);
         return { targetId: p.id, summary: `${col}: ${show(col, before)} → ${show(col, v)}`, undo: { id: p.id, col, value: before },
           text: `✅ پلن #${p.id}: ${field} = ${v || '(خالی، از روی حجم و مدت ساخته می‌شود)'}` };
