@@ -921,7 +921,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 - Branch `claude/w1-licenses-ux` (no version bump; the lead numbers the release): Open-source licences page with
   the engines' licence texts, Go module list and source offer (LEG-01..03), README licence note (LEG-04), and the
   no-plan Connect failure / Now tile offer the trial or Plans (UX-01).
-- Branch `claude/w1-privacy-ux` (stacked on `claude/w1-licenses-ux`, no version bump): Activity's privacy text
+- Branch `claude/w1-privacy-ux-v2` (on main after 1.2.51, no version bump): Activity's privacy text
   says what the Worker really keeps instead of "no session log" (PRV-01); Privacy policy and Terms of use in Pleat
   and the Mini App from `docs/legal/`, "you agree" line at sign-up, Send diagnostics asked once before anything is
   sent (PRV-03); the trial's Telegram requirement said up front on Plans and sign-up, `trial_needs_telegram` in
