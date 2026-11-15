@@ -410,10 +410,7 @@ class PleatVpnService : VpnService() {
                     try { addDisallowedApplication(p) } catch (e: Exception) {}
                 }
             }
-            // No setMetered(false) (NET-04): left as it is, Android 10+ takes
-            // the metered state of the network handed below (setUnderlying-
-            // Networks), so mobile data stays metered for Data Saver and for
-            // apps that wait for Wi-Fi.
+            .apply { if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) setMetered(false) }
             .establish() ?: error("VPN permission revoked")
         tun = iface
         WidgetTrail.step(this, "tun")
