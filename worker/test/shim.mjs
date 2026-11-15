@@ -40,6 +40,8 @@ export function makeDB(schemaPath, { upto } = {}) {
   const out = {
     onQuery: null,
     prepare: (sql) => new Stmt(db, sql, out),
+    // tests only: one row at once, not counted (finding a panel user by its "Pleat #<id>" note)
+    get: (sql, ...args) => fixRow(db.prepare(sql).get(...args)),
     // like D1: the whole batch is one transaction, run without anything else in between, rolled back on error
     async batch(stmts) {
       if (out.onQuery) out.onQuery('batch');

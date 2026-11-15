@@ -42,6 +42,8 @@ const env = {
   TG_START_PER_HOUR: '100000',
 };
 env.DB.onQuery = () => { const s = invocation.getStore(); if (s && ++s.q === QUERY_CAP + 1) overCap.push(s); };
+// a panel account's note is "Pleat #<user id>" (PNL-07: nothing personal on a panel)
+const pleatNote = (email) => { const u = env.DB.get('SELECT id FROM users WHERE email = ?', email); return u ? `Pleat #${u.id}` : '(no such user)'; };
 const _pending = [];
 const ctx = { waitUntil: (p) => { _pending.push(Promise.resolve(p)); } };
 async function drain() { const ps = _pending.splice(0); await Promise.all(ps); }
@@ -421,7 +423,7 @@ section('used_percent on /me comes from the server');
   const tok = await signup('pct@example.com', { device: 'pct-phone' });
   const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
   await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant pct@example.com ${monthly.id}` } });
-  const u = Object.values(fakes.pg.users).find((x) => (x.note || '').includes('pct@example.com'));
+  const u = Object.values(fakes.pg.users).find((x) => x.note === pleatNote('pct@example.com'));
   ok(!!u, 'panel user for pct@example.com');
   const uid = (await env.DB.prepare("SELECT id FROM users WHERE email = 'pct@example.com'").first()).id;
   await env.DB.prepare('UPDATE subscriptions SET data_limit_bytes = 1000 WHERE user_id = ?').bind(uid).run();
@@ -437,7 +439,7 @@ section('used_percent on /me comes from the server');
   ok(s.used_percent === 100, 'capped at 100');
   const tok2 = await signup('pct2@example.com', { device: 'pct2-phone' });
   await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant pct2@example.com ${monthly.id}` } });
-  const u2 = Object.values(fakes.pg.users).find((x) => (x.note || '').includes('pct2@example.com'));
+  const u2 = Object.values(fakes.pg.users).find((x) => x.note === pleatNote('pct2@example.com'));
   u2.used_traffic = 5000;
   s = (await call('GET', '/api/v1/me', { token: tok2 })).data.subscription;
   ok(s.used_percent === null && s.unlimited_data === true && s.used_bytes === 5000, 'unlimited data has no percent');
@@ -627,7 +629,7 @@ section('reseller without full group access: falls back to simple list');
   const annual = (await call('GET', '/api/v1/plans')).data.find((p) => p.trial_days > 0);
   const t = await call('POST', '/api/v1/trial', { token: tok, json: { plan_id: annual.id }, headers: { 'x-device-id': 'rs-phone' } });
   ok(t.status === 200 && t.data.subscription.active, 'trial created via groups/simple ' + JSON.stringify(t.data));
-  const pgUser = Object.values(fakes.pg.users).find((u) => (u.note || '').includes('reseller@example.com'));
+  const pgUser = Object.values(fakes.pg.users).find((u) => u.note === pleatNote('reseller@example.com'));
   ok(pgUser && pgUser.group_ids.join(',') === '1,2', 'user got the reseller groups');
   ok(t.data.subscription.remaining_bytes === null && t.data.subscription.unlimited_data === true, 'unlimited data reported');
   fakes.pg.groupsSudoOnly = false;
@@ -1422,7 +1424,7 @@ env.PANEL_3_CRED = JSON.stringify({ url: P3, username: 'admin3', password: 'pass
 const admin = (text) => tgWebhook({ message: { chat: { id: 12345 }, text } });
 const lastText = () => fakes.tg.messages[fakes.tg.messages.length - 1].text;
 const syncRounds = async (n) => { for (let i = 0; i < n; i++) await runSync(env); };
-const panelUser = (pg, email) => Object.values(pg.users).find((x) => (x.note || '').endsWith('· ' + email));
+const panelUser = (pg, email) => Object.values(pg.users).find((x) => x.note === pleatNote(email));
 const userId = async (email) => (await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first()).id;
 let tenGb;
 
@@ -1472,45 +1474,55 @@ section('acceptance: 2 + 4 + 5 GB on three panels = 11 GB; a 10 GB plan stops on
   ok(puts.join() === puts2.join(), 'stopping again changes nothing (idempotent): ' + puts + ' / ' + puts2);
 }
 
-section('panel accounts are named after the Telegram @username; taken names and users without one fall back');
+section('PNL-07: new panel accounts get an opaque name and a note with no personal data; existing names are kept');
 {
-  const { panelNames, panelNameBase } = await import('../src/sync.js');
-  ok(panelNameBase({ id: 5, tg_username: 'Ali__Gold_' }) === 'ali_gold', 'sanitized: lower case, no double or trailing underscore');
-  ok(panelNameBase({ id: 5, tg_id: 777, tg_username: null }) === 'tg777', 'no @username: tg<numeric id>');
-  ok(panelNameBase({ id: 5, email: 'a@b.c' }) === null, 'no Telegram: no Telegram name');
-  const long = panelNames({ id: 123456, tg_username: 'a'.repeat(32) });
-  ok(long.every((n) => n.length <= 32 && /^[a-z0-9_]+$/.test(n) && !/__/.test(n)) && long[1].endsWith('_123456'), 'every candidate fits all three panels: ' + long.join(','));
-  ok(/^cg_9_[0-9a-f]{4}$/.test(panelNames({ id: 9 })[0]), 'email-only users keep the old cg_<id>_<random> name');
+  const { panelNames } = await import('../src/sync.js');
+  const who = { id: 5, tg_id: 777001, tg_username: 'Ali__Gold_', email: 'ali.gold@example.com' };
+  const cands = panelNames(who);
+  ok(cands.length === 3 && new Set(cands).size === 3 && cands.every((x) => /^cg_[0-9a-f]{10,12}$/.test(x)), 'PNL-07: three opaque candidates cg_<random hex>: ' + cands.join(','));
+  ok(cands.every((x) => !/ali|gold|777001/i.test(x)), 'PNL-07: no @username or Telegram id in the name');
+  ok(panelNames({ id: 9 }).every((x) => /^cg_[0-9a-f]{10,12}$/.test(x)) && panelNames({ id: 9 }, 'pl')[0].startsWith('pl_'), 'PNL-07: the same shape without Telegram, with the configured prefix');
+  ok(panelNames(who).every((x) => x.length <= 32 && !/__/.test(x)), 'PNL-07: every candidate fits all three panel types');
 
   await signup('tgname@example.com', { device: 'tgn-phone' });
   const id1 = await userId('tgname@example.com');
   await env.DB.prepare('UPDATE users SET tg_id = 900001, tg_username = ? WHERE id = ?').bind('gold_ali', id1).run();
-  // someone made "gold_ali" on panel 2 by hand: that panel answers 409 and the next name is used
-  pg2.users['gold_ali'] = { id: 4242, username: 'gold_ali', status: 'active', expire: 0, data_limit: 0, used_traffic: 0, token: 'hand' };
+  // panel 2 says the first name is taken (409): the next candidate is used
+  const real2 = pg2.users;
+  let refused = null;
+  pg2.users = new Proxy(real2, { get(t, k) { if (!refused && typeof k === 'string' && /^cg_/.test(k) && !(k in t)) { refused = k; return { username: k }; } return t[k]; } });
   await admin(`/grant tgname@example.com ${tenGb.id}`);
+  pg2.users = real2;
   const rows = (await env.DB.prepare('SELECT panel_id, remote_username FROM panel_accounts WHERE user_id = ? ORDER BY panel_id').bind(id1).all()).results;
   ok(rows.length === 3, 'one account on each panel');
-  ok(rows[0].remote_username === 'gold_ali' && rows[2].remote_username === 'gold_ali', 'named after the @username: ' + rows.map((r) => r.remote_username));
-  ok(rows[1].remote_username === `gold_ali_${id1}` && pg2.users['gold_ali'].id === 4242, 'taken on panel 2 -> gold_ali_<id>, the hand-made account untouched');
-  ok(fakes.pg.users['gold_ali'].note.includes('tg 900001'), 'the panel note carries the numeric Telegram id');
-  // the user changes @username in Telegram: the panel name stays (it is fixed at creation)
-  await env.DB.prepare('UPDATE users SET tg_username = ? WHERE id = ?').bind('new_name', id1).run();
+  ok(refused && rows[1].remote_username !== refused && /^cg_[0-9a-f]{10,12}$/.test(rows[1].remote_username) && real2[rows[1].remote_username], 'PNL-07: a name the panel says is taken (409) moves on to the next opaque one');
+  ok(rows.every((r) => /^cg_[0-9a-f]{10,12}$/.test(r.remote_username) && !/gold|900001/.test(r.remote_username)), 'PNL-07: the panel names carry nothing about the user: ' + rows.map((r) => r.remote_username));
+  const n1 = fakes.pg.users[rows[0].remote_username].note;
+  ok(n1 === `Pleat #${id1}`, 'PNL-07: the panel note is only "Pleat #<user id>" (no Telegram id, username or email): ' + n1);
+  ok(!/900001|gold_ali|@example/.test(JSON.stringify(Object.values(pg2.users).filter((u) => rows.some((r) => r.remote_username === u.username)))), 'PNL-07: nothing personal on panel 2 either');
+  // an account made before this change keeps its old name: renewal and lookup go by the stored name
+  const old = rows[0].remote_username;
+  fakes.pg.users['gold_ali'] = { ...fakes.pg.users[old], username: 'gold_ali' };
+  delete fakes.pg.users[old];
+  await env.DB.prepare("UPDATE panel_accounts SET remote_username = 'gold_ali' WHERE user_id = ? AND panel_id = 1").bind(id1).run();
+  const created0 = Object.keys(fakes.pg.users).length;
   await admin(`/grant tgname@example.com ${tenGb.id}`);
   const again = (await env.DB.prepare('SELECT remote_username FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(id1).first()).remote_username;
-  ok(again === 'gold_ali', 'renewal keeps the same panel account after an @username change');
+  ok(again === 'gold_ali' && Object.keys(fakes.pg.users).length === created0, 'PNL-07: an existing account is renewed under its old name, never renamed or re-created');
+  const p2name = rows[1].remote_username;
 
   section('bot: per-panel usage, dates, last connection and online now');
   const now = Math.floor(Date.now() / 1000);
   fakes.pg.users['gold_ali'].used_traffic = 1 * GB;
   fakes.pg.users['gold_ali'].online_at = new Date((now - 30) * 1000).toISOString().replace('Z', '');
-  pg2.users[`gold_ali_${id1}`].used_traffic = 2 * GB;
-  pg2.users[`gold_ali_${id1}`].online_at = new Date((now - 3 * 3600) * 1000).toISOString();
+  pg2.users[p2name].used_traffic = 2 * GB;
+  pg2.users[p2name].online_at = new Date((now - 3 * 3600) * 1000).toISOString();
   await syncRounds(3);
   const stored = (await env.DB.prepare('SELECT MAX(online_at) m FROM usage_counters WHERE period_id = (SELECT period_id FROM subscriptions WHERE user_id = ?)').bind(id1).first()).m;
   ok(Math.abs(stored - (now - 30)) <= 1, 'the last connection is stored with the usage reading: ' + stored);
   const S = await import('../src/telegram-screens.js');
   const scr = await S.userPanels(env, id1);
-  ok(scr.text.includes('👤 gold_ali') && scr.text.includes(`👤 gold_ali_${id1}`), 'each panel account by name');
+  ok(scr.text.includes('👤 gold_ali') && scr.text.includes(`👤 ${p2name}`), 'each panel account by name');
   ok(scr.text.includes('🟢 الان آنلاین') && scr.text.includes('۳') === false && /3 ساعت پیش/.test(scr.text), 'online now on panel 1, 3 hours ago on panel 2');
   ok(scr.text.includes('جمع مصرف: 3.00') && scr.text.includes('ساخت: 2026-11-01'), 'total and creation date shown');
   ok(scr.kb.flat().some((x) => x.callback_data === `m:uac:${id1}`), 'refresh is a button');
@@ -1645,7 +1657,7 @@ section('bot: link an existing panel account to an app user, without creating on
 
   const pa = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(uid).first();
   ok(pa && pa.remote_username === 'ali_v2' && pa.sub_path.includes('tok_ali_v2') && pa.desired === 'active', 'the app user now owns that panel account');
-  ok(!Object.values(fakes.pg.users).some((x) => (x.note || '').endsWith('· link1@example.com') && Object.keys(fakes.pg.users).indexOf(x.username) < panelCount) && Object.keys(fakes.pg.users).length === panelCount,
+  ok(!Object.values(fakes.pg.users).some((x) => x.note === pleatNote('link1@example.com') && Object.keys(fakes.pg.users).indexOf(x.username) < panelCount) && Object.keys(fakes.pg.users).length === panelCount,
     'no account was created on panel 1');
   ok(v2.status === 'active' && v2.token === 'tok_ali_v2' && v2.used_traffic === 5 * GB && v2.data_limit === 30 * GB, 'the panel account is unchanged (v2rayNG keeps working)');
   const me = (await call('GET', '/api/v1/me', { token: tok, headers: { 'x-app-version': '1.9.0 (Android 14)' } })).data;
@@ -2315,7 +2327,7 @@ section('a new panel reaches existing users: at once when the app loads servers,
 
   // the app loads servers: the user's account on the new panel is made now and its configs are in this answer
   const r = await call('GET', '/api/v1/vpn/servers', { token: tokA });
-  ok(r.status === 200 && Object.values(np.users).some((u) => (u.note || '').endsWith('· na@example.com')), 'account made on the new panel at app load');
+  ok(r.status === 200 && Object.values(np.users).some((u) => u.note === pleatNote('na@example.com')), 'account made on the new panel at app load');
   ok(JSON.stringify(r.data).includes('nn.example.net'), 'new panel configs are in the same server list');
   const mid = await panelProgress(env, p);
   ok(mid.have === 1, 'progress moved: ' + JSON.stringify(mid));
