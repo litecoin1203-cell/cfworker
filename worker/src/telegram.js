@@ -1,7 +1,7 @@
 // Telegram admin bot: receipts with Approve/Reject buttons, panel diagnostics, discount codes, plans, backups.
 // You run the whole shop from your Telegram chat.
 import { first, run, all, insert, getSettings, setSetting, SETTING_DEFAULTS } from './db.js';
-import { nowSec, deadline } from './util.js';
+import { nowSec, deadline, logError } from './util.js';
 import { runAction, PLAN_FIELDS } from './admin-actions.js';
 
 export { PLAN_FIELDS };
@@ -87,8 +87,20 @@ export async function tg(env, method, body) {
       body: JSON.stringify(body),
       signal: deadline(10000),
     });
-    return r.json();
+    const j = await r.json();
+    noteRefused(method, j);
+    return j;
   } catch (e) { return null; }
+}
+// A message Telegram refused to show (a bad button, a too-long text, bad HTML) used to vanish without a trace: the
+// bot just stayed silent. Such refusals now go to the Worker's error log (☁️ in the bot, Cloudflare › errors in
+// the Mini App), method and Telegram's reason only. Expected refusals are left out: the person blocked the bot or
+// deleted the chat, an edit that changed nothing, a tap answered too late, rate limits (the caller retries).
+const SHOWN = new Set(['sendMessage', 'sendPhoto', 'sendDocument', 'editMessageText', 'editMessageCaption', 'editMessageReplyMarkup', 'answerCallbackQuery']);
+const EXPECTED = /not modified|chat not found|bot was blocked|user is deactivated|query is too old|query ID is invalid|message to edit not found|have no rights|PEER_ID_INVALID|Too Many Requests/i;
+function noteRefused(method, j) {
+  if (!SHOWN.has(method) || !j || j.ok !== false || EXPECTED.test(String(j.description || ''))) return;
+  logError('telegram refused ' + method, new Error(String(j.description || 'error ' + j.error_code).slice(0, 200)));
 }
 
 export async function notifyAdmin(env, text, replyMarkup) {
@@ -184,9 +196,14 @@ export const SECRET_SETTINGS = new Set(['sms_key', 'app_bridges']);
 
 // ---------------- webhook ----------------
 export async function handleWebhook(env, update) {
-  // secret check is done by the caller (path contains the webhook secret)
-  if (update.callback_query) return onCallback(env, update.callback_query);
-  if (update.message) return onMessage(env, update.message);
+  // secret check is done by the caller (path contains the webhook secret). This runs in waitUntil after Telegram
+  // already got its 200, so a throw here was invisible (no reply, nothing in any log): it is logged now.
+  try {
+    if (update.callback_query) return await onCallback(env, update.callback_query);
+    if (update.message) return await onMessage(env, update.message);
+  } catch (e) {
+    logError('bot update failed', e, { kind: update.callback_query ? 'button' : 'message' });
+  }
 }
 
 async function onCallback(env, cq) {

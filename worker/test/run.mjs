@@ -1861,6 +1861,26 @@ section('webhook is registered by the Worker, with no secret in the path');
   ok((await call('POST', '/tg', { json: { message: { chat: { id: 12345 }, text: '/help' } } })).status === 404, '/tg without the header is closed');
 }
 
+section('a silent bot leaves a trace: refused Telegram sends and failed updates are logged');
+{
+  const util = await import('../src/util.js');
+  const { tg, handleWebhook } = await import('../src/telegram.js');
+  const seen = [];
+  util.setErrorSink((m, e) => seen.push(m + ': ' + e));
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, error_code: 400, description: 'Bad Request: BUTTON_URL_INVALID' }), { status: 400 });
+  await tg(env, 'sendMessage', { chat_id: 1, text: 'x' });
+  globalThis.fetch = async () => new Response(JSON.stringify({ ok: false, error_code: 400, description: 'Bad Request: message is not modified' }), { status: 400 });
+  await tg(env, 'editMessageText', { chat_id: 1, message_id: 1, text: 'x' });
+  globalThis.fetch = realFetch;
+  ok(seen.length === 1 && /telegram refused sendMessage: Bad Request: BUTTON_URL_INVALID/.test(seen[0]), 'a refused send is logged with Telegram\'s reason; "not modified" is not: ' + JSON.stringify(seen));
+  const bad = { get message() { throw new Error('boom'); } };
+  let threw = false;
+  try { await handleWebhook(env, bad); } catch (e) { threw = true; }
+  ok(!threw && seen.some((x) => x === 'bot update failed: boom'), 'an update that throws is logged, not lost');
+  util.setErrorSink(null);
+}
+
 section('backup and errors never carry a panel address');
 {
   const { backupJson } = await import('../src/telegram.js');
@@ -5358,10 +5378,10 @@ section('admin bot: ☁️ Cloudflare monitoring (quota, errors, queries, deploy
     env.CF_ANALYTICS_TOKEN = TOKEN; env.CF_ACCOUNT_ID = 'a'.repeat(32); CF.clearCache();
     const hNow = now - (now % 3600);
     cfState.workers = [
-      { sum: { requests: 60000, errors: 0, subrequests: 90000 }, quantiles: { cpuTimeP50: 2.1, cpuTimeP99: 8.4 }, dimensions: { datetimeHour: hourIso(Math.max(t0, hNow - 3600)), scriptName: 'cloudgold', status: 'success' } },
-      { sum: { requests: 600, errors: 600, subrequests: 0 }, quantiles: { cpuTimeP50: 10.5, cpuTimeP99: 12.2 }, dimensions: { datetimeHour: hourIso(hNow), scriptName: 'cloudgold', status: 'exceededCpu' } },
-      { sum: { requests: 900, errors: 0, subrequests: 0 }, quantiles: { cpuTimeP50: 1, cpuTimeP99: 2 }, dimensions: { datetimeHour: hourIso(Math.max(t0, hNow - 3600)), scriptName: 'other-script', status: 'success' } },
-      { sum: { requests: 40000, errors: 10, subrequests: 1000 }, quantiles: { cpuTimeP50: 2, cpuTimeP99: 5 }, dimensions: { datetimeHour: hourIso(t0 - 5 * 3600), scriptName: 'cloudgold', status: 'success' } },
+      { sum: { requests: 60000, errors: 0, subrequests: 90000 }, quantiles: { cpuTimeP50: 2100, cpuTimeP99: 8400 }, dimensions: { datetimeHour: hourIso(Math.max(t0, hNow - 3600)), scriptName: 'cloudgold', status: 'success' } },
+      { sum: { requests: 600, errors: 600, subrequests: 0 }, quantiles: { cpuTimeP50: 10500, cpuTimeP99: 12200 }, dimensions: { datetimeHour: hourIso(hNow), scriptName: 'cloudgold', status: 'exceededCpu' } },
+      { sum: { requests: 900, errors: 0, subrequests: 0 }, quantiles: { cpuTimeP50: 1000, cpuTimeP99: 2000 }, dimensions: { datetimeHour: hourIso(Math.max(t0, hNow - 3600)), scriptName: 'other-script', status: 'success' } },
+      { sum: { requests: 40000, errors: 10, subrequests: 1000 }, quantiles: { cpuTimeP50: 2000, cpuTimeP99: 5000 }, dimensions: { datetimeHour: hourIso(t0 - 5 * 3600), scriptName: 'cloudgold', status: 'success' } },
     ];
     const today = new Date(now * 1000).toISOString().slice(0, 10), weekAgo = new Date((t0 - 6 * 86400) * 1000).toISOString().slice(0, 10);
     cfState.d1 = [{ sum: { readQueries: 1000, writeQueries: 500, rowsRead: 900000, rowsWritten: 85000 }, dimensions: { date: today, databaseId: 'db1' } }];
@@ -5488,8 +5508,8 @@ section('Mini App admin parity: Cloudflare monitoring, app health reports, sync 
     if (url === 'https://api.cloudflare.com/client/v4/graphql') {
       const q = JSON.parse(init.body).query, acc = {};
       if (q.includes('workersInvocationsAdaptive')) acc.workersInvocationsAdaptive = [
-        { sum: { requests: 3000, errors: 30, subrequests: 4000 }, quantiles: { cpuTimeP50: 2, cpuTimeP99: 6 }, dimensions: { datetimeHour: hourIso(now), scriptName: 'cloudgold', status: 'success' } },
-        { sum: { requests: 20, errors: 20, subrequests: 0 }, quantiles: { cpuTimeP50: 11, cpuTimeP99: 12 }, dimensions: { datetimeHour: hourIso(cpuAt), scriptName: 'cloudgold', status: 'exceededCpu' } }];
+        { sum: { requests: 3000, errors: 30, subrequests: 4000 }, quantiles: { cpuTimeP50: 2000, cpuTimeP99: 6000 }, dimensions: { datetimeHour: hourIso(now), scriptName: 'cloudgold', status: 'success' } },
+        { sum: { requests: 20, errors: 20, subrequests: 0 }, quantiles: { cpuTimeP50: 11000, cpuTimeP99: 12000 }, dimensions: { datetimeHour: hourIso(cpuAt), scriptName: 'cloudgold', status: 'exceededCpu' } }];
       if (q.includes('d1AnalyticsAdaptiveGroups')) { acc.d1AnalyticsAdaptiveGroups = [{ sum: { readQueries: 1, writeQueries: 1, rowsRead: 100000, rowsWritten: 9000 }, dimensions: { date: new Date(now * 1000).toISOString().slice(0, 10), databaseId: 'db' } }]; acc.d1StorageAdaptiveGroups = []; }
       if (q.includes('d1QueriesAdaptiveGroups')) acc.d1QueriesAdaptiveGroups = [{ sum: { rowsRead: 900, rowsWritten: 0, queryDurationMs: 10 }, avg: { queryDurationMs: 0.1 }, dimensions: { query: 'SELECT 1 FROM users' } }];
       return j({ data: { viewer: { accounts: [acc] } }, errors: null });
