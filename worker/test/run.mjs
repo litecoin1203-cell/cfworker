@@ -6890,6 +6890,31 @@ section('PERF-B-02: a network report rewrites a server\'s row of the user\'s own
   ok((await rows())[0].tests === 2, 'PERF-B-02: a row 30 minutes old is refreshed');
 }
 
+section('CF-07: every error code the Worker raises is in docs/API.md with its one status');
+{
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const dir = new URL('../src/', import.meta.url);
+  const raised = new Map(); // code -> Set(status)
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.js'))) {
+    for (const m of readFileSync(new URL(f, dir), 'utf8').matchAll(/err\((\d{3}), '([a-z_0-9]+)'/g)) {
+      if (!raised.has(m[2])) raised.set(m[2], new Set());
+      raised.get(m[2]).add(m[1]);
+    }
+  }
+  const api = readFileSync(new URL('../../docs/API.md', import.meta.url), 'utf8');
+  const sec = api.slice(api.indexOf('## Error codes'), api.indexOf('\n## ', api.indexOf('## Error codes') + 5));
+  const doc = new Map(), indirect = new Set();
+  for (const m of sec.matchAll(/^\| `([a-z_0-9, ]+)`( \*indirect\*)? \| (\d{3}) \|/gm)) {
+    for (const c of m[1].split(/,\s*/)) { if (!doc.has(c)) doc.set(c, new Set()); doc.get(c).add(m[3]); if (m[2]) indirect.add(c); }
+  }
+  const missing = [...raised].filter(([c, st]) => !doc.has(c) || [...st].some((x) => !doc.get(c).has(x))).map(([c, st]) => `${c} ${[...st]}`);
+  ok(sec.length > 100 && !missing.length, 'CF-07: codes raised but not in the table (or with another status): ' + missing.join(', '));
+  const stale = [...doc.keys()].filter((c) => !raised.has(c) && !indirect.has(c));
+  ok(!stale.length, 'CF-07: table rows nothing raises: ' + stale.join(', '));
+  const twoStatus = [...raised].filter(([, st]) => st.size > 1).map(([c, st]) => `${c} ${[...st]}`);
+  ok(!twoStatus.length, 'CF-07: one code, one status: ' + twoStatus.join(', '));
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

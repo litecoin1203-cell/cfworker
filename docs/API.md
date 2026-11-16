@@ -39,6 +39,94 @@ account per Telegram id.
 **Request headers Pleat sends:** `Authorization: Bearer <access>`, `X-Device-Id`, `X-Device-Model`,
 `X-Device-OS`, `X-App-Version`, `X-HWID` (panel 1 has an HWID limit).
 
+## Error codes (CF-07)
+
+Every `err(status, code)` the Worker raises, with its one HTTP status. `worker/test/run.mjs` fails when code raises a
+code that is not here, or with another status, or when a row names a code nothing raises (except the rows marked
+*indirect*, whose code comes from a variable). Statuses follow one rule: 400 = the request cannot be done as asked,
+401 = who you are is not proven, 402 = no running plan, 403 = not allowed, 404 = not there, 409 = conflicts with the
+current state, 410 = gone, 413 = too large, 422 = the body is malformed, 429 = later, 5xx = the server or something
+it depends on failed. Pleat maps the codes it knows to English (`flutter_vpn/lib/api/client.dart`); for any other
+code it shows the message only when it is not Persian, so **new codes for the app get English messages**.
+
+| code | status | raised in |
+|---|---|---|
+| `account_disabled` | 403 | auth |
+| `amount_too_large` | 400 | orders |
+| `amount_too_small` | 400 | orders |
+| `bad_code` | 400 | auth |
+| `bad_credentials` | 401 | auth |
+| `bad_file` | 400 | orders |
+| `bad_init_data` | 401 | account, admin-api, auth |
+| `bad_kind` | 400 | panels |
+| `bad_method` | 400 | orders |
+| `bad_request` | 400 | orders |
+| `bad_signature` | 401 | orders |
+| `bad_state` | 400 | orders |
+| `busy` | 429 | util |
+| `code_not_sent` | 409 | auth |
+| `coin_unavailable` | 400 | orders |
+| `confirm` | 409 | admin-api |
+| `coupon_expired` | 400 | orders |
+| `coupon_in_use` | 400 | orders |
+| `coupon_invalid` | 400 | orders |
+| `coupon_used` | 400 | orders |
+| `coupon_used_up` | 400 | orders |
+| `coupon_wrong_plan` | 400 | orders |
+| `crypto_error` | 502 | orders |
+| `device_limit` | 403 | account |
+| `email_taken` | 409 | auth |
+| `fixed` | 400 | admin-api |
+| `invalid_input` | 422 | auth, orders, util |
+| `label` | 400 | admin-api |
+| `method_unavailable` | 400 | orders |
+| `no_email` | 400 | admin-api |
+| `no_receipt` | 404 | admin-api |
+| `no_servers` | 404 | account |
+| `no_subscription` | 402 | account |
+| `no_trial` | 400 | account |
+| `not_admin` | 403 | admin-api |
+| `not_authenticated` | 401 | admin-api, auth |
+| `not_found` | 404 | account, admin-api, appupdate, orders, sms |
+| `panel_unavailable` | 503 | account |
+| `panel_unconfigured` | 503 | pasarguard |
+| `parts` | 400 | admin-api |
+| `password` | 400 | admin-api |
+| `plan_expired` | 402 | account |
+| `plan_limited` | 402 | account |
+| `plan_not_found` | 404 | orders |
+| `price_unavailable` | 503 | orders |
+| `provision_failed` | 503 | account |
+| `role` | 403 | admin-api |
+| `signup_expired` | 401 | auth |
+| `sub_missing` | 410 | account |
+| `telegram` | 502 | admin-api |
+| `telegram_linked` | 409 | auth |
+| `telegram_taken` | 409 | auth |
+| `telegram_unavailable` | 503 | auth |
+| `token_invalid` | 401 | auth |
+| `too_large` | 413 | orders |
+| `too_many_open_orders` | 429 | orders |
+| `too_many_requests` | 429 | account, util |
+| `too_many_tries` | 429 | auth |
+| `trial_needs_telegram` | 403 | account |
+| `trial_used` | 400 | account |
+| `txid_used` | 409 | orders |
+| `unknown_action` | 404 | admin-api |
+| `update_gone` | 410 | appupdate |
+| `update_unavailable` | 503 | appupdate |
+| `use_pleat` | 403 | index |
+| `wait` | 429 | admin-api |
+| `wrong_password` | 400 | auth |
+| `activation_failed` *indirect* | 400 | orders (wallet purchase, `BillingError`) |
+| `insufficient_balance` *indirect* | 400 | orders (`BillingError`) |
+| `not_stuck` *indirect* | 400 | orders (`BillingError`) |
+| `plan_missing` *indirect* | 400 | orders (`BillingError`) |
+| `settle_busy` *indirect* | 400 | orders (`BillingError`) |
+| `wallet_unpaid` *indirect* | 400 | orders (`BillingError`) |
+| `json, parts, url, http` *indirect* | 400 | admin-api (panel login form, from `parseCred`) |
+| `settle_failed` *indirect* | 500 | orders (NOWPayments IPN; it retries) |
+
 ## Outside `/api/v1`
 
 | Method + path | Auth | Handler | Purpose |
