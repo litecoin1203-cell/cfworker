@@ -1544,6 +1544,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     final value = _meFrom(data);
     api.tokens.cache('me', data);
     meFresh = true;
+    _sendPendingAvatar(value);
     final used = value.subscription?.usedBytes;
     if (used != null) {
       usageLog.note(used);
@@ -1586,11 +1587,32 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     try {
       final data = await api.post('/me/avatar', {'avatar': id});
       _pickedAvatar = data is Map ? (data['avatar'] as String? ?? '') : id;
+      _prefs.remove(_avatarPendingKey);
       notifyListeners();
       return null;
     } on ApiError catch (e) {
-      return e.message;
+      if (!e.offline) return e.message;
+      // A filtered line must not hold the person at the gate: the choice is
+      // kept on the phone and sent with the next plan read (UX-06).
+      _pickedAvatar = id;
+      _prefs.setString(_avatarPendingKey, id);
+      notifyListeners();
+      return null;
     }
+  }
+
+  static const _avatarPendingKey = 'avatar_pending';
+
+  /// Sends an avatar picked while the Worker could not be reached.
+  void _sendPendingAvatar(Me value) {
+    final pending = _prefs.getString(_avatarPendingKey);
+    if (pending == null) return;
+    if (value.avatar.isNotEmpty) {
+      _prefs.remove(_avatarPendingKey);
+      return;
+    }
+    _pickedAvatar ??= pending;
+    unawaited(setAvatar(pending));
   }
 
   Future<String?> setEmail(String email, String password) async {
@@ -1860,6 +1882,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     devices.value = null;
     packages.value = null;
     _pickedAvatar = null;
+    _prefs.remove(_avatarPendingKey);
     meFresh = false;
     phase = Phase.idle;
     connectedAt = null;

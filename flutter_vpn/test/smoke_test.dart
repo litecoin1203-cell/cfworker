@@ -1206,6 +1206,34 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
   });
 
+  testWidgets('UX-06: a picked avatar that can\'t be saved yet does not '
+      'hold the app; it is sent on the next plan read', (tester) async {
+    final (app, api) = await _boot(tester, {'onboarded': true}, avatar: null);
+    expect(find.byType(AvatarGate), findsOneWidget);
+    api.avatarOffline = true;
+    await tester.tap(find.text('CHOOSE AN AVATAR'));
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.tap(
+      find.byWidgetPredicate((w) => w is AvatarArt && w.avatar.id == 'kai'),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('CONTINUE AS KAI'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(AvatarGate), findsNothing);
+    expect(find.byType(HomeScreen), findsOneWidget);
+    expect(app.avatarId, 'kai');
+    // back online: the next /me sends the choice
+    api.avatarOffline = false;
+    final before = api.calls.where((c) => c == 'POST /me/avatar').length;
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(api.calls.where((c) => c == 'POST /me/avatar').length, before + 1);
+    expect(api.avatar, 'kai');
+    await tester.pump(const Duration(seconds: 3));
+  });
+
   testWidgets('UX-01: Connect with no plan offers the trial, which opens '
       'Plans; the Now tile does too', (tester) async {
     final (app, api) = await _boot(tester, {

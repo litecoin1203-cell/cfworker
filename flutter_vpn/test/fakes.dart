@@ -253,6 +253,9 @@ class FakeApi extends ApiClient {
           },
         ];
       case 'POST /me/avatar':
+        if (avatarOffline) {
+          throw ApiError(0, 'offline', 'Can’t reach the server.');
+        }
         final id = (body?['avatar'] as String?) ?? '';
         if (id.isEmpty) {
           throw ApiError(422, 'invalid_input', 'Choose one of the avatars.');
@@ -368,6 +371,7 @@ class FakeApi extends ApiClient {
 
   /// The Worker can't be reached for uploads.
   bool uploadOffline = false;
+  bool avatarOffline = false;
   final uploads = <Map<String, String>>[];
 
   @override
