@@ -762,8 +762,12 @@ section('bot: /panel diagnostic, /find, /plan, /backup');
   ok(fakes.tg.messages.slice(b2).some((m) => m.text.includes('روز') && m.text.includes('حجم')), '/find shows live usage');
   await tgWebhook({ message: { chat: { id: 12345 }, text: '/plan 1 name اقتصادی یک ماهه' } });
   ok((await call('GET', '/api/v1/plans')).data.some((p) => p.name === 'اقتصادی یک ماهه'), '/plan renames');
-  const r = await worker.scheduled({}, env, ctx); await drain();
-  ok(true, 'scheduled ran');
+  // QA-03: this used to be ok(true): the cron run must finish, log no new error and leave /health green
+  const errsBefore = env.DB.get('SELECT COALESCE(SUM(count), 0) n FROM worker_errors').n;
+  await worker.scheduled({}, env, ctx); await drain();
+  const hl = await call('GET', '/health');
+  ok(hl.status === 200 && hl.data.ok && env.DB.get('SELECT COALESCE(SUM(count), 0) n FROM worker_errors').n === errsBefore,
+    'scheduled ran: /health is green and no error was logged: ' + JSON.stringify(hl.data));
 }
 
 
