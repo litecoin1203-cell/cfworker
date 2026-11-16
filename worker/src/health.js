@@ -56,7 +56,7 @@ const DETAIL_FA = {
   skipped: 'کنار گذاشته (برای بیشتر کاربران این اپراتور وصل نمی‌شود)',
   proto: 'پروتکل', ms: 'زمان (ms)', s: 'ثانیه', err: 'خطای هسته', kind: 'نوع', tunnel: 'تانل وصل بود', trace: 'trace', reason: 'دلیل',
   min: 'دقیقه', rate: '٪ باتری در ساعت', drop: '٪ افت باتری', off: '٪ صفحه خاموش', opt: 'بهینه‌سازی باتری روشن', route: 'مسیر',
-  tried: 'امتحان‌شده', bridge: 'پل', stage: 'مرحله', expected: 'کشور مورد انتظار', actual: 'کشور واقعی', misses: 'پینگ از دست رفته',
+  tried: 'امتحان‌شده', bridge: 'پل', ways: 'راه‌های دانلود (o خط باز، t تانل، b پل · نتیجه · مگ)', stage: 'مرحله', expected: 'کشور مورد انتظار', actual: 'کشور واقعی', misses: 'پینگ از دست رفته',
   sessions: 'جلسه', ok: 'موفق', fail: 'ناموفق', minutes: 'دقیقه‌ی وصل', moved: 'شبکه عوض شد', status: 'کد', what: 'توضیح اندروید',
   // a native crash (Pleat 1.2.38+): what the crash itself said, and what the tunnel was doing
   sig: 'سیگنال', go: 'panic هسته (Go)', abort: 'پیام abort', cause: 'علت', thread: 'رشته (thread)', lib: 'کتابخانه', frames: 'فریم‌ها',
