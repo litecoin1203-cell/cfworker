@@ -346,111 +346,217 @@ class ApiClient {
   }
 
   /// How long a download may go without a byte before the way is dropped.
-  static const _idle = Duration(seconds: 40);
+  static const _idle = Duration(seconds: 30);
+
+  /// What the last [download] tried, one entry per way, for the update
+  /// failure report: which way (tunnel `t`, open line `o` or bridge `b`,
+  /// and the address by its place in [bases], never its name), how it
+  /// ended and the MB it brought. For example `o0 reset 12.3; o1 tls 0`.
+  String downloadTrail = '';
 
   /// Streams a Worker file (the update APK) into [out]. What [out] already
   /// holds is kept and the rest asked for with a Range request, so a
-  /// dropped download goes on where it stopped, on whichever way answers
-  /// now (open line, tunnel or bridge). [onProgress] gets the bytes in the
-  /// file so far; [stop] returning true aborts with code `stopped`.
+  /// dropped download goes on where it stopped. A way that breaks is not
+  /// asked again in this call: the next round takes another address on the
+  /// open line, and when none is left (and the tunnel is down) the bridge,
+  /// since some lines answer `/health` but cut or block a large file.
+  /// [onProgress] gets the bytes in the file so far. [cancel] completing (or
+  /// [stop] returning true) ends it at once with code `stopped`, also while
+  /// a way is being picked, a connection is opening or the line is silent.
   Future<void> download(
     String path,
     File out, {
     void Function(int bytes)? onProgress,
     bool Function()? stop,
+    Future<void>? cancel,
   }) async {
     if (!configured) {
       throw ApiError(0, 'no_server', 'This build has no server address.');
     }
+    final trail = <String>[];
+    downloadTrail = '';
+    var cancelled = false;
+    HttpClientRequest? live;
+    cancel?.then((_) {
+      cancelled = true;
+      live?.abort();
+    });
+    bool stopped() => cancelled || (stop?.call() ?? false);
+    final stopError = ApiError(0, 'stopped', 'Download stopped.');
+    Future<T> until<T>(Future<T> f) => cancel == null
+        ? f
+        : Future.any<T>([f, cancel.then<T>((_) => throw stopError)]);
+
     Object? lastError;
     var refreshed = false;
-    for (var round = 0; round < 3; round++) {
-      final _Way way;
-      try {
-        way = await _pick(_ways(direct: false), direct: false);
-      } on ApiError {
-        if (lastError == null) rethrow;
-        break;
-      }
-      final have = await out.exists() ? await out.length() : 0;
-      HttpClientRequest? req;
-      try {
-        req = await _client(way.proxy)
-            .openUrl('GET', Uri.parse('${way.base}/api/v1$path'))
-            .timeout(_timeout);
-        final r = req;
-        r.persistentConnection = false;
-        _deviceHeaders.forEach(r.headers.set);
-        if (tokens.access != null) {
-          r.headers.set('authorization', 'Bearer ${tokens.access}');
-        }
-        if (have > 0) r.headers.set('range', 'bytes=$have-');
-        final res = await r.close().timeout(_timeout);
-        if (res.statusCode == 401 && !refreshed) {
-          await res.drain<void>();
-          refreshed = true;
-          if (await _refresh() == _Refresh.ok) {
-            round--;
-            continue;
-          }
-          throw _error(401, null);
-        }
-        if (res.statusCode == 416) {
-          // Nothing left to send: the file is already whole (or too long,
-          // which the hash check then says).
-          await res.drain<void>();
-          return;
-        }
-        if (res.statusCode != 200 && res.statusCode != 206) {
-          final text = await res.transform(utf8.decoder).join();
-          dynamic data;
-          try {
-            data = jsonDecode(text);
-          } on FormatException {
-            data = null;
-          }
-          throw _error(res.statusCode, data);
-        }
-        _keep(way);
-        trace?.call('GET', path.split('?').first, res.statusCode);
-        var pos = res.statusCode == 206 ? have : 0;
-        onProgress?.call(pos);
-        final sink = out.openWrite(
-          mode: res.statusCode == 206 ? FileMode.append : FileMode.write,
-        );
+    final failed = <String>{};
+    final rounds = _bases.length + 2;
+    try {
+      for (var round = 0; round < rounds; round++) {
+        if (stopped()) throw stopError;
+        final _Way way;
         try {
-          await for (final piece in res.timeout(_idle)) {
-            if (stop?.call() ?? false) {
-              r.abort();
-              throw ApiError(0, 'stopped', 'Download stopped.');
-            }
-            sink.add(piece);
-            pos += piece.length;
-            onProgress?.call(pos);
-            // the bridge carried a call: keep it up while the file flows
-            if (way.proxy != null && way.proxy == detours?.bridge) {
-              detours?.used();
-            }
-          }
-        } finally {
-          await sink.close();
+          final ways = _ways(direct: false)
+              .where((w) => !failed.contains(w.key))
+              .toList();
+          final d = detours;
+          way = ways.isEmpty && d != null && d.tunnel == null
+              // every open address broke on this file: try the bridge
+              ? await until(_pickNow(const [], direct: false, bridge: true))
+              : await until(_pick(ways, direct: false));
+        } on ApiError catch (e) {
+          if (e.code == 'stopped' || lastError == null) rethrow;
+          break;
         }
-        return;
-      } on SocketException catch (e) {
-        lastError = e;
-      } on TimeoutException catch (e) {
-        lastError = e;
-      } on HttpException catch (e) {
-        lastError = e;
-      } on HandshakeException catch (e) {
+        final have = await out.exists() ? await out.length() : 0;
+        var pos = have;
+        HttpClientRequest? req;
+        try {
+          final r = await until<HttpClientRequest>(
+            _client(way.proxy)
+                .openUrl('GET', Uri.parse('${way.base}/api/v1$path'))
+                .timeout(_timeout),
+          );
+          req = r;
+          live = r;
+          if (stopped()) {
+            r.abort();
+            throw stopError;
+          }
+          r.persistentConnection = false;
+          _deviceHeaders.forEach(r.headers.set);
+          if (tokens.access != null) {
+            r.headers.set('authorization', 'Bearer ${tokens.access}');
+          }
+          if (have > 0) r.headers.set('range', 'bytes=$have-');
+          final res = await until(r.close().timeout(_timeout));
+          if (res.statusCode == 401 && !refreshed) {
+            await res.drain<void>();
+            refreshed = true;
+            if (await _refresh() == _Refresh.ok) {
+              round--;
+              continue;
+            }
+            throw _error(401, null);
+          }
+          if (res.statusCode == 416) {
+            // Nothing left to send: the file is already whole (or too long,
+            // which the hash check then says).
+            await res.drain<void>();
+            return;
+          }
+          if (res.statusCode != 200 && res.statusCode != 206) {
+            final text = await res.transform(utf8.decoder).join();
+            dynamic data;
+            try {
+              data = jsonDecode(text);
+            } on FormatException {
+              data = null;
+            }
+            trail.add('${_wayName(way)} http${res.statusCode}');
+            throw _error(res.statusCode, data);
+          }
+          _keep(way);
+          trace?.call('GET', path.split('?').first, res.statusCode);
+          pos = res.statusCode == 206 ? have : 0;
+          onProgress?.call(pos);
+          final sink = out.openWrite(
+            mode: res.statusCode == 206 ? FileMode.append : FileMode.write,
+          );
+          // read by hand, not with await-for, so that Stop can cancel the
+          // read while the line is silent instead of waiting for a byte
+          final flowed = Completer<void>();
+          final sub = res
+              .timeout(_idle)
+              .listen(
+                (piece) {
+                  if (flowed.isCompleted) return;
+                  sink.add(piece);
+                  pos += piece.length;
+                  onProgress?.call(pos);
+                  // the bridge carried a call: keep it up while the file flows
+                  if (way.proxy != null && way.proxy == detours?.bridge) {
+                    detours?.used();
+                  }
+                },
+                onError: (Object e, StackTrace st) {
+                  if (!flowed.isCompleted) flowed.completeError(e, st);
+                },
+                onDone: () {
+                  if (!flowed.isCompleted) flowed.complete();
+                },
+                cancelOnError: true,
+              );
+          try {
+            await until(flowed.future);
+          } finally {
+            if (!flowed.isCompleted) {
+              flowed.complete();
+              unawaited(sub.cancel());
+              r.abort();
+            }
+            await sink.close();
+          }
+          if (stopped()) throw stopError;
+          trail.add('${_wayName(way)} ok ${_mb(pos - have)}');
+          return;
+        } on ApiError {
+          req?.abort();
+          rethrow;
+        } on SocketException catch (e) {
+          lastError = e;
+        } on TimeoutException catch (e) {
+          lastError = e;
+        } on HttpException catch (e) {
+          lastError = e;
+        } on HandshakeException catch (e) {
+          // a line that cuts the TLS handshake for one address may still
+          // let another one through
+          lastError = e;
+        }
         req?.abort();
-        throw _offline(e);
+        if (stopped()) throw stopError;
+        trail.add(
+          '${_wayName(way)} ${_failKind(lastError, pos > have)} '
+          '${_mb(pos - have)}',
+        );
+        failed.add(way.key);
+        if (_good?.key == way.key) _good = null;
       }
-      req?.abort();
-      if (_good?.key == way.key) _good = null;
+      throw _offline(lastError);
+    } finally {
+      live = null;
+      downloadTrail = trail.join('; ');
     }
-    throw _offline(lastError);
   }
+
+  String _wayName(_Way w) {
+    final i = _bases.indexOf(w.base);
+    final kind = w.proxy == null
+        ? 'o'
+        : w.proxy == detours?.tunnel
+        ? 't'
+        : 'b';
+    return '$kind$i';
+  }
+
+  static String _mb(int bytes) => (bytes / (1024 * 1024)).toStringAsFixed(1);
+
+  /// How a way broke, in one word for the failure report.
+  static String _failKind(Object? e, bool moved) => switch (e) {
+    HandshakeException() => 'tls',
+    TimeoutException() => moved ? 'stall' : 'timeout',
+    SocketException(:final message, :final osError) =>
+      '$message ${osError?.message ?? ''}'.toLowerCase().contains('reset')
+          ? 'reset'
+          : '$message ${osError?.message ?? ''}'.toLowerCase().contains(
+              'refused',
+            )
+          ? 'refused'
+          : 'socket',
+    HttpException() => moved ? 'cut' : 'closed',
+    _ => 'error',
+  };
 
   Future<dynamic> _send(
     String method,
