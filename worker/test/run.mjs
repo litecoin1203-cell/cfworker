@@ -6724,6 +6724,116 @@ section('CF-05: the Worker\'s error log survives the end of the request and a wr
   await env.DB.prepare("DELETE FROM worker_errors WHERE message LIKE 'cf05%'").run();
 }
 
+section('PNL-10: server names stay put when a panel is missing; a panel that is down serves its last list to the same user only');
+{
+  const { unify, collectLinks } = await import('../src/panels.js');
+  const { serverKey } = await import('../src/netstats.js');
+  const L = (host, remark) => `vless://u@${host}:443?security=tls&type=ws#${encodeURIComponent(remark)}`;
+  const nameOf = (l) => decodeURIComponent(l.split('#')[1]);
+  const de1 = L('a.pnl10.example.com', '🇩🇪 Germany'), de2 = L('b.pnl10.example.com', '🇩🇪 Germany');
+  const de3 = L('c.pnl10.example.com', '🇩🇪 Germany'), nl = L('d.pnl10.example.com', '🇳🇱 Netherlands');
+  ok(unify([de1, de2, nl]).map(nameOf).join() === '🇩🇪 DE 1,🇩🇪 DE 2,🇳🇱 NL 1', 'PNL-10: with nothing remembered the numbering is as before');
+  // the names the user saw last time (user_skeys keeps them without the flag, as /vpn/servers sent them)
+  const prev = { [serverKey(de1)]: 'DE 1', [serverKey(de2)]: 'DE 2', [serverKey(nl)]: 'NL 1' };
+  let names = unify([de2, nl], {}, null, null, prev).map(nameOf);
+  ok(names.join() === '🇩🇪 DE 2,🇳🇱 NL 1', 'PNL-10: DE 1 is missing today, DE 2 is still DE 2: ' + names.join());
+  names = unify([de3, de2], {}, null, null, prev).map(nameOf);
+  ok(names.join() === '🇩🇪 DE 1,🇩🇪 DE 2', 'PNL-10: a new server takes the lowest free number, never a remembered one in use: ' + names.join());
+  names = unify([de1, de2], {}, null, null, { [serverKey(de1)]: 'DE 2', [serverKey(de2)]: 'DE 2' }).map(nameOf);
+  ok(names.join() === '🇩🇪 DE 2,🇩🇪 DE 1', 'PNL-10: two servers never share a number: ' + names.join());
+  names = unify([de3, de2], {}, null, null, prev, true).map(nameOf);
+  ok(names.join() === '🇩🇪 DE 3,🇩🇪 DE 2', 'PNL-10: while a panel gave nothing, a new server does not take the number of one missing now: ' + names.join());
+  names = unify([de3, de1], { [serverKey(de3)]: '🇩🇪 DE 1' }).map(nameOf);
+  ok(names.join() === '🇩🇪 DE 1,🇩🇪 DE 2', 'PNL-10: an admin label that reads "DE 1" keeps that number for itself: ' + names.join());
+  names = unify([L('e.pnl10.example.com', 'fast'), L('f.pnl10.example.com', 'slow')], {}, null, null, { [serverKey(L('f.pnl10.example.com', 'x'))]: 'Server 2' }).map(nameOf);
+  ok(names.join() === 'Server 1,Server 2', 'PNL-10: servers with no country keep their number too: ' + names.join());
+  names = unify([de1, de2], {}, null, null, { [serverKey(de1)]: 'NL 3', [serverKey(de2)]: 'My fast one' }).map(nameOf);
+  ok(names.join() === '🇩🇪 DE 1,🇩🇪 DE 2', 'PNL-10: a remembered name of another country or a free label is not reused: ' + names.join());
+
+  // through the app: one user with configs from the panels, then the panels die
+  const H = { 'x-device-id': 'pnl10-phone', 'x-hwid': 'pnl10-phone' };
+  const tokA = await signup('pnl10a@example.com', { device: 'pnl10-phone' });
+  await signup('pnl10b@example.com', { device: 'pnl10b-phone' });
+  await admin(`/grant pnl10a@example.com ${tenGb.id}`);
+  await admin(`/grant pnl10b@example.com ${tenGb.id}`);
+  const tokB = (await call('POST', '/api/v1/auth/login', { json: { email: 'pnl10b@example.com', password: 'password123' } })).data.access_token;
+  const byKey = (list) => Object.fromEntries((Array.isArray(list) ? list : []).map((x) => [serverKey(x.link), x.name]));
+  const s0 = await call('GET', '/api/v1/vpn/servers', { token: tokA, headers: H });
+  await drain();
+  const panelsOfA = new Set(s0.data.map((x) => x.panel));
+  ok(s0.status === 200 && panelsOfA.size >= 2, 'PNL-10: the user has configs from two panels or more: ' + [...panelsOfA].join());
+  const allPanels = Object.values(fakes.panels);
+  const setDown = (on) => { for (const p of allPanels) p.down = on; };
+
+  // every panel down: the same user (same phone) gets the list they had, with the same names
+  setDown(true);
+  const s1 = await call('GET', '/api/v1/vpn/servers', { token: tokA, headers: H });
+  await drain();
+  ok(s1.status === 200 && JSON.stringify(byKey(s1.data)) === JSON.stringify(byKey(s0.data)),
+    'PNL-10: panels down: the last good list of this user is served, same names: ' + s1.status + ' ' + JSON.stringify(byKey(s1.data)));
+  // never another user's: B never loaded a list, so B has nothing to fall back on
+  const sb = await call('GET', '/api/v1/vpn/servers', { token: tokB, headers: { 'x-device-id': 'pnl10b-phone', 'x-hwid': 'pnl10b-phone' } });
+  await drain();
+  ok(sb.status === 503 && !s0.data.some((x) => JSON.stringify(sb.data || {}).includes(x.link.split('#')[0])),
+    'PNL-10: another user with every panel down gets 503, never the first user\'s configs: ' + sb.status);
+  // nor another phone of the same user (panel 1 counts phones by HWID)
+  const other = await collectLinks(env, await userId('pnl10a@example.com'), { 'x-hwid': 'pnl10-other-phone' });
+  ok(other.links.length === 0, 'PNL-10: the kept list is per phone too: ' + other.links.length);
+  const counted = await collectLinks(env, await userId('pnl10a@example.com'), H);
+  ok(counted.links.length === s0.data.length && counted.reached === 0 && counted.stale === panelsOfA.size,
+    'PNL-10: a kept list does not count as a panel that answered: ' + JSON.stringify({ reached: counted.reached, stale: counted.stale }));
+  setDown(false);
+
+  // the kept list gone (another isolate): one panel down, the other panel's servers keep their names
+  globalThis.__cgSubCache?.clear();
+  fakes.pg.down = true;
+  const s2 = await call('GET', '/api/v1/vpn/servers', { token: tokA, headers: H });
+  await drain();
+  fakes.pg.down = false;
+  const k0 = byKey(s0.data), k2 = byKey(s2.data);
+  const moved = Object.keys(k2).filter((k) => k0[k] !== k2[k]);
+  ok(s2.status === 200 && Object.keys(k2).length > 0 && Object.keys(k2).length < Object.keys(k0).length && !moved.length,
+    'PNL-10: panel 1 down and nothing kept: the other servers keep yesterday\'s names: ' + moved.map((k) => `${k0[k]} -> ${k2[k]}`).join(', '));
+  const saved = JSON.parse((await env.DB.prepare('SELECT keys FROM user_skeys WHERE user_id = ?').bind(await userId('pnl10a@example.com')).first()).keys);
+  ok(Object.keys(k0).every((k) => saved[k] === k0[k]), 'PNL-10: a list with a panel missing keeps that panel\'s names in user_skeys: ' + Object.keys(saved).length);
+  // and once panel 1 is back, its servers take their old names again (nobody took them meanwhile)
+  const s3 = await call('GET', '/api/v1/vpn/servers', { token: tokA, headers: H });
+  await drain();
+  ok(JSON.stringify(byKey(s3.data)) === JSON.stringify(k0), 'PNL-10: panel 1 back: every name as on the first day');
+
+  // a panel that answers its first format with no share links and whose /links is down: the kept list too
+  fakes.pg.subJson = true; fakes.pg.altStatus = 502;
+  for (const p of allPanels) if (p !== fakes.pg) p.down = true;
+  const sAlt = await call('GET', '/api/v1/vpn/servers', { token: tokA, headers: H });
+  await drain();
+  fakes.pg.subJson = false; fakes.pg.altStatus = 0; setDown(false);
+  ok(sAlt.status === 200 && JSON.stringify(byKey(sAlt.data)) === JSON.stringify(k0), 'PNL-10: /links down after an answer without links serves the kept list: ' + sAlt.status);
+  // a phone that sends no HWID (an old client) never gets a kept list: two such phones could not be told apart
+  const uidA = await userId('pnl10a@example.com');
+  await collectLinks(env, uidA, {});
+  setDown(true);
+  const noHwid = await collectLinks(env, uidA, {});
+  setDown(false);
+  ok(noHwid.links.length === 0, 'PNL-10: nothing is kept or served without an HWID: ' + noHwid.links.length);
+  // a 500 can be the panel's answer about this account: not covered by the kept list
+  for (const p of allPanels) p.subStatus = 500;
+  const s500 = await call('GET', '/api/v1/vpn/servers', { token: tokA, headers: H });
+  await drain();
+  for (const p of allPanels) p.subStatus = 0;
+  ok(s500.status === 503, 'PNL-10: a 500 is not hidden behind the kept list: ' + s500.status);
+  // a panel whose proxy answers 502 is down too: the kept list is served
+  for (const p of allPanels) p.subStatus = 502;
+  const s4 = await call('GET', '/api/v1/vpn/servers', { token: tokA, headers: H });
+  await drain();
+  ok(s4.status === 200 && JSON.stringify(byKey(s4.data)) === JSON.stringify(k0), 'PNL-10: a 502 from the panels serves the kept list: ' + s4.status);
+  // a panel that answers "no such account" is not down: nothing kept is served
+  for (const p of allPanels) p.subStatus = 404;
+  const s5 = await call('GET', '/api/v1/vpn/servers', { token: tokA, headers: H });
+  await drain();
+  for (const p of allPanels) p.subStatus = 0;
+  ok(s5.status === 410, 'PNL-10: an account the panel no longer has is not hidden behind the kept list: ' + s5.status);
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));

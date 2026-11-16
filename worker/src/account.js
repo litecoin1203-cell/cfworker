@@ -255,7 +255,8 @@ export async function vpnServers(env, user, request) {
     if (m?.panel) s.panel = m.panel;
     return s;
   });
-  try { const { rememberKeys } = await import('./netstats.js'); await rememberKeys(env, user, list); } catch (e) { /* stats only */ }
+  // a list with a panel missing keeps that panel's remembered names, so they are still there when it is back (PNL-10)
+  try { const { rememberKeys } = await import('./netstats.js'); await rememberKeys(env, user, list, r.partial ? r.names : null); } catch (e) { /* stats only */ }
   return json(list);
 }
 

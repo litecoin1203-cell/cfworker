@@ -83,7 +83,7 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | `POST /me/health` | `health.report` | Pleat's batched health reports (PR #73). Limited per user; capped per day in `health.js` `LIMITS`. |
 | `POST /trial` | `account.startTrial` | free trial (needs verified Telegram when `trial_needs_telegram=1`) |
 | `GET /vpn` | `account.vpn` | connect pre-check; registers the device (`403 device_limit`, `402 no_subscription`, `410 sub_missing`) |
-| `GET /vpn/servers` | `account.vpnServers` | the user's exits from every panel, unified names (`🇩🇪 DE 2`), `tunnel: true` for Iran-tunnel configs, `panel: <n>` (P1/P2 tag). Creates missing panel accounts on demand. `503 panel_unavailable` = account rows exist but no links came back. |
+| `GET /vpn/servers` | `account.vpnServers` | the user's exits from every panel, unified names (`🇩🇪 DE 2`), `tunnel: true` for Iran-tunnel configs, `panel: <n>` (P1/P2 tag). Creates missing panel accounts on demand. A server keeps the number this user saw last time (`user_skeys`, PNL-10). A panel that is down (no answer, 408/502/503/504/52x, also on its `/links` fallback) serves the list it last gave this user on this phone (isolate memory, ≤ 12 h, only with an `x-hwid`; never on 403/404/429/500). `503 panel_unavailable` = account rows exist but no links came back and nothing was kept. |
 | `GET /vpn/sub` | `account.vpnSub` | old-app subscription format (retired app) |
 | `POST /net/report` | `netstats.report` | ping / speed results per server key (crowd ranking). Limited per user (`RL_IP`). |
 | `GET /net/rank` | `netstats.rank` | ranking for the caller's operator (ASN), plus the Google map. Limited per user (`RL_PUB`, fail open). |

@@ -475,6 +475,18 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 - **Server list** (`/vpn/servers`): subscriptions of all panels are fetched (in parallel, 5 s deadline per
   panel on the user path since PR #45), placeholders dropped (Rebecca emits a `0 B / ∞` row at `127.0.0.1:1`),
   duplicates merged, names unified to `🇩🇪 DE 2`, `server_overrides` applied.
+  **Stable names and a kept list (PNL-10)**: the number is shared by all of a user's panels, so it used to shift when
+  a panel was missing or listed its hosts in another order. Now a server keeps the number this user was shown last
+  time (`user_skeys`, one extra read, written only when the list changes) if it still fits its country and is free;
+  new servers take the lowest free number; an admin label that reads like "🇩🇪 DE 1" keeps that number for itself.
+  While a panel gives nothing, its servers' names stay in `user_skeys` (at most 200 keys) and their numbers stay
+  reserved, so they come back under the same names. A panel that is down (no answer in time, 408/502/503/504/52x,
+  also on the `/links` fallback) serves the list it last gave **this user on this phone** (key: user id + the
+  account's sub path + HWID; no HWID = nothing kept), kept in isolate memory only (no D1 write, no subrequest,
+  ≤ 12 h, ≤ 500 lists per isolate); 403/404/429/500 are answers, never covered by it, and a kept list does not count
+  as a panel that answered (`reached`).
+  A fresh isolate has nothing kept, so a first request there while the panel is down still gets fewer servers
+  (or 503 with one panel).
   The country comes from `worker/src/countries.js` (`countryOfLink`): flag emoji, English/Persian country or
   city name, a two-letter code token, then a host label like `de1.`. Before that only a flag counted, so remarks
   without a flag showed as "Unknown country". No country → `Server N`; the bot's server card shows the panel's
@@ -989,6 +1001,8 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 **2026-11-16 — Release audit leftovers (branch `claude/w3-leftovers`, no version bump).**
 - AND-05: Pleat says in the app picker and the privacy check (not only on the Route card) that Android's "Block
   connections without VPN" leaves Split route apps with no internet.
+- PNL-10: a server keeps the number a user saw last (`DE 2` stays `DE 2` while DE 1's panel is down); a panel that is
+  down serves the list it last gave the same user on the same phone (isolate memory, no D1 write).
 
 ---
 
@@ -1132,6 +1146,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | Bot: 🗂 پنل‌های کاربر ran the app-update announce (shared route `upa`) | route renamed `m:uac` — #55 |
 | PNL-01 a panel answering a 200 HTML page (CDN challenge) threw a SyntaxError → every purchase failed, panel 1 ran ahead of D1 | non-JSON body = `PasarGuardError(bad_json)`; any error fails only that panel (dirty) |
 | CF-02 bot work (approve → provision, panel test) runs in `waitUntil`, cut 30 s after the reply; 15 s per panel call could pass it | bot work carries one 22 s panel deadline, each call ≤ 8 s; a slow panel fails as a panel error (dirty → sync) and the admin still gets the answer |
+| PNL-10 a server's name ("DE 2") moved when another panel was down or reordered its hosts; a down panel took its configs out of the list (503 with one panel) | a server keeps the number the user saw last (`user_skeys`); a down panel (no answer / 502-504) serves its last list for the same user and phone from isolate memory, ≤ 12 h, no D1 write |
 | PNL-02 an account created on a panel whose D1 write never ran stayed active as an orphan, and the retry made a second one | intent row first (`applied = 'pending'`), adopt own 409 by note, cron `settlePending` |
 | QA-02 branch coverage 64-74% on sms, nowpayments, chainwatch and the panel adapters (the error paths that move money) | tests for forwarder formats, odd SMS, every SMS outcome, IPN signatures, watcher filters, adapter logins/fallbacks; per-file ≥ 80% branch gate (`coverage:money`) |
 | SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |

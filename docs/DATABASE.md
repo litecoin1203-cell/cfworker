@@ -96,7 +96,7 @@ near the quota, panel resets or a user coming online. Stored "online now" = seen
 | `net_geo` | same per ISP + province in 3-hour buckets, plus speed (`kb_sum/kb_n`) |
 | `net_votes`, `net_speed_votes`, `google_votes` | one vote per user per server per bucket/day (anti-stuffing) |
 | `google_probe` | what Google sees per exit (country, Gemini open, Search wall); fed by Pleat's Protect › Google location (PR #82) through `/net/google` |
-| `user_skeys` | which server keys each user really has (votes from other keys are ignored) |
+| `user_skeys` | which server keys each user really has (votes from other keys are ignored), with the name each was shown (a server keeps its number, PNL-10) |
 | `user_net`, `user_net_srv` | one user's own networks and per-server results (bot "📶 تجربه اتصال") |
 
 Server key = FNV-1a of `type|host|port` (`netstats.serverKey`, same in Pleat). It never contains an address.
