@@ -884,6 +884,8 @@ class ApiClient {
     'plan_not_found': 'This plan isn’t available.',
     'insufficient_balance': 'Your wallet balance isn’t enough for this plan.',
     'wrong_password': 'The current password is wrong.',
+    'confirm_required': 'Type DELETE to confirm.',
+    'open_orders': 'You have a payment in progress. Delete your account after it is done or cancelled.',
     'not_found': 'Not found.',
     'amount_too_large': 'That amount is above the limit.',
     'amount_too_small': 'That amount is below the minimum.',

@@ -71,4 +71,73 @@ void main() {
     final ss = endpointOf('ss://YWVzLTI1Ni1nY206cHdA@1.2.3.4:8388#x')!;
     expect((ss.type, ss.host, ss.port), ('shadowsocks', '1.2.3.4', '8388'));
   });
+
+  // UX-03: Pleat is English only; a Persian plan name, badge or description
+  // from the server never reaches the screen.
+  test('UX-03: plans show the English name, badge and description', () {
+    final fa = RegExp(r'[\u0600-\u06FF]');
+    final p = PlanInfo.fromJson({
+      'id': 1,
+      'name': '\u06cc\u06a9 \u0645\u0627\u0647\u0647',
+      'name_en': 'Gold',
+      'badge': '\u0645\u062d\u0628\u0648\u0628',
+      'badge_en': 'Popular',
+      'description': '\u0628\u0631\u0627\u06cc \u0647\u0645\u0647',
+      'description_en': '',
+      'duration_days': 30,
+      'data_limit_gb': 50,
+    });
+    expect((p.name, p.badge, p.description), ('Gold', 'Popular', ''));
+    // an older Worker without the English fields
+    final old = PlanInfo.fromJson({
+      'id': 2,
+      'name': '\u06cc\u06a9 \u0633\u0627\u0644\u0647',
+      'badge': '\u0645\u062d\u0628\u0648\u0628',
+      'description': '\u0628\u0631\u0627\u06cc \u0647\u0645\u0647',
+      'duration_days': 365,
+      'data_limit_gb': 0,
+    });
+    expect(
+      (old.name, old.badge, old.description),
+      ('1 year \u00b7 Unlimited', '', ''),
+    );
+    final latin = PlanInfo.fromJson({
+      'id': 3,
+      'name': 'Monthly',
+      'badge': 'Best value',
+      'duration_days': 30,
+    });
+    expect((latin.name, latin.badge), ('Monthly', 'Best value'));
+    final sub = Subscription.fromJson({
+      'plan_name': '\u06cc\u06a9 \u0645\u0627\u0647\u0647',
+      'plan_name_en': 'Gold',
+    });
+    expect(sub.planName, 'Gold');
+    expect(
+      Subscription.fromJson({
+        'plan_name': '\u06cc\u06a9 \u0645\u0627\u0647\u0647',
+      }).planName,
+      '',
+    );
+    final pk = Package.fromJson({
+      'name': '\u06cc\u06a9 \u0645\u0627\u0647\u0647',
+      'source': 'order',
+    });
+    expect(pk.name, 'Package');
+    final o = Order.fromJson({
+      'plan_name': '\u06cc\u06a9 \u0645\u0627\u0647\u0647',
+      'plan_name_en': 'Gold',
+      'activate_plan_name': '\u06cc\u06a9 \u0633\u0627\u0644\u0647',
+    });
+    expect((o.planName, o.activatePlanName), ('Gold', 'Your plan'));
+    // the admin's own Persian announcement is laid out right to left
+    expect(
+      rtlText('\u0633\u0644\u0627\u0645 \u062f\u0648\u0633\u062a\u0627\u0646'),
+      isTrue,
+    );
+    expect(rtlText('Maintenance tonight'), isFalse);
+    for (final s in [p.name, old.name, sub.planName, pk.name, o.planName]) {
+      expect(fa.hasMatch(s), isFalse, reason: s);
+    }
+  });
 }

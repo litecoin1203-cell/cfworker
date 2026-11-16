@@ -26,13 +26,16 @@ Future<(AppState, FakeApi)> _boot(
   bool signedIn = true,
   Tunnel? tunnel,
   String? avatar = 'vesper',
+  bool hasPassword = true,
 }) async {
   PType.familyOverride = 'PleatTest';
   tester.view.physicalSize = const Size(1080, 2340);
   tester.view.devicePixelRatio = 2.75;
   addTearDown(tester.view.reset);
   SharedPreferences.setMockInitialValues(prefs);
-  final api = FakeApi(MemoryTokens(signedIn: signedIn))..avatar = avatar;
+  final api = FakeApi(MemoryTokens(signedIn: signedIn))
+    ..avatar = avatar
+    ..hasPassword = hasPassword;
   final state = AppState(
     await SharedPreferences.getInstance(),
     api,
@@ -91,7 +94,7 @@ void main() {
     tester,
   ) async {
     await _boot(tester, {'onboarded': true});
-    expect(find.text('Recommended exits'), findsOneWidget);
+    expect(find.text('Recommended locations'), findsOneWidget);
     // Locations' own rows, with the test line under them.
     await tester.dragUntilVisible(
       find.text('RE-TEST'),
@@ -107,13 +110,13 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
     await tester.tap(find.text('Route'));
     await tester.pump(const Duration(milliseconds: 800));
-    expect(find.text('Recommended exits'), findsNothing);
+    expect(find.text('Recommended locations'), findsNothing);
     await tester.tap(find.text('Stats'));
     await tester.pump(const Duration(milliseconds: 800));
-    expect(find.text('Recommended exits'), findsNothing);
+    expect(find.text('Recommended locations'), findsNothing);
     await tester.tap(find.text('Now'));
     await tester.pump(const Duration(milliseconds: 800));
-    expect(find.text('Recommended exits'), findsOneWidget);
+    expect(find.text('Recommended locations'), findsOneWidget);
     await tester.pump(const Duration(seconds: 1));
   });
 
@@ -199,13 +202,13 @@ void main() {
     await tester.tap(find.textContaining('tap to see why'));
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('No answer: timeout'), findsOneWidget);
-    // the IR Tunnel chip shows only tunnel exits
+    // the Via Iran chip shows only tunnel exits
     await tester.scrollUntilVisible(
-      find.text('IR Tunnel'),
+      find.text('Via Iran'),
       -200,
       scrollable: find.byType(Scrollable).first,
     );
-    await tester.tap(find.text('IR Tunnel'));
+    await tester.tap(find.text('Via Iran'));
     await tester.pump(const Duration(milliseconds: 600));
     expect(app.category, Category.tunnel);
     expect(find.text('Finland'), findsOneWidget);
@@ -657,7 +660,7 @@ void main() {
     tunnel.emit(TunnelState.up);
     await tester.pump(PMotion.seal);
     expect(app.phase, Phase.protected);
-    expect(find.textContaining('Protected.'), findsOneWidget);
+    expect(find.textContaining('Protected · '), findsOneWidget);
     // Home's Now: the exit's address in place of a session clock.
     await tester.pump(const Duration(milliseconds: 400));
     expect(find.text('IP 185.220.101.42'), findsOneWidget);
@@ -1296,6 +1299,181 @@ void main() {
     expect(find.textContaining('Pleat: source code'), findsWidgets);
     expect(tester.takeException(), isNull);
     await tester.pump(const Duration(seconds: 1));
+  });
+
+  Future<void> openDelete(WidgetTester tester) async {
+    await tester.tap(find.textContaining(', Ali'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    final entry = find.byKey(const ValueKey('profile.delete'));
+    await tester.scrollUntilVisible(
+      entry,
+      300,
+      scrollable: find
+          .descendant(
+            of: find.byType(ProfileScreen),
+            matching: find.byType(Scrollable),
+          )
+          .first,
+    );
+    await tester.ensureVisible(entry);
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(entry);
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+  }
+
+  testWidgets('PRV-04: Profile deletes the account after the typed confirm '
+      'and the password', (tester) async {
+    final (app, api) = await _boot(tester, {
+      'onboarded': true,
+    }, tunnel: FakeTunnel());
+    await openDelete(tester);
+    // what is lost is said before anything happens
+    expect(find.textContaining('can’t be undone'), findsOneWidget);
+    expect(find.textContaining('wallet balance'), findsOneWidget);
+    final go = find.byKey(const ValueKey('delete.go'));
+    // without the typed word nothing is sent
+    await tester.enterText(
+      find.byKey(const ValueKey('delete.password')),
+      'password1',
+    );
+    await tester.tap(go);
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(api.deleteBodies, isEmpty);
+    // a wrong password is refused and the person stays signed in
+    await tester.enterText(
+      find.byKey(const ValueKey('delete.confirm')),
+      'DELETE',
+    );
+    await tester.enterText(
+      find.byKey(const ValueKey('delete.password')),
+      'nope-nope',
+    );
+    await tester.tap(go);
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(api.deleteBodies.length, 1);
+    expect(find.textContaining('password is wrong'), findsOneWidget);
+    expect(app.api.tokens.access, isNotNull);
+    // a payment in progress: refused, said plainly, still signed in
+    api.openOrders = true;
+    await tester.enterText(
+      find.byKey(const ValueKey('delete.password')),
+      'password1',
+    );
+    await tester.tap(go);
+    for (var i = 0; i < 5; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.textContaining('payment in progress'), findsOneWidget);
+    expect(app.api.tokens.access, isNotNull);
+    api.openOrders = false;
+    // the right one deletes, signs out and goes to sign-in
+    await tester.tap(go);
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(api.deleteBodies.last, {
+      'confirm': 'DELETE',
+      'password': 'password1',
+    });
+    expect(app.api.tokens.access, isNull);
+    expect(find.byType(LoginScreen), findsOneWidget);
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('PRV-04: an account without a password confirms with the '
+      'typed word alone', (tester) async {
+    final (_, api) = await _boot(
+      tester,
+      {'onboarded': true},
+      tunnel: FakeTunnel(),
+      hasPassword: false,
+    );
+    await openDelete(tester);
+    expect(find.byKey(const ValueKey('delete.password')), findsNothing);
+    await tester.enterText(
+      find.byKey(const ValueKey('delete.confirm')),
+      'delete',
+    );
+    await tester.tap(find.byKey(const ValueKey('delete.go')));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(api.deleteBodies.single, {'confirm': 'DELETE'});
+    expect(find.byType(LoginScreen), findsOneWidget);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  // UX-04: the main path speaks plain English. Protocols, "exit", ping in
+  // ms and "IR Tunnel" stay in detail screens (Route, a server's page).
+  testWidgets('UX-04: Home and Locations use no technical words', (
+    tester,
+  ) async {
+    final jargon = RegExp(
+      r'Handshak|VLESS|VMess|Trojan|Shadowsocks|Hysteria|REALITY|XHTTP|'
+      r'\bexits?\b|\d ms\b|\bms\b|IR Tunnel|Tunnel dropped',
+      caseSensitive: false,
+    );
+    List<String> texts() => [
+      for (final w in tester.widgetList<Text>(find.byType(Text)))
+        w.data ?? w.textSpan?.toPlainText() ?? '',
+      for (final w in tester.widgetList<RichText>(find.byType(RichText)))
+        w.text.toPlainText(),
+    ];
+    void clean(String where) {
+      for (final t in texts()) {
+        expect(jargon.hasMatch(t), isFalse, reason: '$where: "$t"');
+      }
+    }
+
+    final tunnel = FakeTunnel();
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    await tester.pump(const Duration(seconds: 2));
+    clean('Home, not connected');
+    await app.connect(app.exits[1].id);
+    await tester.pump(const Duration(milliseconds: 100));
+    clean('Home, connecting');
+    tunnel.emit(TunnelState.up);
+    await tester.pump(PMotion.seal);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(app.phase, Phase.protected);
+    clean('Home, protected');
+    expect(
+      find.textContaining('Protected · ${app.exit!.title}'),
+      findsOneWidget,
+    );
+    app.setTab(2);
+    for (var i = 0; i < 10; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    clean('Locations');
+    await app.disconnect();
+    await tester.pump(const Duration(seconds: 40));
+  });
+
+  testWidgets('UX-04: the connect button says Connecting, not Handshaking', (
+    tester,
+  ) async {
+    PType.familyOverride = 'PleatTest';
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Center(
+          child: ConnectControl(phase: Phase.handshaking, onTap: () {}),
+        ),
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    final handle = tester.ensureSemantics();
+    expect(find.bySemanticsLabel(RegExp('Handshak')), findsNothing);
+    expect(find.bySemanticsLabel(RegExp('^Connecting')), findsOneWidget);
+    handle.dispose();
+    await tester.pumpWidget(const SizedBox());
   });
 
   testWidgets('a long email fits one line on a small phone, domain kept', (

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 /// One full set of colour roles. Every Pleat screen reads its colours from
 /// the active palette through [PColors], so switching Day and Night is a
@@ -264,9 +263,13 @@ abstract final class PMotion {
       MediaQuery.maybeDisableAnimationsOf(context) ?? false;
 }
 
-/// Type is Plus Jakarta Sans everywhere. Tests swap the loader for a
-/// locally registered family so they never touch the network.
+/// Type is Plus Jakarta Sans everywhere, bundled in assets/fonts/ (PRV-02:
+/// no font is fetched at run time). Tests swap in a locally registered
+/// family.
 abstract final class PType {
+  /// The family declared under `fonts:` in pubspec.yaml.
+  static const family = 'PlusJakartaSans';
+
   static String? familyOverride;
 
   /// Fallback families for flag glyphs. Android finds its emoji font on
@@ -287,10 +290,7 @@ abstract final class PType {
       height: height,
       letterSpacing: tracking,
     );
-    if (familyOverride != null) {
-      return style.copyWith(fontFamily: familyOverride);
-    }
-    return GoogleFonts.plusJakartaSans(textStyle: style);
+    return style.copyWith(fontFamily: familyOverride ?? family);
   }
 
   /// The oversized instrument. Tight, semibold, tabular.

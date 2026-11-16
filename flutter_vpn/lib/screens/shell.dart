@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../api/models.dart';
 import '../design/icons.dart';
 import '../design/nav.dart';
 import '../design/scenes.dart';
@@ -262,7 +263,16 @@ Future<void> showNotices(BuildContext context) {
                             style: PType.h3().copyWith(fontSize: 15),
                           ),
                           const SizedBox(height: 3),
-                          Text(notices[i].body, style: PType.small()),
+                          Text(
+                            notices[i].body,
+                            style: PType.small(),
+                            // UX-03: the admin's announcement may be
+                            // Persian; it reads right to left, not
+                            // scrambled in an LTR line
+                            textDirection: rtlText(notices[i].body)
+                                ? TextDirection.rtl
+                                : TextDirection.ltr,
+                          ),
                           if (notices[i].action == 'plans') ...[
                             const SizedBox(height: 10),
                             PillButton(

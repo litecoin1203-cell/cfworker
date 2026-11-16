@@ -6063,6 +6063,157 @@ section('payments audit PAY-07: a bank SMS the parser cannot read reaches the ad
   await env.DB.prepare("UPDATE settings SET value = ? WHERE key = 'sms_senders'").bind(keep).run();
 }
 
+section('PRV-04: a user can delete their own account (Pleat and Mini App), and a delete leaves no personal data behind');
+{
+  const row = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first());
+  const exec = (sql, ...a) => env.DB.prepare(sql).bind(...a).run();
+  const count = async (t, id) => (await row(`SELECT COUNT(*) c FROM ${t} WHERE user_id = ?`, id)).c;
+  const PERSONAL = ['devices', 'user_net', 'user_net_srv', 'net_votes', 'net_speed_votes', 'google_votes', 'user_skeys', 'health_events'];
+  const seed = async (id) => {
+    const t = Math.floor(Date.now() / 1000);
+    await exec("INSERT INTO user_net (user_id, asn, kind, isp, geo, first_at, last_at, reports) VALUES (?, 64500, 'cell', 'Example Mobile', 'Tehran', ?, ?, 3)", id, t, t);
+    await exec("INSERT INTO user_net_srv (user_id, asn, kind, skey, ok, at) VALUES (?, 64500, 'cell', 'k0000001', 1, ?)", id, t);
+    await exec("INSERT INTO net_votes (user_id, asn, geo, skey, bucket) VALUES (?, 64500, 'Tehran', 'k0000001', 1)", id);
+    await exec("INSERT INTO net_speed_votes (user_id, asn, geo, skey, bucket) VALUES (?, 64500, 'Tehran', 'k0000001', 1)", id);
+    await exec("INSERT INTO google_votes (user_id, skey, day) VALUES (?, 'k0000001', 1)", id);
+    await exec("INSERT OR REPLACE INTO user_skeys (user_id, keys, at) VALUES (?, '{}', ?)", id, t);
+    await exec("INSERT INTO health_events (user_id, day, fp, prio, type, first_at, last_at, model) VALUES (?, 1, 'f00000001', 2, 'connect_fail', ?, ?, 'Pixel')", id, t, t);
+    await exec("INSERT INTO tg_logins (nonce_hash, created_at, expires_at, link_user_id) VALUES (?, ?, ?, ?)", 'prv04-' + id, t, t + 600, id);
+  };
+
+  // Pleat: email + password account with a trial running on a panel and a Telegram link
+  const tok = await signup('prv04@example.com', { device: 'prv04-phone' });
+  const id = await userId('prv04@example.com');
+  await exec("UPDATE users SET tg_id = 770001, tg_username = 'prv04_tg', tg_name = 'Prv', avatar = 'folk-3', wallet_balance = 5000 WHERE id = ?", id);
+  await exec("INSERT INTO wallet_tx (user_id, amount, balance_after, reason, created_at) VALUES (?, 5000, 5000, 'admin', ?)", id, Math.floor(Date.now() / 1000));
+  const trialPlan = await row('SELECT id FROM plans WHERE trial_days > 0 AND is_active = 1 ORDER BY id LIMIT 1');
+  const tr = await call('POST', '/api/v1/trial', { token: tok, json: { plan_id: trialPlan.id }, headers: { 'x-device-id': 'prv04-phone' } });
+  ok(tr.status === 200 || tr.status === 201, 'PRV-04 setup: trial started: ' + tr.status + ' ' + JSON.stringify(tr.data));
+  await drain();
+  const acct = await row('SELECT remote_username FROM panel_accounts WHERE user_id = ? AND panel_id = 1', id);
+  ok(!!acct, 'PRV-04 setup: the user has a panel account');
+  await seed(id);
+
+  ok((await call('GET', '/api/v1/me', { token: tok })).data.has_password === true, 'PRV-04: /me says the account has a password (Pleat asks for it)');
+  const r0 = await call('POST', '/api/v1/me/delete', { token: tok, json: { password: 'password123' } });
+  ok(r0.status === 422 && (await row('SELECT is_active FROM users WHERE id = ?', id)).is_active === 1, 'PRV-04: no delete without the typed confirmation: ' + r0.status);
+  const r1 = await call('POST', '/api/v1/me/delete', { token: tok, json: { confirm: 'DELETE', password: 'wrong-password' } });
+  ok(r1.status === 400 && r1.data?.detail?.code === 'wrong_password' && (await row('SELECT is_active FROM users WHERE id = ?', id)).is_active === 1, 'PRV-04: a Pleat account with a password must give it: ' + r1.status);
+  // a payment in progress (pending / review / settling) would later be paid into a deleted account: refused
+  for (const status of ['pending', 'review', 'settling']) {
+    const oid = (await exec("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, 1000, 'card', ?, ?)", id, trialPlan.id, status, Math.floor(Date.now() / 1000))).meta.last_row_id;
+    const ro = await call('POST', '/api/v1/me/delete', { token: tok, json: { confirm: 'DELETE', password: 'password123' } });
+    ok(ro.status === 409 && ro.data?.detail?.code === 'open_orders' && (await row('SELECT is_active FROM users WHERE id = ?', id)).is_active === 1,
+      `PRV-04: no delete while an order is ${status}: ` + ro.status + ' ' + JSON.stringify(ro.data));
+    await exec("UPDATE orders SET status = 'cancelled' WHERE id = ?", oid);
+  }
+  const r2 = await call('POST', '/api/v1/me/delete', { token: tok, json: { confirm: 'DELETE', password: 'password123' } });
+  await drain();
+  ok(r2.status === 200 && r2.data?.deleted === true, 'PRV-04: POST /me/delete deletes the account: ' + r2.status + ' ' + JSON.stringify(r2.data));
+  const u = await row('SELECT * FROM users WHERE id = ?', id);
+  ok(u.email === `deleted+${id}@invalid` && u.is_active === 0 && u.tg_id === null && u.tg_username === null && u.tg_name === '' && u.avatar === null,
+    'PRV-04: email, Telegram and character are gone, account off');
+  ok(!String(u.password_hash).startsWith('pbkdf2$'), 'PRV-04: the password hash is erased');
+  for (const t of PERSONAL) ok(await count(t, id) === 0, `PRV-04: ${t} rows of the deleted user are removed`);
+  ok(!(await row('SELECT 1 x FROM tg_logins WHERE link_user_id = ?', id)), 'PRV-04: pending Telegram links of the user are removed');
+  ok(await count('panel_accounts', id) === 0 && fakes.pg.users[acct.remote_username]?.status === 'disabled', 'PRV-04: the panel account is switched off and let go');
+  ok((await row('SELECT state FROM subscriptions WHERE user_id = ?', id)).state === 'stopped', 'PRV-04: the plan is ended');
+  ok(await count('wallet_tx', id) === 1, 'PRV-04: wallet history stays for accounting (as the policy says)');
+  ok((await call('GET', '/api/v1/me', { token: tok })).status === 401, 'PRV-04: the old session no longer works');
+  ok((await call('POST', '/api/v1/auth/login', { json: { email: 'prv04@example.com', password: 'password123' } })).status === 401, 'PRV-04: the old email no longer signs in');
+  const aud = await row("SELECT * FROM admin_audit WHERE action = 'user.self_delete' AND target_id = ?", String(id));
+  ok(aud && !String(aud.summary).includes('prv04') && !String(aud.summary).includes('@'), 'PRV-04: the admin log records the self-delete without the email or username: ' + JSON.stringify(aud));
+  ok((await call('POST', '/api/v1/me/delete', { token: tok, json: { confirm: 'DELETE', password: 'password123' } })).status === 401, 'PRV-04: a second delete with the old token is refused');
+
+  // Mini App: an account made with one tap has no password; Telegram proved who it is, the typed confirmation is enough
+  const { createHmac } = await import('node:crypto');
+  const sign = (fields) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(env.TELEGRAM_BOT_TOKEN).digest();
+    return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+  };
+  const init = sign({ query_id: 'AA', user: JSON.stringify({ id: 770002, first_name: 'Mini', username: 'prv04_mini' }), auth_date: String(Math.floor(Date.now() / 1000)) });
+  const mreg = await call('POST', '/api/v1/auth/tg/webapp/register', { json: { init_data: init } });
+  const mid = (await row('SELECT id FROM users WHERE tg_id = 770002')).id;
+  await seed(mid);
+  ok((await call('GET', '/api/v1/me', { token: mreg.data.access_token })).data.has_password === false, 'PRV-04: /me says a one-tap Mini App account has no password');
+  const m1 = await call('POST', '/api/v1/me/delete', { token: mreg.data.access_token, json: { confirm: 'DELETE' } });
+  ok(m1.status === 200 && (await row('SELECT is_active, tg_id FROM users WHERE id = ?', mid)).tg_id === null, 'PRV-04: the Mini App deletes its account with the confirmation alone: ' + m1.status);
+  for (const t of PERSONAL) ok(await count(t, mid) === 0, `PRV-04: Mini App delete removes ${t}`);
+
+  // the admin delete (bot / Mini App admin) removes the same personal data
+  await signup('prv04-admin@example.com', { device: 'prv04-a' });
+  const aid = await userId('prv04-admin@example.com');
+  await seed(aid);
+  const acts = await import('../src/admin-actions.js');
+  const ad = await acts.runAction(env, '12345', 'user.delete', { userId: aid });
+  ok(ad.ok !== false, 'PRV-04: admin delete runs: ' + JSON.stringify(ad).slice(0, 200));
+  const adAud = await row("SELECT summary FROM admin_audit WHERE action = 'user.delete' AND target_id = ? ORDER BY id DESC LIMIT 1", String(aid));
+  ok(adAud && !adAud.summary.includes('prv04-admin') && !adAud.summary.includes('@'), 'PRV-04: the admin delete log has no email or username: ' + JSON.stringify(adAud));
+  for (const t of PERSONAL) ok(await count(t, aid) === 0, `PRV-04: admin delete removes ${t} too`);
+  ok(!String((await row('SELECT password_hash FROM users WHERE id = ?', aid)).password_hash).startsWith('pbkdf2$'), 'PRV-04: admin delete erases the password hash');
+}
+
+section('UX-03: Pleat and the Mini App get English plan names and badges (the owner sets them in the bot), with a safe fallback');
+{
+  const row = async (sql, ...a) => (await env.DB.prepare(sql).bind(...a).first());
+  const acts = await import('../src/admin-actions.js');
+  const PERSIAN = /[؀-ۿ]/;
+  const A = { chat: { id: 12345 } };
+  let mid = 7000;
+  const tap = (data) => tgWebhook({ callback_query: { id: 'ux3-' + (mid++), data, message: { ...A, message_id: 970, text: 'menu' } } });
+  const say = (text) => tgWebhook({ message: { ...A, text, message_id: mid++ } });
+  // a plan the owner named and badged in Persian, with a Persian description
+  const c = await acts.runAction(env, '12345', 'plan.create', { name: 'طلایی', days: 30, gb: 50, devices: 2, price: 150000 });
+  const pid = c.targetId;
+  await acts.runAction(env, '12345', 'plan.set', { id: pid, field: 'badge', raw: 'پیشنهاد ویژه' });
+  await acts.runAction(env, '12345', 'plan.set', { id: pid, field: 'desc', raw: 'برای همه' });
+  const pl = async () => (await call('GET', '/api/v1/plans')).data.find((p) => p.id === pid);
+  let p = await pl();
+  ok(p.name === 'طلایی', 'UX-03: name stays as the owner wrote it (the old app reads it)');
+  ok(p.name_en === '1 month · 50 GB' && p.badge_en === 'Recommended' && p.description_en === '',
+    'UX-03: without an English name the fallback is made from the numbers; a known Persian badge is translated; Persian description dropped: ' + JSON.stringify(p));
+  const all = (await call('GET', '/api/v1/plans')).data;
+  ok(all.every((x) => !PERSIAN.test(x.name_en + x.badge_en + x.description_en) && x.name_en), 'UX-03: no plan has Persian in an English field');
+
+  // the owner sets the English name and badge from the plan card (buttons, then a typed value)
+  const scr = await (await import('../src/telegram-screens.js')).plan(env, pid);
+  const btns = scr.kb.flat().map((x) => x.callback_data);
+  ok(btns.includes(`m:w:plan:${pid}:name_en`) && btns.includes(`m:w:plan:${pid}:badge_en`), 'UX-03: the plan card has buttons for the English name and badge');
+  await tap(`m:w:plan:${pid}:name_en`);
+  await say('Gold');
+  await tap(`m:w:plan:${pid}:badge_en`);
+  await say('Best pick');
+  p = await pl();
+  ok(p.name_en === 'Gold' && p.badge_en === 'Best pick' && p.name === 'طلایی', 'UX-03: the English name and badge set from the bot reach the app: ' + JSON.stringify(p));
+  const bad = await acts.runAction(env, '12345', 'plan.set', { id: pid, field: 'name_en', raw: 'طلایی' });
+  ok(bad.ok === false && (await pl()).name_en === 'Gold', 'UX-03: a Persian "English name" is refused');
+  const und = await acts.runAction(env, '12345', 'plan.set', { id: pid, field: 'name_en', raw: 'Gold Plus' });
+  ok((await pl()).name_en === 'Gold Plus', 'UX-03: renamed');
+  await acts.undoAction(env, '12345', und.auditId);
+  ok((await pl()).name_en === 'Gold', 'UX-03: undo puts the English name back');
+  ok((await (await import('../src/telegram-screens.js')).plan(env, pid)).text.includes('Gold'), 'UX-03: the plan card shows the English name');
+
+  // the same English name on the subscription, orders and packages
+  await signup('ux03@example.com', { device: 'ux03' });
+  const uid = await userId('ux03@example.com');
+  const tok = (await call('POST', '/api/v1/auth/login', { json: { email: 'ux03@example.com', password: 'password123' } })).data.access_token;
+  await acts.runAction(env, '12345', 'user.grant', { userId: uid, planId: pid });
+  await drain();
+  const me = (await call('GET', '/api/v1/me', { token: tok })).data;
+  ok(me.subscription && me.subscription.plan_name_en === 'Gold', 'UX-03: /me subscription has plan_name_en: ' + JSON.stringify(me.subscription && me.subscription.plan_name_en));
+  const pk = (await call('GET', '/api/v1/me/packages', { token: tok })).data;
+  ok(pk.length && pk[0].name_en === 'Gold', 'UX-03: packages have name_en');
+  const o = (await call('POST', '/api/v1/orders', { token: tok, json: { plan_id: pid, method: 'card' } })).data;
+  ok(o && o.plan_name_en === 'Gold', 'UX-03: an order has plan_name_en: ' + JSON.stringify(o).slice(0, 200));
+  // a cleared English name falls back again
+  await acts.runAction(env, '12345', 'plan.set', { id: pid, field: 'name_en', raw: '' });
+  ok((await pl()).name_en === '1 month · 50 GB', 'UX-03: an emptied English name falls back to the numbers');
+  ok((await import('../src/plan-en.js')).planEnName({ name: 'یک ساله', duration_days: 365, data_limit_gb: 0 }) === '1 year · Unlimited'
+    && (await import('../src/plan-en.js')).planEnName({ name: 'x', duration_days: 90, data_limit_gb: 100 }) === 'x'
+    && (await import('../src/plan-en.js')).planEnName({ name: 'هفتگی', duration_days: 7, data_limit_gb: 5 }) === '7 days · 5 GB', 'UX-03: fallback names');
+}
+
 // ================= Wave 2 audit fixes (PNL-01, PNL-02, CF-02, SEC-02): each on a fresh database =================
 // world(tag, n): a fresh database with n PasarGuard panels (1 = the env panel, the others active), its own env
 async function world(tag, n = 2, kinds = []) {

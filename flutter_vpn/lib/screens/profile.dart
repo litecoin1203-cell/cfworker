@@ -300,6 +300,22 @@ class _ProfileScreenState extends State<ProfileScreen> {
                     ),
                   ),
                 ),
+                const SizedBox(height: 14),
+                SurfaceCard(
+                  padding: const EdgeInsets.fromLTRB(20, 8, 10, 8),
+                  child: _Row(
+                    icon: PIcon.close,
+                    title: 'Delete account',
+                    body: 'Erases your account for good.',
+                    trailing: KeyedSubtree(
+                      key: const ValueKey('profile.delete'),
+                      child: _RowAction(
+                        'DELETE',
+                        onTap: () => _deleteAccount(context),
+                      ),
+                    ),
+                  ),
+                ),
                 const SizedBox(height: 22),
                 PillButton(
                   label: 'Sign out',
@@ -794,6 +810,165 @@ Future<void> _changePassword(BuildContext context) async {
   next.dispose();
   if (changed == true && context.mounted) {
     showNote(context, 'Password changed.');
+  }
+}
+
+/// Release audit PRV-04: the person deletes their own account. The sheet
+/// says what is lost first; nothing is sent until DELETE is typed, and an
+/// account with a password must give it.
+Future<void> _deleteAccount(BuildContext context) async {
+  final app = AppScope.read(context);
+  final deleted = await showModalBottomSheet<bool>(
+    context: context,
+    backgroundColor: Colors.transparent,
+    barrierColor: PColors.scrim,
+    isScrollControlled: true,
+    builder: (_) => _DeleteSheet(app: app),
+  );
+  if (deleted == true && context.mounted) {
+    Navigator.of(context).pushAndRemoveUntil(
+      FadeRoute(builder: (_) => const LoginScreen()),
+      (_) => false,
+    );
+  }
+}
+
+class _DeleteSheet extends StatefulWidget {
+  const _DeleteSheet({required this.app});
+  final AppState app;
+
+  @override
+  State<_DeleteSheet> createState() => _DeleteSheetState();
+}
+
+class _DeleteSheetState extends State<_DeleteSheet> {
+  final _password = TextEditingController();
+  final _confirm = TextEditingController();
+  late final bool _needsPassword = widget.app.me.value?.hasPassword ?? true;
+  String? _error;
+  var _busy = false;
+
+  @override
+  void dispose() {
+    _password.dispose();
+    _confirm.dispose();
+    super.dispose();
+  }
+
+  Future<void> _go() async {
+    if (_confirm.text.trim().toUpperCase() != 'DELETE') {
+      setState(() => _error = 'Type DELETE to confirm.');
+      return;
+    }
+    if (_needsPassword && _password.text.isEmpty) {
+      setState(() => _error = 'Enter your password.');
+      return;
+    }
+    setState(() => _busy = true);
+    final err = await widget.app.deleteAccount(
+      _needsPassword ? _password.text : null,
+    );
+    if (!mounted) return;
+    if (err == null) {
+      Navigator.of(context).pop(true);
+    } else {
+      setState(() {
+        _busy = false;
+        _error = err;
+      });
+    }
+  }
+
+  Widget _field(
+    Key key,
+    TextEditingController c,
+    String hint, {
+    bool secret = false,
+  }) => Container(
+    height: 56,
+    margin: const EdgeInsets.only(bottom: 12),
+    padding: const EdgeInsets.symmetric(horizontal: 22),
+    decoration: BoxDecoration(
+      color: PColors.field,
+      borderRadius: BorderRadius.circular(PRadius.pill),
+    ),
+    alignment: Alignment.centerLeft,
+    child: TextField(
+      key: key,
+      controller: c,
+      obscureText: secret,
+      autocorrect: false,
+      style: PType.body().copyWith(fontWeight: FontWeight.w700),
+      decoration: InputDecoration(
+        isCollapsed: true,
+        border: InputBorder.none,
+        hintText: hint,
+        hintStyle: PType.body(color: PColors.muted),
+      ),
+    ),
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: PColors.surface,
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(PRadius.sheet),
+        ),
+      ),
+      padding: EdgeInsets.fromLTRB(
+        24,
+        22,
+        24,
+        24 + MediaQuery.viewInsetsOf(context).bottom,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('Delete account', style: PType.h2()),
+            const SizedBox(height: 10),
+            Text(
+              'This can’t be undone. Your plan ends now, and its remaining '
+              'days and data, and any wallet balance, are lost. Your email, '
+              'Telegram link, character and devices are erased and every '
+              'phone is signed out. Orders and wallet history are kept for '
+              'accounting.',
+              style: PType.small(color: PColors.ink),
+            ),
+            const SizedBox(height: 16),
+            if (_needsPassword)
+              _field(
+                const ValueKey('delete.password'),
+                _password,
+                'Your password',
+                secret: true,
+              ),
+            _field(
+              const ValueKey('delete.confirm'),
+              _confirm,
+              'Type DELETE to confirm',
+            ),
+            if (_error != null)
+              Padding(
+                padding: const EdgeInsets.only(left: 18, bottom: 10),
+                child: Text(_error!, style: PType.small(color: PColors.alert)),
+              ),
+            KeyedSubtree(
+              key: const ValueKey('delete.go'),
+              child: PillButton(
+                label: _busy ? 'Deleting…' : 'Delete my account',
+                color: PColors.alert,
+                textColor: PColors.onAccent,
+                onTap: _busy ? null : _go,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }
 

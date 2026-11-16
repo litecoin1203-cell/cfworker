@@ -15,7 +15,7 @@ in the `CG_API_BASE` repo variable / the Pleat workflow's `api_base` input). The
 location and only roughly counted: they slow one client's burst, they are not a security boundary. Over the limit:
 `429 too_many_requests`. If the limiter itself fails (SEC-08):
 - **fail closed** (`429 too_many_requests`), where a secret can be guessed or someone without an account writes:
-  `/auth/login`, `/auth/tg/verify`, `/auth/change-password`, `/me/email`, `/me/telegram/verify`, `/coupons/check`,
+  `/auth/login`, `/auth/tg/verify`, `/auth/change-password`, `/me/delete`, `/me/email`, `/me/telegram/verify`, `/coupons/check`,
   `/admin/auth` and admin ops, `/auth/register`, `/auth/tg/start`, `/auth/tg/register`, `/auth/tg/webapp`,
   `/auth/tg/webapp/register`, `POST /mini/probe`, `/trial`, `/me/telegram/start`;
 - **fail open** (the request goes through), where closing would stop people connecting or paying and saves nothing:
@@ -55,7 +55,7 @@ account per Telegram id.
 | Method + path | Limit | Handler | Purpose |
 |---|---|---|---|
 | `GET /app-config` | account or IP (`RL_PUB`) | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`); payment methods that are set up and switched on (`card_enabled`, `wallet_enabled`, `crypto_enabled`, `coins`, PAY-08) |
-| `GET /plans` | account or IP (`RL_PUB`) | `account.plans` | active plans |
+| `GET /plans` | account or IP (`RL_PUB`) | `account.plans` | active plans. `name` / `badge` / `description` as the owner wrote them (Persian for the old app); `name_en` / `badge_en` / `description_en` are what English clients show (UX-03, `plan-en.js`: the owner's English text, else the Latin original, else made from the numbers, e.g. `1 month · 50 GB`; never Persian) |
 | `GET /ip` | account or IP (`RL_PUB`) | `account.myIp` | caller's IP/country (no login) |
 | `POST /auth/register` | IP (shared) + hourly budget | `auth.register` | email sign-up → tokens; `429 busy` when the hour's sign-up budget is spent |
 | `POST /auth/login` | IP + login | `auth.login` | email **or** Telegram @username + password → tokens |
@@ -74,9 +74,9 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 
 | Method + path | Handler | Purpose |
 |---|---|---|
-| `GET /me` | `account.me` | account + subscription (`status, days_left, used_bytes, data_limit_bytes, used_percent, …`). Live panel reading waits ≤ 1.5 s, else stored numbers. |
+| `GET /me` | `account.me` | account (subscription carries `plan_name` and English `plan_name_en`, UX-03; `has_password`: false for a one-tap Mini App account, PRV-04) + subscription (`status, days_left, used_bytes, data_limit_bytes, used_percent, …`). Live panel reading waits ≤ 1.5 s, else stored numbers. |
 | `GET /me/ip` | `index.js` | the request's IP, country, city (through the tunnel = the exit). `?k=<serverKey>` teaches the Worker that exit's real country (`panels.learnExitFromUser`, settings `server_exit_cc`; never IR; counted only from a user with a running plan for one of their own servers, one vote per user, a change needs 2 different users) and feeds a location-mismatch health check unless `&h=0`. |
-| `GET /me/packages` | `account.packages` | package history (`sub_periods`) |
+| `GET /me/packages` | `account.packages` | package history (`sub_periods`); each has `name` and English `name_en` |
 | `POST /me/email` | `auth.setEmail` | backup Gmail |
 | `POST /me/avatar` | `auth.setAvatar` | pick one of 14 Folk avatars (empty pick refused since PR #66) |
 | `POST /me/telegram/start`, `/me/telegram/verify` | `auth` | link / verify Telegram on an email account (start: per account + the Telegram link budget, `429 busy`) |
@@ -92,7 +92,7 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | `GET /devices`, `DELETE /devices/:id` | `account` | the user's phones |
 | `GET /wallet` | `orders.wallet` | balance + ledger |
 | `GET /referral` | `orders.referral` | invite code and earnings |
-| `GET /orders`, `POST /orders` | `orders` | list / create (wallet, card, coin, gateway). ≤ 3 open orders per method (`429 too_many_open_orders`). A method switched off or not set up: `400 method_unavailable`, nothing stored. |
+| `GET /orders`, `POST /orders` | `orders` | list / create (wallet, card, coin, gateway). ≤ 3 open orders per method (`429 too_many_open_orders`). A method switched off or not set up: `400 method_unavailable`, nothing stored. Each order has `plan_name` / `activate_plan_name` and the English `plan_name_en` / `activate_plan_name_en`. |
 | `GET /orders/:id` | `orders.getOrder` | one order. A crypto order is looked up on the explorer at most 5 times a minute per order (`RL_LOGIN` `chain:`); past that the stored state is returned. |
 | `POST /orders/:id/receipt` | `orders.uploadReceipt` | card receipt photo (`upload_id` dedupes offline retries) |
 | `POST /orders/:id/cancel` | `orders.cancelOrder` | cancel an open order |
@@ -100,6 +100,7 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | `GET /app/apk` | `appupdate.apkDownload` | proxies the announced APK from the `pleat-latest` release (public, like the repo; resumable) |
 | `POST /auth/change-password` | `auth.changePassword` | 5/min per user (`RL_LOGIN`; it checks the current password) |
 | `POST /auth/logout-all` | `auth.logoutAll` | bumps `token_version` |
+| `POST /me/delete` | `auth.deleteMe` | the user deletes their own account (PRV-04). Body `{confirm: "DELETE", password}`; the password is required unless the account has none (one-tap Mini App account) or the call carries a Mini App token. `422 confirm_required`, `400 wrong_password`, `409 open_orders` while an order is pending, in review or settling (it would be paid into a deleted account; finish or cancel it first); 5/min per user (`RL_LOGIN`). Runs `admin-actions.eraseUser` (the admin delete's erase: email, password hash, Telegram, character, devices, per-user network and health rows, pending Telegram links removed; plan stopped; panel accounts switched off and let go; every session ended; orders and wallet history kept) and logs `user.self_delete` without email or username (the admin `user.delete` row names only the user id too). → `{deleted: true}` |
 
 ## Admin API (Telegram Mini App admin panel) — `admin-api.js`
 

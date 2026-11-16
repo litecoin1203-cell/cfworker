@@ -13,8 +13,10 @@ export const UNDO_SECONDS = 600;
 const fa = (n) => Number(n || 0).toLocaleString('en-US');
 
 export const PLAN_FIELDS = { name: 'name', price: 'price_toman', old: 'old_price_toman', days: 'duration_days', gb: 'data_limit_gb', devices: 'device_limit',
-  trial: 'trial_days', badge: 'badge', sort: 'sort', on: 'is_active', desc: 'description' };
-const PLAN_COLS = new Set(Object.values(PLAN_FIELDS));
+  trial: 'trial_days', badge: 'badge', sort: 'sort', on: 'is_active', desc: 'description', name_en: 'name_en', badge_en: 'badge_en' };
+// UX-03: the English name and badge Pleat and the Mini App show live in a setting (plan-en.js), not in a column
+const EN_COLS = { name_en: 'name', badge_en: 'badge' };
+const PLAN_COLS = new Set(Object.values(PLAN_FIELDS).filter((c) => !(c in EN_COLS)));
 const TEXT_COLS = new Set(['name', 'badge', 'description']);
 const MASKED = new Set(['sms_key', 'app_bridges']); // never shown in the log (bridges are working configs)
 const show = (key, v) => (MASKED.has(key) && v ? '•••' : v === '' || v == null ? '(خالی)' : String(v).slice(0, 80));
@@ -29,12 +31,23 @@ export const ACTIONS = {
       if (!col) return fail('فیلد ناشناخته. فیلدها: ' + Object.keys(PLAN_FIELDS).join(' '));
       const p = await first(env, 'SELECT * FROM plans WHERE id = ?', parseInt(id, 10));
       if (!p) return fail('پلن پیدا نشد.');
+      if (col in EN_COLS) {
+        const { PERSIAN_RE, EN_MAX, setPlanEn } = await import('./plan-en.js');
+        let v = String(raw || '').trim();
+        if (v === '-') v = ''; // a dash clears it (the fallback is used again)
+        if (PERSIAN_RE.test(v)) return fail('فقط حروف انگلیسی؛ اپ Pleat و Mini App انگلیسی هستند.');
+        if (v.length > EN_MAX) return fail('حداکثر ۴۰ حرف.');
+        const before = await setPlanEn(env, p.id, EN_COLS[col], v);
+        return { targetId: p.id, summary: `${col}: ${show(col, before)} → ${show(col, v)}`, undo: { id: p.id, col, value: before },
+          text: `✅ پلن #${p.id}: ${field} = ${v || '(خالی، از روی حجم و مدت ساخته می‌شود)'}` };
+      }
       const val = TEXT_COLS.has(col) ? String(raw || '').trim() : parseInt(String(raw || '').replace(/[^\d]/g, '') || '0', 10);
       await run(env, `UPDATE plans SET ${col} = ? WHERE id = ?`, val, p.id);
       return { targetId: p.id, summary: `${col}: ${show(col, p[col])} → ${show(col, val)}`, undo: { id: p.id, col, value: p[col] },
         text: `✅ پلن #${p.id}: ${field} = ${val === '' ? '(خالی)' : val}` };
     },
     async undo(env, u) {
+      if (u.col in EN_COLS) { await (await import('./plan-en.js')).setPlanEn(env, u.id, EN_COLS[u.col], u.value || ''); return true; }
       if (!PLAN_COLS.has(u.col)) return false;
       await run(env, `UPDATE plans SET ${u.col} = ? WHERE id = ?`, u.value, u.id);
       return true;
@@ -258,6 +271,33 @@ const GB = 1024 ** 3;
 const DAY = 86400;
 export const DELETED_EMAIL = (id) => `deleted+${id}@invalid`;
 export const isDeleted = (u) => /^deleted\+\d+@invalid$/.test(String(u && u.email));
+
+// Deleting an account, by the admin (user.delete) or by the user (POST /me/delete, account.deleteMe; release audit
+// PRV-04). Removed: email (rewritten to DELETED_EMAIL, so it is free again), password hash, Telegram id / username /
+// name, character, last sign-in, devices, the per-user connection-quality rows (user_net, user_net_srv, net_votes,
+// net_speed_votes, google_votes, user_skeys), health reports and pending Telegram links. Every session ends
+// (token_version), the plan stops, and every panel account is switched off (never deleted there) and let go, so
+// the admin can link it to another app account later. Kept for accounting: orders, wallet history, plan periods,
+// coupon uses and the invite code / inviter. One batch plus the panel push: well inside 50 D1 queries.
+export async function eraseUser(env, u) {
+  await env.DB.batch([
+    st(env, `UPDATE users SET email = ?, password_hash = '', tg_id = NULL, tg_username = NULL, tg_name = '', avatar = NULL, is_active = 0,
+      last_login_at = NULL, token_version = token_version + 1 WHERE id = ?`, DELETED_EMAIL(u.id), u.id),
+    st(env, "UPDATE subscriptions SET state = 'stopped', stop_reason = 'admin' WHERE user_id = ?", u.id),
+    st(env, "UPDATE sub_periods SET ended_at = ?, end_reason = 'admin' WHERE user_id = ? AND ended_at IS NULL", nowSec(), u.id),
+    st(env, "UPDATE panel_accounts SET desired = 'removed', dirty = 1, attempts = 0 WHERE user_id = ? AND desired != 'removed'", u.id),
+    st(env, "UPDATE subscriptions SET pg_username = '', sub_url = '' WHERE user_id = ?", u.id),
+    ...['devices', 'user_net', 'user_net_srv', 'net_votes', 'net_speed_votes', 'google_votes', 'user_skeys', 'health_events']
+      .map((t) => st(env, `DELETE FROM ${t} WHERE user_id = ?`, u.id)),
+    st(env, 'DELETE FROM tg_logins WHERE link_user_id = ? OR (tg_id IS NOT NULL AND tg_id = ?)', u.id, u.tg_id ?? -1),
+  ]);
+  // switch every account off on its panel, then let go of all of them
+  const { pushPending } = await import('./sync.js');
+  await pushPending(env, { userId: u.id });
+  const accts = await all(env, 'SELECT panel_id, remote_username, dirty FROM panel_accounts WHERE user_id = ? ORDER BY panel_id', u.id);
+  if (accts.length) await run(env, 'DELETE FROM panel_accounts WHERE user_id = ?', u.id);
+  return { accts, stuck: accts.filter((a) => a.dirty) };
+}
 
 const userRow = (env, userId) => first(env, 'SELECT * FROM users WHERE id = ?', parseInt(userId, 10));
 const subRow = (env, userId) => first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', parseInt(userId, 10));
@@ -525,33 +565,19 @@ Object.assign(ACTIONS, {
       return true;
     },
   },
-  // soft delete: panels off, email and Telegram freed, sessions ended; orders and wallet history stay
+  // soft delete (eraseUser): panels off, personal data removed, sessions ended; orders and wallet history stay
   'user.delete': {
     risk: 'destructive', target: 'user',
     async apply(env, { userId }) {
       const u = await userRow(env, userId);
       if (!u) return fail('کاربر پیدا نشد.');
       if (isDeleted(u)) return fail('این کاربر قبلاً حذف شده است.');
-      await env.DB.batch([
-        st(env, `UPDATE users SET email = ?, tg_id = NULL, tg_username = NULL, tg_name = '', avatar = NULL, is_active = 0,
-          token_version = token_version + 1 WHERE id = ?`, DELETED_EMAIL(u.id), u.id),
-        st(env, "UPDATE subscriptions SET state = 'stopped', stop_reason = 'admin' WHERE user_id = ?", u.id),
-        st(env, "UPDATE sub_periods SET ended_at = ?, end_reason = 'admin' WHERE user_id = ? AND ended_at IS NULL", nowSec(), u.id),
-        st(env, "UPDATE panel_accounts SET desired = 'removed', dirty = 1, attempts = 0 WHERE user_id = ? AND desired != 'removed'", u.id),
-        st(env, "UPDATE subscriptions SET pg_username = '', sub_url = '' WHERE user_id = ?", u.id),
-        st(env, 'DELETE FROM devices WHERE user_id = ?', u.id),
-      ]);
-      // switch every account off on its panel, then let go of all of them: a panel account is never kept by a
-      // deleted user, so the admin can link it to another app account later (switched off, never deleted)
-      const { pushPending } = await import('./sync.js');
-      await pushPending(env, { userId: u.id });
-      const accts = await all(env, 'SELECT panel_id, remote_username, dirty FROM panel_accounts WHERE user_id = ? ORDER BY panel_id', u.id);
-      if (accts.length) await run(env, 'DELETE FROM panel_accounts WHERE user_id = ?', u.id);
-      const stuck = accts.filter((a) => a.dirty);
+      const { accts, stuck } = await eraseUser(env, u);
       const lines = [`🗑 کاربر حذف شد. سفارش‌ها و تاریخچه‌ی کیف پولش (موجودی ${fa(u.wallet_balance)} تومان) برای حساب‌رسی می‌ماند.`];
       if (accts.length) lines.push(`🔓 ${fa(accts.length)} اکانت پنلش (${accts.map((a) => `${a.remote_username} روی #${a.panel_id}`).join('، ')}) از این کاربر جدا شد و آزاد است؛ می‌توانی هر کدام را به کاربر دیگری وصل کنی.`);
       if (stuck.length) lines.push(`⚠️ این‌ها روی پنل خاموش نشدند (پنل جواب نداد)؛ دستی خاموششان کن: ${stuck.map((a) => `${a.remote_username} روی #${a.panel_id}`).join('، ')}`);
-      return { targetId: u.id, summary: `حذف ${u.email}${u.tg_username ? ' @' + u.tg_username : ''}${accts.length ? ` · آزاد: ${accts.map((a) => `#${a.panel_id} ${a.remote_username}`).join(', ')}` : ''}`,
+      // no email or @username in the log (it outlives the account and goes into backups): the user id is the target
+      return { targetId: u.id, summary: `حذف کاربر #${u.id}${accts.length ? ` · آزاد: ${accts.map((a) => `#${a.panel_id} ${a.remote_username}`).join(', ')}` : ''}`,
         text: lines.join('\n') };
     },
   },

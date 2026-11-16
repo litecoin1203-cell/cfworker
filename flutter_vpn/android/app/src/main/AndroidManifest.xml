@@ -1,5 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-    <!-- The Worker API, the tunnel, and Plus Jakarta Sans (fetched once by google_fonts). -->
+    <!-- The Worker API and the tunnel. (Plus Jakarta Sans is bundled; no font is fetched.) -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />

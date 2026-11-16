@@ -20,6 +20,9 @@ const PLAN_FIELDS = [
   { f: 'trial', label: 'Free trial days (0 = none)', get: (p) => p.trial_days, type: 'number', show: (p) => (p.trial_days ? plural(p.trial_days, 'day') : 'None') },
   { f: 'badge', label: 'Badge', get: (p) => p.badge, type: 'text', show: (p) => p.badge || 'None' },
   { f: 'desc', label: 'Description', get: (p) => p.description, type: 'textarea', show: (p) => p.description || 'None' },
+  // UX-03: what Pleat and the Mini App show (English only); empty = made from the numbers
+  { f: 'name_en', label: 'English name (shown in Pleat, empty = automatic)', get: (p) => p.name_en || '', type: 'text', show: (p) => p.name_en || `Automatic: ${p.shown_name || ''}` },
+  { f: 'badge_en', label: 'English badge (shown in Pleat)', get: (p) => p.badge_en || '', type: 'text', show: (p) => p.badge_en || (p.shown_badge ? `Automatic: ${p.shown_badge}` : 'None') },
 ];
 
 async function newPlanForm(nav, after) {

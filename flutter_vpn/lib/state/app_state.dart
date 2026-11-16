@@ -1808,6 +1808,22 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     return null;
   }
 
+  /// Deletes this account on the Worker (POST /me/delete, release audit
+  /// PRV-04), then signs out here. [password] is null for an account that
+  /// has none (one-tap Mini App account).
+  Future<String?> deleteAccount(String? password) async {
+    try {
+      await api.post('/me/delete', {
+        'confirm': 'DELETE',
+        'password': ?password,
+      });
+    } on ApiError catch (e) {
+      return e.message;
+    }
+    await signOut();
+    return null;
+  }
+
   void _forgetAccount() {
     _stopTimers();
     // Receipts belong to the account that signed out.

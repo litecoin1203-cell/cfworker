@@ -23,6 +23,16 @@ void main() {
             'detail': {'code': 'bad_credentials', 'message': 'رمز اشتباه'},
           }),
         );
+      } else if (req.uri.path.endsWith('/me/delete')) {
+        req.response.statusCode = 409;
+        req.response.write(
+          jsonEncode({
+            'detail': {
+              'code': 'open_orders',
+              'message': 'یک پرداخت هنوز در جریان است',
+            },
+          }),
+        );
       } else if (req.uri.path.endsWith('/fa')) {
         req.response.statusCode = 400;
         req.response.write(
@@ -41,6 +51,21 @@ void main() {
   ApiClient client() =>
       ApiClient(MemoryTokens(), bases: 'http://127.0.0.1:${server.port}')
         ..deviceModel = 'Samsung SM-A546E';
+
+  test('PRV-04: a delete refused for a payment in progress says so in '
+      'English', () async {
+    try {
+      await client().post('/me/delete', {'confirm': 'DELETE'});
+      fail('expected an error');
+    } on ApiError catch (e) {
+      expect(e.code, 'open_orders');
+      expect(
+        e.message,
+        'You have a payment in progress. Delete your account after it is '
+        'done or cancelled.',
+      );
+    }
+  });
 
   test('a wrong password and a dead line are different errors', () async {
     try {

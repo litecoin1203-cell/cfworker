@@ -455,11 +455,14 @@ export async function plan(env, id, extraRows = []) {
     FROM plans p WHERE p.id = ?`, id);
   if (!p) return { text: crumb('📦 پلن‌ها') + '\n\nپلن پیدا نشد.', kb: [nav('pl')] };
   const f = (field, label) => b(label, `m:w:plan:${p.id}:${field}`);
+  const { loadPlanEn, planEnName, planEnBadge, planEnOwn } = await import('./plan-en.js');
+  const en = await loadPlanEn(env);
   return {
     text: [crumb('📦 پلن‌ها', `#${p.id}`), '', `📦 پلن #${p.id} — ${p.name}`, '',
       `💰 قیمت: ${fa(p.price_toman)} تومان${p.old_price_toman ? ` (قبلی: ${fa(p.old_price_toman)})` : ''}`,
       `📦 حجم: ${p.data_limit_gb || 'نامحدود'} گیگ`, `📅 مدت: ${p.duration_days} روز`, `📱 دستگاه: ${p.device_limit || 'نامحدود'}`,
       `🎁 تست رایگان: ${p.trial_days ? p.trial_days + ' روز' : 'ندارد'}`, `⭐ نشان: ${p.badge || '—'}`,
+      `🔤 در اپ Pleat (انگلیسی): ${planEnName(p, en)}${planEnBadge(p, en) ? ` · ${planEnBadge(p, en)}` : ''}${planEnOwn(en, p.id, 'name') ? '' : ' (خودکار)'}`,
       `📝 توضیح: ${p.description ? String(p.description).slice(0, 200) : '—'}`,
       `🛒 فروش: ${fa(p.sold)} بار · ${fa(p.income)} تومان`,
       `وضعیت: ${p.archived ? '🗄 بایگانی (در اپ نیست)' : p.is_active ? `🟢 روشن (در اپ دیده می‌شود) · جایگاه ${fa(p.pos + 1)} از ${fa(p.total)}` : '🔴 خاموش'}`].join('\n'),
@@ -469,6 +472,7 @@ export async function plan(env, id, extraRows = []) {
       [f('days', '📅 روز'), f('gb', '📦 حجم')],
       [f('devices', '📱 دستگاه'), f('trial', '🎁 تست')],
       [f('name', '✏️ نام'), f('badge', '⭐ نشان'), f('desc', '📝 توضیح')],
+      [f('name_en', '🔤 نام انگلیسی'), f('badge_en', '🔤 نشان انگلیسی')],
       ...(p.archived ? [] : [[b('⬆️ بالاتر', `m:pmv:${p.id}:u`), b('⬇️ پایین‌تر', `m:pmv:${p.id}:d`)]]),
       p.archived ? [b('📤 برگرداندن از بایگانی', `m:pua:${p.id}`), b('📋 کپی', `m:pcp:${p.id}`)]
         : [b(p.is_active ? '🔴 خاموش کن' : '🟢 روشن کن', `m:pt:${p.id}`), b('📋 کپی', `m:pcp:${p.id}`), b('🗑 حذف', `m:pdl:${p.id}`)],

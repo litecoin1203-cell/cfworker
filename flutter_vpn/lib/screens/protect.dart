@@ -788,7 +788,7 @@ class _BatteryCard extends StatelessWidget {
         ),
         const SizedBox(height: 8),
         Text(
-          'Then a dropped exit isn’t noticed until you open Pleat again. '
+          'Then a dropped connection isn’t noticed until you open Pleat again. '
           'Let Pleat run without battery limits.',
           style: PType.small(),
         ),

@@ -10,6 +10,8 @@ import { refreshUser, usedBytes, ensureMissingFor } from './sync.js';
 import { gatewayReady } from './nowpayments.js';
 import { enabledCoins, coinOut } from './coins.js';
 import { notifyAdmin, untrusted } from './telegram.js';
+import { hasPassword } from './auth.js';
+import { loadPlanEn, planEnName, planEnBadge, planEnDescription } from './plan-en.js';
 import { profileOut } from './auth.js';
 
 export async function appConfig(env) {
@@ -46,7 +48,7 @@ const faName = (n) => FA_NAMES[String(n || '').trim().toLowerCase()] || n;
 const faBadge = (b) => FA_BADGES[String(b || '').trim().toLowerCase()] || b;
 export const planName = faName;
 
-function planOut(p) {
+function planOut(p, en) {
   const months = Math.max(1, Math.round(p.duration_days / 30));
   let save = 0;
   if (p.old_price_toman && p.old_price_toman > p.price_toman) save = Math.round((100 * (p.old_price_toman - p.price_toman)) / p.old_price_toman);
@@ -55,12 +57,15 @@ function planOut(p) {
     device_limit: p.device_limit, price_toman: p.price_toman, old_price_toman: p.old_price_toman,
     monthly_toman: Math.floor(p.price_toman / months), save_percent: save, badge: faBadge(p.badge),
     description: p.description, trial_days: p.trial_days,
+    // UX-03: what Pleat and the Mini App show (English only; plan-en.js)
+    name_en: planEnName(p, en), badge_en: planEnBadge(p, en), description_en: planEnDescription(p),
   };
 }
 
 export async function plans(env) {
   const rows = await all(env, 'SELECT * FROM plans WHERE is_active = 1 AND archived = 0 ORDER BY sort, id');
-  return json(rows.map(planOut));
+  const en = await loadPlanEn(env);
+  return json(rows.map((p) => planOut(p, en)));
 }
 
 // Subscription as the app shows it. The control plane decides; with live = true every panel of the user is read
@@ -100,7 +105,7 @@ export async function subscriptionOut(env, user, live = true, { withSubUrl = fal
   const usable = status === 'active';
   const out = {
     active: usable, status, stop_reason: usable ? null : (sub.stop_reason || (status === 'expired' ? 'expired' : status === 'limited' ? 'quota' : null)),
-    live: liveOk, plan_name: plan ? faName(plan.name) : null,
+    live: liveOk, plan_name: plan ? faName(plan.name) : null, plan_name_en: plan ? planEnName(plan, await loadPlanEn(env)) : null,
     expires_at: expires ? new Date(expires * 1000).toISOString() : null, days_left: daysLeft,
     seconds_left: expires ? Math.max(0, expires - now) : null,
     unlimited_time: !expires, unlimited_data: !dataLimit,
@@ -135,6 +140,7 @@ export async function me(env, user, request, ctx = null) {
     wallet_balance: user.wallet_balance, referral_code: user.referral_code,
     created_at: new Date(user.created_at * 1000).toISOString(),
     trial_available: await trialAvailable(env, user),
+    has_password: hasPassword(user), // Pleat's Delete account asks for it only when there is one
     // the Mini App never gets the panel subscription address (only the old app did)
     subscription: await subscriptionOut(env, user, true, { withSubUrl: !user._mini && !centralApp(request), ctx }),
   });
@@ -149,6 +155,7 @@ export async function packages(env, user) {
     FROM sub_periods p LEFT JOIN orders o ON o.id = p.order_id AND o.user_id = p.user_id
     WHERE p.user_id = ? ORDER BY p.started_at DESC, p.id DESC LIMIT 50`, user.id);
   const sub = await first(env, 'SELECT period_id FROM subscriptions WHERE user_id = ?', user.id);
+  const en = rows.some((r) => r.plan_id) ? await loadPlanEn(env) : {};
   const plans = {};
   const iso = (t) => (t ? new Date(t * 1000).toISOString() : null);
   const out = [];
@@ -162,6 +169,7 @@ export async function packages(env, user) {
     out.push({
       id: r.id, source, current,
       name: plan ? planName(plan.name) : (source === 'panel' ? 'Existing account' : 'Package'),
+      name_en: plan ? planEnName({ ...plan, id: r.plan_id }, en) : (source === 'panel' ? 'Existing account' : 'Package'),
       order_id: r.order_id || null,
       purchased_at: source === 'order' ? iso(r.o_paid || r.o_created) : null,
       activated_at: iso(r.started_at),

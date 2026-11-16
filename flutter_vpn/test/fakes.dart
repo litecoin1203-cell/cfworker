@@ -62,6 +62,15 @@ class FakeApi extends ApiClient {
   bool tgVerified = false;
   String email = 'ali@example.com';
 
+  /// False for a one-tap Mini App account (no password to confirm with).
+  bool hasPassword = true;
+
+  /// POST /me/delete answers 409 open_orders (a payment in progress).
+  bool openOrders = false;
+
+  /// The bodies POST /me/delete got.
+  final deleteBodies = <Map<String, Object?>>[];
+
   /// A character already picked, so most tests start past the avatar gate.
   String? avatar = 'vesper';
 
@@ -210,6 +219,7 @@ class FakeApi extends ApiClient {
           'wallet_balance': 0,
           'referral_code': 'X1',
           'trial_available': !hasPlan,
+          'has_password': hasPassword,
           'subscription': hasPlan ? sub : null,
         };
       case 'GET /me/packages':
@@ -259,6 +269,23 @@ class FakeApi extends ApiClient {
         }
         avatar = id;
         return {'avatar': avatar};
+      case 'POST /me/delete':
+        deleteBodies.add(body ?? const {});
+        if (body?['confirm'] != 'DELETE') {
+          throw ApiError(422, 'confirm_required', 'Type DELETE to confirm.');
+        }
+        if (hasPassword && body?['password'] != 'password1') {
+          throw ApiError(400, 'wrong_password', 'The password is wrong.');
+        }
+        if (openOrders) {
+          throw ApiError(
+            409,
+            'open_orders',
+            'You have a payment in progress. Delete your account after it is '
+                'done or cancelled.',
+          );
+        }
+        return {'deleted': true};
       case 'POST /me/email':
         if (body?['password'] != 'password1') {
           throw ApiError(400, 'wrong_password', 'The password is wrong.');

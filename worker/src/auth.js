@@ -7,6 +7,8 @@ const ACCESS_MIN = 30;
 const REFRESH_DAYS = 60;
 // same shape as a real hash (pbkdf2$iterations$salt$hash); never matches anything
 const DUMMY_HASH = `pbkdf2$5000$${'0'.repeat(32)}$${'0'.repeat(64)}`;
+// false for a one-tap Mini App account (DUMMY_HASH): it has no password to confirm a delete with
+export const hasPassword = (user) => Boolean(user.password_hash) && user.password_hash !== DUMMY_HASH;
 
 async function makeTokens(env, user) {
   const base = { sub: String(user.id), ver: user.token_version };
@@ -133,6 +135,30 @@ export async function changePassword(env, user, body) {
 export async function logoutAll(env, user) {
   await run(env, 'UPDATE users SET token_version = token_version + 1 WHERE id = ?', user.id);
   return new Response(null, { status: 204 });
+}
+
+// The user deletes their own account (Pleat Profile, Mini App; release audit PRV-04). The body must carry
+// confirm: "DELETE"; an account with a password must also give it (a stolen access token alone cannot delete),
+// a one-tap Mini App account has none and was proven by Telegram. The erase itself is the admin delete's
+// (admin-actions.eraseUser); the admin log gets one row without the email or Telegram username.
+export async function deleteMe(env, user, body) {
+  if (!body || body.confirm !== 'DELETE') throw err(422, 'confirm_required', 'Type DELETE to confirm.', 'confirm');
+  if (hasPassword(user) && !user._mini
+      && !(await verifyPassword(body.password || '', user.password_hash, env.SECRET_KEY))) {
+    throw err(400, 'wrong_password', 'رمز فعلی اشتباه است.', 'password');
+  }
+  // a payment still in progress would later be paid (SMS, chain, admin) into a deleted account: finish or cancel it first
+  if (await first(env, "SELECT 1 x FROM orders WHERE user_id = ? AND status IN ('pending', 'review', 'settling') LIMIT 1", user.id)) {
+    throw err(409, 'open_orders', 'یک پرداخت هنوز در جریان است؛ بعد از تمام یا لغو شدنش حساب را حذف کن.');
+  }
+  const { eraseUser } = await import('./admin-actions.js');
+  const { accts } = await eraseUser(env, user);
+  // panel names are often made from the Telegram username: only the panel numbers go in the log
+  const freed = accts.length ? ` · اکانت‌های پنل خاموش و آزاد شدند: ${accts.map((a) => `#${a.panel_id}`).join(', ')}` : '';
+  await insert(env, 'admin_audit', { admin_id: 'user', action: 'user.self_delete', target_type: 'user', target_id: String(user.id),
+    summary: `حذف حساب توسط خود کاربر · موجودی کیف پول ${Number(user.wallet_balance || 0).toLocaleString('en-US')} تومان${freed}`.slice(0, 300),
+    created_at: nowSec() });
+  return json({ deleted: true });
 }
 
 // ---------------- Telegram sign-up / login ----------------

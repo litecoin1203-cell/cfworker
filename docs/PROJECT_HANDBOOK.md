@@ -523,7 +523,7 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   network ranking, broadcast, stats, system (audit log, backup, health).
 - Risk levels: read / reversible (applied + 10-minute undo) / money or access (confirm, 2 min) / destructive
   (confirm with an impact summary). Every write goes through `admin-actions.js` with an audit row.
-- Notable screens: user card (subscription, wallet, devices, security, soft delete, "🔗 وصل اکانت پنل",
+- Notable screens: user card (subscription, wallet, devices, security, soft delete (`eraseUser`, same erase as the user's own delete), "🔗 وصل اکانت پنل",
   "📶 تجربه اتصال"), "👥 کاربران و اپراتورهایشان", "📱 اپ Pleat › 📲 نسخه‌ی اپ" (announce / mandatory /
   withdraw an update), panel list with rollout progress.
 - Broadcasts are sent 25 messages per `*/2` cron run (own invocation, own subrequest budget).
@@ -569,10 +569,19 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
 
 ### Look and feel
 - Design DNA: pale-blue ground, white radius-30 cards, navy/blue/ice/mist diagonal "shards", Plus Jakarta Sans,
-  pill controls. Name and mark (two offset folded planes) are original.
+  pill controls. The font is **bundled** (`assets/fonts/`, six static weights, SIL OFL 1.1 on the licence page;
+  release audit PRV-02): no `google_fonts`, nothing fetched at run time (that request went outside the tunnel
+  from the real IP). `test/fonts_test.dart` keeps it so. Name and mark (two offset folded planes) are original.
 - **Day/Night**: day = original sky blue (`PPalette.sky`), night = same blue on dark navy (`PPalette.skyNight`).
   ONE "Night mode" toggle in Profile, follows the phone until the user touches it. WCAG AA contrast test in
   `test/theme_test.dart`. Every colour comes from `PColors` (palette-driven) — never hardcode colours.
+- Plan names in English (release audit UX-03): the owner writes plans in Persian in the bot; Pleat and the Mini App
+  show only `name_en` / `badge_en` / `description_en` (`worker/src/plan-en.js`). The owner sets the English name and
+  badge on the bot's plan card (🔤 نام انگلیسی / 🔤 نشان انگلیسی; `-` = automatic) or in the Mini App admin; without
+  one the name is the Latin original or is made from the numbers (`1 month · 50 GB`), a known Persian badge is
+  translated, others are dropped. Stored in the setting `plan_names_en` (no migration).
+  Pleat's models (`_english` in `lib/api/models.dart`) and the Mini App (`planLabel`) also drop Persian from an
+  older Worker; the admin's announcement is laid out right to left when it is Persian (`rtlText`).
 - Plans: Ali sells **monthly data-volume plans**; the **big number is the GB** (∞ for no cap), days on a small
   line (`planBig`/`planUnit` in `screens/store_kit.dart`). Bot lists also lead with GB.
 - Profile: mandatory verified Telegram username + optional backup Gmail, then the **Plans shelf** (1.2.48, Ali's
@@ -585,11 +594,16 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
   logged, also stops the connect tries behind Stats) and Clear history now (sessions + connect tries). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
 - Locations (1.2.49, Ali's pick A "Country list", `screens/locations.dart`): navy **Fastest for you now** bar
   (best of `app.best` that answers; smart connect until anything is measured), filter chips All / Stealth /
-  IR Tunnel / Saved / Recent (`Category`), countries grouped by region (`regionOf` in `api/countries.dart`), best
-  first. A country row = its best server's badge, "N servers · best X ms", one pip per server (green answered,
+  Via Iran (was "IR Tunnel") / Saved / Recent (`Category`), countries grouped by region (`regionOf` in `api/countries.dart`), best
+  first. A country row = its best server's badge, "N servers · Fast" (a plain word, UX-04), one pip per server (green answered,
   red slow/weak, grey untested), CONNECT = best server, chevron opens its servers (`ExitRow`). Countries where
   nothing answers on this network fold into "Not answering on <net>" with the core's reason per server.
-- Home has three tabs: **Now** (country + city + exit IP from `/me/ip` through the tunnel, and Recommended exits),
+- **Plain words on the main path** (release audit UX-04): the connect button says Connecting (not Handshaking), the
+  stage line "Protected · Germany." (no protocol), Home and Locations say location / server, never exit, and how
+  well a server works is one word (`Exit.quality`: download speed when tested, else ping: Fast ≤ 150 ms, Fair ≤ 400,
+  Slow). Protocols and ms stay in detail: the rows of an opened country (`Exit.detailMeta`), a server's page, the
+  Route tab, Diagnostics. `test/smoke_test.dart` "UX-04" scans Home and Locations for jargon.
+- Home has three tabs: **Now** (country + city + exit IP from `/me/ip` through the tunnel, and Recommended locations),
   **Route** (how and where to connect) and **Stats**. See "Home tabs" below.
 - Notification "Pleat card" (`TunnelNote.kt`): flag tile, Protected dot, place · timer (system Chronometer),
   Disconnect + Change location. Colours follow the phone's night mode.
@@ -689,6 +703,15 @@ does not reach users by itself.
 - A few working exits are kept through sign-out so the bridge can still open on a filtered line.
 - **AvatarGate** (1.2.30): a new account must pick one of the 14 Folk characters before the app opens (no skip).
   The Telegram profile photo is not used anywhere.
+- **Delete account** (release audit PRV-04): a card under "Sign out everywhere" opens a sheet that says what is
+  lost (plan, remaining days and data, wallet balance; orders and wallet history kept), asks for the password
+  (only when `/me` says `has_password`) and the typed word DELETE, then `POST /me/delete` and back to sign-in. Refused (`409 open_orders`, shown in plain English) while an order is pending, in review or settling.
+  The Mini App Home has the same row (word only; a Mini App token needs no password). Worker: `auth.deleteMe` →
+  `admin-actions.eraseUser`, shared with the bot's soft delete: email rewritten, password hash, Telegram, character,
+  last sign-in, devices, `user_net*`, `net_votes`, `net_speed_votes`, `google_votes`, `user_skeys`,
+  `health_events` and pending `tg_logins` removed; plan stopped; panel accounts switched off (never deleted) and
+  let go; sessions ended. The admin log gets `user.self_delete` with the wallet balance and panel numbers, no email,
+  username or panel names.
 - App version is a signature at the end of Profile (Pleat mark, "Up to date · checked …", Check for updates).
   Long-press the version to send a test health report. Night mode toggle placement: **leave it as it is** (Ali
   rejected three alternatives).
@@ -696,7 +719,7 @@ does not reach users by itself.
   Flutter's `showLicensePage`. Besides the Dart packages Flutter lists itself, `lib/licenses.dart` registers the
   native parts from `assets/licenses/` with `LicenseRegistry`: AndroidLibXrayLite (LGPL-3.0 + GPL-3.0),
   Xray-core (MPL-2.0), hev-socks5-tunnel and its submodules (MIT, lwIP BSD), the geo data (GPL-3.0 + the
-  MaxMind GeoLite2 attribution, domain-list-community MIT), every Go module inside `libgojni.so`
+  MaxMind GeoLite2 attribution, domain-list-community MIT), the Plus Jakarta Sans font (OFL), every Go module inside `libgojni.so`
   (`go-modules.txt`) and the source offer (`SOURCE.txt`, entry "Pleat: source code", with the exact upstream
   tag / commit). A test ties `SOURCE.txt` to `XRAY_LIB_TAG` / `HEV_COMMIT` in the workflow; the manual APK run
   fails if `go-modules.txt` no longer matches the AAR's modules or the APK lacks the texts. After bumping

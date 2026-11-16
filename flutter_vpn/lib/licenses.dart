@@ -5,7 +5,8 @@ import 'package:flutter/services.dart';
 /// those by itself): the Xray engine (AndroidLibXrayLite, LGPL-3.0, with
 /// Xray-core, MPL-2.0, and the Go modules compiled into libgojni.so),
 /// hev-socks5-tunnel (MIT) with its submodules, and the geo routing data
-/// (GPL-3.0, GeoLite2 by MaxMind). The texts are in assets/licenses/;
+/// (GPL-3.0, GeoLite2 by MaxMind) and the Plus Jakarta Sans font (SIL OFL
+/// 1.1). The texts are in assets/licenses/;
 /// go-modules.txt is written by tool/go_licenses.py from the AAR's build
 /// info. The versions are the ones .github/workflows/flutter-vpn.yml pins.
 const thirdPartyLicenses = <(String, List<String>)>[
@@ -19,6 +20,7 @@ const thirdPartyLicenses = <(String, List<String>)>[
   ('lwIP', ['lwip.txt']),
   ('Routing data (geoip.dat, geosite.dat)', ['geo-data.txt', 'GPL-3.0.txt']),
   ('domain-list-community', ['domain-list-community.txt']),
+  ('Plus Jakarta Sans (font)', ['plus-jakarta-sans-OFL.txt']),
   // LEG-05: credit for the method (and the match strings) of Protect's Google checks
   (
     'RegionRestrictionCheck (method of the Google checks)',
