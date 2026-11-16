@@ -5763,6 +5763,18 @@ section('CI: each published APK build has its own fixed source tag, and a build 
   ok(/git\/refs\/tags\/pleat-latest"? -f sha="?\$GITHUB_SHA"? -F force=true/.test(pub), 'OPS-05: pleat-latest is moved to the built commit');
 }
 
+section('OPS-09: the public repo ignores the usual secret files');
+{
+  const { readFileSync } = await import('node:fs');
+  const { execFileSync } = await import('node:child_process');
+  const gi = readFileSync(new URL('../../.gitignore', import.meta.url), 'utf8').split('\n').map((l) => l.trim());
+  const want = ['*.jks', '*.keystore', '*.p12', '*.pem', '*.key', '.env', '.env.*', '.dev.vars', 'key.properties'];
+  ok(want.every((w) => gi.includes(w)), 'OPS-09: .gitignore has ' + want.filter((w) => !gi.includes(w)).join(', ') + ' missing');
+  let ignored = '';
+  try { ignored = execFileSync('git', ['check-ignore', '--no-index', 'worker/.dev.vars', 'flutter_vpn/android/key.properties', 'a/release.p12', 'x/.env.local'], { cwd: new URL('../..', import.meta.url).pathname, encoding: 'utf8' }); } catch (e) { ignored = e.stdout || ''; }
+  ok(ignored.trim().split('\n').filter(Boolean).length === 4, 'OPS-09: git ignores them anywhere in the tree: ' + JSON.stringify(ignored));
+}
+
 section('OPS-06: the daily Telegram backup restores into a new database');
 {
   const { backupJson } = await import('../src/telegram.js');

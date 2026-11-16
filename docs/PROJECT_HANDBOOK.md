@@ -123,6 +123,9 @@ These are not suggestions. Each one exists because something went wrong or Ali s
   "Deploy Cloud Gold server" (and the Pleat workflow for an app change).
 
 ### Secrets and privacy
+- `.gitignore` keeps out signing keys, certificates and local env files (`*.jks`, `*.keystore`, `*.p12`, `*.pem`,
+  `*.key`, `.env*`, `.dev.vars`, `key.properties`; OPS-09, test-checked). Ali: turn on GitHub **Secret scanning** and
+  **Push protection** (Settings › Code security; free for a public repo).
 - **The repo is public.** No secrets in code, logs, tests, docs or chat. Never echo panel logins, panel addresses or subscription links.
 - No panel URL, name, count or credentials anywhere user-facing (app, logs, bot output to users).
 - Tests use made-up config values, never Ali's real ones.
