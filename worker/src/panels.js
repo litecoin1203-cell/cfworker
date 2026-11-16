@@ -5,7 +5,7 @@ import { first, all, run, insert } from './db.js';
 import { nowSec, err, seal, openSealed, throttled } from './util.js';
 import { PasarGuard, PasarGuardError, decodeSub } from './pasarguard.js';
 import { Marzban, Rebecca, detectKind } from './marzban.js';
-import { serverKey, linkEndpoint } from './netstats.js';
+import { serverKey, linkEndpoint, vmessJson, linkRemark } from './netstats.js';
 import { flagToCc, countryFromRemark, countryFromHost } from './countries.js';
 
 export { flagToCc };
@@ -172,18 +172,7 @@ export async function recordHealth(env, panelId, okNow) {
 // ---------------- unified list ----------------
 const ccToFlag = (cc) => (/^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65)) : '');
 
-function remarkOf(link) {
-  const scheme = link.split('://', 1)[0].toLowerCase();
-  if (scheme === 'vmess') {
-    try {
-      let raw = link.split('://')[1];
-      raw += '='.repeat((4 - (raw.length % 4)) % 4);
-      return JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/'))).ps || '';
-    } catch (e) { return ''; }
-  }
-  const frag = link.split('#')[1] || '';
-  try { return decodeURIComponent(frag); } catch (e) { return frag; }
-}
+const remarkOf = linkRemark;
 
 // The country of one config: its panel remark first (flag, name or code), then a host label like "de1.".
 // Before this, only a flag emoji counted, so a remark such as "Germany Tunnel" or "آلمان" showed as an unknown country.
@@ -259,19 +248,16 @@ export async function learnExitFromUser(env, user, key, cc) {
 function withRemark(link, name) {
   const scheme = link.split('://', 1)[0].toLowerCase();
   if (scheme === 'vmess') {
-    try {
-      let raw = link.split('://')[1];
-      raw += '='.repeat((4 - (raw.length % 4)) % 4);
-      const j = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')));
-      j.ps = name;
-      return 'vmess://' + btoa(unescape(encodeURIComponent(JSON.stringify(j))));
-    } catch (e) { return link; }
+    const j = vmessJson(link);
+    if (!j) return link;
+    j.ps = name;
+    return 'vmess://' + btoa(unescape(encodeURIComponent(JSON.stringify(j))));
   }
   return link.split('#')[0] + '#' + encodeURIComponent(name);
 }
 
 // What kinds of configs a panel serves, for the admin ("vless·reality·tcp ×6"). Pleat's core takes vless,
-// vmess, trojan and shadowsocks; anything else (hysteria2, wireguard, tuic...) is counted as unusable.
+// vmess, trojan, shadowsocks, hysteria2 (hy2) and wireguard (wg); anything else (tuic, ...) is counted as unusable.
 export const APP_SCHEMES = ['vless', 'vmess', 'trojan', 'ss', 'hysteria2', 'hy2', 'wireguard', 'wg'];
 export function linkKinds(links) {
   const counts = {};
@@ -280,12 +266,8 @@ export function linkKinds(links) {
     const scheme = link.split('://', 1)[0].toLowerCase();
     let net = '', sec = '';
     if (scheme === 'vmess') {
-      try {
-        let raw = link.split('://')[1];
-        raw += '='.repeat((4 - (raw.length % 4)) % 4);
-        const j = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')));
-        net = j.net || 'tcp'; sec = j.tls || 'none';
-      } catch (e) { /* counted as plain vmess */ }
+      const j = vmessJson(link); // unreadable: counted as plain vmess
+      if (j) { net = j.net || 'tcp'; sec = j.tls || 'none'; }
     } else if (!['ss', 'hysteria2', 'hy2', 'wireguard', 'wg'].includes(scheme)) {
       const q = new URLSearchParams((link.split('?')[1] || '').split('#')[0]);
       net = q.get('type') || 'tcp'; sec = q.get('security') || 'none';
@@ -305,9 +287,8 @@ export function isPlaceholder(link) {
   let host = '', port = '';
   try {
     if (/^vmess:\/\//i.test(link)) {
-      let raw = link.slice(8).split('#')[0].trim().replace(/-/g, '+').replace(/_/g, '/');
-      raw += '='.repeat((4 - (raw.length % 4)) % 4);
-      const j = JSON.parse(atob(raw));
+      const j = vmessJson(link);
+      if (!j) return false;
       host = String(j.add || ''); port = String(j.port || '');
     } else {
       const rest = link.replace(/^[a-z0-9+.-]+:\/\//i, '').split('#')[0].split('?')[0].split('/')[0];

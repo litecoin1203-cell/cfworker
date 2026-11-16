@@ -1274,19 +1274,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   ({int pace, DateTime? runsOut, int? perDayToLast})? get dataPace {
     final s = subscription;
     if (s == null || s.unlimitedData || s.dataLimitBytes <= 0) return null;
-    final pace = usageLog.pace();
-    if (pace == null) return null;
-    final left = (s.dataLimitBytes - s.usedBytes).clamp(0, s.dataLimitBytes);
-    final now = DateTime.now();
-    final runsOut = pace <= 0
-        ? null
-        : now.add(Duration(hours: (left / pace * 24).round()));
-    final days = s.daysLeft;
-    return (
-      pace: pace,
-      runsOut: runsOut,
-      perDayToLast: days == null || days <= 0 ? null : left ~/ days,
-    );
+    return dataPaceOf(s, usageLog.pace(), DateTime.now());
   }
 
   /// Failed share of connects by weekday and hour on this network.
@@ -1316,29 +1304,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// The same from everyone on this operator, from the ranking the app
   /// already gets: (share 0..1, median ms, reports) per goal, weighted by
   /// how many reports each exit has.
-  Map<RouteMode, (double, int, int)> get familyAll {
-    final sum = <RouteMode, (double, int, int, int)>{};
-    for (final e in exits) {
-      final r = e.rank;
-      if (r == null || r.reports <= 0) continue;
-      final f = e.family;
-      final (w, ms, msN, n) = sum[f] ?? (0.0, 0, 0, 0);
-      sum[f] = (
-        w + r.score * r.reports,
-        ms + (r.ms > 0 ? r.ms * r.reports : 0),
-        msN + (r.ms > 0 ? r.reports : 0),
-        n + r.reports,
-      );
-    }
-    return {
-      for (final e in sum.entries)
-        e.key: (
-          e.value.$1 / e.value.$4,
-          e.value.$3 == 0 ? 0 : e.value.$2 ~/ e.value.$3,
-          e.value.$4,
-        ),
-    };
-  }
+  Map<RouteMode, (double, int, int)> get familyAll => familyShares(exits);
 
   /// Protocols present in the server list, in first-seen order.
   List<String> get protocols => {for (final e in exits) e.protocol}.toList();

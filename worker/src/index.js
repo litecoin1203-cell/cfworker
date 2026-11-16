@@ -1,7 +1,7 @@
 // Cloud Gold store on Cloudflare Workers. One Worker serves the app API, the NOWPayments webhook
 // and the Telegram admin bot. State lives in D1 (env.DB).
 import { json, err, ApiError, safeEqual, logError, rateLimit, setErrorSink, verifyJwt, jwtSecret } from './util.js';
-import { recordError } from './cfmon.js';
+import { recordError, flushErrors } from './cfmon.js';
 import { first, run, insert } from './db.js';
 import * as auth from './auth.js';
 import * as account from './account.js';
@@ -42,7 +42,8 @@ function payDonePage(cancelled) {
 export default {
   // daily: backup file + short report to the admin's Telegram (cron in wrangler.jsonc)
   async scheduled(event, env, ctx) {
-    setErrorSink((m, e) => recordError(env, m, e)); // errors also go to the bot's ☁️ section
+    setErrorSink((m, e) => recordError(env, m, e, ctx)); // errors also go to the bot's ☁️ section
+    flushErrors(env, ctx); // an error an earlier invocation could not write (CF-05)
     // every minute: crypto deposits on the blockchain, one slice of the panel usage sync (quota and expiry
     // stops), and the Telegram webhook kept pointed at this Worker
     // every 2 minutes, on its own invocation (its own subrequest budget): one page of the broadcast being sent
@@ -98,7 +99,7 @@ export default {
   },
 
   async fetch(request, env, ctx) {
-    setErrorSink((m, e) => recordError(env, m, e));
+    setErrorSink((m, e) => recordError(env, m, e, ctx));
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     const url = new URL(request.url);
     const path = url.pathname;
@@ -107,6 +108,7 @@ export default {
       // plain /health is never limited: it touches nothing (no D1, no outside call), a limiter there could not save
       // the request it already is, and Pleat races it on every address to pick a working one (a 429 = "down")
       if (path === '/health' && url.searchParams.get('deep') !== '1') return json({ ok: true });
+      flushErrors(env, ctx); // an error an earlier invocation could not write, if any (CF-05; plain /health stays D1-free)
       const ip = request.headers.get('cf-connecting-ip') || '';
       // Mini App stage 0: a throw-away page that tests whether a Mini App opens on Iranian networks (account.js)
       if (path === '/mini/probe' && request.method === 'GET') {
@@ -287,15 +289,16 @@ async function route(request, env, p, ctx) {
       // &h=0: the person turned Pleat's diagnostics off, so no location report (the country is still learned)
       const report = new URL(request.url).searchParams.get('h') !== '0';
       const job = (async () => {
-        await learnExitFromUser(env, user, k, cf.country).catch(() => {});
-        if (report) { const { checkExitCountry } = await import('./health.js'); await checkExitCountry(env, user, request, k, cf.country).catch(() => {}); }
+        // a side job: /me/ip answers either way, but a failure is on record (worker_errors), not swallowed
+        await learnExitFromUser(env, user, k, cf.country).catch((e) => logError('learn exit country failed', e));
+        if (report) { const { checkExitCountry } = await import('./health.js'); await checkExitCountry(env, user, request, k, cf.country).catch((e) => logError('exit country check failed', e)); }
       })();
       if (ctx && ctx.waitUntil) ctx.waitUntil(job); else await job;
     }
     return json({ ip: String(request.headers.get('cf-connecting-ip') || '').slice(0, 45), cc: /^[A-Z]{2}$/.test(cf.country || '') ? cf.country : '',
       city: String(cf.city || '').slice(0, 60), region: String(cf.region || '').slice(0, 60) });
   }
-  // the announced Pleat update (appupdate.js), passed through from the private release; limited per user (resumes are new requests)
+  // the announced Pleat update (appupdate.js), passed through from the (public) release pleat-latest; limited per user (resumes are new requests)
   if (p === '/app/apk' && m === 'GET') {
     await rateLimit(env, 'RL_IP', 'apk:' + user.id, { open: true }); // a read: open if the limiter fails
     const { apkDownload } = await import('./appupdate.js');
