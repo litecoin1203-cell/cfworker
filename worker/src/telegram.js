@@ -271,7 +271,8 @@ export async function ensureWebhook(env, opts = {}) {
   const { hmacHex } = await import('./util.js');
   // the "v2" bump re-registers once so the bot's command list (menu button) is set too
   // "v3": also points every user's menu button at the Mini App
-  const want = await hmacHex(secret, base + '|' + env.TELEGRAM_BOT_TOKEN.slice(-6) + '|v3');
+  // "v4": registers once more after the 2026-11-16 silent-bot report
+  const want = await hmacHex(secret, base + '|' + env.TELEGRAM_BOT_TOKEN.slice(-6) + '|v4');
   const have = (await first(env, "SELECT value FROM settings WHERE key = 'tg_webhook_sig'"))?.value;
   if (have === want && !(opts.check && (await webhookLost(env, base + '/tg')))) return false;
   const r = await tg(env, 'setWebhook', { url: base + '/tg', secret_token: secret, allowed_updates: ['message', 'callback_query'] });
