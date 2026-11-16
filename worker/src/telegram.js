@@ -440,9 +440,10 @@ export async function panelReport(env) {
     if (t.login) lines.push(t.create ? '✅ ساخت اکانت آزمایشی موفق بود' : `❌ ساخت اکانت ناموفق: ${t.error || ''}`);
     if (t.create) lines.push(t.configs ? `✅ لینک ساب کار می‌کند: ${t.configs} کانفیگ` : '⚠️ لینک ساب خالی است؛ در پنل برای این گروه Inbound/Host فعال کن.');
     if (t.version) lines.push(`نسخه‌ی پنل: ${t.version}`);
+    if (t.apiProblems && t.apiProblems.length) lines.push('⚠️ سند API پنل با فرض‌های ورکر فرق دارد:', ...t.apiProblems.map((x) => '• ' + untrusted(x)));
     if (t.sameHost === true) lines.push('⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است؛ آدرس پنل داخل کانفیگ‌ها دیده می‌شود. برای نودها دامنه‌ی جدا بگذار.');
     if (t.sameHost === false) lines.push('✅ دامنه‌ی نودها با دامنه‌ی پنل فرق دارد.');
-    if (!t.login && p.cred_ref !== 'PASARGUARD') lines.push(`راه حل: آدرس/یوزر/رمز را دوباره بده: /panelcred ${p.id}`);
+    if (!t.login && p.cred_ref !== 'PASARGUARD') lines.push(`راه حل: آدرس/یوزر/رمز را دوباره بده: 🗂 پنل‌ها › #${p.id} › 🔐 ورود پنل`);
   }
   return lines.join('\n');
 }
@@ -664,7 +665,7 @@ async function onMessage(env, msg, opts = {}) {
     await say(`🔐 ورود پنل #${panel.id} ذخیره شد (رمزنگاری‌شده). پیامت پاک شد.\n⏳ در حال تست پنل...`);
     return onMessage(env, { chat: msg.chat, from: msg.from, text: `/paneltest ${panel.id} silent` }, opts);
   }
-  if (cmd === '/paneltest' || cmd === '/rollout' || cmd === '/drainpanel' || cmd === '/panelgroups') {
+  if (cmd === '/paneltest' || cmd === '/rollout' || cmd === '/drainpanel' || cmd === '/panelgroups' || cmd === '/panelremake') {
     const parts = text.split(/\s+/);
     const { getPanel, testPanel, setRollout, listPanels } = await import('./panels.js');
     const panel = await getPanel(env, parseInt(parts[1], 10));
@@ -679,12 +680,17 @@ async function onMessage(env, msg, opts = {}) {
       const t = await testPanel(env, panel);
       await audit(env, chatId, 'panel.test', 'panel', panel.id, t.healthy ? 'سالم' : 'ناسالم');
       const typesLine = t.kinds && t.configs ? `\nنوع کانفیگ‌ها: ${Object.entries(t.kinds.counts).map(([k, n]) => `${k} ×${n}`).join('، ')}${t.kinds.unusable ? `\n⚠️ ${t.kinds.unusable} کانفیگ از نوعی است که اپ Pleat پشتیبانی نمی‌کند (اپ vless، vmess، trojan، shadowsocks، hysteria2 و wireguard را می‌شناسد) و در اپ نشان داده نمی‌شود.` : ''}` : '';
-      const kindLine = t.kind ? `نوع پنل: ${t.kind}${t.kindChanged ? ' (خودکار تشخیص داده و ثبت شد)' : ''}\n` : '';
+      const kindLine = (t.kind ? `نوع پنل: ${t.kind}${t.kindChanged ? ' (خودکار تشخیص داده و ثبت شد)' : ''}\n` : '')
+        + (t.apiProblems && t.apiProblems.length ? `⚠️ سند API پنل با فرض‌های ورکر فرق دارد:\n${t.apiProblems.map((x) => '• ' + untrusted(x)).join('\n')}\n` : '');
       const go = t.healthy ? { reply_markup: { inline_keyboard: [
         [{ text: '🚀 ۱۰٪ کاربران', callback_data: `m:x:pp:${panel.id}|/rollout ${panel.id} 10` }, { text: '🚀 همه‌ی کاربران', callback_data: `m:x:pp:${panel.id}|/rollout ${panel.id} 100` }],
-        [{ text: '🗂 صفحه‌ی پنل', callback_data: `m:pp:${panel.id}` }]] } } : undefined;
-      return say(kindLine + (t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\n${typesLine}\nبرای شروع یکی از دکمه‌ها را بزن (یا بنویس: /rollout ${panel.id} 10)`
-        : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}${t.kind === 'rebecca' && !t.create ? `\nدر Rebecca هر کاربر باید یک سرویس (Service) داشته باشد. شماره‌ی سرویس را بده: /panelgroups ${panel.id} شماره` : ''}`), go);
+        [{ text: '🗂 صفحه‌ی پنل', callback_data: `m:pp:${panel.id}` }]] } }
+        // PNL-12: what usually fixes a failed test, as buttons (the error text names them, never a command)
+        : { reply_markup: { inline_keyboard: [
+          [{ text: '🔐 ورود پنل', callback_data: `m:w:panelcred:${panel.id}` }, { text: '👥 گروه‌ها / سرویس', callback_data: `m:w:groups:${panel.id}` }],
+          [{ text: '🗂 صفحه‌ی پنل', callback_data: `m:pp:${panel.id}` }]] } };
+      return say(kindLine + (t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\n${typesLine}\nبرای شروع یکی از دکمه‌ها را بزن.`
+        : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}${t.kind === 'rebecca' && !t.create ? '\nدر Rebecca هر کاربر باید یک سرویس (Service) داشته باشد. سرویس را با دکمه‌ی «👥 گروه‌ها / سرویس» در زیر همین پیام انتخاب کن.' : ''}`), go);
     }
     if (cmd === '/panelgroups') {
       const r = await runAction(env, chatId, 'panel.groups', { panelId: panel.id, ids: String(parts[2] || '').split(',') });
@@ -696,7 +702,14 @@ async function onMessage(env, msg, opts = {}) {
       const p = r.panel;
       const { panelProgress } = await import('./sync.js');
       const g = await panelProgress(env, p);
-      return sayDone({ ...r, text: `✅ پنل #${p.id}: ${STATE_FA[p.state]} ${p.rollout_percent}%.\n${g.want ? `${g.have} از ${g.want} کاربر الان روی این پنل اکانت دارند. بقیه با باز کردن اپ فوراً، یا در پس‌زمینه هر دقیقه چند نفر، اکانت می‌گیرند و کانفیگ‌های این پنل به لیستشان اضافه می‌شود. پیشرفت: /panels` : 'فعلاً کاربری با اشتراک فعال در این سهم نیست.'}` });
+      return sayDone({ ...r, text: `✅ پنل #${p.id}: ${STATE_FA[p.state]} ${p.rollout_percent}%.\n${g.want ? `${g.have} از ${g.want} کاربر الان روی این پنل اکانت دارند. بقیه با باز کردن اپ فوراً، یا در پس‌زمینه هر دقیقه چند نفر، اکانت می‌گیرند و کانفیگ‌های این پنل به لیستشان اضافه می‌شود. پیشرفت: 🗂 پنل‌ها` : 'فعلاً کاربری با اشتراک فعال در این سهم نیست.'}` });
+    }
+    if (cmd === '/panelremake') {
+      // review of PNL-03: the owner resumes remakes of accounts deleted on this panel (button under the pause notice)
+      const { goneKey, goneResumed } = await import('./sync.js');
+      await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', goneKey(panel.id), goneResumed());
+      await audit(env, chatId, 'panel.remake', 'panel', panel.id, 'ادامه‌ی ساخت دوباره');
+      return say(`✅ ساخت دوباره‌ی اکانت‌های پاک‌شده روی پنل #${panel.id} ادامه پیدا می‌کند (در اجرای بعدی همگام‌سازی).`);
     }
     if (cmd === '/drainpanel') {
       if (['draining', 'disabled'].includes(panel.state)) return say('این پنل قبلاً خارج شده است.');

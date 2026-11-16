@@ -142,6 +142,8 @@ export async function allowed(env, binding, key) {
 export const BUDGETS = {
   signup: { env: 'SIGNUP_PER_HOUR', def: 30, fa: 'ثبت‌نام با ایمیل', message: 'Too many new accounts right now. Try again later, or continue with Telegram.' },
   tgstart: { env: 'TG_START_PER_HOUR', def: 60, fa: 'ورود با تلگرام', message: 'Telegram sign-in is busy right now. Try again in a few minutes, or log in with your password.' },
+  // SEC-07: anyone who opened the Mini App holds a valid initData; each report is a message in the admin chat
+  probe: { env: 'PROBE_PER_HOUR', def: 20, fa: 'گزارش تست Mini App', message: 'Too many test reports right now. Try again later.' },
 };
 export const budgetCap = (env, name) => { const v = parseInt(env[BUDGETS[name].env], 10); return v > 0 ? v : BUDGETS[name].def; };
 const B_HOUR = "CAST(substr(value, 1, instr(value, ':') - 1) AS INTEGER)";

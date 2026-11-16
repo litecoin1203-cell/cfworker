@@ -1,9 +1,9 @@
 // Public config, plans, profile, the VPN subscription (from the control plane), the unified server list, devices and the free trial.
 import { first, all, run, getSettings, getSettingInt, switchOn } from './db.js';
-import { json, err, nowSec, deadline, logError } from './util.js';
+import { json, err, nowSec, deadline, throttled, spendBudget, logError } from './util.js';
 import { PasarGuard, PasarGuardError } from './pasarguard.js';
 import { provision } from './billing.js';
-import { collectLinks } from './panels.js';
+import { collectLinks, accountsOf, adapterFor, userPathMs } from './panels.js';
 import { linkRemark } from './netstats.js';
 import { countryFromRemark } from './countries.js';
 import { refreshUser, usedBytes, ensureMissingFor } from './sync.js';
@@ -204,9 +204,13 @@ async function checkDevice(env, user, sub, deviceId, model) {
     const countRow = await first(env, 'SELECT COUNT(*) c FROM devices WHERE user_id = ? AND last_seen >= ?', user.id, since);
     if (countRow.c >= sub.device_limit) throw err(403, 'device_limit', `این پلن روی ${sub.device_limit} گوشی کار می‌کند. یک گوشی قدیمی را از «اشتراک من» حذف کن.`);
   }
+  // PERF-B-01: a known phone is stamped at most once a day (the device limit counts the last 30 days; the lists show
+  // the day), which saves a write on every /vpn and /vpn/sub
+  if (dev && nowSec() - (dev.last_seen || 0) < DEVICE_STAMP_SEC) return;
   await run(env, `INSERT INTO devices (user_id, device_id, model, last_seen) VALUES (?, ?, ?, ?)
     ON CONFLICT(user_id, device_id) DO UPDATE SET last_seen = excluded.last_seen`, user.id, deviceId, model || '', nowSec());
 }
+const DEVICE_STAMP_SEC = 86400;
 
 export async function vpn(env, user, request, ctx = null) {
   const sub = await activeSub(env, user);
@@ -236,7 +240,15 @@ async function unifiedLinks(env, user, fwd) {
   // a panel added since this user's last visit: their account there is made now, so its configs come at once
   try { await ensureMissingFor(env, user.id); } catch (e) { /* the cron job makes it later */ }
   const r = await collectLinks(env, user.id, fwd);
-  if (!r.accounts) throw err(404, 'no_servers', 'برای اشتراک شما هنوز سروری تعریف نشده است.');
+  if (!r.accounts) {
+    // PNL-11: no serving account because the plan is over, not because none was set up. English messages: the app
+    // shows a message it has no copy for when it is not Persian.
+    const sub = await first(env, 'SELECT state, stop_reason, expires_at FROM subscriptions WHERE user_id = ?', user.id);
+    const over = sub && (sub.state === 'stopped' || (sub.expires_at && sub.expires_at <= nowSec()));
+    if (over && sub.stop_reason === 'quota') throw err(402, 'plan_limited', 'Your plan’s data is used up. Renew your plan to connect again.');
+    if (over) throw err(402, 'plan_expired', 'Your plan has ended. Renew your plan to connect again.');
+    throw err(404, 'no_servers', 'برای اشتراک شما هنوز سروری تعریف نشده است.');
+  }
   if (r.deviceLimit && !r.links.length) throw err(403, 'device_limit', 'این اشتراک روی حداکثر تعداد گوشی استفاده شده است.');
   if (r.missing === r.accounts) throw err(410, 'sub_missing', 'اکانت شما روی سرور پیدا نشد. با پشتیبانی تماس بگیر.');
   if (!r.links.length) throw err(503, 'panel_unavailable', 'الان به سرورها دسترسی نداریم. چند دقیقه دیگر دوباره امتحان کن.');
@@ -267,10 +279,19 @@ export async function devices(env, user) {
 export async function removeDevice(env, user, devId) {
   const dev = await first(env, 'SELECT * FROM devices WHERE id = ?', devId);
   if (!dev || dev.user_id !== user.id) throw err(404, 'not_found', 'این دستگاه پیدا نشد.');
-  const sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
-  if (sub && env.PASARGUARD_URL) {
-    // the device row goes anyway (the user asked for the slot); a panel that still counts the device is on record
-    try { await new PasarGuard(env).deleteHwid(sub.pg_username, dev.device_id); } catch (e) { logError('remove device: panel HWID delete failed', e); }
+  // PNL-04: freed on every panel the user has an account on (panels without a device list answer false), all at once
+  // with the user-path deadline; a panel that fails keeps its slot until the panel frees it itself
+  const accounts = (await accountsOf(env, user.id)).filter((a) => a.panel_state !== 'disabled');
+  await Promise.all(accounts.map(async (a) => {
+    try {
+      const pg = await adapterFor(env, { id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref, options_json: a.options_json }, { timeoutMs: userPathMs(a) });
+      await pg.deleteHwid(a.remote_username, dev.device_id);
+    } catch (e) { logError('remove device: panel HWID delete failed', e); }
+  }));
+  if (!accounts.some((a) => a.panel_id === 1) && env.PASARGUARD_URL) {
+    // a subscription from before the control plane that has no panel_accounts row yet
+    const sub = await first(env, 'SELECT pg_username FROM subscriptions WHERE user_id = ?', user.id);
+    if (sub && sub.pg_username) { try { await new PasarGuard(env).deleteHwid(sub.pg_username, dev.device_id); } catch (e) { logError('remove device: panel HWID delete failed', e); } }
   }
   await run(env, 'DELETE FROM devices WHERE id = ?', devId);
   return new Response(null, { status: 204 });
@@ -346,7 +367,13 @@ export async function miniProbeReport(env, body, request) {
   const { verifyInitData } = await import('./auth.js');
   const v = await verifyInitData(env.TELEGRAM_BOT_TOKEN, body?.init_data, 86400);
   if (!v) throw err(401, 'bad_init_data', 'Open this page from the Telegram bot.');
+  // SEC-07: one report a minute per Telegram user and Worker address (isolate memory; the owner probes each address in
+  // turn), and a global hourly cap in D1 for the admin chat that admins do not count against
   const bases = await miniBases(env);
+  const at = String(body?.origin || '').toLowerCase();
+  if (throttled('__cgProbe', `${v.user.id}|${bases.includes(at) ? at : '?'}`, 60000)) throw err(429, 'too_many_requests', 'One report a minute. Try again shortly.');
+  const { adminRole } = await import('./telegram.js');
+  if (!(await adminRole(env, { id: v.user.id, type: 'private' }, { id: v.user.id }))) await spendBudget(env, 'probe');
   const host = (b) => b.replace(/^https:\/\//, '');
   const origin = String(body?.origin || '').toLowerCase();
   const steps = body && typeof body.steps === 'object' && body.steps ? body.steps : {};

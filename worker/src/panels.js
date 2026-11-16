@@ -7,6 +7,7 @@ import { PasarGuard, PasarGuardError, decodeSub } from './pasarguard.js';
 import { Marzban, Rebecca, detectKind } from './marzban.js';
 import { serverKey, linkEndpoint, vmessJson, linkRemark } from './netstats.js';
 import { flagToCc, countryFromRemark, countryFromHost } from './countries.js';
+import { analyseOpenApi, problems } from './panelapi.js';
 
 export { flagToCc };
 
@@ -24,12 +25,29 @@ export const credKey = (id) => `panel_cred_${id}`;
 const credPurpose = (id) => `panel-cred:${id}`;
 const _opened = new Map(); // sealed text -> cred, per isolate (decrypting is cheap, this just skips it)
 
+// CF-01 / PERF-B-03: every bot-given login is read with ONE range query (on the settings primary key) and kept by the
+// isolate for CRED_TTL_MS, so a purchase or a server list over N panels no longer costs N queries. Saving a login
+// drops this isolate's copy at once; another isolate picks a changed login up within CRED_TTL_MS.
+const CRED_TTL_MS = 30_000;
+const _sealedByDb = new WeakMap(); // env.DB -> {at, p: Promise<Map<key, sealed>>}
+function sealedCreds(env) {
+  const db = env.DB;
+  const hit = _sealedByDb.get(db);
+  if (hit && Date.now() - hit.at < CRED_TTL_MS) return hit.p;
+  const p = all(env, "SELECT key, value FROM settings WHERE key >= 'panel_cred_' AND key < 'panel_cred`'")
+    .then((rows) => new Map(rows.map((r) => [r.key, r.value])));
+  p.catch(() => _sealedByDb.delete(db)); // a failed read is not remembered
+  _sealedByDb.set(db, { at: Date.now(), p });
+  return p;
+}
+const forgetCreds = (env) => _sealedByDb.delete(env.DB);
+
 export async function credOf(env, panel) {
   if (panel.cred_ref === 'PASARGUARD') {
     if (!env.PASARGUARD_URL) return null;
     return { url: env.PASARGUARD_URL, username: env.PASARGUARD_USERNAME, password: env.PASARGUARD_PASSWORD, api_key: env.PASARGUARD_API_KEY };
   }
-  const sealed = (await first(env, 'SELECT value FROM settings WHERE key = ?', credKey(panel.id)))?.value;
+  const sealed = (await sealedCreds(env)).get(credKey(panel.id));
   if (sealed) {
     if (_opened.has(sealed)) return _opened.get(sealed);
     try {
@@ -71,6 +89,7 @@ export function parseCred(text) {
 export async function savePanelCred(env, panel, cred) {
   const sealed = await seal(env.SECRET_KEY, credPurpose(panel.id), JSON.stringify(cred));
   await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', credKey(panel.id), sealed);
+  forgetCreds(env);
 }
 
 // where a panel's login comes from, for the bot: 'bot' | 'secret' | 'env' | null
@@ -88,11 +107,11 @@ export function options(panel) {
 // and detect the real type; such a panel cannot take users until /paneltest has set its kind.
 export async function adapterFor(env, panel, { probe = false, timeoutMs = 0 } = {}) {
   const cred = await credOf(env, panel);
-  if (!cred) throw new PasarGuardError(`login for this panel is not set: send it with /panelcred ${panel.id} (or Workers Secret ${panel.cred_ref}, JSON with a "url")`, 0);
+  if (!cred) throw new PasarGuardError(`login for this panel is not set: give it in the bot with 🗂 پنل‌ها › #${panel.id} › 🔐 ورود پنل (or Workers Secret ${panel.cred_ref}, JSON with a "url")`, 0);
   const Cls = ADAPTERS[panel.kind];
   if (Cls) { const a = new Cls(env, cred); if (timeoutMs) a.timeoutMs = timeoutMs; return a; }
   if (probe) return new PasarGuard(env, cred);
-  if (panel.kind === 'auto') throw new PasarGuardError(`panel type not known yet: run /paneltest ${panel.id}`, 0);
+  if (panel.kind === 'auto') throw new PasarGuardError(`panel type not known yet: press 🗂 پنل‌ها › #${panel.id} › 🧪 تست پنل`, 0);
   throw new PasarGuardError(`no adapter for panel type ${panel.kind}`, 0);
 }
 
@@ -394,6 +413,7 @@ export async function collectLinks(env, userId, fwd = {}) {
   const ov = await overridesFor(env, accounts.map((a) => a.panel_id));
   const rules = await hostRulesFor(env, accounts.map((a) => a.panel_id));
   let reached = 0, deviceLimit = false, missing = 0;
+  const gone = [];
   // every panel is asked at the same time; the answers are then read in panel order, so the list stays stable
   const fetchOne = async (a) => {
     const pg = await adapterFor(env, panelOfAccount(a), { timeoutMs: userPathMs(a) }).catch(() => null);
@@ -419,7 +439,7 @@ export async function collectLinks(env, userId, fwd = {}) {
     if (!answers[i]) continue;
     const { raw, found } = answers[i];
     if (raw.status === 403 || raw.status === 429) { deviceLimit = true; continue; }
-    if (raw.status === 404) { missing++; continue; }
+    if (raw.status === 404) { missing++; gone.push(a.id); continue; }
     if (raw.status < 200 || raw.status >= 300) continue;
     reached++;
     for (const l of found) {
@@ -431,6 +451,9 @@ export async function collectLinks(env, userId, fwd = {}) {
       if (lab && !labels[k]) labels[k] = lab;
     }
   }
+  // PNL-03: a link the panel no longer knows (its account was deleted there): the sync job's push checks the account
+  // and makes it again
+  if (gone.length) await env.DB.batch(gone.map((id) => env.DB.prepare("UPDATE panel_accounts SET dirty = 1 WHERE id = ? AND desired = 'active'").bind(id)));
   const kept = [];
   const merged = unify(links, labels, kept, await exitCountries(env));
   // meta[i] = where merged link i came from: {panel: panel id, tunnel: it is in that panel's "Tunnel" group}
@@ -568,19 +591,20 @@ async function hostRulesStamps(env, ids) {
 export async function groupIdsFor(env, panel, pg) {
   if (!pg.usesGroups) return [];
   const word = pg.kind === 'rebecca' ? 'services' : 'groups';
-  const howTo = panel.id === 1 ? '/set pg_group_ids 1' : `/panelgroups ${panel.id} 1`;
+  // PNL-12: a button path, never a command to type (the message reaches the bot through untrusted(), so it is no button)
+  const howTo = `🗂 پنل‌ها › #${panel.id} › 👥 گروه‌ها / سرویس`;
   let ids = [];
-  if (panel.id === 1) {
+  // the groups button saves options.group_ids for every panel, panel 1 included; panel 1 falls back to pg_group_ids
+  const g = options(panel).group_ids;
+  if (Array.isArray(g)) ids = g.map((n) => parseInt(n, 10)).filter((n) => n > 0);
+  if (!ids.length && panel.id === 1) {
     const raw = String((await first(env, "SELECT value FROM settings WHERE key = 'pg_group_ids'"))?.value || '').trim();
     ids = raw.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => n > 0);
-  } else {
-    const g = options(panel).group_ids;
-    if (Array.isArray(g)) ids = g.map((n) => parseInt(n, 10)).filter((n) => n > 0);
   }
   if (ids.length) return ids;
   try { ids = await pg.listGroupIds(); }
   catch (e) {
-    throw new PasarGuardError(`could not read panel ${word} (${e.message}). Set them by hand: ${howTo}`, e.status || 0, e.detail);
+    throw new PasarGuardError(`could not read panel ${word} (${e.message}). Choose them in the bot: ${howTo}`, e.status || 0, e.detail);
   }
   if (!ids.length) throw new PasarGuardError(`panel has no usable ${word} for this admin. Create one (with hosts), then ${howTo}`, 0);
   return pg.kind === 'rebecca' ? ids.slice(0, 1) : ids;
@@ -614,6 +638,9 @@ export async function testPanel(env, panel) {
     if (!pg.apiKey) await pg._login();
     out.login = true;
     out.version = await pg.version();
+    // PNL-05 / PNL-06: what the adapter assumes, against the panel's own API document (when this admin may read it)
+    const doc = pg.openApi ? await pg.openApi() : null;
+    if (doc) out.apiProblems = problems(analyseOpenApi(doc, panel.kind), null, panel.kind);
     const ids = await groupIdsFor(env, panel, pg);
     const name = `cgtest_${Math.floor(Math.random() * 1e6)}`;
     const u = await pg.createUser(name, { expire: nowSec() + 3600, dataLimit: 10 * 1024 * 1024, groupIds: ids, note: 'Cloud Gold test, safe to delete' });
@@ -635,7 +662,7 @@ export async function testPanel(env, panel) {
   await recordHealth(env, panel.id, healthy);
   // the last result, for the panel card in the admin bot (facts only: no address, user name or link)
   const last = { at: nowSec(), healthy, configs: out.configs, kinds: out.kinds?.counts || null, unusable: out.kinds?.unusable || 0,
-    error: out.error ? String(out.error).slice(0, 160) : null };
+    error: out.error ? String(out.error).slice(0, 160) : null, api: out.apiProblems ? out.apiProblems.slice(0, 8) : null };
   await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value',
     `panel_test_${panel.id}`, JSON.stringify(last));
   await run(env, 'UPDATE panels SET version = COALESCE(?, version) WHERE id = ?', out.version, panel.id);

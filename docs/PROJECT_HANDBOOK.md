@@ -125,6 +125,9 @@ These are not suggestions. Each one exists because something went wrong or Ali s
   "Deploy Cloud Gold server" (and the Pleat workflow for an app change).
 
 ### Secrets and privacy
+- `.gitignore` keeps out signing keys, certificates and local env files (`*.jks`, `*.keystore`, `*.p12`, `*.pem`,
+  `*.key`, `.env*`, `.dev.vars`, `key.properties`; OPS-09, test-checked). Ali: turn on GitHub **Secret scanning** and
+  **Push protection** (Settings › Code security; free for a public repo).
 - **The repo is public.** No secrets in code, logs, tests, docs or chat. Never echo panel logins, panel addresses or subscription links.
 - No panel URL, name, count or credentials anywhere user-facing (app, logs, bot output to users).
 - Tests use made-up config values, never Ali's real ones.
@@ -286,6 +289,7 @@ The full list (every route, its auth, handler and limits, plus the admin API and
 | `sync.js` | usage ledger (`observe`), `evaluate` (quota/expiry over ALL panels), idempotent apply, create missing accounts, `linkAccount`, `runSync` (cron slice) |
 | `pasarguard.js` | PasarGuard API client (login, token cache in isolate, timeouts), subscription decode, `/links` fallback |
 | `marzban.js` | Marzban + Rebecca adapters, `detectKind` |
+| `panelapi.js` | what the adapters assume of each panel API, checked against its `/openapi.json` (panel test, `scripts/verify-panel-api.mjs`) |
 | `chainwatch.js` | reads five chains, matches deposits to orders, `claimTxid` (one txid = one order, atomic) |
 | `coins.js`, `usdrate.js`, `nowpayments.js`, `banks.js` | coin prices, USD→toman rate, gateway invoices, bank name from card number |
 | `sms.js` | parses bank SMS (rial vs toman!), auto-confirms card-to-card orders |
@@ -506,9 +510,28 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 - **Dead panels (#58, #62)**: `/me` and `/vpn` wait at most 1.5 s for a live reading (stored numbers otherwise,
   finished in `waitUntil`); a panel that just failed is remembered by the isolate for 60 s so later requests wait
   1.5 s, not 5 s; the per-minute "missing accounts" look is skipped for 10 min after a look that found none.
-- Panel 1 is still special in a few places (always in provision, HWID only for panel 1, device removal only on
-  panel 1, buying needs `PASARGUARD_URL`). Audit items AD3/P17, not yet fixed.
+- **Account deleted on the panel (PNL-03)**: the Worker makes it again under the stored name (never another name), with
+  the wanted expiry and limit, and tells Ali (♻️, at most every 6 h per panel). The user's link changes; the app gets it
+  on its next server-list load. **To cut a user off, stop the plan in the bot** (⏸ قطع موقت); deleting the account on
+  the panel is undone. Guard: when many accounts of one panel look gone at once (the 3rd in 6 h, or from the 2nd when
+  that is ≥ 30% of the panel's active accounts — e.g. a login now pointing at another panel), remakes on that panel
+  pause (`panel_gone_<id>`) and Ali gets ⏸ with buttons: 🔐 ورود پنل to check the login, ♻️ ادامه‌ی ساخت دوباره to go on.
+- Panel 1 is still special in a few places (always in provision, HWID only for panel 1, buying needs
+  `PASARGUARD_URL`). Audit items AD3/P17 / release audit PNL-04: these change who a purchase is delivered to and
+  wait for Ali's OK. Device removal runs on every panel the user is on since PNL-04 (panels without a device list
+  answer false).
 - Ali's panels are **https**. Since PR #45 only https panel logins are accepted.
+- **Panel API assumptions (PNL-05, PNL-06)**: the adapters were written against the project's own fake panel. The
+  HWID contract (`hwid_limit` on create, `DELETE /api/user/{id}/hwids/{hwid}`), the Rebecca adapter (`/api/v2/services`
+  with `has_hosts`/`broken`, `service_id`, `<sub>/v2ray`) and the `x-api-key` login are **not yet confirmed on a real
+  panel**. `src/panelapi.js` lists what is assumed and compares it with a panel's `/openapi.json`; the panel test
+  (bot and Mini App) shows the gaps it finds (`api_problems`). A panel that refuses `hwid_limit` still gets the account
+  (lean retry) and Ali is told (at most every 6 h per panel). To confirm on a real panel, Ali runs the read-only
+  script on his own computer (it only logs in and reads; it prints field names, types and counts, never an address,
+  login, user name or link):
+  `cd worker && PANEL_URL=https://<panel> PANEL_USERNAME=<admin> PANEL_PASSWORD='<pass>' node scripts/verify-panel-api.mjs`
+  (`PANEL_API_KEY=` instead of the login to check the key header; `PANEL_KIND=` to skip detection). Its `problems`
+  list is what to fix.
 
 ---
 
@@ -816,6 +839,8 @@ flutter test
 node --experimental-sqlite ../worker/test/dev_server.mjs &
 flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1:8787
 ```
+- A plain `flutter test` **skips** `live_backend_test.dart` (no Worker): its output says "LIVE BACKEND TEST SKIPPED"
+  (QA-06). Green without the two lines above proves nothing about the client against the Worker; CI runs them.
 - Flutter SDK 3.47.8 can be downloaded in the cloud container (storage.googleapis.com + pub.dev reachable),
   but **there is no Android SDK**: APKs are built only by the workflow. github.com downloads may be blocked
   from the container (use proxy.golang.org for Go sources such as Xray or Rebecca).
@@ -826,7 +851,7 @@ flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1
 | Workflow | Trigger | Notes |
 |---|---|---|
 | **Test Cloud Gold server** (`test-worker.yml`) | PR on `worker/**`, `miniapp/**` or `.github/workflows/**` + manual | Worker tests with coverage gate (≥ 80 % lines), Mini App tests + build |
-| **Pleat Flutter app** (`flutter-vpn.yml`) | PR on `flutter_vpn/**` + manual (`api_base` input) | PR: format, analyze, test, live test against the local Worker, `xray -test` of generated configs. **Manual run only**: NDK + hev + Xray core, configs checked with the **exact** app core (built from libv2ray buildinfo), APK build, Kotlin unit tests, APK check, publish to release `pleat-latest`. ~18 min. **Manual run from `main` only.** |
+| **Pleat Flutter app** (`flutter-vpn.yml`) | PR on `flutter_vpn/**` + manual (`api_base` input) | PR: format, analyze, test, live test against the local Worker, `xray -test` of generated configs. **Manual run only**: NDK + hev + Xray core, configs checked with the **exact** app core (built from libv2ray buildinfo), APK build, Kotlin unit tests, APK check, publish to release `pleat-latest`. ~18 min. **Manual run from `main` only.** Each published build gets the fixed tag `pleat-v<version>+<build>` at its source commit and `pleat-latest` is moved there, both only after the APK upload worked (OPS-05). A run whose version+build already has that tag at another commit, or files on `pleat-latest` without the tag, stops before the build (bump `pubspec.yaml`); a re-run of the same commit (e.g. after a failed upload) goes through. |
 | **Deploy Cloud Gold server** (`deploy-worker.yml`) | **manual only, from `main` only** | tests → Cloudflare login check → secret names check → find/create D1 → **print the D1 Time Travel bookmark** → apply migrations → build the Mini App → deploy (wrangler pinned **4.158.0**) → copy `PLEAT_DL_TOKEN` |
 
 Since #57 nothing runs twice (only the PR, not also the push) and a newer push cancels the running PR check. The
@@ -871,11 +896,11 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | **10 ms CPU** per invocation | no heavy crypto (PBKDF2 stays at 5,000), no big JSON loops |
 | **50 subrequests** per invocation | panel calls, Telegram, explorers all count; budget the cron |
 | **50 D1 queries per invocation** (a batch = 1) | the 51st fails. Batch reads and writes. Test suite enforces it. |
-| **~100k D1 writes/day** | the old cron wrote 2 rows per user per minute even when idle → cap hit at ~35 users (PR #41: writes only on change). A phone that keeps the VPN on still changes its counter every minute, so the cap was still ~33 always-on users; the engineering-audit phase 6 PR spreads those writes (`LEDGER_EVERY` = 10 min in `sync.js`, never for big changes, near-quota, panel resets or a user coming online): 100 always-on users went from 295k to 33k rows/day (measured). Stored "online now" therefore means seen in the last 13 min (`STORED_ONLINE_SEC`); the bot's live card is exact. |
+| **~100k D1 writes/day** | the old cron wrote 2 rows per user per minute even when idle → cap hit at ~35 users (PR #41: writes only on change). A phone that keeps the VPN on still changes its counter every minute, so the cap was still ~33 always-on users; the engineering-audit phase 6 PR spreads those writes (`LEDGER_EVERY` = 10 min in `sync.js`, never for big changes, near-quota, panel resets or a user coming online): 100 always-on users went from 295k to 33k rows/day (measured) **for the cron alone**. Stored "online now" therefore means seen in the last 13 min (`STORED_ONLINE_SEC`); the bot's live card is exact. **That 33k is not the capacity** (release audit PERF-B-01): the app path writes too (`/me` and `/vpn` read the panels live with spread off, so each changed panel counter and `subscriptions.used_bytes` is written; the app asks about every 10 min), plus a fixed base; the audit's model gives **~95–135 always-on users**, not 330. Since PERF-B-01 a known phone's `devices.last_seen` is stamped at most once a day (was every `/vpn`, ~144 rows/user/day) and the cron writes its cursors only when they move or every 2 min (heartbeat for `/health`), and a healthy panel's health row only on change or every 10 min (~2 rows/min less). Still open: the app path could use the cron's spread rule (exact numbers in the app vs writes: Ali's call). **Measured row counts are low (PERF-B-04)**: the suite and the audits count `total_changes()`, but D1 bills every index entry a write touches as a row too, so real "rows written" are about 1.3–1.5× the measured numbers (a guess from the D1 docs, not measured). The check: after a day with a few real users, compare ☁️ کلودفلر › rows written with these figures. |
 | **~5M D1 rows read/day** | every per-minute query must use an index (0021 fixed a full scan of `subscriptions`) |
 | **100k Worker requests/day** | roughly 200–500 active users; Workers Paid ($5/month, 10M/day) for thousands |
 | Rate limiting is per Cloudflare location and approximate | do not rely on it as a security boundary; it fails closed where a secret can be guessed or someone without an account writes, open on reads, token refresh and per-account routes capped in D1 (release audit SEC-08; the full split is in `docs/API.md`) |
-| Anyone can write without an account (sign-up, Telegram link) | a global hourly budget per kind (`util.js` `spendBudget`, one `settings` row each: `SIGNUP_PER_HOUR` 30, `TG_START_PER_HOUR` 60) caps a flood from any number of IPs at ~23k rows/day; a refused request writes nothing; the owner gets one bot alert per kind and hour when a budget fills (release audit SEC-01). The cost: during a flood, new sign-ups / Telegram links stall until the next hour (the WAF rule in §19 is the per-IP answer) |
+| Anyone can write without an account (sign-up, Telegram link) | a global hourly budget per kind (`util.js` `spendBudget`, one `settings` row each: `SIGNUP_PER_HOUR` 30, `TG_START_PER_HOUR` 60, and since SEC-07 `PROBE_PER_HOUR` 20 Mini App probe reports, each a message in the admin chat, plus one a minute per Telegram user and Worker address; admins are not counted against the hourly cap) caps a flood from any number of IPs at ~23k rows/day; a refused request writes nothing; the owner gets one bot alert per kind and hour when a budget fills (release audit SEC-01). The cost: during a flood, new sign-ups / Telegram links stall until the next hour (the WAF rule in §19 is the per-IP answer) |
 
 ---
 
@@ -1128,6 +1153,12 @@ Grouped by area. "Proven" means reproduced or measured.
 | PNL-02 an account created on a panel whose D1 write never ran stayed active as an orphan, and the retry made a second one | intent row first (`applied = 'pending'`), adopt own 409 by note, cron `settlePending` |
 | QA-02 branch coverage 64-74% on sms, nowpayments, chainwatch and the panel adapters (the error paths that move money) | tests for forwarder formats, odd SMS, every SMS outcome, IPN signatures, watcher filters, adapter logins/fallbacks; per-file ≥ 80% branch gate (`coverage:money`) |
 | SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |
+| CF-01 / PERF-B-03 (measured) a first purchase cost 24 + 5 queries per serving panel → over 50 from the 7th panel, after the panels were already changed | all bot-given panel logins in one range query, kept 30 s per isolate (dropped when a login is saved); `ensureAccount` takes the row the caller read and builds the result row; 8 panels: first purchase 40, renewal 28 (test) |
+| PNL-03 an account deleted on the panel (by its owner or a clean-up) was never made again: its configs silently left the user's list, pushes failed `panel_404` forever | a 404 on `/me`, `/vpn` or the server list marks the row dirty; the push confirms the account is gone (`getUser`), makes it again under the **same name** with the wanted expiry/limit and records the new link (an account that should be off is recorded off); ≤ 3 per run; bot alert ♻️ at most every 6 h per panel (`panel_remade_<id>`) |
+| PNL-05 / PNL-06 HWID, Rebecca and API-key assumptions only ever checked against the project's own fake; a refused `hwid_limit` was dropped silently | `panelapi.js` + panel test compare with the panel's `/openapi.json`; admin alert when `hwid_limit` is dropped; read-only `scripts/verify-panel-api.mjs` for Ali to run on real panels (open until he does) |
+| PNL-08 the cron's pushes and creates had no circuit breaker: a dead panel cost up to 15 pushes × 15 s every minute | a panel with `fail_streak >= 3` gets calls of `KNOWN_DOWN_MS` (1.5 s) in push and create; after one unanswered try its other changes wait for the next run (no attempt counted). The usage page keeps the normal timeout, so a slow panel can still recover its health |
+| PNL-12 panel errors (adapter, groups, Rebecca service) told Ali to type `/panelcred`, `/paneltest`, `/panelgroups`, `/set pg_group_ids`; inside `untrusted()` text they could not even become buttons | the errors name the button path (`🗂 پنل‌ها › #n › 🔐 ورود پنل / 🧪 تست پنل / 👥 گروه‌ها / سرویس`); a failed panel test answers with those buttons. Found on the way: the 👥 button saved panel 1's groups in `options.group_ids`, which panel 1 never read (only `pg_group_ids`): now read first, `pg_group_ids` stays the fallback |
+| PERF-B-02 every `/net/report` rewrote the user's row of every server (`user_net_srv`, plus its `at` index): 20–60 servers = 60–180 rows per app open | the upsert only rewrites a server's row when its result flips (works ↔ fails) or the row is 30 min old (`SRV_REWRITE_SEC`); the shared votes were already once per 3 h bucket |
 
 ### App and tunnel
 | Problem | Fix |
@@ -1226,6 +1257,9 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
   country list (Fastest bar, chips, regions, pips, Not answering).
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
+- **One look at ☁️ کلودفلر › rows written** after a normal day: is it about 1.3–1.5× the §12 model (index rows, PERF-B-04)?
+- **Run `worker/scripts/verify-panel-api.mjs` once per real panel** (panel 1, panel 2, and the first Rebecca) and send
+  the printed report (it holds no secrets): it confirms or refutes the HWID, Rebecca and API-key assumptions (PNL-05, PNL-06).
 - **Licence of the repo's own code** (audit LEG-04): there is no top-level `LICENSE`, so the Worker, Mini App and
   Pleat are all rights reserved. Choose one (or a proprietary notice). The deleted `android/` (in git history) stays
   GPL-3.0.
@@ -1335,6 +1369,9 @@ start error), plus `skipped` = exits left out for failing for nearly everyone. D
   day/night direction A. Before sending UI, screenshot each screen next to the matching Pleat screen.
 - The bot's refusals are Persian; `miniapp/src/admin/errors.js` translates them, and `englishSummary` in `fmt.js` the
   admin log. `miniapp/test/admin.test.js` fails when a new bot refusal, action or setting has no English text.
+  `miniapp/test/api.test.js` (QA-05) drives the network layer with a fake `fetch`: the admin token's sign-in and single
+  retry on 401, the `confirm` flag of money actions, undo, and English for every failure. The JSX screens still have
+  no tests (a DOM test setup would be a new dev dependency).
 
 ### Engineering audit (complete, 2026-11-11)
 All 15 phases (discovery → architecture → code → security → VPN → DB → API → performance → UX → mobile →

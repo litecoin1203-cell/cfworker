@@ -548,7 +548,7 @@ export async function panelTest(env, admin, id) {
 }
 const testOut = (t) => ({ healthy: !!t.healthy, configs: t.configs || 0, version: t.version || null, kind: t.kind || null, kind_changed: !!t.kindChanged,
   same_host: t.sameHost ?? null, kinds: t.kinds ? t.kinds.counts : null, unusable: t.kinds ? t.kinds.unusable || 0 : 0,
-  error: t.error ? String(t.error).slice(0, 200) : null, needs_service: t.kind === 'rebecca' && !t.create });
+  error: t.error ? String(t.error).slice(0, 200) : null, needs_service: t.kind === 'rebecca' && !t.create, api_problems: t.apiProblems || null });
 
 async function auditRow(env, admin, action, type, id, summary) {
   const { insert } = await import('./db.js');

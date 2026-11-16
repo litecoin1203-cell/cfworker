@@ -788,8 +788,12 @@ section('bot: /panel diagnostic, /find, /plan, /backup');
   ok(fakes.tg.messages.slice(b2).some((m) => m.text.includes('روز') && m.text.includes('حجم')), '/find shows live usage');
   await tgWebhook({ message: { chat: { id: 12345 }, text: '/plan 1 name اقتصادی یک ماهه' } });
   ok((await call('GET', '/api/v1/plans')).data.some((p) => p.name === 'اقتصادی یک ماهه'), '/plan renames');
-  const r = await worker.scheduled({}, env, ctx); await drain();
-  ok(true, 'scheduled ran');
+  // QA-03: this used to be ok(true): the cron run must finish, log no new error and leave /health green
+  const errsBefore = env.DB.get('SELECT COALESCE(SUM(count), 0) n FROM worker_errors').n;
+  await worker.scheduled({}, env, ctx); await drain();
+  const hl = await call('GET', '/health');
+  ok(hl.status === 200 && hl.data.ok && env.DB.get('SELECT COALESCE(SUM(count), 0) n FROM worker_errors').n === errsBefore,
+    'scheduled ran: /health is green and no error was logged: ' + JSON.stringify(hl.data));
 }
 
 
@@ -2114,9 +2118,11 @@ section('per-user networks: operator + connection type, per-type ranking, admin 
   ok(cell.kind === 'cell' && cell.servers[ky].score > cell.servers[kx].score, 'Irancell mobile data ranks Y first');
   const plain = (await call('GET', '/api/v1/net/rank?kind=bogus', { token: toks[0], cf: MTN })).data;
   ok(plain.kind === '' && plain.servers[kx].level !== 'type', 'an unknown kind falls back to the operator-wide ranking');
-  // one account reporting over and over keeps a bounded weight
-  for (let i = 0; i < 25; i++) { globalThis.__cgNet = {}; await call('POST', '/api/v1/net/report', { token: toks[0], cf: MTN, json: { kind: 'other', results: [{ k: kx, ok: false }] } }); }
-  for (let i = 0; i < 25; i++) { globalThis.__cgNet = {}; await call('POST', '/api/v1/net/report', { token: toks[0], cf: MTN, json: { kind: 'other', results: [{ k: kx, ok: true, ms: 50 }] } }); }
+  // one account reporting over and over (each result 30+ minutes after the last: PERF-B-02 skips unchanged rewrites
+  // within 30 minutes) keeps a bounded weight
+  const later = () => env.DB.prepare('UPDATE user_net_srv SET at = at - 1900 WHERE user_id = ?').bind(ids[0]).run();
+  for (let i = 0; i < 25; i++) { await later(); globalThis.__cgNet = {}; await call('POST', '/api/v1/net/report', { token: toks[0], cf: MTN, json: { kind: 'other', results: [{ k: kx, ok: false }] } }); }
+  for (let i = 0; i < 25; i++) { await later(); globalThis.__cgNet = {}; await call('POST', '/api/v1/net/report', { token: toks[0], cf: MTN, json: { kind: 'other', results: [{ k: kx, ok: true, ms: 50 }] } }); }
   const row = await env.DB.prepare('SELECT ok, fail, tests FROM user_net_srv WHERE user_id = ? AND kind = ? AND skey = ?').bind(ids[0], 'other', kx).first();
   ok(row.ok <= 5 && row.ok > 4.5 && row.fail < 0.05 && row.tests === 50, 'a user\'s weight on a server stays at most 5 results and follows the latest: ' + JSON.stringify(row));
   const sp = await env.DB.prepare('SELECT kb_sum, kb_n, ok FROM user_net_srv WHERE user_id = ? AND kind = ? AND skey = ?').bind(ids[0], 'wifi', kx).first();
@@ -2207,10 +2213,10 @@ section('any panel type: Rebecca, Marzban and PasarGuard are detected on /panelt
   ok(p.kind === 'auto' && p.label === 'ربکا', 'add without a type: type left to the test');
   let threw = '';
   try { await adapterFor(env, p); } catch (e) { threw = e.message; }
-  ok(threw.includes(`/panelcred ${rid}`), 'no login yet: says how to give it: ' + threw);
+  ok(threw.includes(`#${rid} › 🔐 ورود پنل`) && !threw.includes('/panelcred'), 'no login yet: says which button gives it (PNL-12): ' + threw);
   env[`PANEL_${rid}_CRED`] = JSON.stringify({ url: R + '/dashboard/', username: 'ra', password: 'Reb3ccaSecret' });
   try { await adapterFor(env, p); threw = ''; } catch (e) { threw = e.message; }
-  ok(threw.includes('/paneltest'), 'an auto panel cannot be used before its test: ' + threw);
+  ok(threw.includes('🧪 تست پنل') && !threw.includes('/paneltest'), 'an auto panel cannot be used before its test (button named, PNL-12): ' + threw);
   await admin(`/paneltest ${rid}`);
   p = await getPanel(env, rid);
   ok(p.kind === 'rebecca' && p.state === 'testing', 'Rebecca detected and stored: ' + p.kind + ' ' + p.state);
@@ -5822,6 +5828,35 @@ section('CI: the APK run runs the Kotlin unit tests before it publishes (QA-01)'
   ok(/^android\.onlyEnableUnitTestForTheTestedBuildType=false$/m.test(props), 'QA-01: gradle.properties lets AGP 9 make testReleaseUnitTest');
 }
 
+section('CI: each published APK build has its own fixed source tag, and a build number is never published twice (OPS-05)');
+{
+  const { readFileSync } = await import('node:fs');
+  const fv = readFileSync(new URL('../../.github/workflows/flutter-vpn.yml', import.meta.url), 'utf8');
+  const guardAt = fv.indexOf('name: Refuse a version that was already published');
+  const guard = guardAt > 0 ? fv.slice(guardAt, fv.indexOf('\n      - ', guardAt)) : '';
+  ok(guardAt > 0 && guardAt < fv.indexOf('name: Build APK') && /workflow_dispatch/.test(guard) && /pleat-v\$full|pleat-v\$\{full\}/.test(guard) && /::error::/.test(guard) && /exit 1/.test(guard),
+    'OPS-05: before the build, a manual run stops when the version+build already has its tag or files');
+  ok(/!= "\$GITHUB_SHA"/.test(guard) && /GITHUB_RUN_ATTEMPT/.test(guard), 'OPS-05: the guard lets a re-run of the same commit through (tag at this commit, or a re-run after a failed upload)');
+  const pub = fv.slice(fv.indexOf('name: Publish APKs'));
+  const up = pub.indexOf('gh release upload');
+  const tagAt = pub.search(/git\/refs"? -f ref="?refs\/tags\/pleat-v\$full"? -f sha="?\$GITHUB_SHA/);
+  const moveAt = pub.search(/git\/refs\/tags\/pleat-latest"? -f sha="?\$GITHUB_SHA"? -F force=true/);
+  ok(up > 0 && tagAt > up, 'OPS-05 review: the tag pleat-v<version>+<build> is made at the built commit only after the upload worked');
+  ok(moveAt > up && pub.indexOf('gh release edit') > up, 'OPS-05 review: pleat-latest is moved (and retitled) only after the upload');
+}
+
+section('OPS-09: the public repo ignores the usual secret files');
+{
+  const { readFileSync } = await import('node:fs');
+  const { execFileSync } = await import('node:child_process');
+  const gi = readFileSync(new URL('../../.gitignore', import.meta.url), 'utf8').split('\n').map((l) => l.trim());
+  const want = ['*.jks', '*.keystore', '*.p12', '*.pem', '*.key', '.env', '.env.*', '.dev.vars', 'key.properties'];
+  ok(want.every((w) => gi.includes(w)), 'OPS-09: .gitignore has ' + want.filter((w) => !gi.includes(w)).join(', ') + ' missing');
+  let ignored = '';
+  try { ignored = execFileSync('git', ['check-ignore', '--no-index', 'worker/.dev.vars', 'flutter_vpn/android/key.properties', 'a/release.p12', 'x/.env.local'], { cwd: new URL('../..', import.meta.url).pathname, encoding: 'utf8' }); } catch (e) { ignored = e.stdout || ''; }
+  ok(ignored.trim().split('\n').filter(Boolean).length === 4, 'OPS-09: git ignores them anywhere in the tree: ' + JSON.stringify(ignored));
+}
+
 section('OPS-06: the daily Telegram backup restores into a new database');
 {
   const { backupJson } = await import('../src/telegram.js');
@@ -6661,6 +6696,355 @@ section('review of wave 2: a settled exit country is not rewritten; pending rows
   ok(raced && on2.length === 1 && r3 && r3.remote_username === on2[0].username && r3.applied === 'active', 'review 3: the account made during the race has its row: ' + JSON.stringify(r3) + ' ' + on2.map((u) => u.username));
   await runSync(W.e); await runSync(W.e);
   ok(Object.values(W.pgs[1].users).filter((u) => u.note === `Pleat #${u3}`).length === 1, 'review 3: and no second account later');
+}
+
+section('CF-01: a purchase on 8 panels (first buy and renewal) stays within the 50 D1 queries');
+{
+  const W = await world('cf1', 8);
+  const tok = await W.signupW('cf1@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'cf1@example.com'))[0].id;
+  await W.e.DB.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').bind(W.plan.price_toman * 3, uid).run();
+  const costOf = async (fn) => { const from = allInv.length; await fn(); return Math.max(0, ...allInv.slice(from).map((s) => s.q)); };
+  let buy;
+  const q1 = await costOf(async () => { buy = await W.callW('POST', '/api/v1/orders', { token: tok, json: { plan_id: W.plan.id, method: 'wallet' } }); });
+  ok(buy.status === 201 && buy.data && buy.data.status === 'paid', 'CF-01: the first wallet purchase on 8 panels is paid: ' + buy.status + ' ' + JSON.stringify(buy.data));
+  ok((await W.q('SELECT COUNT(*) c FROM panel_accounts WHERE user_id = ? AND applied = ?', uid, 'active'))[0].c === 8, 'CF-01: an account on all 8 panels');
+  const q2 = await costOf(async () => { buy = await W.callW('POST', '/api/v1/orders', { token: tok, json: { plan_id: W.plan.id, method: 'wallet' } }); });
+  ok(buy.status === 201 && buy.data && buy.data.status === 'paid', 'CF-01: the renewal on 8 panels is paid: ' + buy.status);
+  // headroom for the routes that add their own queries around settle (SMS, coupon, bot approval)
+  console.log(`    8 panels: first purchase ${q1}, renewal ${q2} D1 queries`);
+  ok(q1 <= 40 && q2 <= 40, `CF-01: 8-panel first purchase ${q1} and renewal ${q2} D1 queries (want <= 40)`);
+}
+
+section('PNL-03: an account deleted on the panel is made again under the same name; the admin is told once');
+{
+  const W = await world('pnl3', 2);
+  const tok = await W.signupW('p3@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'p3@example.com'))[0].id;
+  await W.bot(`/grant p3@example.com ${W.plan.id}`);
+  const row0 = (await W.q('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 2', uid))[0];
+  delete W.pgs[1].users[row0.remote_username]; // the panel's owner (or its clean-up) removed it
+  const told0 = fakes.tg.messages.length;
+  const sv = await W.callW('GET', '/api/v1/vpn/servers', { token: tok });
+  await W.callW('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'd-p3@example.com', 'x-app-version': '1.2.52' } });
+  await runSync(W.e); await runSync(W.e);
+  const again = W.pgs[1].users[row0.remote_username];
+  const row1 = (await W.q('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 2', uid))[0];
+  const sub = (await W.q('SELECT expires_at FROM subscriptions WHERE user_id = ?', uid))[0];
+  ok(sv.status === 200, 'PNL-03: the server list still answers from panel 1: ' + sv.status);
+  ok(again && again.note === `Pleat #${uid}` && again.expire === sub.expires_at && again.status === 'active', 'PNL-03: the account is made again on the panel, same name, the plan\'s expiry: ' + JSON.stringify(again && { e: again.expire, s: again.status }));
+  ok(row1.applied === 'active' && row1.dirty === 0 && again && row1.sub_path.includes(again.token), 'PNL-03: D1 holds the new link: ' + JSON.stringify({ a: row1.applied, d: row1.dirty, e: row1.last_error }));
+  const sv2 = await W.callW('GET', '/api/v1/vpn/servers', { token: tok });
+  ok(sv2.status === 200 && (Array.isArray(sv2.data) ? sv2.data : []).some((x) => x.panel === 2), 'PNL-03: panel 2\'s configs are back in the list');
+  const told = fakes.tg.messages.slice(told0).filter((m) => /#2/.test(m.text || '') && /دوباره ساخته/.test(m.text || ''));
+  ok(told.length === 1, 'PNL-03: the admin is told once: ' + told.length);
+  // a switched-off account that is gone is already off: the push stops instead of failing forever
+  await W.signupW('p3b@example.com');
+  const u2 = (await W.q('SELECT id FROM users WHERE email = ?', 'p3b@example.com'))[0].id;
+  await W.bot(`/grant p3b@example.com ${W.plan.id}`);
+  const r2 = (await W.q('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 2', u2))[0];
+  delete W.pgs[1].users[r2.remote_username];
+  await W.e.DB.prepare("UPDATE panel_accounts SET desired = 'stopped', dirty = 1 WHERE id = ?").bind(r2.id).run();
+  await runSync(W.e); await runSync(W.e);
+  const r3 = (await W.q('SELECT applied, dirty, attempts FROM panel_accounts WHERE id = ?', r2.id))[0];
+  ok(r3.applied === 'stopped' && r3.dirty === 0 && !W.pgs[1].users[r2.remote_username], 'PNL-03: a gone account that should be off is recorded off, not made again: ' + JSON.stringify(r3));
+}
+
+section('PNL-03 review: many accounts "gone" at once (a login now pointing at another panel) pause the remakes and ask the owner');
+{
+  const W = await world('pnl3g', 2);
+  const emails = ['g1@example.com', 'g2@example.com', 'g3@example.com', 'g4@example.com', 'g5@example.com'];
+  for (const em of emails) { await W.signupW(em); await W.bot(`/grant ${em} ${W.plan.id}`); }
+  const names = (await W.q("SELECT remote_username FROM panel_accounts WHERE panel_id = 2 AND desired = 'active'")).map((r) => r.remote_username);
+  for (const n of names) delete W.pgs[1].users[n]; // as if the login now opened an empty panel
+  await W.e.DB.prepare("UPDATE panel_accounts SET dirty = 1, desired_expire = desired_expire + 60 WHERE panel_id = 2").run();
+  const told0 = fakes.tg.messages.length;
+  for (let i = 0; i < 3; i++) await runSync(W.e);
+  const remade = () => names.filter((n) => W.pgs[1].users[n]).length;
+  ok(remade() <= 2, 'PNL-03 review: at most 2 of 5 gone accounts are made again before the pause: ' + remade());
+  const alert = fakes.tg.messages.slice(told0).find((m) => /مکث|متوقف شد/.test(m.text || '') && /#2/.test(m.text || ''));
+  const kb = JSON.stringify((alert && alert.reply_markup) || {});
+  ok(alert && /ورود پنل/.test(alert.text) && kb.includes('/panelremake 2') && !/(^|\s)\/panelremake/.test(alert.text), 'PNL-03 review: the owner is asked, with buttons only: ' + (alert && alert.text));
+  ok(fakes.tg.messages.slice(told0).filter((m) => /مکث|متوقف شد/.test(m.text || '')).length === 1, 'PNL-03 review: asked once');
+  const before = remade();
+  await runSync(W.e);
+  ok(remade() === before, 'PNL-03 review: paused: nothing more is made');
+  const cb = ((JSON.parse(kb).inline_keyboard || []).flat().find((x) => String(x.callback_data).includes('/panelremake 2')) || {}).callback_data || 'm:home';
+  await W.callW('POST', '/tg/hook', { headers: TG, json: { callback_query: { id: 'rm1', data: cb, from: { id: 12345 }, message: { chat: { id: 12345 }, message_id: 77, text: 'x' } } } });
+  for (let i = 0; i < 4; i++) await runSync(W.e);
+  ok(remade() === 5, 'PNL-03 review: after the owner\'s button the rest are made again: ' + remade());
+  const note = fakes.tg.messages.slice(told0).find((m) => /♻️/.test(m.text || ''));
+  ok(note && /متوقف/.test(note.text) && /پلن/.test(note.text), 'PNL-03 review: the remake notice says to stop the plan in the bot to cut a user off: ' + (note && note.text));
+}
+
+section('PNL-04: removing a device frees it on every panel the user is on, not only panel 1');
+{
+  const W = await world('pnl4', 2);
+  const tok = await W.signupW('p4@example.com');
+  await W.bot(`/grant p4@example.com ${W.plan.id}`);
+  await W.callW('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'p4-phone-b', 'x-app-version': '1.2.52' } });
+  const devs = (await W.callW('GET', '/api/v1/devices', { token: tok })).data;
+  const dev = devs.find((d) => d.device_id === 'p4-phone-b');
+  const del = await W.callW('DELETE', `/api/v1/devices/${dev.id}`, { token: tok });
+  ok(del.status === 204, 'PNL-04: the device is removed: ' + del.status);
+  ok(W.pgs[0].deletedHwids.some((x) => x[1] === 'p4-phone-b'), 'PNL-04: freed on panel 1');
+  ok(W.pgs[1].deletedHwids.some((x) => x[1] === 'p4-phone-b'), 'PNL-04: freed on panel 2 as well');
+}
+
+// made-up OpenAPI documents in the shape FastAPI panels publish (no real panel's document)
+function fakeOpenApi(kind, { hwid = true, extra = {} } = {}) {
+  const op = { responses: { 200: { description: 'ok' } } };
+  const paths = {
+    '/api/admin/token': { post: op }, '/api/user': { post: { ...op, requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/UserCreate' } } } } } },
+    '/api/user/{username}': { get: op, put: op, delete: op }, '/api/user/{username}/reset': { post: op }, '/api/users': { get: op }, '/api/system': { get: op },
+  };
+  const props = { username: { type: 'string' }, expire: { anyOf: [{ type: 'string', format: 'date-time' }, { type: 'integer' }, { type: 'null' }] }, data_limit: { type: 'integer' }, note: { type: 'string' } };
+  if (kind === 'pasarguard') { paths['/api/groups'] = { get: op }; paths['/api/hosts'] = { get: op }; props.group_ids = { type: 'array' }; if (hwid) { props.hwid_limit = { type: 'integer' }; paths['/api/user/{user_id}/hwids/{hwid}'] = { delete: op }; } }
+  if (kind === 'marzban') { paths['/api/inbounds'] = { get: op }; props.proxies = { type: 'object' }; }
+  if (kind === 'rebecca') { paths['/api/v2/services'] = { get: op }; props.service_id = { type: 'integer' }; }
+  Object.assign(props, extra);
+  return { openapi: '3.1.0', info: { title: 'Panel', version: '9.9.9-test' }, paths, components: { schemas: { UserCreate: { allOf: [{ properties: props }] } }, securitySchemes: { k: { type: 'apiKey', in: 'header', name: 'X-API-Key' } } } };
+}
+
+section('PNL-05 / PNL-06: panel API assumptions are checked against the panel\'s own OpenAPI document, read-only, nothing secret printed');
+{
+  const { analyseOpenApi, userFacts, problems } = await import('../src/panelapi.js');
+  const pgDoc = analyseOpenApi(fakeOpenApi('pasarguard'), 'pasarguard');
+  ok(pgDoc && !pgDoc.missing.length && pgDoc.hwid.path && pgDoc.hwid.field && pgDoc.create.expire === 'date-time|integer' && pgDoc.apiKeyHeader, 'PNL-05: a PasarGuard document with HWID: nothing missing, hwid path + field, expire types: ' + JSON.stringify(pgDoc));
+  const noHwid = analyseOpenApi(fakeOpenApi('pasarguard', { hwid: false }), 'pasarguard');
+  const pr = problems(noHwid, null, 'pasarguard');
+  ok(!noHwid.hwid.path && !noHwid.hwid.field && pr.some((x) => /hwid_limit/.test(x)) && pr.some((x) => /removing a device does nothing/.test(x)), 'PNL-05: a panel without HWID support is named as such: ' + pr.join(' | '));
+  const reb = analyseOpenApi(fakeOpenApi('marzban'), 'rebecca');
+  ok(reb.missing.includes('GET /api/v2/services') && problems(reb, null, 'rebecca').some((x) => /service_id/.test(x)), 'PNL-06: a Rebecca assumption the document lacks is listed: ' + reb.missing);
+  ok(!analyseOpenApi(fakeOpenApi('marzban'), 'marzban').missing.length && analyseOpenApi(null) === null, 'PNL-06: a Marzban document passes; no document = null');
+  const f = userFacts({ id: 1, username: 'x', status: 'active', expire: '2026-12-01T00:00:00', used_traffic: 5, subscription_url: '/sub/x', online_at: null });
+  ok(f.expire === 'iso-date' && f.hwid_limit === 'absent' && f.online_at === 'null' && !problems(null, f).length, 'PNL-06: a user record is described by field kinds only: ' + JSON.stringify(f));
+
+  // the owner's script against a fake panel: what it reports, and that no address, login, user name or link leaks
+  const { verifyPanel } = await import('../scripts/verify-panel-api.mjs');
+  const base = 'http://verify-p1.test';
+  const fp = fakes.addPanel(base, 'verifynodes.example.net', 'pasarguard');
+  fp.openapi = fakeOpenApi('pasarguard', { hwid: false });
+  fp.users['cg_verifyuser1'] = { id: 77, username: 'cg_verifyuser1', status: 'active', expire: 1767225600, data_limit: 0, used_traffic: 3, token: 'verifysubtoken9', note: 'Pleat #77' };
+  const writes = [];
+  const spy = (u, init = {}) => { if ((init.method || 'GET') !== 'GET') writes.push(`${init.method} ${new URL(u).pathname}`); return globalThis.fetch(u, init); };
+  const out = await verifyPanel({ url: base, username: 'verify-admin-x', password: 'verify-pass-x' }, spy);
+  const rep = JSON.parse(out);
+  ok(rep.login === 'ok' && rep.kind === 'pasarguard' && rep.system.version === '1.0.0-test' && rep.openapi && rep.openapi.hwid.field === false, 'PNL-05: the script logs in, detects the type and reads the document: ' + JSON.stringify({ l: rep.login, k: rep.kind, o: !!rep.openapi }));
+  ok(rep.user && rep.user.expire === 'number' && rep.user.hwid_limit === 'absent' && rep.problems.some((x) => /hwid_limit/.test(x)), 'PNL-05: a real user record is described and the HWID gap reported');
+  ok(writes.length === 1 && writes[0] === 'POST /api/admin/token', 'PNL-05: read-only: the only non-GET call is the login: ' + writes);
+  ok(!/verify-p1|verify-admin-x|verify-pass-x|cg_verifyuser1|verifysubtoken9|tok\d/.test(out), 'PNL-05: the report has no address, login, token, user name or link');
+  const fr = fakes.addPanel('http://verify-p2.test', 'verifyreb.example.net', 'rebecca');
+  fr.openapi = fakeOpenApi('rebecca');
+  fr.users['cg_verifyuser2'] = { id: 78, username: 'cg_verifyuser2', status: 'active', expire: 0, data_limit: 0, used_traffic: 0, token: 'verifysubtoken8', note: 'x' };
+  const rr = JSON.parse(await verifyPanel({ url: 'http://verify-p2.test', apiKey: 'verify-key-x' }));
+  ok(rr.kind === 'rebecca' && rr.apiKeyHeader === true && rr.services.has_hosts && rr.services.broken && rr.v2ray && rr.v2ray.status === 200 && rr.v2ray.links === 3, 'PNL-06: Rebecca: services fields and the /v2ray links are checked: ' + JSON.stringify({ k: rr.kind, s: rr.services, v: rr.v2ray }));
+}
+
+section('PNL-05: a panel that refuses hwid_limit still gets the account, and the admin learns the device limit was dropped');
+{
+  const W = await world('pnl5', 1);
+  W.pgs[0].rejectHwid = true;
+  await W.signupW('p5@example.com');
+  const told0 = fakes.tg.messages.length;
+  await W.bot(`/grant p5@example.com ${W.plan.id}`);
+  const made = Object.values(W.pgs[0].users).find((u) => /^Pleat #/.test(u.note || '') || u.username.startsWith('cg_'));
+  ok(made && !('hwid_limit' in made), 'PNL-05: the account was made without hwid_limit (lean retry)');
+  const told = fakes.tg.messages.slice(told0).filter((m) => /hwid_limit/.test(m.text || ''));
+  ok(told.length === 1, 'PNL-05: the admin is told the device limit was dropped: ' + told.length);
+  await W.signupW('p5b@example.com');
+  await W.bot(`/grant p5b@example.com ${W.plan.id}`);
+  ok(fakes.tg.messages.slice(told0).filter((m) => /hwid_limit/.test(m.text || '')).length === 1, 'PNL-05: and only once in 6 hours');
+  W.pgs[0].openapi = fakeOpenApi('pasarguard', { hwid: false });
+  const t0 = fakes.tg.messages.length;
+  await W.bot('/paneltest 1');
+  ok(fakes.tg.messages.slice(t0).some((m) => /hwid_limit/.test(m.text || '') && /API/.test(m.text || '')), 'PNL-05: the panel test reports the API document\'s gaps');
+}
+
+section('PERF-B-01: an idle minute writes no cursor or health row; a phone opening the app does not rewrite its device every time');
+{
+  const W = await world('pfb1', 1);
+  const tok = await W.signupW('pb1@example.com');
+  await W.bot(`/grant pb1@example.com ${W.plan.id}`);
+  const countWrites = (re) => { const prep = W.e.DB.prepare; let n = 0; W.e.DB.prepare = (sql) => { if (re.test(sql)) n++; return prep.call(W.e.DB, sql); }; return { get n() { return n; }, stop() { W.e.DB.prepare = prep; } }; };
+  await runSync(W.e); await runSync(W.e);
+  const cw = countWrites(/INSERT INTO sync_cursor|UPDATE panels SET fail_streak = 0/);
+  for (let i = 0; i < 5; i++) await runSync(W.e);
+  cw.stop();
+  ok(cw.n === 0, 'PERF-B-01: 5 idle cron runs on a healthy panel write no cursor or health row: ' + cw.n);
+  const h = await W.callW('GET', '/health');
+  ok(h.status === 200 && h.data.ok, 'PERF-B-01: /health still sees the cron alive: ' + JSON.stringify(h.data));
+  // the heartbeat is kept: an old stamp is written again
+  await W.e.DB.prepare('UPDATE sync_cursor SET run_at = run_at - 200').run();
+  const cw2 = countWrites(/INSERT INTO sync_cursor/);
+  await runSync(W.e);
+  cw2.stop();
+  ok(cw2.n >= 1, 'PERF-B-01: a cursor stamp older than 2 minutes is refreshed: ' + cw2.n);
+  const dv = countWrites(/INSERT INTO devices/);
+  for (let i = 0; i < 3; i++) await W.callW('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'pb1-phone', 'x-device-model': 'Pixel', 'x-app-version': '1.2.52' } });
+  dv.stop();
+  ok(dv.n === 1, 'PERF-B-01: three /vpn calls from the same phone write its device row once: ' + dv.n);
+  const devs = (await W.callW('GET', '/api/v1/devices', { token: tok })).data;
+  ok(devs.some((d) => d.device_id === 'pb1-phone'), 'PERF-B-01: the phone is still listed');
+}
+
+section('SEC-07: Mini App probe reports cannot flood the admin chat: one a minute per Telegram user, a global hourly cap');
+{
+  const W = await world('sec7', 1);
+  const { createHmac } = await import('node:crypto');
+  const sign = (fields) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(W.e.TELEGRAM_BOT_TOKEN).digest();
+    return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+  };
+  const now = Math.floor(Date.now() / 1000);
+  const initOf = (id) => sign({ query_id: 'AAH', user: JSON.stringify({ id, first_name: 'P' + id }), auth_date: String(now - 30) });
+  const report = (id) => W.callW('POST', '/api/v1/mini/probe', { json: { init_data: initOf(id), steps: { page: { ok: true, ms: 5 } } } });
+  const toAdmin = () => fakes.tg.calls.filter((c) => c.method === 'sendMessage' && String(c.body.chat_id) === '12345' && /نتیجه‌ی تست Mini App/.test(String(c.body.text))).length;
+  const n0 = toAdmin();
+  const a = await report(880001);
+  const b = await report(880001);
+  ok(a.status === 200 && b.status === 429 && toAdmin() - n0 === 1, 'SEC-07: the same Telegram user twice in a minute reaches the admin once: ' + a.status + ' ' + b.status);
+  const st = [];
+  for (let i = 0; i < 25; i++) st.push((await report(880100 + i)).status);
+  ok(toAdmin() - n0 === 20 && st.filter((x) => x === 429).length === 6, 'SEC-07: at most 20 reports an hour reach the admin from any number of users: ' + (toAdmin() - n0));
+  // review: the owner probes each Worker address in turn (one page per address), also after the hourly cap is spent
+  W.e.PUBLIC_BASE_URL = 'https://api.test';
+  await W.e.DB.prepare("INSERT INTO settings (key, value) VALUES ('app_api_bases', 'https://b.example.org https://c.example.org') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+  const own = (origin) => W.callW('POST', '/api/v1/mini/probe', { json: { init_data: initOf(12345), origin, steps: { page: { ok: true, ms: 5 } } } });
+  const o = [await own('https://api.test'), await own('https://b.example.org'), await own('https://c.example.org'), await own('https://b.example.org')];
+  ok(o.slice(0, 3).every((x) => x.status === 200) && o[3].status === 429, 'SEC-07 review: the admin gets one report per address a minute, past the hourly cap: ' + o.map((x) => x.status));
+}
+
+section('PNL-08: a panel known to be down gets one short try per cron run, not 15 s per waiting change');
+{
+  const W = await world('pnl8', 2);
+  const { pushPending } = await import('../src/sync.js');
+  for (const em of ['p8a@example.com', 'p8b@example.com', 'p8c@example.com']) { await W.signupW(em); await W.bot(`/grant ${em} ${W.plan.id}`); }
+  await W.e.DB.prepare("UPDATE panel_accounts SET dirty = 1, desired_expire = desired_expire + 86400 WHERE panel_id = 2").run();
+  await W.e.DB.prepare('UPDATE panels SET fail_streak = 5, health = 0 WHERE id = 2').run();
+  // the panel answers only after 2.5 s (a dead panel's connect timeout, shortened for the test)
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (!url.startsWith(W.bases[1])) return realFetch(input, init);
+    return new Promise((res, rej) => {
+      const t = setTimeout(() => res(realFetch(input, init)), 2500);
+      if (init.signal) init.signal.addEventListener('abort', () => { clearTimeout(t); rej(init.signal.reason || new Error('aborted')); });
+    });
+  };
+  const t0 = Date.now();
+  let r;
+  try { r = await counted('push', () => pushPending(W.e, { limit: 15 })); } finally { globalThis.fetch = realFetch; }
+  const ms = Date.now() - t0;
+  const rows = await W.q('SELECT attempts, dirty FROM panel_accounts WHERE panel_id = 2 ORDER BY id');
+  ok(ms < 2500, 'PNL-08: three waiting changes on a dead panel took ' + ms + ' ms (want one short try)');
+  ok(r.done === 0 && rows.filter((x) => x.attempts === 1).length === 1 && rows.every((x) => x.dirty === 1), 'PNL-08: one try is counted, the rest wait for the next run: ' + JSON.stringify(rows));
+  await W.e.DB.prepare('UPDATE panels SET fail_streak = 0, health = 100 WHERE id = 2').run();
+  const r2 = await counted('push', () => pushPending(W.e, { limit: 15 }));
+  ok(r2.done === 3, 'PNL-08: once the panel is back the changes go through: ' + r2.done);
+}
+
+section('PNL-11: an expired or used-up plan gets 402 with its reason on the server list, not "no servers yet"');
+{
+  const W = await world('pnl11', 1);
+  const tok = await W.signupW('p11@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'p11@example.com'))[0].id;
+  await W.bot(`/grant p11@example.com ${W.plan.id}`);
+  await W.e.DB.prepare("UPDATE subscriptions SET state = 'stopped', stop_reason = 'expired', expires_at = ? WHERE user_id = ?").bind(Math.floor(Date.now() / 1000) - 60, uid).run();
+  await W.e.DB.prepare("UPDATE panel_accounts SET desired = 'stopped', applied = 'stopped' WHERE user_id = ?").bind(uid).run();
+  const a = await W.callW('GET', '/api/v1/vpn/servers', { token: tok });
+  ok(a.status === 402 && a.data.detail.code === 'plan_expired' && !/[\u0600-\u06FF]/.test(a.data.detail.message), 'PNL-11: expired -> 402 plan_expired (English): ' + a.status + ' ' + JSON.stringify(a.data));
+  await W.e.DB.prepare("UPDATE subscriptions SET stop_reason = 'quota', expires_at = ? WHERE user_id = ?").bind(Math.floor(Date.now() / 1000) + 86400, uid).run();
+  const b = await W.callW('GET', '/api/v1/vpn/servers', { token: tok });
+  ok(b.status === 402 && b.data.detail.code === 'plan_limited', 'PNL-11: data used up -> 402 plan_limited: ' + b.status + ' ' + JSON.stringify(b.data));
+}
+
+section('PNL-12: panel errors that reach the admin name the bot button to press, never a command to type');
+{
+  const W = await world('pnl12', 2);
+  const { adapterFor, groupIdsFor } = await import('../src/panels.js');
+  const typed = /\/(panelcred|paneltest|panelgroups|set)\b/;
+  const p2 = (await W.q('SELECT * FROM panels WHERE id = 2'))[0];
+  const e1 = await catchErr(adapterFor(W.e, { ...p2, cred_ref: 'W_pnl12_none' }));
+  ok(e1 && !typed.test(e1.message) && /🔐/.test(e1.message), 'PNL-12: no login: points to 🔐 ورود پنل: ' + (e1 && e1.message));
+  const e2 = await catchErr(adapterFor(W.e, { ...p2, kind: 'auto' }));
+  ok(e2 && !typed.test(e2.message) && /🧪/.test(e2.message), 'PNL-12: unknown type: points to 🧪 تست پنل: ' + (e2 && e2.message));
+  W.pgs[1].groupsSudoOnly = true;
+  const pg2 = await adapterFor(W.e, p2);
+  pg2.listGroupIds = async () => { const { PasarGuardError } = await import('../src/pasarguard.js'); throw new PasarGuardError('forbidden', 403); };
+  const e3 = await catchErr(groupIdsFor(W.e, p2, pg2));
+  ok(e3 && !typed.test(e3.message) && /👥/.test(e3.message), 'PNL-12: unreadable groups: points to 👥 گروه‌ها / سرویس: ' + (e3 && e3.message));
+  const { Rebecca } = await import('../src/marzban.js');
+  const e4 = await catchErr(new Rebecca(W.e, { url: W.bases[1], username: 'a', password: 'b' }).createUser('x_1', { groupIds: [] }));
+  ok(e4 && !typed.test(e4.message) && /👥/.test(e4.message), 'PNL-12: Rebecca without a service: points to the button: ' + (e4 && e4.message));
+  // the groups button saves options.group_ids; for panel 1 it must take effect too (it read only pg_group_ids)
+  const p1 = (await W.q('SELECT * FROM panels WHERE id = 1'))[0];
+  const ids = await groupIdsFor(W.e, { ...p1, options_json: JSON.stringify({ group_ids: [7] }) }, await adapterFor(W.e, p1));
+  ok(ids.join() === '7', 'PNL-12: groups chosen with the button for panel 1 are used: ' + ids);
+}
+
+section('PNL-12 review: the panel report and the panel test name buttons, never a command to type');
+{
+  const W = await world('pnl12b', 3, ['pasarguard', 'pasarguard', 'rebecca']);
+  const { panelReport } = await import('../src/telegram.js');
+  W.e.W_pnl12b_2 = JSON.stringify({ url: W.bases[1], username: 'adm', password: 'pw' });
+  W.pgs[1].kind = 'none'; // answers no login: the report's fix line
+  const rep = await panelReport(W.e);
+  ok(/❌ ورود ناموفق/.test(rep) && !/\/panelcred|\/paneltest|\/panelgroups/.test(rep) && /🔐 ورود پنل/.test(rep), 'PNL-12 review: the health report names 🔐 ورود پنل, not /panelcred: ' + rep.split('\n').filter((l) => /راه حل/.test(l)).join(' '));
+  W.pgs[1].kind = 'pasarguard';
+  const n0 = fakes.tg.messages.length;
+  await W.bot('/paneltest 1');
+  W.pgs[2].services = [];
+  await W.bot('/paneltest 3');
+  const texts = fakes.tg.messages.slice(n0).map((m) => m.text || '');
+  ok(texts.some((t) => /سالم است/.test(t)) && !texts.some((t) => /بنویس/.test(t)), 'PNL-12 review: the panel test reply never says "write ...": ' + texts.filter((t) => /بنویس/.test(t)).join(' | ').slice(0, 300));
+}
+
+section('PERF-B-02: a network report rewrites a server\'s row of the user\'s own history only when its result changed or the row is 30 min old');
+{
+  const W = await world('pfb2', 1);
+  const tok = await W.signupW('pb2@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'pb2@example.com'))[0].id;
+  const MCI = { asn: 197207, country: 'IR', region: 'Tehran', city: 'Tehran' };
+  const rep = async (results) => { globalThis.__cgNet = {}; return W.callW('POST', '/api/v1/net/report', { token: tok, cf: MCI, json: { kind: 'cell', results } }); };
+  const rows = () => W.q('SELECT skey, tests, ok, fail FROM user_net_srv WHERE user_id = ? ORDER BY skey', uid);
+  await rep([{ k: 'aaaaaa11', ok: true, ms: 100 }, { k: 'bbbbbb22', ok: false }]);
+  const r1 = await rows();
+  await rep([{ k: 'aaaaaa11', ok: true, ms: 110 }, { k: 'bbbbbb22', ok: false }]);
+  const r2 = await rows();
+  ok(r1.length === 2 && JSON.stringify(r1) === JSON.stringify(r2), 'PERF-B-02: the same results again write nothing: ' + JSON.stringify(r2));
+  await rep([{ k: 'aaaaaa11', ok: true, ms: 90 }, { k: 'bbbbbb22', ok: true, ms: 80 }]);
+  const r3 = await rows();
+  ok(r3[0].tests === 1 && r3[1].tests === 2 && r3[1].ok > 0, 'PERF-B-02: a server whose result flipped is written at once: ' + JSON.stringify(r3));
+  await W.e.DB.prepare('UPDATE user_net_srv SET at = at - 1900 WHERE user_id = ?').bind(uid).run();
+  await rep([{ k: 'aaaaaa11', ok: true, ms: 100 }]);
+  ok((await rows())[0].tests === 2, 'PERF-B-02: a row 30 minutes old is refreshed');
+}
+
+section('CF-07: every error code the Worker raises is in docs/API.md with its one status');
+{
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const dir = new URL('../src/', import.meta.url);
+  const raised = new Map(); // code -> Set(status)
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.js'))) {
+    for (const m of readFileSync(new URL(f, dir), 'utf8').matchAll(/err\((\d{3}), '([a-z_0-9]+)'/g)) {
+      if (!raised.has(m[2])) raised.set(m[2], new Set());
+      raised.get(m[2]).add(m[1]);
+    }
+  }
+  const api = readFileSync(new URL('../../docs/API.md', import.meta.url), 'utf8');
+  const sec = api.slice(api.indexOf('## Error codes'), api.indexOf('\n## ', api.indexOf('## Error codes') + 5));
+  const doc = new Map(), indirect = new Set();
+  for (const m of sec.matchAll(/^\| `([a-z_0-9, ]+)`( \*indirect\*)? \| (\d{3}) \|/gm)) {
+    for (const c of m[1].split(/,\s*/)) { if (!doc.has(c)) doc.set(c, new Set()); doc.get(c).add(m[3]); if (m[2]) indirect.add(c); }
+  }
+  const missing = [...raised].filter(([c, st]) => !doc.has(c) || [...st].some((x) => !doc.get(c).has(x))).map(([c, st]) => `${c} ${[...st]}`);
+  ok(sec.length > 100 && !missing.length, 'CF-07: codes raised but not in the table (or with another status): ' + missing.join(', '));
+  const stale = [...doc.keys()].filter((c) => !raised.has(c) && !indirect.has(c));
+  ok(!stale.length, 'CF-07: table rows nothing raises: ' + stale.join(', '));
+  const twoStatus = [...raised].filter(([, st]) => st.size > 1).map(([c, st]) => `${c} ${[...st]}`);
+  ok(!twoStatus.length, 'CF-07: one code, one status: ' + twoStatus.join(', '));
 }
 
 section('MISC-06: an incident runbook exists and covers the single points of failure');

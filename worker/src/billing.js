@@ -92,7 +92,7 @@ export async function provision(env, user, plan, opts = {}) {
         subPath, fields.data_limit, fields.data_limit, newExpire, newExpire, now, pa.id));
         results.push({ panel, name: pa.remote_username, subPath, used });
       } else {
-        pa = await ensureAccount(env, user, panel, { expire: newExpire, limit: dataLimit, hwid });
+        pa = await ensureAccount(env, user, panel, { expire: newExpire, limit: dataLimit, hwid, row: pa || null });
         results.push({ panel, name: pa.remote_username, subPath: pa.sub_path, used: 0 });
       }
     } catch (e) {

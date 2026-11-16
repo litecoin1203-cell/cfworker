@@ -1,6 +1,15 @@
 node_modules/
 worker/.wrangler/
 *.jks
+# secrets that must never reach this public repo (OPS-09): signing keys, certificates, local env files
+*.keystore
+*.p12
+*.pem
+*.key
+.env
+.env.*
+.dev.vars
+key.properties
 *.log
 __pycache__/
 worker/coverage/

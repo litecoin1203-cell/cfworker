@@ -132,6 +132,10 @@ export const KINDS = new Set(['wifi', 'cell', 'other']);
 const kindOf = (v) => (KINDS.has(v) ? v : '');
 export const KIND_FA = { wifi: 'وای‌فای', cell: 'دیتای موبایل', other: 'شبکه‌ی دیگر', '': 'نامشخص' };
 const DECAY = 0.8; // weight of a user's earlier results on a server each time a new one arrives
+// PERF-B-02: the app reports every server on each open (20-60 servers = as many rows plus their index rows). A user's
+// row for a server is rewritten only when its result flips (works <-> fails) or the row is this old, so the decay
+// above now steps at most every 30 minutes per server unless something changed.
+const SRV_REWRITE_SEC = 1800;
 
 // POST /net/report  { kind?, results: [{ k, ok, ms, kbps? }] } — an entry with kbps and no ok is a speed result only.
 // Set-based: a fixed handful of D1 queries whatever the number of servers (the free plan allows 50 per request;
@@ -205,7 +209,9 @@ export async function report(env, user, request, body) {
           ms_n = CASE WHEN excluded.ms_n > 0 THEN ms_n * ${DECAY} + 1 ELSE ms_n END,
           kb_sum = CASE WHEN excluded.kb_n > 0 THEN kb_sum * ${DECAY} + excluded.kb_sum ELSE kb_sum END,
           kb_n = CASE WHEN excluded.kb_n > 0 THEN kb_n * ${DECAY} + 1 ELSE kb_n END,
-          tests = tests + 1, at = excluded.at`)
+          tests = tests + 1, at = excluded.at
+        WHERE user_net_srv.at <= excluded.at - ${SRV_REWRITE_SEC}
+          OR (excluded.ok + excluded.fail > 0 AND (excluded.ok > 0) <> (user_net_srv.ok >= user_net_srv.fail))`)
         .bind(user.id, asn, kind, now, JSON.stringify(mine)),
     ]);
   }

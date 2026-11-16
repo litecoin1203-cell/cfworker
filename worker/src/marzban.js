@@ -76,7 +76,7 @@ export class Rebecca extends Marzban {
 
   async createUser(username, { expire, dataLimit, groupIds, note }) {
     const serviceId = (groupIds || [])[0];
-    if (!serviceId) throw new PasarGuardError('Rebecca needs a service for new users. Set it: /panelgroups <panel> <service id>', 0);
+    if (!serviceId) throw new PasarGuardError('Rebecca needs a service for new users. Choose it in the bot: 🗂 پنل‌ها › (this panel) › 👥 گروه‌ها / سرویس', 0);
     const body = {
       username, service_id: serviceId, status: 'active', expire: expire || 0, data_limit: dataLimit || 0,
       data_limit_reset_strategy: 'no_reset', note: (note || '').slice(0, 450),
