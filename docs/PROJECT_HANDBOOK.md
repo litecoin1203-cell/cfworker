@@ -514,7 +514,9 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 
 ## 9. The admin Telegram bot
 
-- Webhook `/tg`, secret in path **and** header; `ensureWebhook` (every minute) re-registers if needed. A manual
+- Webhook `/tg`, secret in path **and** header; `ensureWebhook` (every minute) re-registers if needed, and every
+  10 minutes asks Telegram (`getWebhookInfo`) and re-registers when the updates go elsewhere, nowhere, or were
+  refused with 401/403/404 in the last 15 minutes (a silent bot fixes itself). A manual
   `wrangler deploy` (outside the workflow) needs the webhook re-registered with `secret_token`.
 - Admin only from a **private chat** with the right `from.id` (N1 fix). Owner = `TELEGRAM_CHAT_ID`; extra admins
   in `admins` with roles owner/support/viewer.

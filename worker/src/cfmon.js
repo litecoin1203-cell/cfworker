@@ -128,7 +128,8 @@ export async function workerRows(env, since, until = nowSec()) {
     const rows = (r.acc.workersInvocationsAdaptive || []).map((g) => ({
       hour: Math.floor(Date.parse(g.dimensions.datetimeHour) / 1000) || 0, script: g.dimensions.scriptName || '', status: g.dimensions.status || '',
       requests: Number(g.sum.requests) || 0, errors: Number(g.sum.errors) || 0, subrequests: Number(g.sum.subrequests) || 0,
-      p50: Number(g.quantiles && g.quantiles.cpuTimeP50) || 0, p99: Number(g.quantiles && g.quantiles.cpuTimeP99) || 0,
+      // Cloudflare gives CPU time in microseconds; everything here (and the 10 ms cap) is milliseconds
+      p50: (Number(g.quantiles && g.quantiles.cpuTimeP50) || 0) / 1000, p99: (Number(g.quantiles && g.quantiles.cpuTimeP99) || 0) / 1000,
     }));
     return { rows };
   });

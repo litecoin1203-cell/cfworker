@@ -1,7 +1,7 @@
 // Telegram admin bot: receipts with Approve/Reject buttons, panel diagnostics, discount codes, plans, backups.
 // You run the whole shop from your Telegram chat.
 import { first, run, all, insert, getSettings, setSetting, SETTING_DEFAULTS } from './db.js';
-import { nowSec, deadline } from './util.js';
+import { nowSec, deadline, logError } from './util.js';
 import { runAction, PLAN_FIELDS } from './admin-actions.js';
 
 export { PLAN_FIELDS };
@@ -87,8 +87,20 @@ export async function tg(env, method, body) {
       body: JSON.stringify(body),
       signal: deadline(10000),
     });
-    return r.json();
+    const j = await r.json();
+    noteRefused(method, j);
+    return j;
   } catch (e) { return null; }
+}
+// A message Telegram refused to show (a bad button, a too-long text, bad HTML) used to vanish without a trace: the
+// bot just stayed silent. Such refusals now go to the Worker's error log (☁️ in the bot, Cloudflare › errors in
+// the Mini App), method and Telegram's reason only. Expected refusals are left out: the person blocked the bot or
+// deleted the chat, an edit that changed nothing, a tap answered too late, rate limits (the caller retries).
+const SHOWN = new Set(['sendMessage', 'sendPhoto', 'sendDocument', 'editMessageText', 'editMessageCaption', 'editMessageReplyMarkup', 'answerCallbackQuery']);
+const EXPECTED = /not modified|chat not found|bot was blocked|user is deactivated|query is too old|query ID is invalid|message to edit not found|have no rights|PEER_ID_INVALID|Too Many Requests/i;
+function noteRefused(method, j) {
+  if (!SHOWN.has(method) || !j || j.ok !== false || EXPECTED.test(String(j.description || ''))) return;
+  logError('telegram refused ' + method, new Error(String(j.description || 'error ' + j.error_code).slice(0, 200)));
 }
 
 export async function notifyAdmin(env, text, replyMarkup) {
@@ -184,9 +196,14 @@ export const SECRET_SETTINGS = new Set(['sms_key', 'app_bridges']);
 
 // ---------------- webhook ----------------
 export async function handleWebhook(env, update) {
-  // secret check is done by the caller (path contains the webhook secret)
-  if (update.callback_query) return onCallback(env, update.callback_query);
-  if (update.message) return onMessage(env, update.message);
+  // secret check is done by the caller (path contains the webhook secret). This runs in waitUntil after Telegram
+  // already got its 200, so a throw here was invisible (no reply, nothing in any log): it is logged now.
+  try {
+    if (update.callback_query) return await onCallback(env, update.callback_query);
+    if (update.message) return await onMessage(env, update.message);
+  } catch (e) {
+    logError('bot update failed', e, { kind: update.callback_query ? 'button' : 'message' });
+  }
 }
 
 async function onCallback(env, cq) {
@@ -260,17 +277,21 @@ async function editStatus(env, cq, text, markup) {
 
 // ---------------- webhook registration ----------------
 // The Worker points the bot at itself (no secret in the deploy workflow). Runs every minute but only calls
-// Telegram when the address or the secret changed since the last successful registration.
-export async function ensureWebhook(env) {
+// Telegram when the address or the secret changed since the last successful registration, and every 10 minutes
+// (opts.check) asks Telegram where the bot's updates go: when they no longer come here (another program set its
+// own webhook or deleted it), or Telegram's last tries were refused by this Worker (a secret mismatch), it
+// registers again. Without this a bot pointed elsewhere stayed silent until the next deploy changed the address.
+export async function ensureWebhook(env, opts = {}) {
   const base = String(env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
   const secret = env.TELEGRAM_WEBHOOK_SECRET;
   if (!env.TELEGRAM_BOT_TOKEN || !secret || !base) return false;
   const { hmacHex } = await import('./util.js');
   // the "v2" bump re-registers once so the bot's command list (menu button) is set too
   // "v3": also points every user's menu button at the Mini App
-  const want = await hmacHex(secret, base + '|' + env.TELEGRAM_BOT_TOKEN.slice(-6) + '|v3');
+  // "v4": registers once more after the 2026-11-16 silent-bot report
+  const want = await hmacHex(secret, base + '|' + env.TELEGRAM_BOT_TOKEN.slice(-6) + '|v4');
   const have = (await first(env, "SELECT value FROM settings WHERE key = 'tg_webhook_sig'"))?.value;
-  if (have === want) return false;
+  if (have === want && !(opts.check && (await webhookLost(env, base + '/tg')))) return false;
   const r = await tg(env, 'setWebhook', { url: base + '/tg', secret_token: secret, allowed_updates: ['message', 'callback_query'] });
   if (!r || !r.ok) return false;
   if (env.TELEGRAM_CHAT_ID) {
@@ -284,6 +305,19 @@ export async function ensureWebhook(env) {
   await tg(env, 'setChatMenuButton', { menu_button: { type: 'web_app', text: 'Pleat', web_app: { url: base + MINI_PATH } } });
   await setSetting(env, 'tg_webhook_sig', want);
   return true;
+}
+
+// Telegram's own view of the webhook: lost when it points somewhere else (or nowhere), or when its last error in
+// the past 15 minutes is this Worker refusing the update (401/403/404: the secret Telegram sends is not ours).
+// No answer from Telegram is not "lost" (nothing to fix from here).
+export async function webhookLost(env, url) {
+  const r = await tg(env, 'getWebhookInfo', {});
+  if (!r || !r.ok || !r.result) return false;
+  const w = r.result;
+  if (typeof w.url !== 'string') return false; // not an answer we can read
+  if (w.url !== url) return true;
+  const recent = w.last_error_date && nowSec() - w.last_error_date < 900;
+  return !!(recent && w.pending_update_count > 0 && /\b(401|403|404)\b/.test(String(w.last_error_message || '')));
 }
 
 // ---------------- admin log and "are you sure?" ----------------
