@@ -67,6 +67,7 @@ export const CAUSE = {
 export const DETAIL = {
   proto: 'Protocol', ms: 'Time (ms)', s: 'Seconds', err: 'Core error', kind: 'Kind', tunnel: 'Tunnel was up', trace: 'Trace', reason: 'Reason',
   min: 'Minutes', rate: 'Battery % per hour', drop: 'Battery drop %', off: 'Screen off %', opt: 'Battery optimisation on', route: 'Route',
+  skipped: 'Left out (fails for nearly everyone on this operator)',
   tried: 'Tried', bridge: 'Bridge', stage: 'Stage', expected: 'Expected country', actual: 'Real country', misses: 'Missed pings',
   sessions: 'Sessions', ok: 'Succeeded', fail: 'Failed', minutes: 'Minutes connected', moved: 'Network changed', status: 'Code', what: 'Android says',
   sig: 'Signal', go: 'Core panic (Go)', abort: 'Abort message', cause: 'Cause', thread: 'Thread', lib: 'Library', frames: 'Frames',
@@ -105,7 +106,8 @@ export const CRASH = {
 // how each server of a "no server connected" report did in the last test
 const WHY = { ok: 'answered', untested: 'not tested' };
 export function detailValue(k, v, d, names = {}) {
-  if (k === 'tried' && Array.isArray(v)) return v.map((x) => names[x] || x).join(', ');
+  // from Pleat 1.2.52 each try carries its own failure: { k, c }
+  if (k === 'tried' && Array.isArray(v)) return v.map((x) => (x && x.k ? `${names[x.k] || x.k}${x.c ? `: ${CAUSE[x.c] || x.c}` : ''}` : names[x] || x)).join(', ');
   if (k === 'why' && Array.isArray(v)) return v.map((x) => (x && x.k ? `${names[x.k] || x.k}: ${WHY[x.c] || CAUSE[x.c] || x.c}` : x)).join(' | ');
   if (k === 'reason' && EXIT_REASON[v] !== undefined) return `${v} = ${EXIT_REASON[v]}`;
   if (k === 'status' && d.reason === 5 && SIGNAL[v]) return `${v} = ${SIGNAL[v]}`;
