@@ -566,10 +566,15 @@ class _RegionHead extends StatelessWidget {
     child: Row(
       children: [
         Expanded(
-          child: Text(
-            '${region.title.toUpperCase()}  ·  $countries '
-            '${countries == 1 ? 'COUNTRY' : 'COUNTRIES'}',
-            style: PType.tab(color: PColors.ink),
+          child: Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: TitleScrim(
+              child: Text(
+                '${region.title.toUpperCase()}  ·  $countries '
+                '${countries == 1 ? 'COUNTRY' : 'COUNTRIES'}',
+                style: PType.tab(color: PColors.ink),
+              ),
+            ),
           ),
         ),
         if (legend)

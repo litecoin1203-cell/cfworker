@@ -549,6 +549,29 @@ class _StaggerInState extends State<StaggerIn>
   }
 }
 
+/// A soft pill of the page colour behind a title that sits on the open
+/// ground, so a shard drawn behind it keeps the text readable (UX-07).
+class TitleScrim extends StatelessWidget {
+  const TitleScrim({super.key, required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Transform.translate(
+    // the text stays where it was; only the pill reaches past it
+    offset: const Offset(-10, 0),
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: PColors.ground.withValues(alpha: 0.88),
+        borderRadius: BorderRadius.circular(PRadius.pill),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+        child: child,
+      ),
+    ),
+  );
+}
+
 /// Section label used sparingly: sentence case, semibold.
 class SectionLabel extends StatelessWidget {
   const SectionLabel(this.text, {super.key, this.trailing, this.onTrailing});
@@ -560,7 +583,12 @@ class SectionLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Expanded(child: Text(text, style: PType.h3())),
+        Expanded(
+          child: Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: TitleScrim(child: Text(text, style: PType.h3())),
+          ),
+        ),
         if (trailing != null)
           Pressable(
             onTap: onTrailing,
