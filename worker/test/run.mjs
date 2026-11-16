@@ -2088,9 +2088,11 @@ section('per-user networks: operator + connection type, per-type ranking, admin 
   ok(cell.kind === 'cell' && cell.servers[ky].score > cell.servers[kx].score, 'Irancell mobile data ranks Y first');
   const plain = (await call('GET', '/api/v1/net/rank?kind=bogus', { token: toks[0], cf: MTN })).data;
   ok(plain.kind === '' && plain.servers[kx].level !== 'type', 'an unknown kind falls back to the operator-wide ranking');
-  // one account reporting over and over keeps a bounded weight
-  for (let i = 0; i < 25; i++) { globalThis.__cgNet = {}; await call('POST', '/api/v1/net/report', { token: toks[0], cf: MTN, json: { kind: 'other', results: [{ k: kx, ok: false }] } }); }
-  for (let i = 0; i < 25; i++) { globalThis.__cgNet = {}; await call('POST', '/api/v1/net/report', { token: toks[0], cf: MTN, json: { kind: 'other', results: [{ k: kx, ok: true, ms: 50 }] } }); }
+  // one account reporting over and over (each result 30+ minutes after the last: PERF-B-02 skips unchanged rewrites
+  // within 30 minutes) keeps a bounded weight
+  const later = () => env.DB.prepare('UPDATE user_net_srv SET at = at - 1900 WHERE user_id = ?').bind(ids[0]).run();
+  for (let i = 0; i < 25; i++) { await later(); globalThis.__cgNet = {}; await call('POST', '/api/v1/net/report', { token: toks[0], cf: MTN, json: { kind: 'other', results: [{ k: kx, ok: false }] } }); }
+  for (let i = 0; i < 25; i++) { await later(); globalThis.__cgNet = {}; await call('POST', '/api/v1/net/report', { token: toks[0], cf: MTN, json: { kind: 'other', results: [{ k: kx, ok: true, ms: 50 }] } }); }
   const row = await env.DB.prepare('SELECT ok, fail, tests FROM user_net_srv WHERE user_id = ? AND kind = ? AND skey = ?').bind(ids[0], 'other', kx).first();
   ok(row.ok <= 5 && row.ok > 4.5 && row.fail < 0.05 && row.tests === 50, 'a user\'s weight on a server stays at most 5 results and follows the latest: ' + JSON.stringify(row));
   const sp = await env.DB.prepare('SELECT kb_sum, kb_n, ok FROM user_net_srv WHERE user_id = ? AND kind = ? AND skey = ?').bind(ids[0], 'wifi', kx).first();
@@ -6853,6 +6855,27 @@ section('PNL-12: panel errors that reach the admin name the bot button to press,
   const p1 = (await W.q('SELECT * FROM panels WHERE id = 1'))[0];
   const ids = await groupIdsFor(W.e, { ...p1, options_json: JSON.stringify({ group_ids: [7] }) }, await adapterFor(W.e, p1));
   ok(ids.join() === '7', 'PNL-12: groups chosen with the button for panel 1 are used: ' + ids);
+}
+
+section('PERF-B-02: a network report rewrites a server\'s row of the user\'s own history only when its result changed or the row is 30 min old');
+{
+  const W = await world('pfb2', 1);
+  const tok = await W.signupW('pb2@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'pb2@example.com'))[0].id;
+  const MCI = { asn: 197207, country: 'IR', region: 'Tehran', city: 'Tehran' };
+  const rep = async (results) => { globalThis.__cgNet = {}; return W.callW('POST', '/api/v1/net/report', { token: tok, cf: MCI, json: { kind: 'cell', results } }); };
+  const rows = () => W.q('SELECT skey, tests, ok, fail FROM user_net_srv WHERE user_id = ? ORDER BY skey', uid);
+  await rep([{ k: 'aaaaaa11', ok: true, ms: 100 }, { k: 'bbbbbb22', ok: false }]);
+  const r1 = await rows();
+  await rep([{ k: 'aaaaaa11', ok: true, ms: 110 }, { k: 'bbbbbb22', ok: false }]);
+  const r2 = await rows();
+  ok(r1.length === 2 && JSON.stringify(r1) === JSON.stringify(r2), 'PERF-B-02: the same results again write nothing: ' + JSON.stringify(r2));
+  await rep([{ k: 'aaaaaa11', ok: true, ms: 90 }, { k: 'bbbbbb22', ok: true, ms: 80 }]);
+  const r3 = await rows();
+  ok(r3[0].tests === 1 && r3[1].tests === 2 && r3[1].ok > 0, 'PERF-B-02: a server whose result flipped is written at once: ' + JSON.stringify(r3));
+  await W.e.DB.prepare('UPDATE user_net_srv SET at = at - 1900 WHERE user_id = ?').bind(uid).run();
+  await rep([{ k: 'aaaaaa11', ok: true, ms: 100 }]);
+  ok((await rows())[0].tests === 2, 'PERF-B-02: a row 30 minutes old is refreshed');
 }
 
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
