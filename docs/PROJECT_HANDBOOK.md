@@ -108,7 +108,7 @@ These are not suggestions. Each one exists because something went wrong or Ali s
   Two Pleat releases (1.2.9 and earlier) shipped theory-driven fixes that did nothing; a per-exit core log
   then settled the question in minutes. The audit uses the tags **[run]**, **[code]**, **[CI]**, **[guess]**;
   keep using them in reports.
-- For a failing VPN exit, use the app's **"Test alone + copy core log"** first (Profile → Connection check).
+- For a failing VPN exit, use the app's **"Test alone + copy report for support"** first (Profile → Connection check).
 
 ### Scope and approval
 - **Never create a new repo or a new project.** Develop only `litecoin1203-cell/cfworker`. Extend existing files.
@@ -771,7 +771,7 @@ does not reach users by itself.
 
 ### Diagnostics
 Profile → **Connection check**: tests every exit (own native 10 s budget per test since 1.2.21), shows cause /
-fix / advice (`diagnose.dart`), "Copy report" (real app version), and **"Test alone + copy core log"** per exit
+fix / advice (`diagnose.dart`), "Copy report" (real app version), and **"Test alone + copy report for support"** per exit (named "Test alone + copy core log" before release audit UX-09; the copied text is the same core log)
 (debug log, hosts blanked). This is the tool that ends arguments — use it.
 
 ### State and code notes
@@ -1193,7 +1193,7 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
   outbound/dispatcher/log, so DNS changes were irrelevant to the check. The real fix was MTU 1280.
 - **WebSocket h2 ALPN** causing closed pipes (PR #28): not the cause; closed pipes are server-side (§16).
 - **The "No server connected · DE" alerts** from the DE 3 user are not crashes: DE exits fail on that Wi-Fi.
-- In general: **no more theory patches** for failing exits. Ask Ali for "Test alone + copy core log" traces
+- In general: **no more theory patches** for failing exits. Ask Ali for "Test alone + copy report for support" traces
   and fix only on evidence.
 
 ---
@@ -1389,7 +1389,7 @@ own core version.
 data → D1 Time Travel first; older than that → `worker/scripts/restore-backup.mjs` on the Telegram backup into a
 new database; a bad APK → a new build with a higher build number.
 
-**Diagnose a failing exit.** Ask Ali for Connection check → "Test alone + copy core log" for that exit. Read the
+**Diagnose a failing exit.** Ask Ali for Connection check → "Test alone + copy report for support" for that exit. Read the
 core log. Classify as app-side or server-side (§16) before writing code.
 
 **Report to Ali.** Persian, short, lead with the result, say proven vs guessed, give the PR link and the exact

@@ -107,12 +107,12 @@ class _CheckScreenState extends State<CheckScreen> {
           throw ApiError(0, 'no_engine', why ?? 'not in this build');
         }
         return await app.tunnel.hasGeo()
-            ? 'core + place lists'
-            : 'core, no place lists';
+            ? 'ready, with country lists'
+            : 'ready, no country lists';
       });
       // Every exit through the core at once (a few at a time natively),
       // the same run smart connect uses; the findings below read it.
-      await _step('Exits through the core', () async {
+      await _step('Exits answering', () async {
         if (app.exits.isEmpty) await app.loadServers();
         if (app.exits.isEmpty) throw ApiError(0, 'no_exits', 'none to test');
         await app.testAll();
@@ -366,7 +366,7 @@ class _TraceLinkState extends State<_TraceLink> {
     copyText(
       context,
       text,
-      'Core log copied. It has no addresses, keys or account details.',
+      'Report copied. It has no addresses, keys or account details.',
     );
   }
 
@@ -377,8 +377,8 @@ class _TraceLinkState extends State<_TraceLink> {
       onTap: _running ? null : _trace,
       child: Text(
         _running
-            ? 'Testing alone with the core log…'
-            : 'Test alone + copy core log',
+            ? 'Testing this exit for support…'
+            : 'Test alone + copy report for support',
         style: PType.small(color: PColors.accentInk).copyWith(
           fontWeight: FontWeight.w700,
           decoration: _running ? null : TextDecoration.underline,
