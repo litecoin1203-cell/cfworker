@@ -461,6 +461,7 @@ class _FastestBar extends StatelessWidget {
               selected: on,
               radius: PRadius.pill,
               color: on ? PColors.blue : PColors.onDeep,
+              minTap: 48,
               child: SizedBox(
                 height: 42,
                 child: Padding(
@@ -565,10 +566,15 @@ class _RegionHead extends StatelessWidget {
     child: Row(
       children: [
         Expanded(
-          child: Text(
-            '${region.title.toUpperCase()}  ·  $countries '
-            '${countries == 1 ? 'COUNTRY' : 'COUNTRIES'}',
-            style: PType.tab(color: PColors.ink),
+          child: Align(
+            alignment: AlignmentDirectional.centerStart,
+            child: TitleScrim(
+              child: Text(
+                '${region.title.toUpperCase()}  ·  $countries '
+                '${countries == 1 ? 'COUNTRY' : 'COUNTRIES'}',
+                style: PType.tab(color: PColors.ink),
+              ),
+            ),
           ),
         ),
         if (legend)
@@ -712,6 +718,7 @@ class _CountryRowState extends State<_CountryRow> {
                   selected: on != null,
                   radius: PRadius.pill,
                   color: on != null ? PColors.blue : PColors.field,
+                  minTap: 48,
                   child: SizedBox(
                     height: 40,
                     child: Padding(
@@ -1011,6 +1018,7 @@ class ExitRow extends StatelessWidget {
               selected: selected,
               radius: PRadius.pill,
               color: selected ? PColors.blue : PColors.field,
+              minTap: 48,
               child: SizedBox(
                 height: 40,
                 child: Padding(

@@ -497,14 +497,20 @@ class _Tabs extends StatelessWidget {
                                     : PColors.ink,
                               ),
                               const SizedBox(width: 8),
-                              AnimatedDefaultTextStyle(
-                                duration: d,
-                                style: PType.small(
-                                  color: t == value
-                                      ? PColors.accentInk
-                                      : PColors.ink,
-                                ).copyWith(fontWeight: FontWeight.w700),
-                                child: Text(label),
+                              // large system text shrinks to fit (UX-08)
+                              Flexible(
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  child: AnimatedDefaultTextStyle(
+                                    duration: d,
+                                    style: PType.small(
+                                      color: t == value
+                                          ? PColors.accentInk
+                                          : PColors.ink,
+                                    ).copyWith(fontWeight: FontWeight.w700),
+                                    child: Text(label, maxLines: 1),
+                                  ),
+                                ),
                               ),
                             ],
                           ),

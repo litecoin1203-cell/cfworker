@@ -567,7 +567,10 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       // longer-spaced ping is due.
       _beat();
     }
-    if (signedIn && !me.loading) loadMe();
+    final meAge = meAt == null ? null : DateTime.now().difference(meAt!);
+    if (signedIn && !me.loading && (meAge == null || meAge > meOnResumeGap)) {
+      loadMe();
+    }
     // back from Android's battery page, maybe exempted now
     unawaited(readBattery());
     unawaited(updater.resumed());
@@ -1432,18 +1435,30 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    final edge = read(await t.cached('edge'), (v) => v as Map);
+    // Each read is a Keystore decrypt: all of them at once (PERF-A-05).
+    final account = signedIn;
+    final raw = await Future.wait([
+      t.cached('edge'),
+      t.cached('plans'),
+      if (account) ...[
+        t.cached('me'),
+        t.cached('devices'),
+        t.cached('ranks'),
+        t.cachedServers(),
+      ],
+    ]);
+    final edge = read(raw[0], (v) => v as Map);
     if (edge != null) _learnEdge(edge, save: false);
-    plans.value ??= read(await t.cached('plans'), _plansFrom);
-    if (signedIn) {
-      me.value ??= read(await t.cached('me'), _meFrom);
-      devices.value ??= read(await t.cached('devices'), _devicesFrom);
-      final ranks = await t.cached('ranks');
+    plans.value ??= read(raw[1], _plansFrom);
+    if (account) {
+      me.value ??= read(raw[2], _meFrom);
+      devices.value ??= read(raw[3], _devicesFrom);
+      final ranks = raw[4];
       _ranks = read(ranks, ranksFrom) ?? _ranks;
       network ??= read<NetInfo?>(ranks, NetInfo.from);
       testedAt ??= _cache.testedAt(_net);
       if (servers.value == null) {
-        final list = read(await t.cachedServers(), _exitsFrom);
+        final list = read(raw[5], _exitsFrom);
         if (list != null && list.isNotEmpty) {
           servers.value = list;
           serversStale = true;
@@ -1505,11 +1520,20 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
+  /// When `/me` last answered. Coming back to the app reads it again only
+  /// after [meOnResumeGap]: every read makes the Worker ask the panels live
+  /// (PERF-A-04).
+  @visibleForTesting
+  DateTime? meAt;
+  static const meOnResumeGap = Duration(seconds: 60);
+
   Future<void> loadMe() => _fetch(me, () async {
     final data = await api.get('/me');
+    meAt = DateTime.now();
     final value = _meFrom(data);
     api.tokens.cache('me', data);
     meFresh = true;
+    _sendPendingAvatar(value);
     final used = value.subscription?.usedBytes;
     if (used != null) {
       usageLog.note(used);
@@ -1548,15 +1572,64 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// Pick a Pleat character as the profile picture. The characters are the
   /// only picture (the Telegram photo is not used). Returns an error to
   /// show, or null.
-  Future<String?> setAvatar(String id) async {
+  Future<String?> setAvatar(String id, {bool pending = false}) async {
     try {
       final data = await api.post('/me/avatar', {'avatar': id});
       _pickedAvatar = data is Map ? (data['avatar'] as String? ?? '') : id;
+      _prefs.remove(_avatarPendingKey);
       notifyListeners();
       return null;
     } on ApiError catch (e) {
-      return e.message;
+      if (!e.offline) {
+        if (pending) {
+          // The server refused the pick kept from offline: drop it, so it
+          // isn't sent on every plan read; the gate asks again if needed.
+          _prefs.remove(_avatarPendingKey);
+          _pickedAvatar = null;
+          notifyListeners();
+        }
+        return e.message;
+      }
+      // A filtered line must not hold the person at the gate, nor lose a
+      // change made in Profile: the choice is kept on the phone, with the
+      // avatar the account had when it was made, and sent with the next
+      // plan read (UX-06).
+      final was = _pendingAvatar()?.was ?? avatarId;
+      _pickedAvatar = id;
+      _prefs.setString(_avatarPendingKey, jsonEncode({'id': id, 'was': was}));
+      notifyListeners();
+      return null;
     }
+  }
+
+  static const _avatarPendingKey = 'avatar_pending';
+
+  ({String id, String was})? _pendingAvatar() {
+    final raw = _prefs.getString(_avatarPendingKey);
+    if (raw == null) return null;
+    try {
+      final m = jsonDecode(raw) as Map;
+      return (id: '${m['id'] ?? ''}', was: '${m['was'] ?? ''}');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Sends an avatar picked while the Worker could not be reached, unless
+  /// the account's avatar changed since (another phone): that one wins.
+  void _sendPendingAvatar(Me value) {
+    final p = _pendingAvatar();
+    if (p == null) {
+      _prefs.remove(_avatarPendingKey);
+      return;
+    }
+    if (p.id.isEmpty || value.avatar == p.id || value.avatar != p.was) {
+      _prefs.remove(_avatarPendingKey);
+      _pickedAvatar = null;
+      return;
+    }
+    _pickedAvatar = p.id;
+    unawaited(setAvatar(p.id, pending: true));
   }
 
   Future<String?> setEmail(String email, String password) async {
@@ -1826,6 +1899,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     devices.value = null;
     packages.value = null;
     _pickedAvatar = null;
+    _prefs.remove(_avatarPendingKey);
     meFresh = false;
     phase = Phase.idle;
     connectedAt = null;
@@ -2129,7 +2203,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       );
     }
     if (config.announcement.trim().isNotEmpty) {
-      out.add(Notice('From Cloud Gold', config.announcement.trim()));
+      out.add(Notice('From Pleat', config.announcement.trim()));
     }
     final s = subscription;
     if (me.ready && s == null) {

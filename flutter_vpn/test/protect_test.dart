@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:pleat/api/models.dart';
 import 'package:pleat/design/tokens.dart';
 import 'package:pleat/main.dart';
+import 'package:pleat/screens/privacy_check.dart';
 import 'package:pleat/screens/protect.dart';
 import 'package:pleat/state/app_state.dart';
 import 'package:pleat/state/exits.dart';
@@ -438,5 +439,24 @@ void main() {
         await tester.pump(const Duration(seconds: 10));
       }
     });
+  });
+
+  testWidgets('Privacy check says the home-address test goes direct (PRV-08)', (
+    tester,
+  ) async {
+    PType.familyOverride = 'PleatTest';
+    SharedPreferences.setMockInitialValues({'onboarded': true});
+    final app = AppState(
+      await SharedPreferences.getInstance(),
+      FakeApi(MemoryTokens(signedIn: true)),
+      tunnel: FakeTunnel(),
+    );
+    await tester.pumpWidget(MaterialApp(home: PrivacyCheckScreen(app: app)));
+    expect(
+      find.textContaining(
+        'One test asks Cloudflare for your home address directly, to compare',
+      ),
+      findsOneWidget,
+    );
   });
 }

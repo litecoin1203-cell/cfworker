@@ -48,6 +48,60 @@ Future<(AppState, FakeApi)> _boot(
 }
 
 void main() {
+  testWidgets('a signed-in launch opens the app at once, no splash (UX-05)', (
+    tester,
+  ) async {
+    PType.familyOverride = 'PleatTest';
+    tester.view.physicalSize = const Size(1080, 2340);
+    tester.view.devicePixelRatio = 2.75;
+    addTearDown(tester.view.reset);
+    SharedPreferences.setMockInitialValues({'onboarded': true});
+    final api = FakeApi(MemoryTokens(signedIn: true))..avatar = 'vesper';
+    final state = AppState(await SharedPreferences.getInstance(), api);
+    await state.refreshAccount();
+    await tester.pumpWidget(PleatApp(state: state));
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(find.byType(Shell), findsOneWidget);
+    for (var i = 0; i < 30; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+  });
+
+  testWidgets('UX-08: Locations CONNECT buttons are at least 48 dp to tap', (
+    tester,
+  ) async {
+    final (app, _) = await _boot(tester, {'onboarded': true});
+    app.setTab(2);
+    await tester.pump(const Duration(milliseconds: 800));
+    final connects = find.byWidgetPredicate(
+      (w) => w is Pressable && (w.label ?? '').startsWith('Connect to'),
+    );
+    expect(connects, findsWidgets);
+    for (final e in connects.evaluate()) {
+      final size = e.size!;
+      expect(
+        size.height,
+        greaterThanOrEqualTo(48),
+        reason: '${(e.widget as Pressable).label} $size',
+      );
+      expect(size.width, greaterThanOrEqualTo(48), reason: '$size');
+    }
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('UX-08: Home and Locations lay out at twice the text size', (
+    tester,
+  ) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final (app, _) = await _boot(tester, {'onboarded': true});
+    expect(tester.takeException(), isNull);
+    app.setTab(2);
+    await tester.pump(const Duration(milliseconds: 800));
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
   testWidgets('first launch goes from splash to onboarding', (tester) async {
     await _boot(tester, {}, signedIn: false);
     expect(find.byType(OnboardingScreen), findsOneWidget);
@@ -1202,6 +1256,84 @@ void main() {
     expect(app.avatarId, 'kai');
     expect(find.byType(AvatarGate), findsNothing);
     expect(find.byType(HomeScreen), findsOneWidget);
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('UX-06: a picked avatar that can\'t be saved yet does not '
+      'hold the app; it is sent on the next plan read', (tester) async {
+    final (app, api) = await _boot(tester, {'onboarded': true}, avatar: null);
+    expect(find.byType(AvatarGate), findsOneWidget);
+    api.avatarOffline = true;
+    await tester.tap(find.text('CHOOSE AN AVATAR'));
+    await tester.pump(const Duration(milliseconds: 200));
+    await tester.tap(
+      find.byWidgetPredicate((w) => w is AvatarArt && w.avatar.id == 'kai'),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    await tester.tap(find.text('CONTINUE AS KAI'));
+    for (var i = 0; i < 20; i++) {
+      await tester.pump(const Duration(milliseconds: 100));
+    }
+    expect(find.byType(AvatarGate), findsNothing);
+    expect(find.byType(HomeScreen), findsOneWidget);
+    expect(app.avatarId, 'kai');
+    // back online: the next /me sends the choice
+    api.avatarOffline = false;
+    final before = api.calls.where((c) => c == 'POST /me/avatar').length;
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(api.calls.where((c) => c == 'POST /me/avatar').length, before + 1);
+    expect(api.avatar, 'kai');
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('UX-06: a pending avatar the server refuses is dropped and '
+      'the gate asks again', (tester) async {
+    final (app, api) = await _boot(tester, {'onboarded': true}, avatar: null);
+    api.avatarOffline = true;
+    expect(await app.setAvatar('kai'), isNull);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(app.needsAvatar, isFalse);
+    api
+      ..avatarOffline = false
+      ..avatarRefused = true;
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 100));
+    final sent = api.calls.where((c) => c == 'POST /me/avatar').length;
+    expect(app.needsAvatar, isTrue);
+    expect(find.byType(AvatarGate), findsOneWidget);
+    // not sent again on every plan read
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(api.calls.where((c) => c == 'POST /me/avatar').length, sent);
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('UX-06: an avatar changed in Profile while offline is sent '
+      'later, unless the account changed it meanwhile', (tester) async {
+    final (app, api) = await _boot(tester, {'onboarded': true});
+    expect(app.avatarId, 'vesper');
+    api.avatarOffline = true;
+    expect(await app.setAvatar('kai'), isNull);
+    expect(app.avatarId, 'kai');
+    api.avatarOffline = false;
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(api.avatar, 'kai');
+    expect(app.avatarId, 'kai');
+
+    // picked offline, then another phone set a different one: that wins
+    api.avatarOffline = true;
+    expect(await app.setAvatar('luna'), isNull);
+    api
+      ..avatarOffline = false
+      ..avatar = 'vesper';
+    final before = api.calls.where((c) => c == 'POST /me/avatar').length;
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(api.calls.where((c) => c == 'POST /me/avatar').length, before);
+    expect(api.avatar, 'vesper');
+    expect(app.avatarId, 'vesper');
     await tester.pump(const Duration(seconds: 3));
   });
 

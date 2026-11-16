@@ -22,13 +22,13 @@ class _Beat {
 }
 
 const _beats = [
-  _Beat('Your Cloud Gold', 'account, on Pleat', 11, SceneTone.dusk),
+  _Beat('One tap,', 'every country', 11, SceneTone.dusk),
   _Beat('Every exit', 'flagged by country', 37, SceneTone.dawn),
   _Beat('Your plan and usage', 'always in view', 83, SceneTone.night),
 ];
 
 /// Three beats around one circular scene that never leaves. Orbit bubbles
-/// swap icons every 900ms, the metric disk trades "28 ms" for "AES-256",
+/// swap icons every 900ms, the metric disk trades "Exits / Flags" for "Usage / Live",
 /// and a beat change shifts the shards and wipes the headline.
 class OnboardingScreen extends StatefulWidget {
   const OnboardingScreen({super.key});
@@ -40,7 +40,9 @@ class OnboardingScreen extends StatefulWidget {
 class _OnboardingScreenState extends State<OnboardingScreen>
     with SingleTickerProviderStateMixin {
   int _beat = 0;
-  int _tick = 0;
+
+  /// The bubbles' 900 ms tick; only the orbit scene listens (PERF-A-06).
+  final ValueNotifier<int> _tick = ValueNotifier(0);
   Timer? _timer;
   late final AnimationController _orbit = AnimationController(
     vsync: this,
@@ -50,7 +52,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
   @override
   void initState() {
     super.initState();
-    _timer = Timer.periodic(PMotion.orbitTick, (_) => setState(() => _tick++));
+    _timer = Timer.periodic(PMotion.orbitTick, (_) => _tick.value++);
   }
 
   @override
@@ -66,6 +68,7 @@ class _OnboardingScreenState extends State<OnboardingScreen>
   @override
   void dispose() {
     _timer?.cancel();
+    _tick.dispose();
     _orbit.dispose();
     super.dispose();
   }
@@ -157,11 +160,14 @@ class _OnboardingScreenState extends State<OnboardingScreen>
                     ),
                     Expanded(
                       child: Center(
-                        child: _OrbitScene(
-                          art: beat,
-                          tick: _tick,
-                          orbit: _orbit,
-                          beat: _beat,
+                        child: ValueListenableBuilder<int>(
+                          valueListenable: _tick,
+                          builder: (context, tick, _) => _OrbitScene(
+                            art: beat,
+                            tick: tick,
+                            orbit: _orbit,
+                            beat: _beat,
+                          ),
                         ),
                       ),
                     ),

@@ -110,7 +110,7 @@ These are not suggestions. Each one exists because something went wrong or Ali s
   Two Pleat releases (1.2.9 and earlier) shipped theory-driven fixes that did nothing; a per-exit core log
   then settled the question in minutes. The audit uses the tags **[run]**, **[code]**, **[CI]**, **[guess]**;
   keep using them in reports.
-- For a failing VPN exit, use the app's **"Test alone + copy core log"** first (Profile → Connection check).
+- For a failing VPN exit, use the app's **"Test alone + copy report for support"** first (Profile → Connection check).
 
 ### Scope and approval
 - **Never create a new repo or a new project.** Develop only `litecoin1203-cell/cfworker`. Extend existing files.
@@ -351,7 +351,8 @@ Facts to remember:
 - Migrations are forward-only and **additive only**. Two files are numbered 0015; wrangler sorts by name and it
   works. **Never rename an applied migration.** Latest: **0022** (`health_events`).
 - Backup = a daily JSON of 14 tables (no password hashes, sub URLs, panel creds, SMS key or bridges) sent to
-  the admin's Telegram. There is no restore tool; real recovery is D1 Time Travel (the Deploy prints a bookmark
+  the admin's Telegram; each daily one deletes the one before it, so only the latest stays in the chat (PRV-05; a
+  backup asked for by hand stays). There is no restore tool; real recovery is D1 Time Travel (the Deploy prints a bookmark
   before migrating).
 
 ---
@@ -549,6 +550,8 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   Without the token the section still shows DB size (D1 `meta.size_after`), the Worker's own error log and cron.
 - **Worker error log**: `logError` also feeds `worker_errors` (migration 0023; one row per kind of error, scrubbed,
   at most once a minute per kind and 12 writes a minute per isolate, kept 14 days). Bot › ☁️ › 🐞.
+- **Cloudflare Workers Logs** keep a 10% sample of requests (`wrangler.jsonc` `observability`), and Traces are off
+  (they record every subrequest URL, panel addresses too). The error log above has every error (PRV-06).
 - System › 🩺 health has "⚡ همگام‌سازی همین حالا" (`sync.manualSync`: one `runSync` in the tap's invocation, once a minute; shared with the Mini App's `POST /admin/sync`) and
   "🔁 تلاش دوباره" for panel accounts stuck after 3+ failed pushes.
 - **Screens are drawn from data functions** (PR #85): `cfmon.js` `overviewData / historyData / errorsData /
@@ -687,7 +690,13 @@ does not reach users by itself.
 - `ApiError.offline` (Worker never reached) shows a neutral "No connection to Pleat" card; only a real
   `bad_credentials` marks fields red. The screen warms the route (address race, bridge) as it opens.
 - A few working exits are kept through sign-out so the bridge can still open on a filtered line.
+- **Start** (release audit UX-05): someone already onboarded and signed in opens straight on the Shell (Android's
+  own launch screen covers the start); the drawn splash (~2 s) plays only before onboarding or sign-in.
 - **AvatarGate** (1.2.30): a new account must pick one of the 14 Folk characters before the app opens (no skip).
+  A pick that can't be saved because the Worker is unreachable is kept on the phone (`avatar_pending`) and sent
+  with the next `/me`, so a filtered line never holds the person at the gate (UX-06). The same holds for a change
+  in Profile. A kept pick is dropped if the server refuses it (the gate asks again) or if the account's avatar
+  changed meanwhile (another phone wins).
   The Telegram profile photo is not used anywhere.
 - App version is a signature at the end of Profile (Pleat mark, "Up to date · checked …", Check for updates).
   Long-press the version to send a test health report. Night mode toggle placement: **leave it as it is** (Ali
@@ -777,7 +786,7 @@ does not reach users by itself.
 
 ### Diagnostics
 Profile → **Connection check**: tests every exit (own native 10 s budget per test since 1.2.21), shows cause /
-fix / advice (`diagnose.dart`), "Copy report" (real app version), and **"Test alone + copy core log"** per exit
+fix / advice (`diagnose.dart`), "Copy report" (real app version), and **"Test alone + copy report for support"** per exit (named "Test alone + copy core log" before release audit UX-09; the copied text is the same core log)
 (debug log, hosts blanked). This is the tool that ends arguments — use it.
 
 ### State and code notes
@@ -1189,6 +1198,13 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - **TR 1 / TR 7** are named Turkey on the panel but leave through German hosting (Hetzner, dataforest); since #76
   the Worker lists them as DE. Ali may want to fix the remarks.
 - The app forces WireGuard MTU 1280 (links say 1420); that is the proven fix for DE 7 / DE 10.
+- **Bridge account (release audit NET-07)**: links in `PLEAT_BRIDGE` (and, less so, `app_bridges`) can be read out
+  of the public APK or by any phone, and the "only the Worker's hosts" rule lives in the app's own config, so
+  someone else's client can use that account as an unlimited VPN. The app cannot stop this; the panel must. Give
+  the bridge its **own panel account** with a small data cap and a low speed / IP limit, rotate it now and then
+  (set the new link with the bot's `app_bridges`; it reaches phones without a new APK), and, best, put it on its own
+  inbound whose **server-side** routing lets through only the Worker's hosts — the custom domain and the
+  `workers.dev` address, the same list as `api_base` / `CG_API_BASE` — and blocks everything else.
 
 ---
 
@@ -1198,7 +1214,7 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
   outbound/dispatcher/log, so DNS changes were irrelevant to the check. The real fix was MTU 1280.
 - **WebSocket h2 ALPN** causing closed pipes (PR #28): not the cause; closed pipes are server-side (§16).
 - **The "No server connected · DE" alerts** from the DE 3 user are not crashes: DE exits fail on that Wi-Fi.
-- In general: **no more theory patches** for failing exits. Ask Ali for "Test alone + copy core log" traces
+- In general: **no more theory patches** for failing exits. Ask Ali for "Test alone + copy report for support" traces
   and fix only on evidence.
 
 ---
@@ -1353,6 +1369,13 @@ actions to SHAs (done for the live workflows, release audit SEC-04). Also open: 
 (no longer written to the config; such exits are verified normally — NET-01) · P20 outdated README · Gmail one-tap sign-in (needs a Google OAuth client).
 
 ### Follow-ups (non-critical)
+- **Release audit wave 3, left open on purpose:** NET-10 (fixed local ports 10808/10809/10810 and no SOCKS login on
+  the Speed / Privacy-check cores) changes the generated Xray config for every user, so it waits for Ali; AND-03
+  (core + geo loading on the main thread) is kept, since 1.2.44 loads the same way in the service on purpose for the
+  widget start and the geo files are ~5 MB since PERF-A-03; AND-04 (`last-config.json`, `widget-spares.json`
+  readable on a rooted phone) is accepted by the audit; NET-11's double request lives in the core library
+  (`MeasureDelay`), and a ping left behind ends by itself within 24 s, so the pool stays bounded.
+
 Pleat: `_failover`'s resync (`loadServers().then(... _connect(null, failover: true))`) is not guarded by
 `_attempt`, so a Disconnect during it can be followed by a fresh start (pre-existing, audit review N4); the config
 builder still lets unknown `type=` values and REALITY over ws/httpupgrade through to the core (N3). PBKDF2 iterations (only with a CPU budget), split `telegram.js`, a `confirmPayment` use case, a notify port,
@@ -1405,7 +1428,7 @@ own core version.
 data → D1 Time Travel first; older than that → `worker/scripts/restore-backup.mjs` on the Telegram backup into a
 new database; a bad APK → a new build with a higher build number.
 
-**Diagnose a failing exit.** Ask Ali for Connection check → "Test alone + copy core log" for that exit. Read the
+**Diagnose a failing exit.** Ask Ali for Connection check → "Test alone + copy report for support" for that exit. Read the
 core log. Classify as app-side or server-side (§16) before writing code.
 
 **Report to Ali.** Persian, short, lead with the result, say proven vs guessed, give the PR link and the exact
@@ -1425,7 +1448,8 @@ version in §10, move finished items out of §19.
 - Rotating `SECRET_KEY` invalidates stored panel logins (and sessions if `JWT_SECRET` is unset).
 - The app's build list `PLEAT_API` comes from the workflow input or `CG_API_BASE`; an APK built without it has
   no server address.
-- Bridge links baked into the APK (`PLEAT_BRIDGE`) can be extracted from the APK; prefer bot-set `app_bridges`.
+- Bridge links baked into the APK (`PLEAT_BRIDGE`) can be extracted from the APK; prefer bot-set `app_bridges`,
+  and lock the bridge account down on the panel (§16, NET-07).
 - The core's log handler is global: a previous probe's line can leak into the next trace.
 - Calling a MethodChannel during `AppState.refreshAccount` before `pumpWidget` deadlocks widget tests;
   `Tunnel.netKind` returns '' until `available()` answered.

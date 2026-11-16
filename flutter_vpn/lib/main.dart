@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'api/client.dart';
 import 'design/tokens.dart';
 import 'licenses.dart';
+import 'screens/shell.dart';
 import 'screens/splash.dart';
 import 'state/app_state.dart';
 
@@ -46,6 +47,13 @@ class PleatApp extends StatefulWidget {
 /// [PColors] while it builds, so a switch swaps the palette and asks the
 /// whole tree to build again, in place: the screen you are on stays open.
 class _PleatAppState extends State<PleatApp> with WidgetsBindingObserver {
+  /// The first screen, chosen once. Someone already signed in goes straight
+  /// to the app (Android's own launch screen covers the start); the drawn
+  /// splash plays only before onboarding or sign-in (UX-05).
+  late final Widget _home = widget.state.onboarded && widget.state.signedIn
+      ? const Shell()
+      : const SplashScreen();
+
   @override
   void initState() {
     super.initState();
@@ -121,7 +129,7 @@ class _PleatAppState extends State<PleatApp> with WidgetsBindingObserver {
             );
           },
         ),
-        home: const SplashScreen(),
+        home: _home,
       ),
     );
   }

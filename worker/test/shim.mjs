@@ -214,7 +214,8 @@ export function installFakes({ panelBase }) {
 
     if (url.includes('api.telegram.org')) {
       const method2 = url.split('/').pop();
-      tg.calls.push({ method: method2, body: body && typeof body === 'string' ? JSON.parse(body) : null });
+      tg.calls.push({ method: method2, body: body && typeof body === 'string' ? JSON.parse(body) : (body instanceof FormData ? { caption: body.get('caption') } : null) });
+      if (method2 === 'deleteMessage' && tg.deleteFails) return resJson({ ok: false, error_code: 400, description: 'Bad Request: message can\'t be deleted' }, 400);
       if (method2 === 'sendMessage') {
         const sm = JSON.parse(body), code = tg.failFor[String(sm.chat_id)];
         if (code) return resJson({ ok: false, error_code: code, description: code === 429 ? 'Too Many Requests: retry after 5' : 'Forbidden: bot was blocked by the user' }, code);
@@ -227,6 +228,7 @@ export function installFakes({ panelBase }) {
         return resJson({ ok: true, result: { total_count: id === 555123 ? 1 : 0, photos: id === 555123 ? [[{ file_id: 's', width: 160, height: 160 }, { file_id: 'b', width: 640, height: 640 }]] : [] } });
       }
       if (method2 === 'getFile') return resJson({ ok: true, result: { file_id: JSON.parse(body).file_id, file_size: 6, file_path: 'photos/file_1.jpg' } });
+      if (method2 === 'sendDocument') { tg.docs = (tg.docs || 0) + 1; return resJson({ ok: true, result: { message_id: 9000 + tg.docs } }); }
       if (method2 === 'sendPhoto') { tg.photos.push(true); return resJson({ ok: true, result: { message_id: 1, photo: [{ file_id: 'photo_' + tg.photos.length }] } }); }
       return resJson({ ok: true, result: {} });
     }

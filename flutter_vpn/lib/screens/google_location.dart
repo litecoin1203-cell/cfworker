@@ -140,7 +140,7 @@ class GoogleLocationScreen extends StatelessWidget {
                 Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 4),
                   child: Text(
-                    'Each exit is tested through a throw-away core with YouTube, Gemini and Search. Results are shared by exit with other Pleat users, never with your account.',
+                    'Each exit is tested on its own, away from your connection, with YouTube, Gemini and Search. Results are shared by exit with other Pleat users, never with your account.',
                     style: PType.meta(color: PColors.muted),
                   ),
                 ),

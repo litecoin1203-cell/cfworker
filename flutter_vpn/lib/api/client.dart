@@ -61,9 +61,15 @@ class TokenStore {
   }
 
   Future<void> load() async {
-    access = await _s.read(key: 'access');
-    refresh = await _s.read(key: 'refresh');
-    deviceId = await _s.read(key: 'device');
+    // Keystore decrypts, side by side (PERF-A-05).
+    final got = await Future.wait([
+      _s.read(key: 'access'),
+      _s.read(key: 'refresh'),
+      _s.read(key: 'device'),
+    ]);
+    access = got[0];
+    refresh = got[1];
+    deviceId = got[2];
     if (deviceId == null) {
       deviceId = _hex(16);
       await _s.write(key: 'device', value: deviceId);
