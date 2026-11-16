@@ -5761,10 +5761,13 @@ section('CI: each published APK build has its own fixed source tag, and a build 
   const guard = guardAt > 0 ? fv.slice(guardAt, fv.indexOf('\n      - ', guardAt)) : '';
   ok(guardAt > 0 && guardAt < fv.indexOf('name: Build APK') && /workflow_dispatch/.test(guard) && /pleat-v\$full|pleat-v\$\{full\}/.test(guard) && /::error::/.test(guard) && /exit 1/.test(guard),
     'OPS-05: before the build, a manual run stops when the version+build already has its tag or files');
+  ok(/!= "\$GITHUB_SHA"/.test(guard) && /GITHUB_RUN_ATTEMPT/.test(guard), 'OPS-05: the guard lets a re-run of the same commit through (tag at this commit, or a re-run after a failed upload)');
   const pub = fv.slice(fv.indexOf('name: Publish APKs'));
+  const up = pub.indexOf('gh release upload');
   const tagAt = pub.search(/git\/refs"? -f ref="?refs\/tags\/pleat-v\$full"? -f sha="?\$GITHUB_SHA/);
-  ok(tagAt > 0 && tagAt < pub.indexOf('gh release upload'), 'OPS-05: an immutable tag pleat-v<version>+<build> is made at the built commit before any file is uploaded');
-  ok(/git\/refs\/tags\/pleat-latest"? -f sha="?\$GITHUB_SHA"? -F force=true/.test(pub), 'OPS-05: pleat-latest is moved to the built commit');
+  const moveAt = pub.search(/git\/refs\/tags\/pleat-latest"? -f sha="?\$GITHUB_SHA"? -F force=true/);
+  ok(up > 0 && tagAt > up, 'OPS-05 review: the tag pleat-v<version>+<build> is made at the built commit only after the upload worked');
+  ok(moveAt > up && pub.indexOf('gh release edit') > up, 'OPS-05 review: pleat-latest is moved (and retitled) only after the upload');
 }
 
 section('OPS-09: the public repo ignores the usual secret files');
