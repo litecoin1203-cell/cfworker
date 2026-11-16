@@ -81,7 +81,7 @@ const ACTION = {
   'user.device_remove': 'Device removed', 'user.logout_all': 'Signed out everywhere', 'user.block': 'Block / unblock', 'user.unlink_tg': 'Telegram unlinked', 'user.unlink_panel': 'Panel account unlinked',
   'user.avatar_reset': 'Avatar reset', 'user.email': 'Email changed', 'user.delete': 'User deleted', 'user.create': 'User created',
   'order.approve': 'Order approved', 'order.reject': 'Order rejected', 'order.cancel': 'Order cancelled', 'order.refund': 'Order refunded',
-  'server.hide': 'Server shown / hidden', 'server.rename': 'Server renamed', 'app.list': 'App list changed', 'app.release': 'App release', 'net.reset': 'Network stats cleared',
+  'server.hide': 'Server shown / hidden', 'server.rename': 'Server renamed', 'app.list': 'App list changed', 'app.release': 'App release', 'app.notes': "What's new lines", 'net.reset': 'Network stats cleared',
   'broadcast.create': 'Broadcast drafted', 'broadcast.start': 'Broadcast started', 'broadcast.stop': 'Broadcast stopped', 'admin.add': 'Admin added', 'admin.remove': 'Admin removed',
   'system.backup': 'Backup sent',
 };
