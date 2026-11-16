@@ -14,7 +14,7 @@
 import { first, all, run } from './db.js';
 import { nowSec, logError } from './util.js';
 import { PasarGuardError, parseExpire } from './pasarguard.js';
-import { adapterFor, listPanels, panelsFor, pickPanels, recordHealth, accountsOf, groupIdsFor, USER_PATH_MS, userPathMs, noteUserPathFail, noteUserPathOk } from './panels.js';
+import { adapterFor, listPanels, panelsFor, pickPanels, recordHealth, accountsOf, groupIdsFor, USER_PATH_MS, KNOWN_DOWN_MS, userPathMs, noteUserPathFail, noteUserPathOk } from './panels.js';
 
 export const PAGE = 200;            // users read per panel request
 const PUSH_PER_RUN = 15;            // pending panel writes per cron run
@@ -175,7 +175,7 @@ export async function evaluate(env, userId) {
 // ---------------- enforcement ----------------
 const panelOf = (a) => ({ id: a.panel_id, kind: a.kind, state: a.panel_state, cred_ref: a.cred_ref, options_json: a.options_json, label: a.panel_label });
 const PENDING_SQL = `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json, p.label AS panel_label,
-    (SELECT s.device_limit FROM subscriptions s WHERE s.user_id = a.user_id) AS sub_device_limit
+    p.fail_streak, (SELECT s.device_limit FROM subscriptions s WHERE s.user_id = a.user_id) AS sub_device_limit
   FROM panel_accounts a JOIN panels p ON p.id = a.panel_id AND a.applied != 'pending'`; // PNL-02: a pending row is settled by ensureAccount / settlePending
 
 // One adapter per panel for a whole invocation: opening a panel's login costs a D1 read, so it is done once.
@@ -200,10 +200,14 @@ async function pushRows(env, rows, adapter = adapterCache(env)) {
   const stmts = [];
   const remade = new Map(); // panel id -> {panel, n}
   let done = 0, remakes = 0;
+  const down = new Set(); // PNL-08: known-down panels that did not answer their one short try in this run
   for (const pa of rows) {
-    let pg = null;
+    if (down.has(pa.panel_id)) continue; // waits for the next run, no attempt counted
+    const knownDown = (pa.fail_streak || 0) >= 3;
+    let pg = null, prevMs = 0;
     try {
       pg = await adapter(panelOf(pa));
+      if (knownDown) { prevMs = pg.timeoutMs; pg.timeoutMs = KNOWN_DOWN_MS; }
       if (pa.desired === 'active') {
         await pg.modifyUser(pa.remote_username, { status: 'active', data_limit: pa.desired_limit_bytes || 0, expire: pa.desired_expire || 0, data_limit_reset_strategy: 'no_reset' });
       } else {
@@ -215,6 +219,7 @@ async function pushRows(env, rows, adapter = adapterCache(env)) {
       done++;
     } catch (e0) {
       let e = e0;
+      if (knownDown && (!(e instanceof PasarGuardError) || !e.status)) down.add(pa.panel_id);
       if (pg && e instanceof PasarGuardError && e.status === 404 && remakes < REMAKE_PER_RUN) {
         remakes++;
         try {
@@ -230,6 +235,8 @@ async function pushRows(env, rows, adapter = adapterCache(env)) {
       const code = e instanceof PasarGuardError ? `panel_${e.status || 'net'}` : 'error';
       stmts.push(st(env, 'UPDATE panel_accounts SET attempts = attempts + 1, last_error = ? WHERE id = ?', code, pa.id));
       if (!(e instanceof PasarGuardError)) logError('panel push failed', e, { account: pa.id });
+    } finally {
+      if (pg && knownDown) pg.timeoutMs = prevMs; // the adapter is shared with the rest of the run
     }
   }
   await batch(env, stmts);
@@ -717,8 +724,11 @@ async function createMissing(env, allPanels, adapter, max = CREATE_PER_RUN) {
       for (const s of fresh) s.pending_name = panelNames(s, prefixOf(env))[0];
       await batch(env, fresh.map((s) => pendingRow(env, s.user_id, panel.id, s.pending_name, { expire: s.expires_at, limit: leftOf(s), now })));
     }
+    let pg = null, prevMs = 0;
+    const knownDown = (panel.fail_streak || 0) >= 3; // PNL-08: one short try; the loop stops at the first failure
     try {
-      const pg = await adapter(panel);
+      pg = await adapter(panel);
+      if (knownDown) { prevMs = pg.timeoutMs; pg.timeoutMs = KNOWN_DOWN_MS; }
       const groups = await groupIdsFor(env, panel, pg);
       for (const s of want) {
         const limit = leftOf(s);
@@ -732,6 +742,8 @@ async function createMissing(env, allPanels, adapter, max = CREATE_PER_RUN) {
       }
     } catch (e) {
       failed = e; // this panel refuses now; what was made is kept, the rest is tried again next run
+    } finally {
+      if (pg && knownDown) pg.timeoutMs = prevMs;
     }
     if (inserted && !failed) stmts.push(st(env, 'DELETE FROM settings WHERE key = ?', `panel_err_${panel.id}`));
     if (failed) stmts.push(healthWrite(env, panel.id, false, now));

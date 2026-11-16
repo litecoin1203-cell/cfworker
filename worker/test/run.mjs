@@ -6787,6 +6787,35 @@ section('SEC-07: Mini App probe reports cannot flood the admin chat: one a minut
   ok(toAdmin() - n0 === 20 && st.filter((x) => x === 429).length === 6, 'SEC-07: at most 20 reports an hour reach the admin from any number of users: ' + (toAdmin() - n0));
 }
 
+section('PNL-08: a panel known to be down gets one short try per cron run, not 15 s per waiting change');
+{
+  const W = await world('pnl8', 2);
+  const { pushPending } = await import('../src/sync.js');
+  for (const em of ['p8a@example.com', 'p8b@example.com', 'p8c@example.com']) { await W.signupW(em); await W.bot(`/grant ${em} ${W.plan.id}`); }
+  await W.e.DB.prepare("UPDATE panel_accounts SET dirty = 1, desired_expire = desired_expire + 86400 WHERE panel_id = 2").run();
+  await W.e.DB.prepare('UPDATE panels SET fail_streak = 5, health = 0 WHERE id = 2').run();
+  // the panel answers only after 2.5 s (a dead panel's connect timeout, shortened for the test)
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (!url.startsWith(W.bases[1])) return realFetch(input, init);
+    return new Promise((res, rej) => {
+      const t = setTimeout(() => res(realFetch(input, init)), 2500);
+      if (init.signal) init.signal.addEventListener('abort', () => { clearTimeout(t); rej(init.signal.reason || new Error('aborted')); });
+    });
+  };
+  const t0 = Date.now();
+  let r;
+  try { r = await counted('push', () => pushPending(W.e, { limit: 15 })); } finally { globalThis.fetch = realFetch; }
+  const ms = Date.now() - t0;
+  const rows = await W.q('SELECT attempts, dirty FROM panel_accounts WHERE panel_id = 2 ORDER BY id');
+  ok(ms < 2500, 'PNL-08: three waiting changes on a dead panel took ' + ms + ' ms (want one short try)');
+  ok(r.done === 0 && rows.filter((x) => x.attempts === 1).length === 1 && rows.every((x) => x.dirty === 1), 'PNL-08: one try is counted, the rest wait for the next run: ' + JSON.stringify(rows));
+  await W.e.DB.prepare('UPDATE panels SET fail_streak = 0, health = 100 WHERE id = 2').run();
+  const r2 = await counted('push', () => pushPending(W.e, { limit: 15 }));
+  ok(r2.done === 3, 'PNL-08: once the panel is back the changes go through: ' + r2.done);
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
