@@ -1,9 +1,10 @@
 // Public config, plans, profile, the VPN subscription (from the control plane), the unified server list, devices and the free trial.
 import { first, all, run, getSettings, getSettingInt, switchOn } from './db.js';
-import { json, err, nowSec, deadline, throttled, spendBudget } from './util.js';
+import { json, err, nowSec, deadline, throttled, spendBudget, logError } from './util.js';
 import { PasarGuard, PasarGuardError } from './pasarguard.js';
 import { provision } from './billing.js';
 import { collectLinks, accountsOf, adapterFor, userPathMs } from './panels.js';
+import { linkRemark } from './netstats.js';
 import { countryFromRemark } from './countries.js';
 import { refreshUser, usedBytes, ensureMissingFor } from './sync.js';
 import { gatewayReady } from './nowpayments.js';
@@ -183,17 +184,7 @@ export function myIp(env, request) {
 // ---------------- VPN ----------------
 function parseLink(index, link) {
   const scheme = link.split('://', 1)[0].toLowerCase();
-  let name = '';
-  if (scheme === 'vmess') {
-    try {
-      let raw = link.split('://')[1];
-      raw += '='.repeat((4 - (raw.length % 4)) % 4);
-      name = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/'))).ps || '';
-    } catch (e) { name = ''; }
-  } else {
-    const frag = link.split('#')[1] || '';
-    try { name = decodeURIComponent(frag); } catch (e) { name = frag; }
-  }
+  const name = linkRemark(link);
   const cc = countryFromRemark(name);
   const clean = name.replace(/[\u{1F1E6}-\u{1F1FF}]{2}/u, '').replace(/^[\s\-|·]+|[\s\-|·]+$/g, '');
   return { index, name: clean || `Server ${index + 1}`, country_code: cc, protocol: scheme, link };
@@ -295,12 +286,12 @@ export async function removeDevice(env, user, devId) {
     try {
       const pg = await adapterFor(env, { id: a.panel_id, kind: a.kind, cred_ref: a.cred_ref, options_json: a.options_json }, { timeoutMs: userPathMs(a) });
       await pg.deleteHwid(a.remote_username, dev.device_id);
-    } catch (e) { /* see above */ }
+    } catch (e) { logError('remove device: panel HWID delete failed', e); }
   }));
   if (!accounts.some((a) => a.panel_id === 1) && env.PASARGUARD_URL) {
     // a subscription from before the control plane that has no panel_accounts row yet
     const sub = await first(env, 'SELECT pg_username FROM subscriptions WHERE user_id = ?', user.id);
-    if (sub && sub.pg_username) { try { await new PasarGuard(env).deleteHwid(sub.pg_username, dev.device_id); } catch (e) { /* as above */ } }
+    if (sub && sub.pg_username) { try { await new PasarGuard(env).deleteHwid(sub.pg_username, dev.device_id); } catch (e) { logError('remove device: panel HWID delete failed', e); } }
   }
   await run(env, 'DELETE FROM devices WHERE id = ?', devId);
   return new Response(null, { status: 204 });

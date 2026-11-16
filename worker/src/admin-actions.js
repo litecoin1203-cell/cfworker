@@ -7,6 +7,7 @@
 // money = a one-time "are you sure?" (bot_confirm, 2 minutes); destructive = the same, with what it affects.
 import { first, all, run, insert, getSettings, setSetting, SETTING_DEFAULTS } from './db.js';
 import { hashPassword, nowSec } from './util.js';
+import { vmessJson } from './netstats.js';
 
 export const UNDO_SECONDS = 600;
 const fa = (n) => Number(n || 0).toLocaleString('en-US');
@@ -837,9 +838,7 @@ export function maskBridge(link) {
   let host = '';
   try {
     if (scheme === 'vmess') {
-      let raw = s.slice(8).split('#')[0];
-      raw += '='.repeat((4 - (raw.length % 4)) % 4);
-      host = String(JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/'))).add || '');
+      host = String((vmessJson(s) || {}).add || '');
     } else {
       const rest = s.replace(/^[a-z0-9+.-]+:\/\//i, '').split('#')[0].split('?')[0].split('/')[0];
       host = rest.slice(rest.lastIndexOf('@') + 1).replace(/^\[/, '').replace(/\](:\d*)?$/, '').replace(/:\d*$/, '');

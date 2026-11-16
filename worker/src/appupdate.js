@@ -1,7 +1,9 @@
 // Pleat's in-app update. There is no store: the "Pleat Flutter app" workflow builds one APK per phone type
-// (arm64-v8a, armeabi-v7a, x86_64) and puts them on the repo's release `pleat-latest`. The repo is private, so
-// phones can't download from GitHub themselves: this Worker reads the release with a read-only token
-// (Workers secret PLEAT_DL_TOKEN, copied there by the deploy workflow) and passes the file through.
+// (arm64-v8a, armeabi-v7a, x86_64) and puts them on the repo's release `pleat-latest`. The repo is PUBLIC (since
+// 2026-11-11), so that release and every Actions log can be read by anyone: never put anything in an APK or a log
+// that must stay secret. Phones in Iran often can't reach GitHub, so this Worker reads the release (with the
+// read-only token PLEAT_DL_TOKEN when set, copied there by the deploy workflow: it lifts GitHub's per-IP rate
+// limit and keeps working if the repo is ever made private again) and passes the file through.
 //
 // Nothing reaches the users until the admin taps "announce" in the bot: that copies the newest build (version,
 // build number, and per phone type the asset id, size and SHA-256 GitHub gives) into the setting `app_release`,

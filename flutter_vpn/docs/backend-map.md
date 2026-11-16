@@ -1,8 +1,8 @@
 # Pleat ↔ Cloud Gold backend map
 
-Backend: the Cloud Gold Worker (`worker/src`), base `…/api/v1`. Reference
-client contract: `app-web/core.js` and the native bridge in
-`android/…/cloudgold/`. Pleat talks to the Worker directly over HTTPS with one
+Backend: the Cloud Gold Worker (`worker/src`), base `…/api/v1`; every route is
+in `docs/API.md`. (The retired Cloud Gold app that first used this contract was
+deleted from main in the release audit, ARC-06; git history keeps it.) Pleat talks to the Worker directly over HTTPS with one
 client (`lib/api/client.dart`) and one set of parsers (`lib/api/models.dart`).
 
 Headers on every call: `X-Device-Id` (random 128-bit id kept in secure
@@ -27,7 +27,7 @@ Nothing. Pleat was a seeded demo with no network code.
 | Trial | `POST /trial` | `plan_id` → 200 + new subscription (via `/me`) | Plans → Start trial |
 | Buy a plan (wallet) | `POST /orders` | `plan_id, method:"wallet", use_wallet:true` → order `status` | Plans → Buy with wallet |
 | Server list | `GET /vpn/servers` | `index, name, country_code, protocol, link` (link kept in memory only, never shown) | Locations, Home recommended, Location detail, Protect protocol |
-| Server quality | `GET /net/rank` | `asn`, `isp_en`, `mobile`, `servers{k: score, ms, kbps, n, users}` keyed by FNV-1a of `type|host|port` (same key as `CgVpn.serverKey`) | "On Irancell" line, Strong/Weak on the operator (3+ people), others' speed until this phone measured, Best category, recommended order |
+| Server quality | `GET /net/rank` | `asn`, `isp_en`, `mobile`, `servers{k: score, ms, kbps, n, users}` keyed by FNV-1a of `type|host|port` (same key as the Worker's `netstats.serverKey`) | "On Irancell" line, Strong/Weak on the operator (3+ people), others' speed until this phone measured, Best category, recommended order |
 | Results shared | `POST /net/report` | `{results:[{k, ok, ms}]}` after pings, `{results:[{k, kbps}]}` after speed tests, 9 s apart | Per-operator ranking for everyone |
 | Health reports | `POST /me/health` | `{app, os, model, net, events:[{t, k?, c?, n, at, last, d?}]}`, batched (critical ≤ 1 min, high ≤ 10 min, rest 6 h); scrubbed, no link or address; off with Profile › Send diagnostics | Bot › 🩺 سلامت اپ, instant Telegram alert for critical |
 | Connect pre-check | `GET /vpn` | `subscription{status, active}`, registers this device (403 `device_limit`, 402 `no_subscription`, 410 `sub_missing`) | Home connect control, Location detail Connect here |

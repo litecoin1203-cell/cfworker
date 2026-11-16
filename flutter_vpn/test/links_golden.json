@@ -1,0 +1,50 @@
+{
+  "about": "Share links read the same way by the Worker (netstats.js, panels.js) and Pleat (api/models.dart): run.mjs and parsers_test.dart both check every row (ARC-02). Made-up hosts and ids.",
+  "links": [
+    {
+      "link": "vmess://eyJ2IjoiMiIsInBzIjoi8J+HqfCfh6ogMSIsImFkZCI6ImVkZ2UxLmV4YW1wbGUub3JnIiwicG9ydCI6IjQ0MyIsImlkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwibmV0Ijoid3MiLCJwYXRoIjoiL3dzIiwidGxzIjoidGxzIn0=",
+      "type": "vmess",
+      "host": "edge1.example.org",
+      "port": "443",
+      "remark": "🇩🇪 1",
+      "cc": "DE",
+      "key": "k1d7a836c"
+    },
+    {
+      "link": "vmess://eyJ2IjoiMiIsInBzIjoi2KLZhNmF2KfZhiDbsiIsImFkZCI6IjIwMy4wLjExMy4xMCIsInBvcnQiOjgwODAsImlkIjoiMDAwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAyIiwibmV0IjoidGNwIiwicGF0aCI6Ii_Zhdiz24zYsSJ9#ignored",
+      "type": "vmess",
+      "host": "203.0.113.10",
+      "port": "8080",
+      "remark": "آلمان ۲",
+      "cc": "DE",
+      "key": "k1b70fcb4"
+    },
+    {
+      "link": "vless://00000000-0000-4000-8000-000000000003@nl1.example.net:2083?security=tls&type=ws#%F0%9F%87%B3%F0%9F%87%B1%20Amsterdam",
+      "type": "vless",
+      "host": "nl1.example.net",
+      "port": "2083",
+      "remark": "🇳🇱 Amsterdam",
+      "cc": "NL",
+      "key": "k441c1aeb"
+    },
+    {
+      "link": "ss://YWVzLTEyOC1nY206cGFzc0BmcjEuZXhhbXBsZS5jb206ODM4OA==#France",
+      "type": "shadowsocks",
+      "host": "fr1.example.com",
+      "port": "8388",
+      "remark": "France",
+      "cc": "FR",
+      "key": "k184e5957"
+    },
+    {
+      "link": "trojan://secret@[2001:db8::1]:443?security=tls#Server",
+      "type": "trojan",
+      "host": "2001:db8::1",
+      "port": "443",
+      "remark": "Server",
+      "cc": "",
+      "key": "k0da41e88"
+    }
+  ]
+}

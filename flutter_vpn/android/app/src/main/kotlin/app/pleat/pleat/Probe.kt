@@ -38,8 +38,11 @@ import org.json.JSONObject
  * Google: the country YouTube gives the address (its INNERTUBE_CONTEXT_GL),
  * whether Gemini opens (Iran is one of the places it is closed to) and
  * whether Search answers with its "unusual traffic" wall: the method of
- * the open-source RegionRestrictionCheck, the same one the Cloud Gold app
- * used. Nothing personal is sent: no account, cookie or address.
+ * the open-source RegionRestrictionCheck (lmc999, AGPL-3.0), the same one
+ * the Cloud Gold app used. Only its endpoints and the short match strings
+ * are shared (credited on the licence page, region-restriction-check.txt);
+ * this code is Pleat's own. Nothing personal is sent: no account, cookie or
+ * address.
  *
  * Blocking; call from a background thread.
  */

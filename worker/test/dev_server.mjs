@@ -1,5 +1,5 @@
-// Local preview: runs the real Worker over Node's SQLite + fake panel, and serves the app-web UI,
-// so you can click through the whole store in a browser.  node --experimental-sqlite test/dev_server.mjs
+// Local preview: runs the real Worker over Node's SQLite + fake panel (Pleat's live test talks to it), and serves
+// the built Mini App (worker/public/, after `cd miniapp && npm run build`) at /app/.  node --experimental-sqlite test/dev_server.mjs
 import { createServer } from 'node:http';
 import { readFileSync, existsSync, statSync } from 'node:fs';
 import { extname, join, normalize } from 'node:path';
@@ -20,7 +20,7 @@ const env = {
   TELEGRAM_BOT_TOKEN: 'bot:token', TELEGRAM_CHAT_ID: '12345', TELEGRAM_WEBHOOK_SECRET: 'hook', TELEGRAM_BOT_USERNAME: 'PleatDevBot',
 };
 const ctx = { waitUntil: () => {} };
-const WEB = new URL('../../app-web/', import.meta.url).pathname;
+const WEB = new URL('../public/', import.meta.url).pathname;
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.webp': 'image/webp', '.ttf': 'font/ttf', '.woff2': 'font/woff2', '.json': 'application/json', '.txt': 'text/plain' };
 
 // seed card settings + auto-approve webhook helper

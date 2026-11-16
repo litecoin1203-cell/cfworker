@@ -168,13 +168,33 @@ export async function dbSize(env) {
 // logError (util.js) hands each error here. One row per kind of error (its words with numbers taken out),
 // counted; written at most once a minute per kind and 12 times a minute per isolate, so an error storm can never
 // eat the D1 write allowance or push one request over its 50 queries. Never throws, never logs.
+// The write is held open with ctx.waitUntil (CF-05), so it is not cancelled when the response goes out. A write that
+// fails (the request is already past its 50 queries, or D1 is out of writes for the day) is kept in the isolate and
+// written by the next invocation (flushErrors, one row per invocation), so the likeliest Free-plan failure is not
+// the one the log can never show. Errors only an outside view sees (the daily write cap) need CF_ANALYTICS_TOKEN.
 const recent = new Map(); // fp -> {at, n}
+const unsent = new Map(); // fp -> {message, error}: its write failed; flushErrors tries again
 let minute = 0, writes = 0;
+function writeError(env, fp, message, error, n) {
+  const now = Math.floor(Date.now() / 1000);
+  // scrubbed: no address, email, ip or long token ever reaches the table (the health module's rules)
+  return import('./health.js').then(({ scrub }) => env.DB.prepare(`INSERT INTO worker_errors (fp, message, detail, count, first_at, last_at) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(fp) DO UPDATE SET count = count + excluded.count, detail = excluded.detail, last_at = excluded.last_at`)
+    .bind(fp, scrub(message, 80), scrub(error, 200), n, now, now).run());
+}
+function send(env, ctx, fp, r, message, error) {
+  const n = r.n; r.n = 0; r.at = Date.now();
+  const p = writeError(env, fp, message, error, n).then(() => { unsent.delete(fp); }, () => {
+    r.n += n; // counted again, so nothing is lost
+    if (unsent.size < 50 || unsent.has(fp)) unsent.set(fp, { message, error });
+  });
+  if (ctx && typeof ctx.waitUntil === 'function') { try { ctx.waitUntil(p); } catch (e) { /* the write still runs */ } }
+}
 export function errorFp(message, error) {
   const norm = (s) => String(s || '').replace(/\d+/g, '#').replace(/\s+/g, ' ').trim();
   return (norm(message).slice(0, 60) + '|' + norm(error).slice(0, 60)).slice(0, 124);
 }
-export function recordError(env, message, error) {
+export function recordError(env, message, error, ctx) {
   try {
     if (!env || !env.DB) return;
     const fp = errorFp(message, error);
@@ -186,13 +206,19 @@ export function recordError(env, message, error) {
     if (nowMs - r.at < 60000 || writes >= 12) return; // counted here, written with the next one
     if (recent.size > 200) for (const k of recent.keys()) { if (k !== fp) recent.delete(k); if (recent.size <= 100) break; }
     writes += 1;
-    const n = r.n; r.n = 0; r.at = nowMs;
-    const now = Math.floor(nowMs / 1000);
-    // scrubbed: no address, email, ip or long token ever reaches the table (the health module's rules)
-    import('./health.js').then(({ scrub }) => env.DB.prepare(`INSERT INTO worker_errors (fp, message, detail, count, first_at, last_at) VALUES (?, ?, ?, ?, ?, ?)
-      ON CONFLICT(fp) DO UPDATE SET count = count + excluded.count, detail = excluded.detail, last_at = excluded.last_at`)
-      .bind(fp, scrub(message, 80), scrub(error, 200), n, now, now).run()).catch(() => {});
+    send(env, ctx, fp, r, message, error);
   } catch (e) { /* never let the error log make a new error */ }
+}
+// At the start of every invocation: one error an earlier invocation could not write, if any (else no query at all).
+export function flushErrors(env, ctx) {
+  try {
+    if (!unsent.size || !env || !env.DB) return;
+    const [fp, e] = unsent.entries().next().value;
+    unsent.delete(fp);
+    const r = recent.get(fp);
+    if (!r || !r.n) return;
+    send(env, ctx, fp, r, e.message, e.error);
+  } catch (x) { /* never let the error log make a new error */ }
 }
 export async function pruneErrors(env) {
   await run(env, 'DELETE FROM worker_errors WHERE last_at < ?', nowSec() - 14 * DAY);
