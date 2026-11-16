@@ -562,6 +562,7 @@ export async function app(env) {
   const trials = await all(env, 'SELECT id, name, trial_days FROM plans WHERE trial_days > 0 AND is_active = 1 AND archived = 0 ORDER BY sort, id LIMIT 6');
   const u = await import('./appupdate.js');
   const [latest, cur] = await Promise.all([u.latestBuild(env).catch(() => null), u.announced(env, s)]);
+  const nt = await u.notesTarget(env, latest);
   const brief = (r) => (r ? { version: r.version, build: r.build, tag: r.tag, force: !!r.force, at: r.at || r.built_at || null } : null);
   return json({
     announcement: s.announcement || '', support_url: s.support_url || '',
@@ -569,7 +570,9 @@ export async function app(env) {
     bridges: splitAppList(s.app_bridges).map((v) => ({ value: maskBridge(v), tag: itemTag(v) })),
     trial: { gb: parseInt(s.trial_data_gb || '0', 10) || 0, telegram_only: String(s.trial_needs_telegram ?? '1') !== '0', plans: trials },
     min_topup_toman: parseInt(s.min_topup_toman || '0', 10), referral_percent: parseInt(s.referral_percent || '0', 10) || 0,
-    release: { token: !!env.PLEAT_DL_TOKEN, latest: brief(latest), announced: brief(cur), fresh: !!(latest && (!cur || latest.tag !== cur.tag)) },
+    release: { token: !!env.PLEAT_DL_TOKEN, latest: brief(latest), announced: brief(cur), fresh: !!(latest && (!cur || latest.tag !== cur.tag)),
+      // What's new: the lines of the build about to be announced, else of the announced one
+      notes: nt ? { version: nt.rel.version, announced: nt.kind === 'announced', lines: nt.notes } : null },
   });
 }
 

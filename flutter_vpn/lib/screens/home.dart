@@ -21,6 +21,7 @@ import 'route_extras.dart';
 import 'shell.dart';
 import 'states.dart';
 import 'stats_view.dart';
+import 'whats_new.dart';
 
 enum _HomeTab { now, route, stats }
 
@@ -61,6 +62,11 @@ class _HomeScreenState extends State<HomeScreen> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
                 child: _UpdateBanner(app: app),
+              )
+            else if (app.showWhatsNew)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+                child: WhatsNewCard(app: app),
               ),
             const SizedBox(height: 14),
             Padding(

@@ -2697,7 +2697,7 @@ const STAGE2_ACTIONS = ['user.add_days', 'user.add_gb', 'user.reset_usage', 'use
   'user.logout_all', 'user.block', 'user.unlink_tg', 'user.unlink_panel', 'user.avatar_reset', 'user.email', 'user.delete', 'user.create'];
 const STAGE3_ACTIONS = ['order.approve', 'order.reject', 'order.cancel', 'order.refund', 'plan.move', 'plan.copy', 'plan.delete', 'plan.unarchive',
   'coupon.set', 'coupon.toggle'];
-const STAGE4_ACTIONS = ['panel.rename', 'panel.enable', 'server.hide', 'server.rename', 'app.list', 'net.reset', 'app.release'];
+const STAGE4_ACTIONS = ['panel.rename', 'panel.enable', 'server.hide', 'server.rename', 'app.list', 'net.reset', 'app.release', 'app.notes'];
 // Pleat health reports: exercised in their own section near the end
 const HEALTH_ACTIONS = ['health.resolve', 'health.mute', 'health.mode'];
 // Cloudflare monitoring + panel sync by hand: exercised in their own section at the end
@@ -3583,7 +3583,7 @@ section('Pleat in-app update: build on the private release, announce in the bot,
   // the private release: two builds' files, GitHub's signed address behind each asset
   const bytes = {};
   const asset = (id, name, size) => { bytes[id] = new Uint8Array(size).map((_, i) => (i * 7 + id) % 251); return { id, name, size, state: 'uploaded', digest: 'sha256:' + String(id % 10).repeat(64), updated_at: '2026-11-07T10:00:00Z' }; };
-  const release = { name: 'Pleat 1.2.19+22 (latest build)', body: 'Pleat 1.2.19+22, built from abcdef1234 on 2026-11-07.', assets: [
+  const release = { name: 'Pleat 1.2.19+22 (latest build)', body: "Pleat 1.2.19+22, built from abcdef1234 on 2026-11-07. Install pleat.apk.\n\nWhat's new in 1.2.19:\n- NEW: Locations shows the fastest country.\n- FIXED: The widget connects when Pleat is closed.", assets: [
     asset(11, 'pleat-1.2.18-21-arm64-v8a.apk', 50), asset(21, 'pleat-1.2.19-22-arm64-v8a.apk', 120), asset(22, 'pleat-1.2.19-22-armeabi-v7a.apk', 90),
     asset(23, 'pleat-1.2.19-22-x86_64.apk', 130), { id: 30, name: 'pleat.apk', size: 120, digest: 'sha256:' + '9'.repeat(64) },
   ] };
@@ -3615,11 +3615,17 @@ section('Pleat in-app update: build on the private release, announce in the bot,
     const latest = await upd.latestBuild(env);
     ok(latest && latest.version === '1.2.19' && latest.build === 22 && Object.keys(latest.abis).length === 3 && latest.commit === 'abcdef1', 'the newest build on the release is read with its three phone types');
     ok(latest && latest.abis['arm64-v8a'].size === 120 && latest.abis['arm64-v8a'].sha256 === '1'.repeat(64), 'size and SHA-256 come from GitHub');
+    ok(latest && latest.notes.length === 2 && latest.notes[0].kind === 'new' && latest.notes[1].kind === 'fixed' && /widget/.test(latest.notes[1].text), "the release notes' What's new lines are read with their kinds");
+    ok(upd.releaseFromGitHub({ ...release, body: 'Pleat 1.2.18+21, built from abcdef1 on x\n- NEW: old lines' }).notes.length === 0, "What's new lines written for another version are not used");
+    ok(upd.parseNotes('NEW: a\nbetter - b\nplain c\n- FIX: d').notes.map((x) => x.kind).join() === 'new,better,new,fixed', 'typed lines: NEW / BETTER / FIXED, a plain line is new');
+    ok(upd.parseNotes('NEW: سرعت بیشتر').error === 'latin' && upd.parseNotes('x'.repeat(161)).error === 'long' && upd.parseNotes('a\nb\nc\nd\ne\nf\ng\nh\ni').error === 'many', 'Persian, too long and too many lines are refused');
+    ok(upd.cleanNotes([{ kind: 'evil', text: '<b>hi</b>' }, { kind: 'new', text: 'متن' }, 'x']).map((x) => x.kind + ':' + x.text).join('|') === 'new:b hi /b', 'stored lines are cleaned: unknown kind, markup and Persian dropped');
 
     // the admin hears about the new build once
     const told = [];
     ok(await upd.checkNewBuild(env, async (t, kb) => told.push({ t, kb })), 'a new build is told to the admin');
     ok(told.length === 1 && /1\.2\.19/.test(told[0].t) && flat(told[0].kb.inline_keyboard).includes('m:upd'), 'the note names the version and has the update button');
+    ok(/fastest country/.test(told[0].t), "the new-build note shows the What's new lines");
     ok(!(await upd.checkNewBuild(env, async (t) => told.push({ t }))) && told.length === 1, 'the same build is told only once');
 
     n = fakes.tg.calls.length;
@@ -3628,9 +3634,23 @@ section('Pleat in-app update: build on the private release, announce in the bot,
     ok(/1\.2\.19/.test(scr?.body.text || '') && flat(scr.body.reply_markup.inline_keyboard).includes('m:upa'), 'the update screen shows the build and an announce button');
     ok(!/(^|\n)\s*\//.test(scr?.body.text || ''), 'the update screen asks for no typed command');
     ok((await cfg()) === null, 'nothing reaches the apps before the announcement');
+    ok(/fastest country/.test(scr?.body.text || '') && flat(scr.body.reply_markup.inline_keyboard).includes('m:w:appnotes') && flat(scr.body.reply_markup.inline_keyboard).includes('m:apn'), "the update screen shows the What's new lines with write / none buttons");
+
+    // the admin writes other lines before announcing: the next message is the answer, no command typed
+    const say = (text) => tgWebhook({ message: { chat: { id: 12345 }, from: { id: 12345 }, message_id: 950, text } });
+    await tap('m:w:appnotes');
+    n = fakes.tg.calls.length;
+    await say('NEW: سرعت بیشتر');
+    ok(since(n).some((c) => c.method === 'sendMessage' && /انگلیسی/.test(c.body.text)), 'Persian lines are refused with the reason');
+    await say('NEW: Smart connect answers faster.\nBETTER: Plans load sooner.');
+    ok((await cfg()) === null, 'writing lines announces nothing');
+    n = fakes.tg.calls.length;
+    await tap('m:upd');
+    ok(/Smart connect answers faster/.test(lastScreen(n)?.body.text || ''), 'the screen shows the lines just written');
 
     await tap('m:upa');
     let u = await cfg();
+    ok(u && u.notes.length === 2 && u.notes[0].text === 'Smart connect answers faster.' && u.notes[1].kind === 'better', "the announced build carries the admin's lines to the apps");
     ok(u && u.version === '1.2.19' && u.build === 22 && u.force === false && u.tag === latest.tag, 'after announce app-config carries the build');
     ok(u && u.abis['armeabi-v7a'].size === 90 && !('id' in u.abis['armeabi-v7a']), 'app-config gives size and hash per phone type, no GitHub ids');
 
@@ -3657,6 +3677,17 @@ section('Pleat in-app update: build on the private release, announce in the bot,
     const forced = await env.DB.prepare("SELECT id FROM admin_audit WHERE action = 'app.release' ORDER BY id DESC LIMIT 1").first();
     await tap(`m:undo:${forced.id}`);
     ok((await cfg()).force === false, 'making it a must can be undone');
+    // after announcing, "no lines" changes the apps' text at once, and can be undone
+    await tap('m:apn');
+    ok((await cfg()).notes.length === 0, "'no lines' clears the announced build's What's new");
+    const cleared = await env.DB.prepare("SELECT id FROM admin_audit WHERE action = 'app.notes' ORDER BY id DESC LIMIT 1").first();
+    await tap(`m:undo:${cleared.id}`);
+    ok((await cfg()).notes.length === 2, "clearing the What's new lines can be undone");
+    // the Mini App sends the typed text; the Worker parses it the same way
+    const acts = await import('../src/admin-actions.js');
+    const viaText = await acts.runAction(env, 12345, 'app.notes', { text: 'FIXED: Faster sign-in.' });
+    ok(viaText.ok && (await cfg()).notes[0].kind === 'fixed', 'typed lines from the Mini App are parsed and saved');
+    ok(!(await acts.runAction(env, 12345, 'app.notes', { text: 'NEW: متن' })).ok, 'and Persian lines from the Mini App are refused');
     n = fakes.tg.calls.length;
     await tap('m:upa');
     ok(/همین بیلد/.test(acks(n)), 'announcing the same build twice is refused');
@@ -3777,7 +3808,7 @@ section('Pleat in-app update: build on the private release, announce in the bot,
   } finally {
     globalThis.fetch = realFetch;
     delete env.PLEAT_DL_TOKEN;
-    await env.DB.prepare("DELETE FROM settings WHERE key IN ('app_release', 'app_build_seen')").run();
+    await env.DB.prepare("DELETE FROM settings WHERE key IN ('app_release', 'app_build_seen', 'app_notes_draft')").run();
   }
 }
 

@@ -376,7 +376,7 @@ const ACTION_RISK = {
   cs: 'reversible', ct: 'reversible', ss: 'reversible', sdel: 'reversible', pcn: 'reversible',
   // panels, servers, the app, network (stage 4)
   pen: 'reversible', sh: 'reversible', sl: 'reversible', apm: 'reversible', apr: 'reversible', apc: 'reversible', apt: 'read', nrs: 'destructive',
-  upa: 'reversible', upf: 'reversible', upx: 'reversible',
+  upa: 'reversible', upf: 'reversible', upx: 'reversible', apn: 'reversible',
   // broadcast, admins (stage 5)
   bcs: 'reversible', bcgo: 'destructive', adr: 'reversible',
   // Pleat health reports
@@ -412,6 +412,7 @@ const USER_TAPS = {
   upa: () => ['app.release', { op: 'announce' }, 'upd'],
   upf: () => ['app.release', { op: 'force' }, 'upd'],
   upx: () => ['app.release', { op: 'withdraw' }, 'upd'],
+  apn: () => ['app.notes', { notes: [] }, 'upd'],
   // broadcast, admins (stage 5)
   bcs: (a) => ['broadcast.stop', { id: a[0] }, `bcv:${a[0]}`],
   adr: (a) => ['admin.remove', { tgId: a[0] }, 'sys.adm'],
@@ -487,6 +488,10 @@ const ASK = {
   },
   newplan: async () => null, // replaced by the step-by-step form (m:f:newplan)
   coupon: async () => null,  // replaced by the step-by-step form (m:f:coupon)
+  appnotes: async () => ['/appnotes', 'upd', ['📝 متن تغییرات این نسخه را بفرست؛ هر خط یک مورد (حداکثر ۸ خط).',
+    'اول هر خط بنویس NEW: یا BETTER: یا FIXED: (خط بدون این‌ها «جدید» حساب می‌شود). مثلاً:', '',
+    'NEW: Locations shows the fastest country for you.', 'FIXED: The widget connects when Pleat is closed.', '',
+    'متن در اپ انگلیسی نشان داده می‌شود، پس انگلیسی بنویس.'].join('\n')],
   addpanel: async () => ['/addpanel auto', 'pa', '➕ یک نام برای پنل جدید بنویس، مثلاً: آلمان ۲\nنوع پنل (PasarGuard، Marzban یا Rebecca) موقع تست خودکار تشخیص داده می‌شود.'],
   panelcred: async (env, args) => { const id = parseInt(args[0], 10); return [`/panelcred ${id}`, `pp:${id}`, CRED_PROMPT, true]; },
   groups: async (env, args) => { const id = parseInt(args[0], 10); return [`/panelgroups ${id}`, `pp:${id}`, '👥 شماره‌ی گروه‌های پنل را با کاما بنویس (مثلاً 1,2).\nبرای Rebecca فقط شماره‌ی یک سرویس (Service) را بنویس:']; },

@@ -814,12 +814,16 @@ export async function appUpdate(env) {
   const settings = await getSettings(env);
   const w = await import('./welcome.js');
   lines.push('', ...w.ownerLines(settings));
+  // What's new: the lines of the build that is about to be announced, else of the announced one
+  const nt = await u.notesTarget(env, latest);
+  if (nt) lines.push('', `📝 تغییرات ${nt.rel.version} (کاربرها در صفحه‌ی آپدیت می‌بینند):`, u.notesFa(nt.notes));
   lines.push('', 'بعد از اعلام، اپ‌هایی که نسخه‌ی قدیمی‌تر دارند علامت و نوتیف آپدیت می‌بینند و فایل مخصوص گوشی خودشان را از داخل اپ دانلود و نصب می‌کنند.',
     'اجباری = صفحه‌ی آپدیت تا آپدیت نکنند بسته نمی‌شود.');
   return {
     text: lines.join('\n'),
     kb: [
-      ...(fresh ? [[b(`📢 اعلام نسخه‌ی ${latest.version} به کاربرها`, 'm:upa')]] : []),
+      ...(fresh ? [[b(`📢 اعلام نسخه‌ی ${latest.version} به کاربرها${nt && nt.notes.length ? ' با همین تغییرات' : ''}`, 'm:upa')]] : []),
+      ...(nt ? [[b('✏️ نوشتن متن تغییرات', 'm:w:appnotes'), ...(nt.notes.length ? [b('🚫 بدون متن', 'm:apn')] : [])]] : []),
       ...(cur ? [[b(cur.force ? '✅ اجباری نباشد' : '⚠️ آپدیت اجباری شود', 'm:upf'), b('🛑 برداشتن اعلام', 'm:upx')]] : []),
       [b('📎 فایل تلگرامی اپ', 'm:apkf'), b('👀 پیام خوش‌آمد', 'pw:app')],
       [b('🔄 تازه کن', 'm:upd')],

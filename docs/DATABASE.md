@@ -135,7 +135,8 @@ Almost all runtime configuration. Defaults in `worker/src/db.js` `SETTING_DEFAUL
   `min_topup_toman`. Switches per method (PAY-08, 1 = offered, 0 = off, default 1): `pay_wallet_on`, `pay_card_on`,
   `pay_coin_on`, `pay_crypto_on`; `pay_coins_off` (coin ids switched off one by one, comma separated, default empty).
 - App: `announcement`, `support_url`, `app_api_bases` (extra Worker domains), `app_bridges` (bridge links),
-  `trial_data_gb`, `trial_needs_telegram`, `app_release` (in-app update announcement), `app_tg_file` (JSON: the Telegram `file_id`, name, size and version of
+  `trial_data_gb`, `trial_needs_telegram`, `app_release` (in-app update announcement, with its What's new `notes`), `app_notes_draft` (What's new lines the
+  admin wrote for a build not announced yet: `{tag, notes}`), `app_tg_file` (JSON: the Telegram `file_id`, name, size and version of
   the APK the owner sent the bot, offered to new people while it is the announced version).
 - Monitoring: `cf_alerts` (1/0, hourly Cloudflare alerts), `cf_alert_state` (what was already told today), `sync_manual_at` (last "sync now" tap).
 - Panels: `panel_cred_<id>` (AES-GCM sealed login, never in backups), `panel_err_<id>` (refused creates),

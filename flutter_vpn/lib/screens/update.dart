@@ -6,6 +6,7 @@ import '../design/update_track.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
 import '../state/updater.dart';
+import 'whats_new.dart';
 
 /// MB with one decimal, as the sheet shows sizes.
 String _mb(int bytes) => (bytes / (1024 * 1024)).toStringAsFixed(1);
@@ -46,6 +47,8 @@ class UpdateSheet extends StatelessWidget {
     final file = u?.files[up.abi];
     final must = app.mustUpdate;
     final step = up.step;
+    // What's new: the store's lines for this build, when it wrote any
+    final news = u != null && u.notes.isNotEmpty;
 
     final String status = switch (step) {
       UpdateStep.idle =>
@@ -103,71 +106,86 @@ class UpdateSheet extends StatelessWidget {
         24,
         24 + MediaQuery.paddingOf(context).bottom,
       ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Center(
-            child: Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: PColors.mist,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          const SizedBox(height: 18),
-          Row(
-            children: [
-              Expanded(child: Text('Update Pleat', style: PType.h2())),
-              if (!must)
-                RoundIcon(
-                  PIcon.close,
-                  onTap: () => Navigator.of(context).pop(),
-                  label: 'Close',
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.sizeOf(context).height * 0.9,
+      ),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: PColors.mist,
+                  borderRadius: BorderRadius.circular(2),
                 ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            u == null
-                ? 'You have the latest Pleat.'
-                : '${up.version.isEmpty ? 'This version' : up.version}  →  ${u.version}',
-            style: PType.body(),
-          ),
-          if (must) ...[
-            const SizedBox(height: 10),
-            Text(
-              'This update is needed to keep using Pleat.',
-              style: PType.small(color: PColors.accentInk),
-            ),
-          ],
-          const SizedBox(height: 20),
-          if (u != null) ...[
-            UpdateTrack(
-              stage: updateTrack(up).stage,
-              frac: updateTrack(up).frac,
-              from: up.version,
-              to: u.version,
-            ),
-            const SizedBox(height: 12),
-          ],
-          if (status.isNotEmpty)
-            Text(
-              status,
-              style: PType.small(
-                color: step == UpdateStep.failed ? PColors.ink : null,
               ),
             ),
-          const SizedBox(height: 20),
-          action,
-          const SizedBox(height: 14),
-          Text(
-            'It downloads through Pleat’s own connection and installs over this one. Your account, plan and settings stay as they are.',
-            style: PType.meta(),
-          ),
-        ],
+            const SizedBox(height: 18),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    news ? 'What’s new in ${u.version}' : 'Update Pleat',
+                    style: PType.h2(),
+                  ),
+                ),
+                if (!must)
+                  RoundIcon(
+                    PIcon.close,
+                    onTap: () => Navigator.of(context).pop(),
+                    label: 'Close',
+                  ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              u == null
+                  ? 'You have the latest Pleat.'
+                  : news
+                  ? (up.version.isEmpty
+                        ? 'Pleat ${u.version}'
+                        : 'You have ${up.version}')
+                  : '${up.version.isEmpty ? 'This version' : up.version}  →  ${u.version}',
+              style: news ? PType.small() : PType.body(),
+            ),
+            if (news) ...[const SizedBox(height: 18), NoteLines(u.notes)],
+            if (must) ...[
+              const SizedBox(height: 10),
+              Text(
+                'This update is needed to keep using Pleat.',
+                style: PType.small(color: PColors.accentInk),
+              ),
+            ],
+            const SizedBox(height: 20),
+            if (u != null) ...[
+              UpdateTrack(
+                stage: updateTrack(up).stage,
+                frac: updateTrack(up).frac,
+                from: up.version,
+                to: u.version,
+              ),
+              const SizedBox(height: 12),
+            ],
+            if (status.isNotEmpty)
+              Text(
+                status,
+                style: PType.small(
+                  color: step == UpdateStep.failed ? PColors.ink : null,
+                ),
+              ),
+            const SizedBox(height: 20),
+            action,
+            const SizedBox(height: 14),
+            Text(
+              'It downloads through Pleat’s own connection and installs over this one. Your account, plan and settings stay as they are.',
+              style: PType.meta(),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -569,9 +569,11 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.53+56** (`flutter_vpn/pubspec.yaml`; a Worker test fails when this line and pubspec differ, so
+Version on main: **1.2.54+57** (`flutter_vpn/pubspec.yaml`; a Worker test fails when this line and pubspec differ, so
 update it in the same PR as every version bump). 1.2.53 is the smart-connect fix ("only exits that answered here").
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
+**Every release also adds its What's new entry** to `flutter_vpn/assets/whats_new/whats_new.json` (short English
+lines, kind `new` / `better` / `fixed`, at most 8); a Flutter test fails when the pubspec version has none.
 Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLibXrayLite tag **v26.7.5**
 (Xray 26.6.27 inside), hev-socks5-tunnel commit `67dfba56`.
 
@@ -687,6 +689,17 @@ does not reach users by itself.
 - Update UI (#69, design "N2 Live track"): one notification from announcement to installer with a Download /
   Check / Install track (Android 16+: the system `ProgressStyle`; Android 7–15: a custom view), Stop / Later from
   the shade; the Home card and update sheet use the same track (`UpdateTrack`, `UpdateCopy`).
+- What's new (2026-11-16, Ali's pick A + the history page of C): `assets/whats_new/whats_new.json` holds every
+  version's lines and ships in the APK. The APK workflow copies the built version's lines into the release notes as
+  `- NEW: …`; the Worker (`appupdate.releaseFromGitHub`) reads them, the bot's new-build note and 📲 screen show
+  them with "✏️ نوشتن متن تغییرات" (typed answer, English only, one line per item) and "🚫 بدون متن" (the admin
+  Mini App › App updates has the same: Write lines / No lines), and announce
+  sends them in app-config `update.notes`. Lines written before announcing wait in the setting `app_notes_draft`
+  (for that build's tag); after announcing they change `app_release` directly. Pleat: the update sheet is "What's
+  new in X" with NEW / BETTER / FIXED chips; after an update Home shows a one-time "You're on the new Pleat" card
+  (pref `whatsNewSeen`; a new install never sees it); Profile footer › WHAT'S NEW opens every version on a timeline
+  (`lib/state/whats_new.dart`, `lib/screens/whats_new.dart`). The store's lines win over the bundled ones for the
+  announced version.
 - Stop and filtered lines (2026-11-16): Stop (card, sheet or shade) puts the card back to "Go on" at once and aborts
   the running request wherever it is (picking a way, connecting, or a silent line); a stopped run can't take the card
   back. Inside one `ApiClient.download` call a way that breaks on the file is not asked again: the next round takes
@@ -989,6 +1002,8 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 **2026-11-16 — Welcome for new bot users.**
 - The bot greets a new person once with a banner card and the ways to get Pleat: the APK inside Telegram (a file the
   owner sends once per version), our own download link `/dl/pleat.apk`, GitHub, and install help (migration 0024).
+**2026-11-16 — What's new.** Each update says what changed: the bundled `whats_new.json` feeds the release notes,
+the bot (show / rewrite / none before announcing) and Pleat (update sheet list, one-time Home card, Profile history).
 
 **2026-11-15 — "No server connected" with servers that answered.**
 - Pleat 1.2.53: smart connect offers only exits that answered here after a failure, never retries a failed exit in
@@ -1098,6 +1113,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 89 | 11-13 | Locations country list: Fastest for you, chips, regions, health pips, Not answering (1.2.49) |
 | 90 | 11-13 | Native crash: offsets inside the core (pc, lr, Go frame chain), signal sender, stderr matched per process (1.2.50) |
 | — | 11-15 | Smart connect offers only exits that answered here, skips ones failing for everyone, `no_exit` says why each try failed (1.2.53) |
+| — | 11-16 | What's new per update: lines in the update sheet, a one-time Home card, a history page; bot shows / edits them before announcing |
 | — | 11-16 | In-app update: Stop works at once; a broken way is skipped for the next address / the bridge; failure report names each way tried |
 | — | 11-16 | Bot welcome card for new people (design D): APK in Telegram by `file_id`, `/dl/pleat.apk`, GitHub, install help; `bot_users` (0024) |
 
@@ -1243,6 +1259,8 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 
 ## 19. Open items and known gaps
 
+- **What's new phone test** (needs a version bump with the PR): update sheet shows the lines, Home card appears once
+  after installing and goes away after SEE WHAT'S NEW or ✕, Profile › WHAT'S NEW timeline in Day and Night.
 - **In-app update on Pars Online without VPN (2026-11-16)**: cause unproven. The next `📲 به‌روزرسانی ناموفق`
   report's `ways` line says whether the line cut the file, the TLS handshake, or never answered.
 
