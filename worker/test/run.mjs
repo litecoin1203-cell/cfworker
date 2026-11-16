@@ -6909,6 +6909,23 @@ section('PNL-12: panel errors that reach the admin name the bot button to press,
   ok(ids.join() === '7', 'PNL-12: groups chosen with the button for panel 1 are used: ' + ids);
 }
 
+section('PNL-12 review: the panel report and the panel test name buttons, never a command to type');
+{
+  const W = await world('pnl12b', 3, ['pasarguard', 'pasarguard', 'rebecca']);
+  const { panelReport } = await import('../src/telegram.js');
+  W.e.W_pnl12b_2 = JSON.stringify({ url: W.bases[1], username: 'adm', password: 'pw' });
+  W.pgs[1].kind = 'none'; // answers no login: the report's fix line
+  const rep = await panelReport(W.e);
+  ok(/❌ ورود ناموفق/.test(rep) && !/\/panelcred|\/paneltest|\/panelgroups/.test(rep) && /🔐 ورود پنل/.test(rep), 'PNL-12 review: the health report names 🔐 ورود پنل, not /panelcred: ' + rep.split('\n').filter((l) => /راه حل/.test(l)).join(' '));
+  W.pgs[1].kind = 'pasarguard';
+  const n0 = fakes.tg.messages.length;
+  await W.bot('/paneltest 1');
+  W.pgs[2].services = [];
+  await W.bot('/paneltest 3');
+  const texts = fakes.tg.messages.slice(n0).map((m) => m.text || '');
+  ok(texts.some((t) => /سالم است/.test(t)) && !texts.some((t) => /بنویس/.test(t)), 'PNL-12 review: the panel test reply never says "write ...": ' + texts.filter((t) => /بنویس/.test(t)).join(' | ').slice(0, 300));
+}
+
 section('PERF-B-02: a network report rewrites a server\'s row of the user\'s own history only when its result changed or the row is 30 min old');
 {
   const W = await world('pfb2', 1);

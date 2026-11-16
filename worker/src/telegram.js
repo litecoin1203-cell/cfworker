@@ -443,7 +443,7 @@ export async function panelReport(env) {
     if (t.apiProblems && t.apiProblems.length) lines.push('⚠️ سند API پنل با فرض‌های ورکر فرق دارد:', ...t.apiProblems.map((x) => '• ' + untrusted(x)));
     if (t.sameHost === true) lines.push('⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است؛ آدرس پنل داخل کانفیگ‌ها دیده می‌شود. برای نودها دامنه‌ی جدا بگذار.');
     if (t.sameHost === false) lines.push('✅ دامنه‌ی نودها با دامنه‌ی پنل فرق دارد.');
-    if (!t.login && p.cred_ref !== 'PASARGUARD') lines.push(`راه حل: آدرس/یوزر/رمز را دوباره بده: /panelcred ${p.id}`);
+    if (!t.login && p.cred_ref !== 'PASARGUARD') lines.push(`راه حل: آدرس/یوزر/رمز را دوباره بده: 🗂 پنل‌ها › #${p.id} › 🔐 ورود پنل`);
   }
   return lines.join('\n');
 }
@@ -689,8 +689,8 @@ async function onMessage(env, msg, opts = {}) {
         : { reply_markup: { inline_keyboard: [
           [{ text: '🔐 ورود پنل', callback_data: `m:w:panelcred:${panel.id}` }, { text: '👥 گروه‌ها / سرویس', callback_data: `m:w:groups:${panel.id}` }],
           [{ text: '🗂 صفحه‌ی پنل', callback_data: `m:pp:${panel.id}` }]] } };
-      return say(kindLine + (t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\n${typesLine}\nبرای شروع یکی از دکمه‌ها را بزن (یا بنویس: /rollout ${panel.id} 10)`
-        : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}${t.kind === 'rebecca' && !t.create ? `\nدر Rebecca هر کاربر باید یک سرویس (Service) داشته باشد. شماره‌ی سرویس را بده: /panelgroups ${panel.id} شماره` : ''}`), go);
+      return say(kindLine + (t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\n${typesLine}\nبرای شروع یکی از دکمه‌ها را بزن.`
+        : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}${t.kind === 'rebecca' && !t.create ? '\nدر Rebecca هر کاربر باید یک سرویس (Service) داشته باشد. سرویس را با دکمه‌ی «👥 گروه‌ها / سرویس» در زیر همین پیام انتخاب کن.' : ''}`), go);
     }
     if (cmd === '/panelgroups') {
       const r = await runAction(env, chatId, 'panel.groups', { panelId: panel.id, ids: String(parts[2] || '').split(',') });
@@ -702,7 +702,7 @@ async function onMessage(env, msg, opts = {}) {
       const p = r.panel;
       const { panelProgress } = await import('./sync.js');
       const g = await panelProgress(env, p);
-      return sayDone({ ...r, text: `✅ پنل #${p.id}: ${STATE_FA[p.state]} ${p.rollout_percent}%.\n${g.want ? `${g.have} از ${g.want} کاربر الان روی این پنل اکانت دارند. بقیه با باز کردن اپ فوراً، یا در پس‌زمینه هر دقیقه چند نفر، اکانت می‌گیرند و کانفیگ‌های این پنل به لیستشان اضافه می‌شود. پیشرفت: /panels` : 'فعلاً کاربری با اشتراک فعال در این سهم نیست.'}` });
+      return sayDone({ ...r, text: `✅ پنل #${p.id}: ${STATE_FA[p.state]} ${p.rollout_percent}%.\n${g.want ? `${g.have} از ${g.want} کاربر الان روی این پنل اکانت دارند. بقیه با باز کردن اپ فوراً، یا در پس‌زمینه هر دقیقه چند نفر، اکانت می‌گیرند و کانفیگ‌های این پنل به لیستشان اضافه می‌شود. پیشرفت: 🗂 پنل‌ها` : 'فعلاً کاربری با اشتراک فعال در این سهم نیست.'}` });
     }
     if (cmd === '/panelremake') {
       // review of PNL-03: the owner resumes remakes of accounts deleted on this panel (button under the pause notice)
