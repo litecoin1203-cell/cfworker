@@ -1337,6 +1337,13 @@ actions to SHAs (done for the live workflows, release audit SEC-04). Also open: 
 (no longer written to the config; such exits are verified normally — NET-01) · P20 outdated README · Gmail one-tap sign-in (needs a Google OAuth client).
 
 ### Follow-ups (non-critical)
+- **Release audit wave 3, left open on purpose:** NET-10 (fixed local ports 10808/10809/10810 and no SOCKS login on
+  the Speed / Privacy-check cores) changes the generated Xray config for every user, so it waits for Ali; AND-03
+  (core + geo loading on the main thread) is kept, since 1.2.44 loads the same way in the service on purpose for the
+  widget start and the geo files are ~5 MB since PERF-A-03; AND-04 (`last-config.json`, `widget-spares.json`
+  readable on a rooted phone) is accepted by the audit; NET-11's double request lives in the core library
+  (`MeasureDelay`), and a ping left behind ends by itself within 24 s, so the pool stays bounded.
+
 Pleat: `_failover`'s resync (`loadServers().then(... _connect(null, failover: true))`) is not guarded by
 `_attempt`, so a Disconnect during it can be followed by a fresh start (pre-existing, audit review N4); the config
 builder still lets unknown `type=` values and REALITY over ws/httpupgrade through to the core (N3). PBKDF2 iterations (only with a CPU budget), split `telegram.js`, a `confirmPayment` use case, a notify port,
