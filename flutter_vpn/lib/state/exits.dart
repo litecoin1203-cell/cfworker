@@ -120,6 +120,18 @@ class Exit {
   double? get ispScore =>
       rank != null && rank!.reports >= 3 ? rank!.score : null;
 
+  /// People on this operator almost never get through it: 8 or more
+  /// results and a score under 0.3. The Worker's score is 60 % how often
+  /// it connects, so an exit that fails for everyone stays near 0.2.
+  bool get failsForPeople => (rank?.reports ?? 0) >= 8 && rank!.score < 0.3;
+
+  /// Smart connect may offer it: it answered this phone's last test, or
+  /// it was not tested here and people on this operator get through it.
+  /// An exit that failed here, or fails for nearly everyone on this
+  /// operator, is never picked by itself (a tap on it still connects).
+  bool get autoOk =>
+      (measured ?? 0) > 0 || (measured == null && !failsForPeople);
+
   /// Download speed as 0 … 1 on a log scale: 0.5 Mbit/s is 0, about
   /// 3.5 Mbit/s 0.5, 20 Mbit/s and up 1. This phone's own result first,
   /// then what people on this network measured; unknown counts as the

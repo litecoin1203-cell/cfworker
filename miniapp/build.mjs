@@ -18,6 +18,8 @@ await mkdir(out + 'app/fonts', { recursive: true });
 const fs = 'node_modules/@fontsource/';
 for (const w of [500, 600, 700]) await copyFile(`${fs}plus-jakarta-sans/files/plus-jakarta-sans-latin-${w}-normal.woff2`, `${out}app/fonts/pjs-${w}.woff2`);
 for (const w of [500, 700]) await copyFile(`${fs}vazirmatn/files/vazirmatn-arabic-${w}-normal.woff2`, `${out}app/fonts/vazir-${w}.woff2`);
+// both are SIL OFL 1.1, which asks that the licence goes with the font files (LEG-06)
+for (const f of ['plus-jakarta-sans', 'vazirmatn']) await copyFile(`${fs}${f}/LICENSE`, `${out}app/fonts/OFL-${f}.txt`);
 // file names stay fixed; a content hash in the query string makes Telegram's web view pick up a new build
 const ver = createHash('sha256').update(await readFile(out + 'app/app.js')).update(await readFile(out + 'app/styles.css')).digest('hex').slice(0, 10);
 await writeFile(out + 'app/index.html', (await readFile('src/index.html', 'utf8')).replaceAll('__V__', ver));

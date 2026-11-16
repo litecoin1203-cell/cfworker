@@ -81,9 +81,11 @@ the only admin, and as of 2026-11-12 had **about 2 users** and **2 panels** (pan
 Rebecca 1.8.0). The GitHub repo is **public** (since 2026-11-11, for free Actions minutes): anything committed is
 readable by anyone, so secrets live only in GitHub/Worker secrets. Users are in **Iran**, behind heavy filtering; that fact drives many design choices.
 
-**The old app is retired.** `android/` (v2rayNG 2.2.6 fork + a WebView bridge) and `app-web/` (its Persian
-web UI) are the former "Cloud Gold" app. Nobody uses it (Ali, 2026-11-07). They are still in the repo and are
-candidates for deletion in the audit's repair phase. **Do not build new features there.**
+**The old app is retired and deleted.** `android/` (v2rayNG 2.2.6 fork + a WebView bridge, GPL-3.0) and
+`app-web/` (its web UI) were the former "Cloud Gold" app. Nobody uses it (Ali, 2026-11-07); Ali approved deleting it
+on 2026-11-13 and the release audit removed both folders and `android.yml` from main (ARC-06). Git history keeps
+them: the last commit that has them is `5890bdc` (`git show 5890bdc:android/LICENSE`). The Worker still answers
+the old app's compatibility paths (`centralApp`, `sub_url`, `/vpn/sub`, `/pay/done`); see §19.
 
 ---
 
@@ -158,7 +160,7 @@ cfworker/
 ├── worker/                      THE BACKEND (active)
 │   ├── src/                     ~10,800 lines, 27 files (see §5)
 │   ├── migrations/              0001 … 0023 (two files share 0015 — harmless, never rename) → docs/DATABASE.md
-│   ├── test/run.mjs             the whole test suite (hand-made harness, ~1,450 checks)
+│   ├── test/run.mjs             the whole test suite (hand-made harness, ~1,850 checks)
 │   ├── test/shim.mjs            D1 on node:sqlite (batch is transactional like D1), fake panels
 │   ├── test/dev_server.mjs      the Worker + a fake panel on http://127.0.0.1:8787 (for Pleat's live test)
 │   ├── wrangler.jsonc           crons, rate limiters, D1 binding (id filled by the deploy workflow), static assets
@@ -186,9 +188,9 @@ cfworker/
 │                 parity.md      Pleat vs the old Cloud Gold app, feature by feature (Persian)
 ├── miniapp/                     TELEGRAM MINI APP (Preact 10 + esbuild, pinned + lockfile): src/ (user side),
 │                                src/admin/ (admin panel), test/; `npm run build` → worker/public/
-├── android/  app-web/           RETIRED old Cloud Gold app — do not extend
 ├── design-system/               the old app's "Vault & Hallmark" design docs (historical)
-├── docs/                        PROJECT_HANDBOOK.md (this file), API.md, DATABASE.md, RESTORE.md (restore/rollback)
+├── docs/                        PROJECT_HANDBOOK.md (this file), API.md, DATABASE.md, RESTORE.md (restore/rollback),
+│                                RUNBOOK.md (incidents: filtered domain, panel down, leaked secret or key, lost Telegram)
 ├── AGENTS.md, CLAUDE.md         short rule card for AI coding agents
 ├── README.md                    original Persian setup guide (partly outdated: old app); links to docs/
 └── .github/workflows/
@@ -196,7 +198,6 @@ cfworker/
     ├── flutter-vpn.yml          "Pleat Flutter app": on PRs: format, analyze, test, live test, Xray config test;
     │                            manual run (input api_base) also builds the APK and publishes to pleat-latest
     ├── deploy-worker.yml        "Deploy Cloud Gold server": manual only
-    ├── android.yml              RETIRED: old app APK
     └── make-key.yml             one-time signing key generator (already used)
 ```
 
@@ -288,15 +289,15 @@ The full list (every route, its auth, handler and limits, plus the admin API and
 | `chainwatch.js` | reads five chains, matches deposits to orders, `claimTxid` (one txid = one order, atomic) |
 | `coins.js`, `usdrate.js`, `nowpayments.js`, `banks.js` | coin prices, USD→toman rate, gateway invoices, bank name from card number |
 | `sms.js` | parses bank SMS (rial vs toman!), auto-confirms card-to-card orders |
-| `netstats.js` | crowd ranking of exits per operator (Cloudflare ASN), province, network kind; per-user experience |
-| `appupdate.js` | reads the private `pleat-latest` release with `PLEAT_DL_TOKEN`, serves version info, proxies the APK, `checkNewBuild` |
+| `netstats.js` | crowd ranking of exits per operator (Cloudflare ASN), province, network kind; per-user experience; **the one share-link reader** (`vmessJson` UTF-8, `linkRemark`, `linkEndpoint`, `serverKey`), matched by Pleat's `models.dart` (`vmessObject`, `endpointOf`) through `flutter_vpn/test/links_golden.json` |
+| `appupdate.js` | reads the `pleat-latest` release (public, like the repo) with `PLEAT_DL_TOKEN`, serves version info, proxies the APK, `checkNewBuild` |
 | `telegram.js` | Telegram client, admin roles, order callbacks, `ensureWebhook`, `sendBackup`, legacy text commands, `buttonize` |
 | `telegram-menu.js` | button menu router, forms (`bot_session`), confirms |
 | `telegram-screens.js` | read-only bot screens |
 | `admin-actions.js` | **every bot and Mini App write**: validate → one D1 batch → audit → undo; broadcasts (`broadcastTick`) |
 | `admin-api.js` | the Mini App admin API: `ROUTES` table `[method, regex, level, handler]`, 15-min admin token, role re-read per request |
 | `health.js` | Pleat health reports: `TYPES` + priorities, `LIMITS` (per-user caps), `scrub`, P1 Telegram alert, location mismatch (`checkExitCountry`), bot screens (🩺 سلامت اپ), crash wording (`crashGuess`), daily line, prune |
-| `cfmon.js` | Admin bot ☁️ Cloudflare monitoring: GraphQL Analytics (`CF_ANALYTICS_TOKEN`), Free-plan `LIMITS`, overview / 7-day / errors / costly queries / deploys / token screens, `alertTick` (hourly), `dailyLine`, `recordError` (the `worker_errors` log fed by `logError`) |
+| `cfmon.js` | Admin bot ☁️ Cloudflare monitoring: GraphQL Analytics (`CF_ANALYTICS_TOKEN`), Free-plan `LIMITS`, overview / 7-day / errors / costly queries / deploys / token screens, `alertTick` (hourly), `dailyLine`, `recordError` (the `worker_errors` log fed by `logError`; held open with `ctx.waitUntil`, and a write that failed is retried by the next invocation's `flushErrors`) |
 | `countries.js` | country of a config from its remark/host (`countryOfLink`): flag, English/Persian name, 2-letter token, host label |
 
 ### Auth facts
@@ -560,7 +561,8 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.49+52** (`flutter_vpn/pubspec.yaml`). PR #90 (open) is 1.2.50+53.
+Version on main: **1.2.53+56** (`flutter_vpn/pubspec.yaml`; a Worker test fails when this line and pubspec differ, so
+update it in the same PR as every version bump). 1.2.53 is the smart-connect fix ("only exits that answered here").
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
 Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLibXrayLite tag **v26.7.5**
 (Xray 26.6.27 inside), hev-socks5-tunnel commit `67dfba56`.
@@ -635,6 +637,15 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
    it after 2026-08-01): an insecure link is verified like any TLS exit, or by its pin (`pcs`).
 5. Smart connect, its backups and failover only use exits that match the **Route** choice (goal family and
    country, §Home tabs) and say so instead of silently switching protocol.
+   **What smart connect offers (1.2.53):** the first pick may skip the test only for an exit that works for nearly
+   everyone on this operator (8+ results, score ≥ 0.8) *and* did not fail this phone's own last test. After any
+   failure, and for the core's 2 backups and the failover, only exits that **answered a fresh test on this
+   network** are used, and an exit already tried in this connect is never tried again (it answered a test and still
+   did not come up). With no fresh test, the failover re-fetches the list and tests first. `Exit.failsForPeople`
+   (8+ results, score < 0.3: fails for nearly everyone on this operator) is never offered by itself — not picked,
+   not a backup, not a widget spare — unless this phone reached it in its own last test; a tap on it still connects.
+   Before 1.2.53 an untested exit could outrank one that answered (score = isp × 0.55 with no local result), the
+   strong pick ignored a local failure, and the resync retry tried the same failed exits again (6 tries, 3 exits).
 6. Iran split (now Home › Route › Split route): Iranian sites/IPs direct (geo files from Loyalsoldier, fetched in
    CI), plus the person's own sites and chosen Android apps (`addDisallowedApplication`). QUIC blocked.
 
@@ -671,8 +682,10 @@ Measured with fake time: screen-off pings/h 180 → 20, `/me`/h 60 → 6, shard 
 networks: no auto speed tests, rarer pings. Never mix metered and unmetered results in a report.
 
 ### In-app update (PR #40, 1.2.19)
-The workflow uploads per-ABI APKs `pleat-<ver>-<build>-<abi>.apk` to the private release `pleat-latest`
-(keeps the last 3; `pleat.apk` = arm64). The Worker reads the release with `PLEAT_DL_TOKEN` and proxies a
+The workflow uploads per-ABI APKs `pleat-<ver>-<build>-<abi>.apk` to the release `pleat-latest`
+(keeps the last 3; `pleat.apk` = arm64). The repo is public, so the release and the APK in it (with whatever the
+build baked in, e.g. `PLEAT_BRIDGE`) can be downloaded by anyone; phones in Iran still go through the Worker
+because GitHub is often unreachable there. The Worker reads the release with `PLEAT_DL_TOKEN` and proxies a
 resumable download; the app checks SHA-256 and hands it to Android's installer (`Updates.kt`). Ali announces /
 forces / withdraws from the bot. **No chunking** (Ali refused KV/R2 splitting). Installed build =
 `versionCode % 1000`. The app only offers the version Ali **announces** in the bot, so a test APK on the release
@@ -979,6 +992,11 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
   keep/clear history); Profile gets the Plans shelf.
 - PR #89 (1.2.49) Locations country list: Fastest-for-you bar, filter chips, regions, health pips, Not answering.
 - PR #90 (1.2.50) native crash: the code offsets inside the core, the signal's sender, stderr per process.
+
+**2026-11-15 — "No server connected" with servers that answered.**
+- Pleat 1.2.53: smart connect offers only exits that answered here after a failure, never retries a failed exit in
+  the same connect, never offers one that fails for nearly everyone on the operator; `no_exit` says why each try
+  failed; "has been removed" core errors read as a setting problem.
 - Release audit wave 1, payment controls (branch `claude/w1-payment-controls`, stacked on the PAY-01..04 branch):
   one on/off switch per payment method (PAY-08), unrecognised bank SMS reach the admin (PAY-07), no personal data in
   third-party panel account names or notes (PNL-07), a made-up host in a test (SEC-11).
@@ -1082,6 +1100,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 88 | 11-13 | Activity account hub (data and days, sessions, keep/clear history) + Profile Plans shelf (1.2.48) |
 | 89 | 11-13 | Locations country list: Fastest for you, chips, regions, health pips, Not answering (1.2.49) |
 | 90 | 11-13 | Native crash: offsets inside the core (pc, lr, Go frame chain), signal sender, stderr matched per process (1.2.50) |
+| — | 11-15 | Smart connect offers only exits that answered here, skips ones failing for everyone, `no_exit` says why each try failed (1.2.53) |
 
 ---
 
@@ -1231,7 +1250,8 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
 - **Licence of the repo's own code** (audit LEG-04): there is no top-level `LICENSE`, so the Worker, Mini App and
-  Pleat are all rights reserved. Choose one (or a proprietary notice); `android/` stays GPL-3.0.
+  Pleat are all rights reserved. Choose one (or a proprietary notice). The deleted `android/` (in git history) stays
+  GPL-3.0.
 - **GeoLite2 terms** (LEG-02): the APK carries MaxMind's attribution, but the GeoLite2 EULA may also require
   updating or deleting old copies; the geo files are refreshed only when an APK is built. Legal review, or a
   source with simpler terms (DB-IP / IPinfo lite, CC BY 4.0).
@@ -1282,6 +1302,16 @@ again), so an empty list did not mean nothing was tried. Earlier reports named t
 1.2.47 keeps every exit tried in the connect, adds `why` (each route exit's last test result on that network:
 timeout / refused / tls / reality / ok / untested) and `age`, and the bot shows server names instead of keys. Which
 DE server fails and why is known only from the next report.
+
+2026-11-15 (1.2.50, 3 users, Xiaomi M2010J19CI + 24117RN76G, MCI data, Dadeh Gostar, Hetzner): Auto tried TR 4,
+TR 3, MX 1 while FI 1, GB 3, DE 2, FI 2 had answered the test and were never tried. Proven from the code (and a test
+that fails on 1.2.51): the first pick took a strongly ranked exit without checking this phone's result; failover
+ranked untested exits by other people's results above exits that answered here; backups could be untested exits;
+the resync retry tried the same three again. Not proven: why TR 4 / TR 3 / MX 1 failed on these phones (a refused
+backup in 1.2.50, `allowInsecure` or a removed transport, would fail the whole start; 1.2.51 already removes both).
+1.2.53 fixes the choice (§10 item 5) and each `tried` entry carries that try's own failure (`c`, from the core's
+start error), plus `skipped` = exits left out for failing for nearly everyone. DE 1 "path" = the server answered
+40x to the test: a path / host / XHTTP-mode mismatch on the server.
 
 ### Telegram Mini App (user stage 1 + full admin panel built, PRs #50–#52)
 - Stage 0 result (Ali's phone, 2026-11-08): with only Telegram's proxy the Mini App did **not** open; it opens with a
@@ -1349,8 +1379,8 @@ actions to SHAs (done for the live workflows, release audit SEC-04). Also open: 
 Pleat: `_failover`'s resync (`loadServers().then(... _connect(null, failover: true))`) is not guarded by
 `_attempt`, so a Disconnect during it can be followed by a fresh start (pre-existing, audit review N4); the config
 builder still lets unknown `type=` values and REALITY over ws/httpupgrade through to the core (N3). PBKDF2 iterations (only with a CPU budget), split `telegram.js`, a `confirmPayment` use case, a notify port,
-compat-date bump (`2025-09-01`), delete `android/`,
-`app-web/`, `android.yml` and the old-app compatibility paths (`centralApp`, `sub_url`, `/vpn/sub`,
+compat-date bump (`2025-09-01`), delete the old-app compatibility paths in the Worker (`android/`, `app-web/` and
+`android.yml` are already gone, ARC-06) (`centralApp`, `sub_url`, `/vpn/sub`,
 `/pay/done` with `cloudgold://`). Not built: per-session byte usage, Cloudflare clean-IP/SNI tricks, a domestic relay for intranet-only periods, Hiddify adapter.
 Payments (after PAY-01..04, PAY-08): Pleat should hide the wallet row when `app-config.wallet_enabled` is false
 (today the server refuses it); there is no separate switch for wallet top-ups (each top-up method has its own).

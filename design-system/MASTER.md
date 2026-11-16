@@ -1,5 +1,9 @@
 # Cloud Gold — Design System (MASTER)
 
+> **Historical.** This folder documents the retired Cloud Gold app's `app-web/` UI, which was deleted from main in
+> the release audit (ARC-06; git history keeps it at commit `5890bdc`). Pleat's design lives in
+> `flutter_vpn/lib/design/`.
+
 > Status: **APPROVED by Ali on 2026-10-29 (D1, D3–D8 approved; D2 = A: older screens translated to English,
 > text only).** This file is locked: screens follow it, and any change to a token or rule is made here first. Page-specific exceptions would go in `design-system/pages/<page>.md`
 > (none exist; Master rules apply everywhere).

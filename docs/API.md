@@ -97,7 +97,7 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | `POST /orders/:id/receipt` | `orders.uploadReceipt` | card receipt photo (`upload_id` dedupes offline retries) |
 | `POST /orders/:id/cancel` | `orders.cancelOrder` | cancel an open order |
 | `POST /orders/:id/paid` | `orders.markCoinPaid` | "I paid" for a crypto order |
-| `GET /app/apk` | `appupdate.apkDownload` | proxies the announced APK from the private `pleat-latest` release (resumable) |
+| `GET /app/apk` | `appupdate.apkDownload` | proxies the announced APK from the `pleat-latest` release (public, like the repo; resumable) |
 | `POST /auth/change-password` | `auth.changePassword` | 5/min per user (`RL_LOGIN`; it checks the current password) |
 | `POST /auth/logout-all` | `auth.logoutAll` | bumps `token_version` |
 | `POST /me/delete` | `auth.deleteMe` | the user deletes their own account (PRV-04). Body `{confirm: "DELETE", password}`; the password is required unless the account has none (one-tap Mini App account) or the call carries a Mini App token. `422 confirm_required`, `400 wrong_password`, `409 open_orders` while an order is pending, in review or settling (it would be paid into a deleted account; finish or cancel it first); 5/min per user (`RL_LOGIN`). Runs `admin-actions.eraseUser` (the admin delete's erase: email, password hash, Telegram, character, devices, per-user network and health rows, pending Telegram links removed; plan stopped; panel accounts switched off and let go; every session ended; orders and wallet history kept) and logs `user.self_delete` without email or username (the admin `user.delete` row names only the user id too). → `{deleted: true}` |

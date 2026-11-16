@@ -9,7 +9,7 @@ Read **[`docs/PROJECT_HANDBOOK.md`](docs/PROJECT_HANDBOOK.md)** before changing 
   payment ends in `billing.settle()`.
 - `flutter_vpn/` — **Pleat**, the product Android app (Flutter + Kotlin, Xray core + hev-socks5-tunnel).
 - `miniapp/` — Telegram Mini App (Preact), user side + admin panel; built into `worker/public/`.
-- `android/`, `app-web/` — the retired old app. Do not extend.
+- The retired old app (`android/`, `app-web/`) was deleted from main (ARC-06); git history keeps it. Do not revive it.
 
 ## Hard rules
 1. **Cloudflare Free plan**: 10 ms CPU, 50 subrequests and **50 D1 queries per invocation** (batch = 1),
@@ -33,7 +33,7 @@ Read **[`docs/PROJECT_HANDBOOK.md`](docs/PROJECT_HANDBOOK.md)** before changing 
 
 ## Checks
 ```sh
-cd worker && npm test                 # Node 22; ~1,450 checks incl. the 50-query guard and the docs check
+cd worker && npm test                 # Node 22; ~1,850 checks incl. the 50-query guard and the docs check
 cd miniapp && npm ci && npm test && npm run build
 cd flutter_vpn && flutter analyze && flutter test   # no Android SDK in cloud containers; CI builds the APK
 ```

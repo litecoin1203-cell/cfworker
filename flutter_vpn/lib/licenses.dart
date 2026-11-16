@@ -21,6 +21,11 @@ const thirdPartyLicenses = <(String, List<String>)>[
   ('Routing data (geoip.dat, geosite.dat)', ['geo-data.txt', 'GPL-3.0.txt']),
   ('domain-list-community', ['domain-list-community.txt']),
   ('Plus Jakarta Sans (font)', ['plus-jakarta-sans-OFL.txt']),
+  // LEG-05: credit for the method (and the match strings) of Protect's Google checks
+  (
+    'RegionRestrictionCheck (method of the Google checks)',
+    ['region-restriction-check.txt'],
+  ),
 ];
 
 const _goModules = 'go-modules.txt';

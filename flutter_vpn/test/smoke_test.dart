@@ -792,9 +792,27 @@ void main() {
     final tunnel = FakeTunnel();
     final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
     final sure = app.exits.firstWhere((e) => e.id == 'k53ca1f60');
+    // not tested on this phone yet
+    for (final e in app.exits) {
+      e.measured = null;
+    }
     await app.connect();
     expect(tunnel.pinged, isEmpty);
     expect(app.exit!.id, sure.id);
+    await app.cancel();
+  });
+
+  testWidgets('an exit that failed on this phone is not taken for its '
+      'ranking; the exits are tested and one that answered is used', (
+    tester,
+  ) async {
+    final tunnel = FakeTunnel()..pings = {'us1.example.com': 120};
+    final (app, _) = await _boot(tester, {'onboarded': true}, tunnel: tunnel);
+    final sure = app.exits.firstWhere((e) => e.id == 'k53ca1f60');
+    sure.measured = -1;
+    await app.connect();
+    expect(app.exit!.id, isNot(sure.id));
+    expect(app.exit!.server.link, contains('us1.example.com'));
     await app.cancel();
   });
 
