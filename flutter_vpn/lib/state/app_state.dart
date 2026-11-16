@@ -1446,18 +1446,30 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       }
     }
 
-    final edge = read(await t.cached('edge'), (v) => v as Map);
+    // Each read is a Keystore decrypt: all of them at once (PERF-A-05).
+    final account = signedIn;
+    final raw = await Future.wait([
+      t.cached('edge'),
+      t.cached('plans'),
+      if (account) ...[
+        t.cached('me'),
+        t.cached('devices'),
+        t.cached('ranks'),
+        t.cachedServers(),
+      ],
+    ]);
+    final edge = read(raw[0], (v) => v as Map);
     if (edge != null) _learnEdge(edge, save: false);
-    plans.value ??= read(await t.cached('plans'), _plansFrom);
-    if (signedIn) {
-      me.value ??= read(await t.cached('me'), _meFrom);
-      devices.value ??= read(await t.cached('devices'), _devicesFrom);
-      final ranks = await t.cached('ranks');
+    plans.value ??= read(raw[1], _plansFrom);
+    if (account) {
+      me.value ??= read(raw[2], _meFrom);
+      devices.value ??= read(raw[3], _devicesFrom);
+      final ranks = raw[4];
       _ranks = read(ranks, ranksFrom) ?? _ranks;
       network ??= read<NetInfo?>(ranks, NetInfo.from);
       testedAt ??= _cache.testedAt(_net);
       if (servers.value == null) {
-        final list = read(await t.cachedServers(), _exitsFrom);
+        final list = read(raw[5], _exitsFrom);
         if (list != null && list.isNotEmpty) {
           servers.value = list;
           serversStale = true;
