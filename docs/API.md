@@ -152,7 +152,7 @@ code it shows the message only when it is not Persian, so **new codes for the ap
 | `POST /auth/tg/register` | IP (shared) | `auth.tgRegister` | finish Telegram sign-up with a password |
 | `POST /auth/tg/webapp` | IP | `auth.webappLogin` | Mini App sign-in with Telegram `initData` (≤ 1 h) → 30-min access token marked `src: mini`; `{need_account}` if new |
 | `POST /auth/tg/webapp/register` | IP (shared) | `auth.webappRegister` | one-tap account from the Mini App (no password), invite `startapp=ref_<CODE>` |
-| `POST /mini/probe` | IP; `initData` HMAC | `account.miniProbeReport` | stage-0 probe result → admin chat; one a minute per Telegram user, `PROBE_PER_HOUR` (default 20) in all per UTC hour (SEC-07), 429 beyond |
+| `POST /mini/probe` | IP; `initData` HMAC | `account.miniProbeReport` | stage-0 probe result → admin chat; one a minute per Telegram user and Worker address, `PROBE_PER_HOUR` (default 20) in all per UTC hour, admins not counted (SEC-07), 429 beyond |
 | `POST /auth/refresh` | IP | `auth.refresh` | refresh token (60 days, not rotating) → new access token (30 min) |
 | `POST /payments/nowpayments/ipn` | HMAC-SHA512 | `orders.nowpaymentsIpn` | optional crypto gateway → `settle` |
 

@@ -6833,6 +6833,12 @@ section('SEC-07: Mini App probe reports cannot flood the admin chat: one a minut
   const st = [];
   for (let i = 0; i < 25; i++) st.push((await report(880100 + i)).status);
   ok(toAdmin() - n0 === 20 && st.filter((x) => x === 429).length === 6, 'SEC-07: at most 20 reports an hour reach the admin from any number of users: ' + (toAdmin() - n0));
+  // review: the owner probes each Worker address in turn (one page per address), also after the hourly cap is spent
+  W.e.PUBLIC_BASE_URL = 'https://api.test';
+  await W.e.DB.prepare("INSERT INTO settings (key, value) VALUES ('app_api_bases', 'https://b.example.org https://c.example.org') ON CONFLICT(key) DO UPDATE SET value = excluded.value").run();
+  const own = (origin) => W.callW('POST', '/api/v1/mini/probe', { json: { init_data: initOf(12345), origin, steps: { page: { ok: true, ms: 5 } } } });
+  const o = [await own('https://api.test'), await own('https://b.example.org'), await own('https://c.example.org'), await own('https://b.example.org')];
+  ok(o.slice(0, 3).every((x) => x.status === 200) && o[3].status === 429, 'SEC-07 review: the admin gets one report per address a minute, past the hourly cap: ' + o.map((x) => x.status));
 }
 
 section('PNL-08: a panel known to be down gets one short try per cron run, not 15 s per waiting change');

@@ -376,10 +376,13 @@ export async function miniProbeReport(env, body, request) {
   const { verifyInitData } = await import('./auth.js');
   const v = await verifyInitData(env.TELEGRAM_BOT_TOKEN, body?.init_data, 86400);
   if (!v) throw err(401, 'bad_init_data', 'Open this page from the Telegram bot.');
-  // SEC-07: one report a minute per Telegram user (isolate memory), and a global hourly cap in D1 for the admin chat
-  if (throttled('__cgProbe', v.user.id, 60000)) throw err(429, 'too_many_requests', 'One report a minute. Try again shortly.');
-  await spendBudget(env, 'probe');
+  // SEC-07: one report a minute per Telegram user and Worker address (isolate memory; the owner probes each address in
+  // turn), and a global hourly cap in D1 for the admin chat that admins do not count against
   const bases = await miniBases(env);
+  const at = String(body?.origin || '').toLowerCase();
+  if (throttled('__cgProbe', `${v.user.id}|${bases.includes(at) ? at : '?'}`, 60000)) throw err(429, 'too_many_requests', 'One report a minute. Try again shortly.');
+  const { adminRole } = await import('./telegram.js');
+  if (!(await adminRole(env, { id: v.user.id, type: 'private' }, { id: v.user.id }))) await spendBudget(env, 'probe');
   const host = (b) => b.replace(/^https:\/\//, '');
   const origin = String(body?.origin || '').toLowerCase();
   const steps = body && typeof body.steps === 'object' && body.steps ? body.steps : {};
