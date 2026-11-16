@@ -5,7 +5,7 @@ import { payWithWallet, settle, BillingError } from './billing.js';
 import { cryptoEnabled, gatewayReady, tomanToUsd, createInvoice, verifyIpn, PAID_STATES, FAILED_STATES } from './nowpayments.js';
 import { sendReceipt, notifyAdmin } from './telegram.js';
 import { planName } from './account.js';
-import { loadPlanEn, planEnName } from './plan-en.js';
+import { loadPlanEn, parsePlanEn, planEnName, PLAN_EN_KEY } from './plan-en.js';
 import { bankOf, cardDigits } from './banks.js';
 import { coinById, walletKey, memoKey, enabledCoins, usdRate, prices, quoteAmount, cleanTxid } from './coins.js';
 import { sendCoinNotice } from './telegram.js';
@@ -15,20 +15,21 @@ const cardOpen = (o) => o.method === 'card' && ['pending', 'review', 'rejected']
 
 // What showing these orders needs, read once for all of them (the order list must stay a handful of D1 queries
 // however many orders the user has: an invocation may send at most 50).
-async function outContext(env, rows) {
+async function outContext(env, rows, pre = {}) {
   const planIds = [...new Set(rows.flatMap((o) => [o.plan_id, o.activate_plan_id]).filter(Boolean))];
   const resultIds = [...new Set(rows.map((o) => o.result_order_id).filter(Boolean))];
   const plans = new Map(planIds.length
     ? (await all(env, 'SELECT * FROM plans WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(planIds))).map((p) => [p.id, p]) : []);
   const results = new Map(resultIds.length
     ? (await all(env, 'SELECT id, status FROM orders WHERE id IN (SELECT value FROM json_each(?))', JSON.stringify(resultIds))).map((r) => [r.id, r.status]) : []);
-  const settings = rows.some(cardOpen) ? await getSettings(env) : null;
-  const en = plans.size ? await loadPlanEn(env) : {};
+  // a caller that already read the settings (createOrder) hands them over: one D1 query less (CF-01's 8-panel cap)
+  const settings = pre.settings || (rows.some(cardOpen) ? await getSettings(env) : null);
+  const en = !plans.size ? {} : settings ? parsePlanEn(settings[PLAN_EN_KEY]) : await loadPlanEn(env);
   return { plans, results, settings, en };
 }
 
-async function orderOut(env, o, ctx = null) {
-  ctx = ctx || (await outContext(env, [o]));
+async function orderOut(env, o, ctx = null, pre = {}) {
+  ctx = ctx || (await outContext(env, [o], pre));
   const plan = o.plan_id ? ctx.plans.get(o.plan_id) || null : null;
   const target = o.activate_plan_id ? ctx.plans.get(o.activate_plan_id) || null : null;
   let card = null;
@@ -274,7 +275,7 @@ export async function createOrder(env, user, body) {
     }
   }
   order = await first(env, 'SELECT * FROM orders WHERE id = ?', orderId);
-  return json(await orderOut(env, order), 201);
+  return json(await orderOut(env, order, null, { settings: s }), 201);
 }
 
 export async function listOrders(env, user) {
