@@ -5,7 +5,58 @@ library;
 
 import 'dart:convert';
 
+import '../api/models.dart';
+import 'exits.dart';
 import 'route_mode.dart';
+
+/// The plan's data at [pace] bytes a day: (bytes per day, the day it runs
+/// out, bytes per day that last until the plan ends). Null without a pace
+/// (two days must be known) or for a plan with no data cap.
+({int pace, DateTime? runsOut, int? perDayToLast})? dataPaceOf(
+  Subscription? s,
+  int? pace,
+  DateTime now,
+) {
+  if (s == null || s.unlimitedData || s.dataLimitBytes <= 0) return null;
+  if (pace == null) return null;
+  final left = (s.dataLimitBytes - s.usedBytes).clamp(0, s.dataLimitBytes);
+  final runsOut = pace <= 0
+      ? null
+      : now.add(Duration(hours: (left / pace * 24).round()));
+  final days = s.daysLeft;
+  return (
+    pace: pace,
+    runsOut: runsOut,
+    perDayToLast: days == null || days <= 0 ? null : left ~/ days,
+  );
+}
+
+/// What works for everyone on this operator, from the ranking the app
+/// already gets: (share 0..1, median ms, reports) per goal, weighted by
+/// how many reports each exit has.
+Map<RouteMode, (double, int, int)> familyShares(Iterable<Exit> exits) {
+  final sum = <RouteMode, (double, int, int, int)>{};
+  for (final e in exits) {
+    final r = e.rank;
+    if (r == null || r.reports <= 0) continue;
+    final f = e.family;
+    final (w, ms, msN, n) = sum[f] ?? (0.0, 0, 0, 0);
+    sum[f] = (
+      w + r.score * r.reports,
+      ms + (r.ms > 0 ? r.ms * r.reports : 0),
+      msN + (r.ms > 0 ? r.reports : 0),
+      n + r.reports,
+    );
+  }
+  return {
+    for (final e in sum.entries)
+      e.key: (
+        e.value.$1 / e.value.$4,
+        e.value.$3 == 0 ? 0 : e.value.$2 ~/ e.value.$3,
+        e.value.$4,
+      ),
+  };
+}
 
 /// The plan's used data, noted at most once per call to [note] and kept as
 /// the last reading of each day, for the Data pace chart.
