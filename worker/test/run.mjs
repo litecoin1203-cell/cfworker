@@ -1442,8 +1442,7 @@ section('backup never contains password hashes');
 }
 
 
-// ================= Phase 1: control plane over several panels ==========}
-
+// ================= Phase 1: control plane over several panels =================
 const { runSync: runSyncRaw } = await import('../src/sync.js');
 const runSync = (e) => { if (!globalThis.__keepIsolate) globalThis.__cgNoMissingUntil = 0; return counted('runSync', () => runSyncRaw(e)); };
 const GB = 1024 ** 3;
@@ -7046,7 +7045,8 @@ section('CF-07: every error code the Worker raises is in docs/API.md with its on
   ok(!stale.length, 'CF-07: table rows nothing raises: ' + stale.join(', '));
   const twoStatus = [...raised].filter(([, st]) => st.size > 1).map(([c, st]) => `${c} ${[...st]}`);
   ok(!twoStatus.length, 'CF-07: one code, one status: ' + twoStatus.join(', '));
-=======
+}
+
 section('MISC-06: an incident runbook exists and covers the single points of failure');
 {
   const { readFileSync, existsSync } = await import('node:fs');
