@@ -304,25 +304,58 @@ export function isPlaceholder(link) {
 // labels = {serverKey: name} the admin gave a server (server_overrides): used as is, takes no number.
 // Ranking does not move: it is keyed by serverKey (type|host|port), never by the name.
 // kept (optional array) gets the index in `links` of every link that stays, in the same order as the result.
-export function unify(links, labels = {}, kept = null, exits = null) {
+// prev = {serverKey: name} this user was shown last time (user_skeys, PNL-10): a server keeps its number ("DE 2"
+// stays "DE 2" while DE 1's panel is down or the panel lists its hosts in another order) as long as the name still
+// fits its country and no other server took the number first; every other server takes the lowest free number.
+// holdAbsent = some panel gave nothing this time: the numbers of remembered servers missing now stay reserved, so
+// a server that appeared meanwhile does not take a number its owner comes back for. A label that reads like a name
+// given here ("🇩🇪 DE 1") reserves its number too.
+export function unify(links, labels = {}, kept = null, exits = null, prev = null, holdAbsent = false) {
   const hasLabels = Object.keys(labels).length > 0;
-  const seen = new Set();
-  const perCc = {};
+  const seen = new Set(), present = new Set();
   const out = [];
+  const auto = []; // servers named here: {at: index in out, link, key, cc}
+  const used = {}; // country ('?' = none) -> numbers taken
+  const taken = (cc) => (used[cc || '?'] ||= new Set());
+  const reserve = (name) => { const p = autoName(name); if (p) taken(p.cc).add(p.n); };
   for (let i = 0; i < links.length; i++) {
     const link = links[i];
     if (isPlaceholder(link)) continue;
-    const key = link.split('#')[0];
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const dedup = link.split('#')[0];
+    if (seen.has(dedup)) continue;
+    seen.add(dedup);
     if (kept) kept.push(i);
-    const label = hasLabels ? labels[serverKey(link)] : null;
-    if (label) { out.push(withRemark(link, label)); continue; }
-    const cc = countryOfLink(link, exits);
-    const n = (perCc[cc || '?'] = (perCc[cc || '?'] || 0) + 1);
-    out.push(withRemark(link, cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`));
+    const key = serverKey(link);
+    present.add(key);
+    const label = hasLabels ? labels[key] : null;
+    if (label) { out.push(withRemark(link, label)); reserve(label); continue; }
+    auto.push({ at: out.length, link, key, cc: countryOfLink(link, exits) });
+    out.push(null);
+  }
+  if (prev && holdAbsent) for (const [k, name] of Object.entries(prev)) if (!present.has(k)) reserve(name);
+  const nameFor = (cc, n) => (cc ? `${ccToFlag(cc)} ${cc} ${n}` : `Server ${n}`);
+  const late = [];
+  for (const s of auto) {
+    const p = prev ? autoName(prev[s.key]) : null;
+    if (p && p.cc === s.cc && !taken(s.cc).has(p.n)) { taken(s.cc).add(p.n); out[s.at] = withRemark(s.link, nameFor(s.cc, p.n)); } else late.push(s);
+  }
+  for (const s of late) {
+    let n = 1;
+    while (taken(s.cc).has(n)) n++;
+    taken(s.cc).add(n);
+    out[s.at] = withRemark(s.link, nameFor(s.cc, n));
   }
   return out;
+}
+
+// A name unify gives ("🇩🇪 DE 2", or "DE 2" as /vpn/servers sends it, without the flag; "Server 3" when no country
+// is known) read back: {cc ('' = none), n}. null for anything else (an admin's free label).
+function autoName(name) {
+  const t = String(name || '').replace(/[\u{1F1E6}-\u{1F1FF}]{2}/u, '').trim();
+  const m = t.match(/^(?:([A-Z]{2})|Server) (\d{1,3})$/);
+  if (!m) return null;
+  const n = Number(m[2]);
+  return n >= 1 ? { cc: m[1] || '', n } : null;
 }
 
 // What the app may show as a server name. The app is English only, so no Persian/Arabic letters; emoji flags,
@@ -386,42 +419,85 @@ export async function panelServers(env, panel) {
   return { servers: servers.slice(0, 60), source: 'account' };
 }
 
+// ---------------- PNL-10: the last good list of each panel, per user and phone ----------------
+// A panel that is down (no answer in time, or 502/503/504/408 or a Cloudflare 52x) used to drop its configs from the list, and a user on that one
+// panel got 503. This isolate keeps the last list each panel gave each user on each phone (memory only: no D1 write,
+// no subrequest) and serves it, for up to STALE_FOR_MS, only while that panel fails. The key is the user id, the
+// account's own subscription path and the phone's HWID, so one user's configs never reach another user or phone.
+// A panel that answers 403/404/429 (device limit, no such account) is up: nothing kept is served for it.
+export const STALE_FOR_MS = 12 * 3600 * 1000;
+const STALE_MAX = 500; // entries per isolate (a list is a few kB)
+const subCache = () => (globalThis.__cgSubCache ||= new Map());
+// no HWID (an old client): nothing is kept or served, since two such phones could not be told apart
+const subCacheKey = (a, fwd) => (fwd && fwd['x-hwid'] ? `${a.user_id}|${a.panel_id}|${a.sub_path}|${fwd['x-hwid']}` : null);
+function keepSub(a, fwd, found) {
+  const m = subCache(), k = subCacheKey(a, fwd);
+  if (!k) return;
+  m.delete(k); // to the end: the oldest entry is dropped first
+  m.set(k, { at: Date.now(), found });
+  while (m.size > STALE_MAX) m.delete(m.keys().next().value);
+}
+function keptSub(a, fwd) {
+  const m = subCache(), k = subCacheKey(a, fwd), e = k && m.get(k);
+  if (!e) return null;
+  if (Date.now() - e.at > STALE_FOR_MS) { m.delete(k); return null; }
+  return e.found;
+}
+// down = the panel (or the proxy / CDN in front of it) could not answer; a 500 can be the panel's answer about this
+// account, so it is not covered
+const panelDown = (status) => [408, 502, 503, 504].includes(status) || (status >= 520 && status <= 530);
+
 // The user's configs from every panel they are served by, merged. fwd = the phone's HWID headers (panel 1
 // limits devices with them). {links, deviceLimit, missing}: deviceLimit = a panel refused this phone.
+// names = what user_skeys remembered, partial = some panel gave nothing (no answer and nothing kept): /vpn/servers
+// then keeps the names of the servers missing now (PNL-10).
 export async function collectLinks(env, userId, fwd = {}) {
   const accounts = (await accountsOf(env, userId)).filter((a) => SERVING.includes(a.panel_state) && a.desired === 'active' && a.sub_path);
   const links = [], labels = {}, from = [];
   const ov = await overridesFor(env, accounts.map((a) => a.panel_id));
   const rules = await hostRulesFor(env, accounts.map((a) => a.panel_id));
-  let reached = 0, deviceLimit = false, missing = 0;
+  let reached = 0, deviceLimit = false, missing = 0, stale = 0, partial = false;
   // every panel is asked at the same time; the answers are then read in panel order, so the list stays stable
   const fetchOne = async (a) => {
     const pg = await adapterFor(env, panelOfAccount(a), { timeoutMs: userPathMs(a) }).catch(() => null);
     if (!pg) return null;
     let raw;
+    // a panel that is down serves the list it gave this user on this phone last time (PNL-10), else only its own
+    // configs are missing
+    const keptOr = (answer) => { const k = keptSub(a, fwd); return k ? { raw: { status: 200, text: '' }, found: k, stale: true } : answer; };
     try { raw = await pg.subscriptionRaw(a.sub_path, fwd); noteUserPathOk(a.panel_id); }
-    catch (e) { noteUserPathFail(a.panel_id); return null; } // an unreachable panel only removes its own configs
+    catch (e) { noteUserPathFail(a.panel_id); return keptOr(null); }
     let found = raw.status >= 200 && raw.status < 300 ? decodeSub(raw.text) : [];
+    let altDown = false;
     // A panel whose rules answer the v2rayNG agent with Xray JSON (or refuse it, 406) gives no share links
     // here; its explicit /links format does, with the same device check.
     if (!found.length && ![403, 404, 429].includes(raw.status)) {
       try {
         const alt = await pg.subscriptionRaw(pg.linksUrl(a.sub_path), fwd);
         if (alt.status === 403 || alt.status === 429 || (alt.status >= 200 && alt.status < 300)) raw = alt;
+        else altDown = panelDown(alt.status);
         found = raw.status >= 200 && raw.status < 300 ? decodeSub(raw.text) : [];
-      } catch (e) { /* keep the first answer */ }
+      } catch (e) { altDown = true; /* keep the first answer */ }
     }
+    if (raw.status >= 200 && raw.status < 300 && found.length) keepSub(a, fwd, found);
+    else if (panelDown(raw.status) || (altDown && !found.length && ![403, 404, 429].includes(raw.status))) return keptOr({ raw, found });
     return { raw, found };
   };
+  // the names this user was shown last time (PNL-10): one read, alongside the panel calls; /vpn/servers writes it
+  // back only when the list changed
+  const prevRead = accounts.length ? first(env, 'SELECT keys FROM user_skeys WHERE user_id = ?', userId).catch(() => null) : null;
   const answers = await Promise.all(accounts.map(fetchOne));
+  let prev = null;
+  try { prev = JSON.parse((await prevRead)?.keys || 'null'); } catch (e) { prev = null; }
+  if (!prev || typeof prev !== 'object' || Array.isArray(prev)) prev = null;
   for (let i = 0; i < accounts.length; i++) {
     const a = accounts[i];
-    if (!answers[i]) continue;
+    if (!answers[i]) { partial = true; continue; }
     const { raw, found } = answers[i];
     if (raw.status === 403 || raw.status === 429) { deviceLimit = true; continue; }
     if (raw.status === 404) { missing++; continue; }
-    if (raw.status < 200 || raw.status >= 300) continue;
-    reached++;
+    if (raw.status < 200 || raw.status >= 300) { partial = true; continue; }
+    if (answers[i].stale) stale++; else reached++; // reached = panels that answered now
     for (const l of found) {
       const k = serverKey(l);
       if (ov.hidden.has(a.panel_id + ':' + k)) continue; // the admin hid it (server_overrides)
@@ -432,9 +508,9 @@ export async function collectLinks(env, userId, fwd = {}) {
     }
   }
   const kept = [];
-  const merged = unify(links, labels, kept, await exitCountries(env));
+  const merged = unify(links, labels, kept, await exitCountries(env), prev, partial);
   // meta[i] = where merged link i came from: {panel: panel id, tunnel: it is in that panel's "Tunnel" group}
-  return { links: merged, meta: kept.map((i) => from[i]), reached, deviceLimit, missing, accounts: accounts.length };
+  return { links: merged, meta: kept.map((i) => from[i]), reached, stale, deviceLimit, missing, accounts: accounts.length, names: prev, partial };
 }
 
 // ---------------- which configs are tunnelled through Iran ----------------

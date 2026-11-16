@@ -109,11 +109,16 @@ export function linkEndpoint(link) {
   return { type, host, port };
 }
 
-// remembers which servers this user has (from /vpn/servers), so /net/report counts only those. Written only when
-// the list changed (or once a day): every app open used to cost a D1 write.
-export async function rememberKeys(env, user, servers) {
+// remembers which servers this user has (from /vpn/servers), so /net/report counts only those, and the name each
+// was shown (a server keeps its number, PNL-10). Written only when the list changed (or once a day): every app open
+// used to cost a D1 write. keep = the names read before, when a panel gave nothing this time: its servers stay
+// remembered (at most 200 keys) until a full list replaces them.
+export async function rememberKeys(env, user, servers, keep = null) {
   const keys = {};
-  for (const s of servers) { const k = serverKey(s.link); if (k) keys[k] = String(s.name || '').slice(0, 40); }
+  if (keep && typeof keep === 'object') {
+    for (const [k, v] of Object.entries(keep).slice(0, 200)) if (/^[a-z0-9]{6,16}$/.test(k)) keys[k] = String(v || '').slice(0, 40);
+  }
+  for (const s of servers) { const k = serverKey(s.link); if (k) { delete keys[k]; keys[k] = String(s.name || '').slice(0, 40); } }
   await run(env, `INSERT INTO user_skeys (user_id, keys, at) VALUES (?,?,?)
     ON CONFLICT(user_id) DO UPDATE SET keys = excluded.keys, at = excluded.at
     WHERE user_skeys.keys != excluded.keys OR user_skeys.at < excluded.at - 86400`, user.id, JSON.stringify(keys), nowSec());

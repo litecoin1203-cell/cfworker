@@ -395,13 +395,18 @@ class LeakReport {
         LeakRow(
           icon: 'split',
           title: 'Apps skipping the VPN',
+          // AND-05: Android's kill switch lets no app outside the VPN online
           sub: ctx.bypassApps == 0
               ? 'Every app goes through the tunnel'
-              : 'Your choice in Route › Split route: they show your Iran IP',
+              : (ctx.lockdown
+                    ? 'The kill switch is on, so they have no internet at all'
+                    : 'Your choice in Route › Split route: they show your Iran IP'),
           value: ctx.bypassApps == 0
               ? 'None'
               : (ctx.bypassApps == 1 ? '1 app' : '${ctx.bypassApps} apps'),
-          verdict: ctx.bypassApps == 0 ? Mark.ok : Mark.note,
+          verdict: ctx.bypassApps == 0
+              ? Mark.ok
+              : (ctx.lockdown ? Mark.warn : Mark.note),
         ),
       ]),
       LeakGroup('YOUR PHONE TELLS GOOGLE TOO', [

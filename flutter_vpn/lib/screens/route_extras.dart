@@ -564,12 +564,14 @@ class _SplitCard extends StatelessWidget {
               MaterialPageRoute<void>(builder: (_) => AppsScreen(app: app)),
             ),
           ),
-          if (app.bypassBlocked)
+          if (lockdownBypassNote(
+                lockdown: app.guard?.lockdown,
+                apps: apps.length,
+              )
+              case final note?)
             Padding(
               padding: const EdgeInsets.fromLTRB(2, 6, 4, 6),
-              child: UnavailableNote(
-                'Android’s “Block connections without VPN” is on, so these apps can’t go online. Turn it off in Protect > Kill switch, or remove them.',
-              ),
+              child: UnavailableNote(note),
             ),
         ],
       ),
@@ -791,6 +793,15 @@ class _AppsScreenState extends State<AppsScreen> {
                   'Picked apps use your own internet and IP, never the tunnel. Everything else stays protected.',
                   style: PType.small(),
                 ),
+                if (lockdownBypassNote(
+                      lockdown: widget.app.guard?.lockdown,
+                      apps: _picked.length,
+                      picking: true,
+                    )
+                    case final note?) ...[
+                  const SizedBox(height: 10),
+                  UnavailableNote(note),
+                ],
                 const SizedBox(height: 14),
                 PillSearch(
                   hint: 'Search apps',

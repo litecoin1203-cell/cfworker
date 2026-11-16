@@ -475,6 +475,18 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 - **Server list** (`/vpn/servers`): subscriptions of all panels are fetched (in parallel, 5 s deadline per
   panel on the user path since PR #45), placeholders dropped (Rebecca emits a `0 B / ∞` row at `127.0.0.1:1`),
   duplicates merged, names unified to `🇩🇪 DE 2`, `server_overrides` applied.
+  **Stable names and a kept list (PNL-10)**: the number is shared by all of a user's panels, so it used to shift when
+  a panel was missing or listed its hosts in another order. Now a server keeps the number this user was shown last
+  time (`user_skeys`, one extra read, written only when the list changes) if it still fits its country and is free;
+  new servers take the lowest free number; an admin label that reads like "🇩🇪 DE 1" keeps that number for itself.
+  While a panel gives nothing, its servers' names stay in `user_skeys` (at most 200 keys) and their numbers stay
+  reserved, so they come back under the same names. A panel that is down (no answer in time, 408/502/503/504/52x,
+  also on the `/links` fallback) serves the list it last gave **this user on this phone** (key: user id + the
+  account's sub path + HWID; no HWID = nothing kept), kept in isolate memory only (no D1 write, no subrequest,
+  ≤ 12 h, ≤ 500 lists per isolate); 403/404/429/500 are answers, never covered by it, and a kept list does not count
+  as a panel that answered (`reached`).
+  A fresh isolate has nothing kept, so a first request there while the panel is down still gets fewer servers
+  (or 503 with one panel).
   The country comes from `worker/src/countries.js` (`countryOfLink`): flag emoji, English/Persian country or
   city name, a two-letter code token, then a host label like `de1.`. Before that only a flag counted, so remarks
   without a flag showed as "Unknown country". No country → `Server N`; the bot's server card shows the panel's
@@ -708,7 +720,10 @@ does not reach users by itself.
   Hysteria2 / QUIC = Speed, the rest Classic. Under it (`route_extras.dart`, order of precedence in
   `route_rules.dart`): **Stay in one country** (stable IP; asks in a popup before leaving the country; an accepted
   switch lasts 1 h), **Split route** (Iranian sites, own sites, chosen apps bypass; warns about Android's "Block
-  connections without VPN"), **Your networks** (remembers the goal per network). Smart connect lives here too.
+  connections without VPN", AND-05: lockdown lets no app outside the VPN online, so picked apps get no internet at
+  all. The Route card and the app picker say so once Android has reported lockdown on (`lockdownBypassNote` in
+  `route_rules.dart`); while it is unknown (Android 9, or Pleat not connected yet) the picker gives a hint; the
+  privacy check marks "Apps skipping the VPN" as a warning and opens the picker), **Your networks** (remembers the goal per network). Smart connect lives here too.
   An exit picked by hand in Locations wins over everything.
 - **Stats** (phone-local, no server writes, `stats_log.dart`): Data pace, Hardest hours (failed connects by
   weekday/hour on this network), What works here (this phone vs all Pleat users on the operator).
@@ -983,6 +998,12 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
   the engines' licence texts, Go module list and source offer (LEG-01..03), README licence note (LEG-04), and the
   no-plan Connect failure / Now tile offer the trial or Plans (UX-01).
 
+**2026-11-16 — Release audit leftovers (branch `claude/w3-leftovers`, no version bump).**
+- AND-05: Pleat says in the app picker and the privacy check (not only on the Route card) that Android's "Block
+  connections without VPN" leaves Split route apps with no internet.
+- PNL-10: a server keeps the number a user saw last (`DE 2` stays `DE 2` while DE 1's panel is down); a panel that is
+  down serves the list it last gave the same user on the same phone (isolate memory, no D1 write).
+
 ---
 
 ## 14. PR index
@@ -1125,6 +1146,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | Bot: 🗂 پنل‌های کاربر ran the app-update announce (shared route `upa`) | route renamed `m:uac` — #55 |
 | PNL-01 a panel answering a 200 HTML page (CDN challenge) threw a SyntaxError → every purchase failed, panel 1 ran ahead of D1 | non-JSON body = `PasarGuardError(bad_json)`; any error fails only that panel (dirty) |
 | CF-02 bot work (approve → provision, panel test) runs in `waitUntil`, cut 30 s after the reply; 15 s per panel call could pass it | bot work carries one 22 s panel deadline, each call ≤ 8 s; a slow panel fails as a panel error (dirty → sync) and the admin still gets the answer |
+| PNL-10 a server's name ("DE 2") moved when another panel was down or reordered its hosts; a down panel took its configs out of the list (503 with one panel) | a server keeps the number the user saw last (`user_skeys`); a down panel (no answer / 502-504) serves its last list for the same user and phone from isolate memory, ≤ 12 h, no D1 write |
 | PNL-02 an account created on a panel whose D1 write never ran stayed active as an orphan, and the retry made a second one | intent row first (`applied = 'pending'`), adopt own 409 by note, cron `settlePending` |
 | QA-02 branch coverage 64-74% on sms, nowpayments, chainwatch and the panel adapters (the error paths that move money) | tests for forwarder formats, odd SMS, every SMS outcome, IPN signatures, watcher filters, adapter logins/fallbacks; per-file ≥ 80% branch gate (`coverage:money`) |
 | SEC-02 any free account could rename server countries for everyone via `/me/ip?k=` and flood the map | running plan + own server key + distinct users + per-user throttle |
@@ -1155,6 +1177,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | NET-02 a short network loss ended in failover → `_stopTunnel` → apps out bare | no-network misses not counted (bounded ~2 min); a live session that lost every exit keeps the tun held, shown on the card/widget, retried with back-off, and tried at once when Android names a network again (checked every 3 s while held) — audit fix |
 | NET-04 (audit) "`setMetered(false)` makes the VPN unmetered on mobile data" | **false positive**: for apps targeting Android 10+ a VPN is metered by default (even on Wi-Fi); `setMetered(false)` is what makes it inherit meteredness from the underlying network (`setUnderlyingNetworks`). Kept; guarded by `test/native_source_test.dart` — do not remove |
 | NET-06 a Wi-Fi <-> mobile switch was only handed to Android; core connections stayed on the old network up to 300 s | the service tells the app on a real switch (`netChanged`); the app asks the exit after 2 s and, if it misses, starts the same exit again in place (tun kept; failure fails over or holds). App closed: the service does the same itself (`kick`, nothing closed on failure). `onLost` of a network not in use no longer clears the underlying network. Dart proven by `test/net_switch_test.dart`; Kotlin uncompiled here, phone test pending; hev `tcp-read-write-timeout` left at 300 s — audit fix |
+| AND-05 Android lockdown ("Block connections without VPN") plus Split route apps: those apps have no internet, and only the Route card said so (once Android reported lockdown) | the same plain-English note in the app picker (a hint while lockdown is unknown), the privacy check warns and opens the picker (`test/lockdown_split_test.dart`). Android only tells the running service (10+), Pleat cannot change the setting; phone behaviour unproven — audit fix |
 | AND-02 with the app closed nothing watched the session, and no word on battery optimisation / autostart | Protect card "Keep Pleat running" while optimised (`battery_tip_test.dart`); the service checks the exit itself after a network switch when the app is gone. Kotlin uncompiled; OEM behaviour only provable on phones — audit fix (partial: failover and plan check still need the app) |
 | A dead line showed as "wrong password / wrong code" | `ApiError.offline` → neutral connection card — #54 |
 | Native crash (SIGABRT) reports carried only the signal | tombstone + Go stderr + tunnel state in the report — #77, #79, #80 (root cause still open, §19) |

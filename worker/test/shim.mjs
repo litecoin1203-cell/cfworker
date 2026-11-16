@@ -156,6 +156,10 @@ export function installFakes({ panelBase }) {
       if ((mm = path.match(/^\/api\/user\/(\d+)\/hwids\/(.+)$/)) && method === 'DELETE') {
         pg.deletedHwids.push([parseInt(mm[1], 10), decodeURIComponent(mm[2])]); return resText('', 204);
       }
+      // subStatus: every subscription answers with this status (404 = no such account, 502 = the panel's proxy is down)
+      if (pg.subStatus && path.startsWith('/sub/')) return resText('{"detail":"sub ' + pg.subStatus + '"}', pg.subStatus);
+      // altStatus: only the explicit share-link formats (<sub>/links, <sub>/v2ray) answer with this status
+      if (pg.altStatus && /^\/sub\/[^/]+\/(links|v2ray)$/.test(path)) return resText('{"detail":"alt ' + pg.altStatus + '"}', pg.altStatus);
       if (path.match(/^\/sub\/[^/]+\/v2ray$/) && pg.kind !== 'pasarguard') {
         pg.lastLinksHwid = new Headers(init.headers || {}).get('x-hwid');
         return resText(btoa(subLinks(pg, path)));
