@@ -2181,10 +2181,10 @@ section('any panel type: Rebecca, Marzban and PasarGuard are detected on /panelt
   ok(p.kind === 'auto' && p.label === 'ربکا', 'add without a type: type left to the test');
   let threw = '';
   try { await adapterFor(env, p); } catch (e) { threw = e.message; }
-  ok(threw.includes(`/panelcred ${rid}`), 'no login yet: says how to give it: ' + threw);
+  ok(threw.includes(`#${rid} › 🔐 ورود پنل`) && !threw.includes('/panelcred'), 'no login yet: says which button gives it (PNL-12): ' + threw);
   env[`PANEL_${rid}_CRED`] = JSON.stringify({ url: R + '/dashboard/', username: 'ra', password: 'Reb3ccaSecret' });
   try { await adapterFor(env, p); threw = ''; } catch (e) { threw = e.message; }
-  ok(threw.includes('/paneltest'), 'an auto panel cannot be used before its test: ' + threw);
+  ok(threw.includes('🧪 تست پنل') && !threw.includes('/paneltest'), 'an auto panel cannot be used before its test (button named, PNL-12): ' + threw);
   await admin(`/paneltest ${rid}`);
   p = await getPanel(env, rid);
   ok(p.kind === 'rebecca' && p.state === 'testing', 'Rebecca detected and stored: ' + p.kind + ' ' + p.state);
@@ -6829,6 +6829,30 @@ section('PNL-11: an expired or used-up plan gets 402 with its reason on the serv
   await W.e.DB.prepare("UPDATE subscriptions SET stop_reason = 'quota', expires_at = ? WHERE user_id = ?").bind(Math.floor(Date.now() / 1000) + 86400, uid).run();
   const b = await W.callW('GET', '/api/v1/vpn/servers', { token: tok });
   ok(b.status === 402 && b.data.detail.code === 'plan_limited', 'PNL-11: data used up -> 402 plan_limited: ' + b.status + ' ' + JSON.stringify(b.data));
+}
+
+section('PNL-12: panel errors that reach the admin name the bot button to press, never a command to type');
+{
+  const W = await world('pnl12', 2);
+  const { adapterFor, groupIdsFor } = await import('../src/panels.js');
+  const typed = /\/(panelcred|paneltest|panelgroups|set)\b/;
+  const p2 = (await W.q('SELECT * FROM panels WHERE id = 2'))[0];
+  const e1 = await catchErr(adapterFor(W.e, { ...p2, cred_ref: 'W_pnl12_none' }));
+  ok(e1 && !typed.test(e1.message) && /🔐/.test(e1.message), 'PNL-12: no login: points to 🔐 ورود پنل: ' + (e1 && e1.message));
+  const e2 = await catchErr(adapterFor(W.e, { ...p2, kind: 'auto' }));
+  ok(e2 && !typed.test(e2.message) && /🧪/.test(e2.message), 'PNL-12: unknown type: points to 🧪 تست پنل: ' + (e2 && e2.message));
+  W.pgs[1].groupsSudoOnly = true;
+  const pg2 = await adapterFor(W.e, p2);
+  pg2.listGroupIds = async () => { const { PasarGuardError } = await import('../src/pasarguard.js'); throw new PasarGuardError('forbidden', 403); };
+  const e3 = await catchErr(groupIdsFor(W.e, p2, pg2));
+  ok(e3 && !typed.test(e3.message) && /👥/.test(e3.message), 'PNL-12: unreadable groups: points to 👥 گروه‌ها / سرویس: ' + (e3 && e3.message));
+  const { Rebecca } = await import('../src/marzban.js');
+  const e4 = await catchErr(new Rebecca(W.e, { url: W.bases[1], username: 'a', password: 'b' }).createUser('x_1', { groupIds: [] }));
+  ok(e4 && !typed.test(e4.message) && /👥/.test(e4.message), 'PNL-12: Rebecca without a service: points to the button: ' + (e4 && e4.message));
+  // the groups button saves options.group_ids; for panel 1 it must take effect too (it read only pg_group_ids)
+  const p1 = (await W.q('SELECT * FROM panels WHERE id = 1'))[0];
+  const ids = await groupIdsFor(W.e, { ...p1, options_json: JSON.stringify({ group_ids: [7] }) }, await adapterFor(W.e, p1));
+  ok(ids.join() === '7', 'PNL-12: groups chosen with the button for panel 1 are used: ' + ids);
 }
 
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');

@@ -684,7 +684,11 @@ async function onMessage(env, msg, opts = {}) {
         + (t.apiProblems && t.apiProblems.length ? `⚠️ سند API پنل با فرض‌های ورکر فرق دارد:\n${t.apiProblems.map((x) => '• ' + untrusted(x)).join('\n')}\n` : '');
       const go = t.healthy ? { reply_markup: { inline_keyboard: [
         [{ text: '🚀 ۱۰٪ کاربران', callback_data: `m:x:pp:${panel.id}|/rollout ${panel.id} 10` }, { text: '🚀 همه‌ی کاربران', callback_data: `m:x:pp:${panel.id}|/rollout ${panel.id} 100` }],
-        [{ text: '🗂 صفحه‌ی پنل', callback_data: `m:pp:${panel.id}` }]] } } : undefined;
+        [{ text: '🗂 صفحه‌ی پنل', callback_data: `m:pp:${panel.id}` }]] } }
+        // PNL-12: what usually fixes a failed test, as buttons (the error text names them, never a command)
+        : { reply_markup: { inline_keyboard: [
+          [{ text: '🔐 ورود پنل', callback_data: `m:w:panelcred:${panel.id}` }, { text: '👥 گروه‌ها / سرویس', callback_data: `m:w:groups:${panel.id}` }],
+          [{ text: '🗂 صفحه‌ی پنل', callback_data: `m:pp:${panel.id}` }]] } };
       return say(kindLine + (t.healthy ? `✅ پنل #${panel.id} سالم است (${t.configs} کانفیگ${t.version ? `، نسخه ${t.version}` : ''}).${t.sameHost ? '\n⚠️ دامنه‌ی نودها همان دامنه‌ی پنل است.' : ''}\n${typesLine}\nبرای شروع یکی از دکمه‌ها را بزن (یا بنویس: /rollout ${panel.id} 10)`
         : `❌ پنل #${panel.id} سالم نیست: ${t.error || 'لینک ساب کانفیگی ندارد'}${t.kind === 'rebecca' && !t.create ? `\nدر Rebecca هر کاربر باید یک سرویس (Service) داشته باشد. شماره‌ی سرویس را بده: /panelgroups ${panel.id} شماره` : ''}`), go);
     }

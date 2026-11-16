@@ -107,11 +107,11 @@ export function options(panel) {
 // and detect the real type; such a panel cannot take users until /paneltest has set its kind.
 export async function adapterFor(env, panel, { probe = false, timeoutMs = 0 } = {}) {
   const cred = await credOf(env, panel);
-  if (!cred) throw new PasarGuardError(`login for this panel is not set: send it with /panelcred ${panel.id} (or Workers Secret ${panel.cred_ref}, JSON with a "url")`, 0);
+  if (!cred) throw new PasarGuardError(`login for this panel is not set: give it in the bot with 🗂 پنل‌ها › #${panel.id} › 🔐 ورود پنل (or Workers Secret ${panel.cred_ref}, JSON with a "url")`, 0);
   const Cls = ADAPTERS[panel.kind];
   if (Cls) { const a = new Cls(env, cred); if (timeoutMs) a.timeoutMs = timeoutMs; return a; }
   if (probe) return new PasarGuard(env, cred);
-  if (panel.kind === 'auto') throw new PasarGuardError(`panel type not known yet: run /paneltest ${panel.id}`, 0);
+  if (panel.kind === 'auto') throw new PasarGuardError(`panel type not known yet: press 🗂 پنل‌ها › #${panel.id} › 🧪 تست پنل`, 0);
   throw new PasarGuardError(`no adapter for panel type ${panel.kind}`, 0);
 }
 
@@ -610,19 +610,20 @@ async function hostRulesStamps(env, ids) {
 export async function groupIdsFor(env, panel, pg) {
   if (!pg.usesGroups) return [];
   const word = pg.kind === 'rebecca' ? 'services' : 'groups';
-  const howTo = panel.id === 1 ? '/set pg_group_ids 1' : `/panelgroups ${panel.id} 1`;
+  // PNL-12: a button path, never a command to type (the message reaches the bot through untrusted(), so it is no button)
+  const howTo = `🗂 پنل‌ها › #${panel.id} › 👥 گروه‌ها / سرویس`;
   let ids = [];
-  if (panel.id === 1) {
+  // the groups button saves options.group_ids for every panel, panel 1 included; panel 1 falls back to pg_group_ids
+  const g = options(panel).group_ids;
+  if (Array.isArray(g)) ids = g.map((n) => parseInt(n, 10)).filter((n) => n > 0);
+  if (!ids.length && panel.id === 1) {
     const raw = String((await first(env, "SELECT value FROM settings WHERE key = 'pg_group_ids'"))?.value || '').trim();
     ids = raw.split(',').map((s) => parseInt(s.trim(), 10)).filter((n) => n > 0);
-  } else {
-    const g = options(panel).group_ids;
-    if (Array.isArray(g)) ids = g.map((n) => parseInt(n, 10)).filter((n) => n > 0);
   }
   if (ids.length) return ids;
   try { ids = await pg.listGroupIds(); }
   catch (e) {
-    throw new PasarGuardError(`could not read panel ${word} (${e.message}). Set them by hand: ${howTo}`, e.status || 0, e.detail);
+    throw new PasarGuardError(`could not read panel ${word} (${e.message}). Choose them in the bot: ${howTo}`, e.status || 0, e.detail);
   }
   if (!ids.length) throw new PasarGuardError(`panel has no usable ${word} for this admin. Create one (with hosts), then ${howTo}`, 0);
   return pg.kind === 'rebecca' ? ids.slice(0, 1) : ids;
