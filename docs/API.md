@@ -54,7 +54,7 @@ account per Telegram id.
 
 | Method + path | Limit | Handler | Purpose |
 |---|---|---|---|
-| `GET /app-config` | account or IP (`RL_PUB`) | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`); payment methods that are set up and switched on (`card_enabled`, `wallet_enabled`, `crypto_enabled`, `coins`, PAY-08) |
+| `GET /app-config` | account or IP (`RL_PUB`) | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`), `trial_needs_telegram` (the free trial needs a verified Telegram); payment methods that are set up and switched on (`card_enabled`, `wallet_enabled`, `crypto_enabled`, `coins`, PAY-08) |
 | `GET /plans` | account or IP (`RL_PUB`) | `account.plans` | active plans |
 | `GET /ip` | account or IP (`RL_PUB`) | `account.myIp` | caller's IP/country (no login) |
 | `POST /auth/register` | IP (shared) + hourly budget | `auth.register` | email sign-up → tokens; `429 busy` when the hour's sign-up budget is spent |

@@ -13,6 +13,7 @@ import '../design/widgets.dart';
 import '../state/app_state.dart';
 import '../state/recommend.dart';
 import '../state/updater.dart';
+import 'legal.dart';
 import 'location_detail.dart';
 import 'locations.dart';
 import 'profile.dart';
@@ -61,6 +62,14 @@ class _HomeScreenState extends State<HomeScreen> {
               Padding(
                 padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
                 child: _UpdateBanner(app: app),
+              ),
+            if (app.signedIn && app.diagnosticsUndecided)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+                child: _DiagnosticsAsk(
+                  key: const ValueKey('diag.ask'),
+                  app: app,
+                ),
               ),
             const SizedBox(height: 14),
             Padding(
@@ -353,6 +362,70 @@ class _Header extends StatelessWidget {
           badge: app.hasUnseenNotices,
         ),
       ],
+    );
+  }
+}
+
+/// "Send diagnostics?", once (release audit PRV-03): nothing is sent before
+/// a yes. The answer is kept; Profile's switch changes it later.
+class _DiagnosticsAsk extends StatelessWidget {
+  const _DiagnosticsAsk({super.key, required this.app});
+  final AppState app;
+
+  @override
+  Widget build(BuildContext context) {
+    return SurfaceCard(
+      padding: const EdgeInsets.fromLTRB(18, 14, 14, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('Send diagnostics?', style: PType.h3().copyWith(fontSize: 15)),
+          const SizedBox(height: 4),
+          Text(
+            'When something breaks, Pleat can tell support the phone model, '
+            'network and what failed, so it gets fixed. Never your browsing, '
+            'configs or addresses. Change it any time in Profile.',
+            style: PType.small(),
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              PillButton(
+                label: 'Send',
+                height: 38,
+                expand: false,
+                onTap: () => app.answerDiagnostics(true),
+              ),
+              PillButton(
+                label: 'Don’t send',
+                height: 38,
+                expand: false,
+                color: PColors.mist,
+                textColor: PColors.accentInk,
+                onTap: () => app.answerDiagnostics(false),
+              ),
+              Pressable(
+                onTap: () => openLegal(context, LegalDoc.privacy),
+                label: 'Privacy policy',
+                radius: PRadius.pill,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 8,
+                  ),
+                  child: Text(
+                    'PRIVACY POLICY',
+                    style: PType.button(color: PColors.accentInk),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

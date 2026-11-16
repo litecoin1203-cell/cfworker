@@ -11,6 +11,8 @@ await mkdir(out + 'app', { recursive: true });
 const r = await build({
   entryPoints: ['src/main.jsx'], bundle: true, minify: true, format: 'esm', target: 'es2020',
   jsx: 'automatic', jsxImportSource: 'preact', outfile: out + 'app/app.js', legalComments: 'none', metafile: true,
+  // the Privacy policy and Terms of use come from ../docs/legal/*.txt, the same files Pleat shows
+  loader: { '.txt': 'text' },
 });
 await copyFile('src/styles.css', out + 'app/styles.css');
 // fonts ship with the page (Google Fonts is filtered in Iran): Plus Jakarta Sans for Latin, Vazirmatn only for Persian names

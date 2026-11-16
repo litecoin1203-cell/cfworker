@@ -125,7 +125,8 @@ void main() {
     }
 
     setUp(() async {
-      SharedPreferences.setMockInitialValues({});
+      // the person said yes to Send diagnostics (see the consent group)
+      SharedPreferences.setMockInitialValues({'health_asked': true});
       now = DateTime(2026, 11, 11, 12);
       log = HealthLog(await SharedPreferences.getInstance(), clock: () => now);
       sent = [];
@@ -294,12 +295,67 @@ void main() {
     });
   });
 
+  group('consent (PRV-03)', () {
+    Future<HealthLog> log(Map<String, Object> prefs) async {
+      SharedPreferences.setMockInitialValues(prefs);
+      return HealthLog(await SharedPreferences.getInstance());
+    }
+
+    Future<bool> flush(HealthLog l, List<Object> sent) => l.flush((b) async {
+      sent.add(b);
+      return {'ok': true, 'stored': 1, 'mode': 'all'};
+    }, force: true);
+
+    test('until the person answers, problems wait on the phone and none '
+        'leave', () async {
+      final l = await log({});
+      expect(l.asked, isFalse);
+      expect(l.sending, isFalse);
+      l.record('connect_fail', k: 'k1a2b3c4d', c: 'timeout');
+      expect(l.queued, hasLength(1));
+      expect(l.dueIn, isNull);
+      final sent = <Object>[];
+      expect(await flush(l, sent), isFalse);
+      expect(sent, isEmpty);
+    });
+
+    test('yes sends what waited; the answer is kept', () async {
+      final l = await log({});
+      l.record('connect_fail', k: 'k1a2b3c4d', c: 'timeout');
+      l.answer(true);
+      expect(l.sending, isTrue);
+      final sent = <Object>[];
+      expect(await flush(l, sent), isTrue);
+      expect(sent, hasLength(1));
+      final again = HealthLog(await SharedPreferences.getInstance());
+      expect(again.asked, isTrue);
+      expect(again.sending, isTrue);
+    });
+
+    test('no empties the queue and is kept', () async {
+      final l = await log({});
+      l.record('connect_fail', k: 'k1a2b3c4d', c: 'timeout');
+      l.answer(false);
+      expect(l.queued, isEmpty);
+      expect(l.sending, isFalse);
+      final again = HealthLog(await SharedPreferences.getInstance());
+      expect(again.asked, isTrue);
+      expect(again.enabled, isFalse);
+    });
+
+    test('the Profile switch flipped before counts as an answer', () async {
+      expect((await log({'health_on': true})).sending, isTrue);
+      expect((await log({'health_on': false})).sending, isFalse);
+      expect((await log({'health_on': false})).asked, isTrue);
+    });
+  });
+
   group('the app', () {
     Future<(AppState, FakeApi, FakeTunnel)> boot(
       WidgetTester tester, {
       Map<String, Object> prefs = const {'onboarded': true},
     }) async {
-      SharedPreferences.setMockInitialValues(prefs);
+      SharedPreferences.setMockInitialValues({'health_asked': true, ...prefs});
       final api = FakeApi(MemoryTokens(signedIn: true));
       final tunnel = FakeTunnel()
         ..pings = {'nl1.example.com': 240, 'de1.example.com': 60};

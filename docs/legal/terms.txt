@@ -1,0 +1,28 @@
+# Terms of use
+
+By creating a Pleat account or using Pleat, you agree to these terms. They are written to be read, not to be a legal opinion.
+
+## The service
+- Pleat gives you access to VPN servers for the time and data of the plan you have. Servers, countries and speeds can change, and a server can stop working for a while.
+- We work to keep Pleat reachable, but we cannot promise it will always work on every network.
+
+## Your account
+- Give a real email or Telegram account, keep your password to yourself, and tell Support if someone else may have used your account.
+- One free trial per person and per phone. The free trial may need a verified Telegram account.
+- A plan can be used on up to the number of devices it lists.
+
+## Fair use
+Do not use Pleat to break the law, to attack, scan or spam other networks, to share or resell your account, or to put so much load on a server that others cannot use it. We can stop an account that does this.
+
+## Payments
+- Prices are shown before you pay. A plan starts when the payment is confirmed.
+- If something goes wrong with a payment, ask Support.
+
+## Privacy
+What we collect and keep is described in the Privacy policy.
+
+## No warranty
+Pleat is provided as it is. To the extent the law allows, we are not responsible for losses caused by the service being slow, unavailable or interrupted.
+
+## Changes
+We may change these terms. The new version ships with the app and the Mini App. If you keep using Pleat after a change, the new terms apply.

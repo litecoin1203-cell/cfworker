@@ -6,9 +6,11 @@ import '../design/backdrop.dart';
 import '../design/icons.dart';
 import '../design/scenes.dart';
 import '../design/tokens.dart';
+import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
 import 'checkout.dart';
+import 'login.dart';
 import 'states.dart';
 import 'store_kit.dart';
 
@@ -36,12 +38,29 @@ class _PlansScreenState extends State<PlansScreen> {
     showNote(context, err ?? ok);
   }
 
+  Future<void> _verifyTelegram(BuildContext context) async {
+    final done = await Navigator.of(context).push<bool>(
+      FadeRoute(builder: (_) => const TelegramLoginScreen(link: true)),
+    );
+    if (done == true && context.mounted) {
+      showNote(context, 'Telegram verified. Start your trial.');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final app = AppScope.of(context);
     final me = app.me.value;
     final list = app.plans.value ?? const <PlanInfo>[];
     final current = app.subscription?.planName;
+    // The trial is there but only with a verified Telegram (UX-02): say so
+    // first, and offer the way there instead of a Start trial that fails.
+    final needsTelegram =
+        me != null &&
+        me.trialAvailable &&
+        !me.telegramVerified &&
+        app.config.trialNeedsTelegram &&
+        list.any((p) => p.trialDays > 0);
     return Scaffold(
       backgroundColor: PColors.ground,
       body: ShardBackdrop(
@@ -72,6 +91,35 @@ class _PlansScreenState extends State<PlansScreen> {
                 ),
               ),
               const SizedBox(height: 20),
+              if (needsTelegram) ...[
+                SurfaceCard(
+                  key: const ValueKey('trial.telegram'),
+                  padding: const EdgeInsets.fromLTRB(20, 16, 16, 14),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'The free trial needs a verified Telegram',
+                        style: PType.h3(),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'One trial per person: our bot sends a 6-digit code '
+                        'to your Telegram, then the trial is one tap.',
+                        style: PType.small(),
+                      ),
+                      const SizedBox(height: 12),
+                      PillButton(
+                        label: 'Verify Telegram',
+                        expand: false,
+                        height: 46,
+                        onTap: () => _verifyTelegram(context),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 18),
+              ],
               if (list.isEmpty)
                 SurfaceCard(
                   child: Column(
@@ -117,11 +165,14 @@ class _PlansScreenState extends State<PlansScreen> {
                           (me?.trialAvailable ?? false),
                       busy: _busy == list[i].id,
                       signedIn: me != null,
-                      onTrial: () => _run(
-                        list[i],
-                        () => app.startTrial(list[i]),
-                        'Trial started: ${list[i].trialDays} days.',
-                      ),
+                      needsTelegram: needsTelegram,
+                      onTrial: needsTelegram
+                          ? () => _verifyTelegram(context)
+                          : () => _run(
+                              list[i],
+                              () => app.startTrial(list[i]),
+                              'Trial started: ${list[i].trialDays} days.',
+                            ),
                       onBuy: () => openCheckout(context, plan: list[i]),
                     ),
                   ),
@@ -143,9 +194,10 @@ class _PlanCard extends StatelessWidget {
     required this.signedIn,
     required this.onTrial,
     required this.onBuy,
+    this.needsTelegram = false,
   });
   final PlanInfo plan;
-  final bool current, trial, busy, signedIn;
+  final bool current, trial, busy, signedIn, needsTelegram;
   final VoidCallback onTrial, onBuy;
 
   @override
@@ -156,7 +208,9 @@ class _PlanCard extends StatelessWidget {
     final line = plan.description.isNotEmpty
         ? plan.description
         : (trial
-              ? '${plan.trialDays}-day free trial, then ${toman(plan.priceToman)}.'
+              ? (needsTelegram
+                    ? '${plan.trialDays}-day free trial once your Telegram is verified.'
+                    : '${plan.trialDays}-day free trial, then ${toman(plan.priceToman)}.')
               : '$data, ${plan.deviceLimit} device${plan.deviceLimit == 1 ? '' : 's'}.');
     final (label, onTap) = current
         ? ('Current', null)
@@ -165,7 +219,7 @@ class _PlanCard extends StatelessWidget {
         : !signedIn
         ? ('Sign in', null)
         : trial
-        ? ('Start trial', onTrial)
+        ? (needsTelegram ? 'Verify' : 'Start trial', onTrial)
         : ('Buy', onBuy);
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,

@@ -6,6 +6,7 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
+import 'legal.dart';
 import 'location_detail.dart';
 import 'plan_usage.dart';
 import 'shell.dart';
@@ -55,7 +56,7 @@ class ActivityScreen extends StatelessWidget {
                             Text(
                               app.keepHistory
                                   ? 'Sessions show here, on this phone, once a tunnel really runs.'
-                                  : 'Keep history is off, so nothing is logged.',
+                                  : 'Keep history is off, so no sessions are saved here.',
                               style: PType.small(),
                             ),
                           ],
@@ -335,15 +336,28 @@ class _Privacy extends StatelessWidget {
           row(
             PIcon.lock,
             'History stays on this phone',
-            'Pleat servers keep no session log.',
+            'This list of sessions is never uploaded.',
             first: true,
+          ),
+          // What the Worker really keeps per account (netstats.js prune,
+          // health.js LIMITS.keepDays). The full list is the Privacy policy.
+          row(
+            PIcon.info,
+            'What our server keeps',
+            'No browsing log. Your network operator, province and how each '
+                'server worked for you (30 days), and problem reports (14 days).',
+            trailing: Text(
+              'POLICY',
+              style: PType.button(color: PColors.accentInk),
+            ),
+            onTap: () => openLegal(context, LegalDoc.privacy),
           ),
           row(
             PIcon.clock,
             'Keep history',
             app.keepHistory
-                ? '${AppState.historyDays} days, then it deletes itself.'
-                : 'Off. Nothing is logged.',
+                ? '${AppState.historyDays} days on this phone, then it deletes itself.'
+                : 'Off. Nothing new is saved on this phone.',
             trailing: PToggle(
               value: app.keepHistory,
               onChanged: app.setKeepHistory,

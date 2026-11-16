@@ -581,8 +581,11 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
 - Activity (1.2.48, Ali's pick C "Account hub", `screens/activity.dart` + `screens/plan_usage.dart`): plan card
   with a data-left ring, end date, devices, used, PACKAGES (bottom sheet with pleats = data, day dots, package
   history; moved here from Profile) and RENEW (same plan at checkout if still on sale, else Plans); the last 3
-  sessions + "See all"; "Your privacy": history only on this phone, **Keep history** (30 days, off = nothing
-  logged, also stops the connect tries behind Stats) and Clear history now (sessions + connect tries). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
+  sessions + "See all"; "Your privacy": history only on this phone, **What our server keeps** (release audit
+  PRV-01: no browsing log; operator, province and per-server results 30 days, problem reports 14 days; never
+  promise "no log" again), **Keep history** (30 days, off = nothing new saved *on the phone*, also stops the
+  connect tries behind Stats; `/net/report` and health reports are separate) and Clear history now (sessions +
+  connect tries). 14 "Folk" avatars (SVG) are the only profile picture (the Telegram photo is not used), picked on first sign-in, stored server-side.
 - Locations (1.2.49, Ali's pick A "Country list", `screens/locations.dart`): navy **Fastest for you now** bar
   (best of `app.best` that answers; smart connect until anything is measured), filter chips All / Stealth /
   IR Tunnel / Saved / Recent (`Category`), countries grouped by region (`regionOf` in `api/countries.dart`), best
@@ -701,6 +704,12 @@ does not reach users by itself.
   tag / commit). A test ties `SOURCE.txt` to `XRAY_LIB_TAG` / `HEV_COMMIT` in the workflow; the manual APK run
   fails if `go-modules.txt` no longer matches the AAR's modules or the APK lacks the texts. After bumping
   `XRAY_LIB_TAG`: `python3 -I tool/go_licenses.py write <libgojni.so>` and update `SOURCE.txt`.
+- **Privacy policy and Terms of use** (release audit PRV-03): the text is `docs/legal/privacy.txt` and
+  `terms.txt` (plain English, no country named). Pleat shows it in `screens/legal.dart` from a word-for-word copy
+  in `lib/legal_text.dart` (`test/legal_test.dart` fails when they differ); the Mini App bundles the .txt files.
+  Reached from Profile's footer (PRIVACY POLICY / TERMS OF USE under the licences), the "By creating an account
+  you agree to…" line under every Create account button, and the diagnostics card. **When what the Worker keeps
+  changes (a new table with user data, a retention), change `privacy.txt` in the same PR.**
 
 ### Home tabs (PRs #71, #74, #75, #81)
 - **Route** (design D): goal cards **Auto / Stealth / Speed / Classic** + a location bar with a country sheet. Each
@@ -720,6 +729,14 @@ does not reach users by itself.
   ended.") shows a **Start free trial** / **See plans** button under the stage line (`AppState.planNeeded`,
   `NoPlanAction` in `states.dart`); both open Plans, where the trial is one tap. The Now tile without a plan
   carries the same button, and the bell's "No plan yet" notice has See plans. Any other failure hides it.
+- **Trial needs Telegram, said up front** (release audit UX-02; the trial stays Telegram-only, Ali's call):
+  `/app-config` carries `trial_needs_telegram` (the bot's switch). While it is on and the account has no verified
+  Telegram, Plans shows "The free trial needs a verified Telegram" with VERIFY TELEGRAM (the Profile link flow,
+  `TelegramLoginScreen(link: true)`) and the plan cards say Verify instead of a Start trial that would fail; the
+  Create account header chip reads "N-day free trial with Telegram" and the form says email sign-ups link
+  Telegram later. **Forgot password** says plainly that there is no reset email: Telegram → sign in with a bot
+  code; email only → support resets it (Contact support when `support_url` is set). An email reset needs a mail
+  sender the Worker does not have.
 
 ### Protect (PR #82, 1.2.46, layout B)
 - **Always protected**: kill switch + start with the phone (both open Android's always-on VPN page).
@@ -754,7 +771,10 @@ does not reach users by itself.
 ### Health reports and crash capture (PRs #73, #77, #79, #80)
 - `lib/state/health.dart` queues problems on the phone (survive a crash), folds repeats with a count, and sends
   batches to `POST /me/health`: critical within ~1 min, high every ≤ 10 min, rest every 6 h. Profile has a
-  **Send diagnostics** switch (off → also `&h=0` on `/me/ip`).
+  **Send diagnostics** switch (off → also `&h=0` on `/me/ip`). **Consent first** (release audit PRV-03): Home
+  shows a "Send diagnostics?" card (Send / Don't send / Privacy policy) until the person answers; until then
+  problems wait on the phone and nothing is sent (`HealthLog.asked` / `sending`, pref `health_asked`; a Profile
+  switch flipped before counts as an answer). No → the queue is emptied.
 - Types and priority (`health.js` `TYPES`): P1 `crash`, `killed`, `no_exit` (instant Telegram alert); P2
   `connect_fail`, `drop`, `silent`, `unsupported`, `loc_mismatch`, `exit_iran` (last two seen only by the Worker);
   P3 `battery`, `slow_connect`, `api_down`, `update_fail`, `app_error`; P4 `daily`.
@@ -982,6 +1002,11 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 - Branch `claude/w1-licenses-ux` (no version bump; the lead numbers the release): Open-source licences page with
   the engines' licence texts, Go module list and source offer (LEG-01..03), README licence note (LEG-04), and the
   no-plan Connect failure / Now tile offer the trial or Plans (UX-01).
+- Branch `claude/w1-privacy-ux-v2` (on main after 1.2.51, no version bump): Activity's privacy text
+  says what the Worker really keeps instead of "no session log" (PRV-01); Privacy policy and Terms of use in Pleat
+  and the Mini App from `docs/legal/`, "you agree" line at sign-up, Send diagnostics asked once before anything is
+  sent (PRV-03); the trial's Telegram requirement said up front on Plans and sign-up, `trial_needs_telegram` in
+  `/app-config`, Forgot password says what an email-only account does (UX-02).
 
 ---
 
@@ -1226,6 +1251,14 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
   country list (Fastest bar, chips, regions, pips, Not answering).
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
+- **Privacy policy / Terms** (audit PRV-03): `docs/legal/*.txt` are plain-English drafts that follow the code's
+  data map, not legal advice; have them reviewed before a store listing. Keep `privacy.txt` true: when PRV-02
+  (bundled font) lands, drop its Google Fonts line; when a self-service account delete lands (PRV-04), update
+  "Deleting your account".
+- **Diagnostics consent** (PRV-03): after this update existing users send no health reports until they answer the
+  Home card, so reports dip at first.
+- **Password reset by email** (UX-02): there is none (the Worker has no mail sender); email-only accounts depend on
+  support (`user.reset_password`). Needs a decision on a mail provider.
 - **Licence of the repo's own code** (audit LEG-04): there is no top-level `LICENSE`, so the Worker, Mini App and
   Pleat are all rights reserved. Choose one (or a proprietary notice). The deleted `android/` (in git history) stays
   GPL-3.0.
@@ -1304,6 +1337,10 @@ start error), plus `skipped` = exits left out for failing for nearly everyone. D
 - Bot: `/start` from a non-admin shows an "Open Pleat" web_app button; `ensureWebhook` (sig v3) sets the menu button.
 - Screens: Welcome (create account), Home (data left with pleats, days left with dots, wallet), Loading/Error/Empty.
   English, Pleat day/night colours follow Telegram's theme. Stage 2 = plans and payments (needs «برو»).
+- Privacy policy / Terms of use (release audit PRV-03): Welcome says "By creating an account you agree to the
+  Terms of use and the Privacy policy" (both open in place), Home has an About list with both. The text is bundled
+  from `docs/legal/*.txt` (esbuild `.txt` text loader; `src/legal.js` parses, `src/legal-text.js` imports), the
+  same files Pleat shows.
 - **Admin panel in the Mini App (Ali's priority, 2026-11-08; redesigned in English 2026-11-09)**: an admin who opens
   `/app/` lands on the admin panel (`miniapp/src/admin/`). **English only, LTR** (Ali: the main language is English).
   Server: `worker/src/admin-api.js`, a ROUTES table `[method, regex, level, handler]` under `/api/v1/admin/*`.

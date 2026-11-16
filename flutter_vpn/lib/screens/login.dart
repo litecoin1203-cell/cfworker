@@ -13,6 +13,7 @@ import '../design/tokens.dart';
 import '../design/tunnel_route.dart';
 import '../design/widgets.dart';
 import '../state/app_state.dart';
+import 'legal.dart';
 import 'shell.dart';
 import 'states.dart';
 
@@ -177,10 +178,15 @@ class _LoginScreenState extends State<LoginScreen> {
     );
   }
 
+  /// Telegram: a code from the bot signs in. Email only: there is no reset
+  /// email, so support resets it (the admin's user.reset_password).
   Future<void> _forgot() async {
     FocusScope.of(context).unfocus();
-    final telegram = await showModalBottomSheet<bool>(
+    final app = AppScope.of(context);
+    final support = app.config.supportUrl;
+    final pick = await showModalBottomSheet<String>(
       context: context,
+      isScrollControlled: true,
       backgroundColor: Colors.transparent,
       barrierColor: PColors.scrim,
       builder: (context) => Container(
@@ -193,31 +199,61 @@ class _LoginScreenState extends State<LoginScreen> {
         padding: const EdgeInsets.fromLTRB(24, 12, 24, 28),
         child: SafeArea(
           top: false,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Center(child: _Handle()),
-              Text('Forgot your password?', style: PType.h2()),
-              const SizedBox(height: 10),
-              Text(
-                'If your account has a Telegram account, sign in with a code '
-                'from our bot instead. No Telegram on your account? Message '
-                'support in our Telegram bot and we’ll reset it.',
-                style: PType.body(color: PColors.muted),
-              ),
-              const SizedBox(height: 20),
-              _BrandButton(
-                asset: 'telegram',
-                label: 'Sign in with Telegram',
-                onTap: () => Navigator.of(context).pop(true),
-              ),
-            ],
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Center(child: _Handle()),
+                Text('Forgot your password?', style: PType.h2()),
+                const SizedBox(height: 10),
+                Text(
+                  'Telegram on your account? Sign in with a code from our bot '
+                  'instead.',
+                  style: PType.body(color: PColors.muted),
+                ),
+                const SizedBox(height: 14),
+                _BrandButton(
+                  asset: 'telegram',
+                  label: 'Sign in with Telegram',
+                  onTap: () => Navigator.of(context).pop('telegram'),
+                ),
+                const SizedBox(height: 18),
+                Text(
+                  support.isEmpty
+                      ? 'Email only? Pleat can’t send reset emails yet. Message '
+                            'support in our Telegram bot with the email on your '
+                            'account and they’ll reset your password.'
+                      : 'Email only? Pleat can’t send reset emails yet. Contact '
+                            'support with the email on your account and they’ll '
+                            'reset your password.',
+                  style: PType.body(color: PColors.muted),
+                ),
+                if (support.isNotEmpty) ...[
+                  const SizedBox(height: 14),
+                  PillButton(
+                    label: 'Contact support',
+                    icon: PIcon.mail,
+                    color: PColors.mist,
+                    textColor: PColors.accentInk,
+                    onTap: () => Navigator.of(context).pop('support'),
+                  ),
+                ],
+              ],
+            ),
           ),
         ),
       ),
     );
-    if (telegram == true && mounted) _telegram();
+    if (!mounted) return;
+    if (pick == 'telegram') _telegram();
+    if (pick == 'support') {
+      final ok = await app.tunnel.openUrl(support);
+      if (!ok && mounted) {
+        await Clipboard.setData(ClipboardData(text: support));
+        if (mounted) showNote(context, 'Support link copied.');
+      }
+    }
   }
 
   @override
@@ -267,34 +303,47 @@ class _LoginScreenState extends State<LoginScreen> {
                               ],
                             ),
                             const SizedBox(height: 22),
-                            AnimatedSwitcher(
-                              duration: reduced ? Duration.zero : PMotion.quick,
-                              child: Column(
-                                key: ValueKey(_tab),
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    create ? 'Join Pleat' : 'Welcome back',
-                                    style: PType.h1(color: PColors.onDeep),
-                                  ),
-                                  const SizedBox(height: 6),
-                                  Text(
-                                    create
-                                        ? 'One account, every exit.'
-                                        : 'Sign in to reach your exits.',
-                                    style: PType.small(
-                                      color: PColors.onDeep.withValues(
-                                        alpha: 0.78,
+                            // a big font or a small phone clips the header
+                            // instead of overflowing it
+                            Flexible(
+                              child: SingleChildScrollView(
+                                primary: false,
+                                physics: const NeverScrollableScrollPhysics(),
+                                child: AnimatedSwitcher(
+                                  duration: reduced
+                                      ? Duration.zero
+                                      : PMotion.quick,
+                                  child: Column(
+                                    key: ValueKey(_tab),
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        create ? 'Join Pleat' : 'Welcome back',
+                                        style: PType.h1(color: PColors.onDeep),
                                       ),
-                                    ),
+                                      const SizedBox(height: 6),
+                                      Text(
+                                        create
+                                            ? 'One account, every exit.'
+                                            : 'Sign in to reach your exits.',
+                                        style: PType.small(
+                                          color: PColors.onDeep.withValues(
+                                            alpha: 0.78,
+                                          ),
+                                        ),
+                                      ),
+                                      if (create && trial != null) ...[
+                                        const SizedBox(height: 10),
+                                        _HeaderChip(
+                                          app.config.trialNeedsTelegram
+                                              ? '${trial.trialDays}-day free trial with Telegram'
+                                              : '${trial.trialDays}-day free trial after sign-up',
+                                        ),
+                                      ],
+                                    ],
                                   ),
-                                  if (create && trial != null) ...[
-                                    const SizedBox(height: 10),
-                                    _HeaderChip(
-                                      '${trial.trialDays}-day free trial after sign-up',
-                                    ),
-                                  ],
-                                ],
+                                ),
                               ),
                             ),
                           ],
@@ -329,7 +378,13 @@ class _LoginScreenState extends State<LoginScreen> {
                           const SizedBox(height: 20),
                           AnimatedSwitcher(
                             duration: reduced ? Duration.zero : PMotion.quick,
-                            child: create ? _createForm() : _signInForm(),
+                            child: create
+                                ? _createForm(
+                                    trialNote:
+                                        trial != null &&
+                                        app.config.trialNeedsTelegram,
+                                  )
+                                : _signInForm(),
                           ),
                           if (!app.api.configured) ...[
                             const SizedBox(height: 16),
@@ -410,10 +465,19 @@ class _LoginScreenState extends State<LoginScreen> {
     ],
   );
 
-  Widget _createForm() => Column(
+  Widget _createForm({bool trialNote = false}) => Column(
     key: const ValueKey('create'),
     crossAxisAlignment: CrossAxisAlignment.stretch,
     children: [
+      // UX-02: said before sign-up, not only when the trial is refused
+      if (trialNote) ...[
+        Text(
+          'The free trial needs a verified Telegram. Signing up with email? '
+          'Link Telegram in Profile later to start it.',
+          style: PType.small(),
+        ),
+        const SizedBox(height: 14),
+      ],
       Row(
         children: [
           Expanded(
@@ -480,6 +544,7 @@ class _LoginScreenState extends State<LoginScreen> {
             : (_offline ? 'Try again' : 'Create account'),
         onTap: _busy ? null : _submit,
       ),
+      const AgreeLine(),
     ],
   );
 }
@@ -1037,6 +1102,7 @@ class _TelegramLoginScreenState extends State<TelegramLoginScreen>
             : (_offline ? 'Try again' : 'Create account'),
         onTap: _busy ? null : _create,
       ),
+      const AgreeLine(),
     ],
   );
 }
@@ -1666,9 +1732,13 @@ class _BrandButton extends StatelessWidget {
         children: [
           _brandLogo(asset, 24),
           const SizedBox(width: 10),
-          Text(
-            label,
-            style: PType.body().copyWith(fontWeight: FontWeight.w800),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: PType.body().copyWith(fontWeight: FontWeight.w800),
+            ),
           ),
         ],
       ),
@@ -1693,10 +1763,14 @@ class _HeaderChip extends StatelessWidget {
       children: [
         PIconView(PIcon.ticket, size: 14, color: PColors.onDeep),
         const SizedBox(width: 6),
-        Text(
-          text,
-          style: PType.meta(color: PColors.onDeep)
-              .copyWith(fontWeight: FontWeight.w700),
+        Flexible(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: PType.meta(color: PColors.onDeep)
+                .copyWith(fontWeight: FontWeight.w700),
+          ),
         ),
       ],
     ),
