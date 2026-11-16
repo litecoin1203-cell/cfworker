@@ -6672,6 +6672,33 @@ section('PNL-03: an account deleted on the panel is made again under the same na
   ok(r3.applied === 'stopped' && r3.dirty === 0 && !W.pgs[1].users[r2.remote_username], 'PNL-03: a gone account that should be off is recorded off, not made again: ' + JSON.stringify(r3));
 }
 
+section('PNL-03 review: many accounts "gone" at once (a login now pointing at another panel) pause the remakes and ask the owner');
+{
+  const W = await world('pnl3g', 2);
+  const emails = ['g1@example.com', 'g2@example.com', 'g3@example.com', 'g4@example.com', 'g5@example.com'];
+  for (const em of emails) { await W.signupW(em); await W.bot(`/grant ${em} ${W.plan.id}`); }
+  const names = (await W.q("SELECT remote_username FROM panel_accounts WHERE panel_id = 2 AND desired = 'active'")).map((r) => r.remote_username);
+  for (const n of names) delete W.pgs[1].users[n]; // as if the login now opened an empty panel
+  await W.e.DB.prepare("UPDATE panel_accounts SET dirty = 1, desired_expire = desired_expire + 60 WHERE panel_id = 2").run();
+  const told0 = fakes.tg.messages.length;
+  for (let i = 0; i < 3; i++) await runSync(W.e);
+  const remade = () => names.filter((n) => W.pgs[1].users[n]).length;
+  ok(remade() <= 2, 'PNL-03 review: at most 2 of 5 gone accounts are made again before the pause: ' + remade());
+  const alert = fakes.tg.messages.slice(told0).find((m) => /مکث|متوقف شد/.test(m.text || '') && /#2/.test(m.text || ''));
+  const kb = JSON.stringify((alert && alert.reply_markup) || {});
+  ok(alert && /ورود پنل/.test(alert.text) && kb.includes('/panelremake 2') && !/(^|\s)\/panelremake/.test(alert.text), 'PNL-03 review: the owner is asked, with buttons only: ' + (alert && alert.text));
+  ok(fakes.tg.messages.slice(told0).filter((m) => /مکث|متوقف شد/.test(m.text || '')).length === 1, 'PNL-03 review: asked once');
+  const before = remade();
+  await runSync(W.e);
+  ok(remade() === before, 'PNL-03 review: paused: nothing more is made');
+  const cb = ((JSON.parse(kb).inline_keyboard || []).flat().find((x) => String(x.callback_data).includes('/panelremake 2')) || {}).callback_data || 'm:home';
+  await W.callW('POST', '/tg/hook', { headers: TG, json: { callback_query: { id: 'rm1', data: cb, from: { id: 12345 }, message: { chat: { id: 12345 }, message_id: 77, text: 'x' } } } });
+  for (let i = 0; i < 4; i++) await runSync(W.e);
+  ok(remade() === 5, 'PNL-03 review: after the owner\'s button the rest are made again: ' + remade());
+  const note = fakes.tg.messages.slice(told0).find((m) => /♻️/.test(m.text || ''));
+  ok(note && /متوقف/.test(note.text) && /پلن/.test(note.text), 'PNL-03 review: the remake notice says to stop the plan in the bot to cut a user off: ' + (note && note.text));
+}
+
 section('PNL-04: removing a device frees it on every panel the user is on, not only panel 1');
 {
   const W = await world('pnl4', 2);

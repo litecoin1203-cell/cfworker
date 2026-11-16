@@ -511,7 +511,10 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   1.5 s, not 5 s; the per-minute "missing accounts" look is skipped for 10 min after a look that found none.
 - **Account deleted on the panel (PNL-03)**: the Worker makes it again under the stored name (never another name), with
   the wanted expiry and limit, and tells Ali (♻️, at most every 6 h per panel). The user's link changes; the app gets it
-  on its next server-list load.
+  on its next server-list load. **To cut a user off, stop the plan in the bot** (⏸ قطع موقت); deleting the account on
+  the panel is undone. Guard: when many accounts of one panel look gone at once (the 3rd in 6 h, or from the 2nd when
+  that is ≥ 30% of the panel's active accounts — e.g. a login now pointing at another panel), remakes on that panel
+  pause (`panel_gone_<id>`) and Ali gets ⏸ with buttons: 🔐 ورود پنل to check the login, ♻️ ادامه‌ی ساخت دوباره to go on.
 - Panel 1 is still special in a few places (always in provision, HWID only for panel 1, buying needs
   `PASARGUARD_URL`). Audit items AD3/P17 / release audit PNL-04: these change who a purchase is delivered to and
   wait for Ali's OK. Device removal runs on every panel the user is on since PNL-04 (panels without a device list

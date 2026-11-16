@@ -665,7 +665,7 @@ async function onMessage(env, msg, opts = {}) {
     await say(`🔐 ورود پنل #${panel.id} ذخیره شد (رمزنگاری‌شده). پیامت پاک شد.\n⏳ در حال تست پنل...`);
     return onMessage(env, { chat: msg.chat, from: msg.from, text: `/paneltest ${panel.id} silent` }, opts);
   }
-  if (cmd === '/paneltest' || cmd === '/rollout' || cmd === '/drainpanel' || cmd === '/panelgroups') {
+  if (cmd === '/paneltest' || cmd === '/rollout' || cmd === '/drainpanel' || cmd === '/panelgroups' || cmd === '/panelremake') {
     const parts = text.split(/\s+/);
     const { getPanel, testPanel, setRollout, listPanels } = await import('./panels.js');
     const panel = await getPanel(env, parseInt(parts[1], 10));
@@ -703,6 +703,13 @@ async function onMessage(env, msg, opts = {}) {
       const { panelProgress } = await import('./sync.js');
       const g = await panelProgress(env, p);
       return sayDone({ ...r, text: `✅ پنل #${p.id}: ${STATE_FA[p.state]} ${p.rollout_percent}%.\n${g.want ? `${g.have} از ${g.want} کاربر الان روی این پنل اکانت دارند. بقیه با باز کردن اپ فوراً، یا در پس‌زمینه هر دقیقه چند نفر، اکانت می‌گیرند و کانفیگ‌های این پنل به لیستشان اضافه می‌شود. پیشرفت: /panels` : 'فعلاً کاربری با اشتراک فعال در این سهم نیست.'}` });
+    }
+    if (cmd === '/panelremake') {
+      // review of PNL-03: the owner resumes remakes of accounts deleted on this panel (button under the pause notice)
+      const { goneKey, goneResumed } = await import('./sync.js');
+      await run(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', goneKey(panel.id), goneResumed());
+      await audit(env, chatId, 'panel.remake', 'panel', panel.id, 'ادامه‌ی ساخت دوباره');
+      return say(`✅ ساخت دوباره‌ی اکانت‌های پاک‌شده روی پنل #${panel.id} ادامه پیدا می‌کند (در اجرای بعدی همگام‌سازی).`);
     }
     if (cmd === '/drainpanel') {
       if (['draining', 'disabled'].includes(panel.state)) return say('این پنل قبلاً خارج شده است.');

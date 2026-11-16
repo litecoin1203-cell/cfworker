@@ -196,8 +196,41 @@ function adapterCache(env, timeoutMs = 0) {
 // that should be off is recorded as off. At most REMAKE_PER_RUN per call (each costs a few panel calls); the admin
 // hears about it at most every 6 h per panel.
 const REMAKE_PER_RUN = 3;
+// Review of PNL-03: a panel login changed to point at ANOTHER working panel makes every account look gone, and they
+// would all be made again there. So remakes on one panel are counted over GONE_WINDOW: the GONE_MAX-th (or one that
+// is GONE_SHARE of the panel's active accounts, from the 2nd on) pauses remakes on that panel and asks the owner
+// (settings panel_gone_<id> = {w, n, paused}); the bot's ♻️ button resumes them.
+const GONE_WINDOW = 6 * 3600, GONE_MAX = 3, GONE_SHARE = 0.3;
+export const goneKey = (panelId) => `panel_gone_${panelId}`;
+// what the ♻️ button writes: remakes go on without a pause for one window
+export const goneResumed = () => JSON.stringify({ w: nowSec(), n: 0, paused: 0, ok: nowSec() + GONE_WINDOW });
+async function goneGate(env, cache, panel) {
+  if (!cache.has(panel.id)) {
+    let g = null;
+    try { g = JSON.parse((await first(env, 'SELECT value FROM settings WHERE key = ?', goneKey(panel.id)))?.value || 'null'); } catch (e) { g = null; }
+    const now = nowSec();
+    if (!g || (!g.paused && now - (g.w || 0) >= GONE_WINDOW && !((g.ok || 0) > now))) g = { w: now, n: 0, paused: 0 };
+    cache.set(panel.id, { g, panel, dirty: false, active: null, justPaused: false });
+  }
+  return cache.get(panel.id);
+}
+// true = this remake may go ahead (and is counted); false = remakes on this panel are paused
+async function mayRemake(env, cache, panel) {
+  const c = await goneGate(env, cache, panel);
+  if (c.g.paused) return false;
+  const n = c.g.n + 1;
+  if ((c.g.ok || 0) > nowSec()) { c.g.n = n; c.dirty = true; return true; } // the owner said go on (♻️ button)
+  if (c.active === null) c.active = (await first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active' AND applied != 'pending'", panel.id)).c;
+  if (n >= GONE_MAX || (n >= 2 && n >= GONE_SHARE * c.active)) {
+    c.g.paused = 1; c.dirty = true; c.justPaused = true;
+    return false;
+  }
+  c.g.n = n; c.dirty = true;
+  return true;
+}
 async function pushRows(env, rows, adapter = adapterCache(env)) {
   const stmts = [];
+  const gates = new Map(); // panel id -> gone counter (review of PNL-03)
   const remade = new Map(); // panel id -> {panel, n}
   let done = 0, remakes = 0;
   const down = new Set(); // PNL-08: known-down panels that did not answer their one short try in this run
@@ -223,7 +256,7 @@ async function pushRows(env, rows, adapter = adapterCache(env)) {
       if (pg && e instanceof PasarGuardError && e.status === 404 && remakes < REMAKE_PER_RUN) {
         remakes++;
         try {
-          stmts.push(...await remakeGone(env, pg, pa));
+          stmts.push(...await remakeGone(env, pg, pa, () => mayRemake(env, gates, panelOf(pa))));
           done++;
           if (pa.desired === 'active') {
             const r = remade.get(pa.panel_id) || { panel: panelOf(pa), n: 0 };
@@ -239,21 +272,26 @@ async function pushRows(env, rows, adapter = adapterCache(env)) {
       if (pg && knownDown) pg.timeoutMs = prevMs; // the adapter is shared with the rest of the run
     }
   }
+  for (const c of gates.values()) {
+    if (c.dirty) stmts.push(st(env, 'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value', goneKey(c.panel.id), JSON.stringify(c.g)));
+  }
   await batch(env, stmts);
   for (const r of remade.values()) await noteRemade(env, r.panel, r.n);
+  for (const c of gates.values()) if (c.justPaused) await noteGonePaused(env, c.panel, c.g.n + 1);
   return done;
 }
 
 // PNL-03: the statements that record an account the panel answered 404 for (see pushRows). Throws when the account
 // is in fact there (a 404 from somewhere else) or the panel refuses the create; only the stored name is ever used,
 // so a refusal never leads to a second account under another name.
-async function remakeGone(env, pg, pa) {
+async function remakeGone(env, pg, pa, gate) {
   if (await pg.getUser(pa.remote_username)) throw new PasarGuardError('panel answered 404 for an account it has', 404);
   const now = nowSec();
   const applied = st(env, `UPDATE panel_accounts SET applied = desired, applied_limit_bytes = desired_limit_bytes, applied_expire = desired_expire,
     dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ? AND desired = ? AND desired_limit_bytes = ?`,
   now, pa.id, pa.desired, pa.desired_limit_bytes);
   if (pa.desired !== 'active') return [applied]; // nothing left to switch off
+  if (gate && !(await gate())) throw new PasarGuardError('remakes on this panel are paused: too many accounts gone at once', 404);
   const groups = await groupIdsFor(env, panelOf(pa), pg);
   const hwid = pa.panel_id === 1 ? pa.sub_device_limit || null : null;
   const made = await pg.createUser(pa.remote_username, { expire: pa.desired_expire || 0, dataLimit: pa.desired_limit_bytes || 0, groupIds: groups, hwidLimit: hwid, note: noteFor({ id: pa.user_id }) });
@@ -278,6 +316,21 @@ async function noteHwidDropped(env, panel) {
   } catch (e) { logError('hwid notice failed', e, { panel: panel.id }); }
 }
 
+// review of PNL-03: remakes paused on a panel; the owner decides with a button (never a command to type)
+async function noteGonePaused(env, panel, n) {
+  try {
+    const { notifyAdmin, untrusted } = await import('./telegram.js');
+    await notifyAdmin(env, `⏸ ساختن دوباره‌ی اکانت‌ها روی پنل #${panel.id} (${untrusted(panel.label || '')}) متوقف شد.
+
+در چند ساعت اخیر ${n} اکانت فعال روی این پنل پیدا نشدند. اگر ورود پنل (آدرس، یوزر، رمز) به پنل دیگری اشاره می‌کند، همه‌ی کاربران آنجا دوباره ساخته می‌شدند؛ برای همین مکث کردم.
+
+اول ورود پنل را بررسی کن (🔐 ورود پنل) و تست بگیر. اگر واقعاً این اکانت‌ها روی پنل پاک شده‌اند، «♻️ ادامه‌ی ساخت دوباره» را بزن.`,
+    { inline_keyboard: [
+      [{ text: '♻️ ادامه‌ی ساخت دوباره', callback_data: `m:x:pp:${panel.id}|/panelremake ${panel.id}` }],
+      [{ text: '🔐 ورود پنل', callback_data: `m:w:panelcred:${panel.id}` }, { text: '🗂 صفحه‌ی پنل', callback_data: `m:pp:${panel.id}` }]] });
+  } catch (e) { logError('panel pause notice failed', e, { panel: panel.id }); }
+}
+
 async function noteRemade(env, panel, n) {
   const key = `panel_remade_${panel.id}`, now = nowSec();
   try {
@@ -287,7 +340,11 @@ async function noteRemade(env, panel, n) {
     const { notifyAdmin, untrusted } = await import('./telegram.js');
     await notifyAdmin(env, `♻️ روی پنل #${panel.id} (${untrusted(panel.label || '')}) اکانت ${n} کاربر روی خود پنل پاک شده بود و با همان نام دوباره ساخته شد، با همان تاریخ و حجم.
 
-اگر کسی روی پنل کاربرها را پاک می‌کند (یا پنل پاک‌سازی خودکار دارد)، آن را بررسی کنید. این پیام حداکثر هر ۶ ساعت یک بار می‌آید.`);
+اگر کسی روی پنل کاربرها را پاک می‌کند (یا پنل پاک‌سازی خودکار دارد)، آن را بررسی کنید.
+
+⚠️ برای قطع کردن یک کاربر، پلنش را در ربات متوقف کن (👤 کاربران › کارت کاربر › ⏸ قطع موقت). پاک کردن اکانت روی خود پنل جواب نمی‌دهد: ورکر آن را دوباره می‌سازد.
+
+این پیام حداکثر هر ۶ ساعت یک بار می‌آید.`);
   } catch (e) { logError('panel remake notice failed', e, { panel: panel.id }); }
 }
 
