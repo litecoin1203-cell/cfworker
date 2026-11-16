@@ -68,7 +68,7 @@ export const DETAIL = {
   proto: 'Protocol', ms: 'Time (ms)', s: 'Seconds', err: 'Core error', kind: 'Kind', tunnel: 'Tunnel was up', trace: 'Trace', reason: 'Reason',
   min: 'Minutes', rate: 'Battery % per hour', drop: 'Battery drop %', off: 'Screen off %', opt: 'Battery optimisation on', route: 'Route',
   skipped: 'Left out (fails for nearly everyone on this operator)',
-  tried: 'Tried', bridge: 'Bridge', stage: 'Stage', expected: 'Expected country', actual: 'Real country', misses: 'Missed pings',
+  tried: 'Tried', bridge: 'Bridge', ways: 'Download ways (o open line, t tunnel, b bridge · result · MB)', stage: 'Stage', expected: 'Expected country', actual: 'Real country', misses: 'Missed pings',
   sessions: 'Sessions', ok: 'Succeeded', fail: 'Failed', minutes: 'Minutes connected', moved: 'Network changed', status: 'Code', what: 'Android says',
   sig: 'Signal', go: 'Core panic (Go)', abort: 'Abort message', cause: 'Cause', thread: 'Thread', lib: 'Library', frames: 'Frames',
   why: 'Each server', age: 'Seconds since the last test', exits: 'Servers on this route', country: 'Country',
