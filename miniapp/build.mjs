@@ -24,5 +24,7 @@ for (const f of ['plus-jakarta-sans', 'vazirmatn']) await copyFile(`${fs}${f}/LI
 const ver = createHash('sha256').update(await readFile(out + 'app/app.js')).update(await readFile(out + 'app/styles.css')).digest('hex').slice(0, 10);
 await writeFile(out + 'app/index.html', (await readFile('src/index.html', 'utf8')).replaceAll('__V__', ver));
 await copyFile('src/_headers', out + '_headers');
+// the banner on the bot's welcome card for new people (worker/src/welcome.js); Telegram fetches it from this address
+await copyFile('src/welcome.jpg', out + 'welcome.jpg');
 const kb = Object.values(r.metafile.outputs).reduce((n, o) => n + o.bytes, 0) / 1024;
 console.log(`Mini App built: ${kb.toFixed(1)} KB of JS, version ${ver}`);

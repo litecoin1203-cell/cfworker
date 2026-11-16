@@ -115,6 +115,13 @@ export default {
         await rateLimit(env, 'RL_PUB', 'pub:' + ip, { open: true });
         return account.miniProbePage(env, request);
       }
+      // the bot's welcome "Fast link": the announced Pleat APK for people with no account yet (GitHub is often
+      // filtered in Iran). Per IP; open when the limiter fails, like /app/apk (a resume is a new request).
+      if (path === '/dl/pleat.apk' && request.method === 'GET') {
+        await rateLimit(env, 'RL_IP', 'dl:' + ip, { open: true });
+        const { publicApk } = await import('./appupdate.js');
+        return await publicApk(env, request);
+      }
       // for an outside uptime monitor: is the per-minute cron still running? (the panel sync stamps its cursor
       // every run while a panel is active). 503 when it has been quiet for 10 minutes. One read, no details.
       if (path === '/health') {
