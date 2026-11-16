@@ -15,6 +15,13 @@ import 'fakes.dart';
 
 const live = String.fromEnvironment('LIVE_API');
 
+// QA-06: a local `flutter test` has no Worker, so this test is skipped; say so loudly, so a green run is not read
+// as "the client works against the real Worker". CI runs it (flutter-vpn.yml, "Client against the local Worker").
+const liveSkipped =
+    'LIVE BACKEND TEST SKIPPED: nothing checked against a Worker. Start '
+    'worker/test/dev_server.mjs and pass --dart-define=LIVE_API=http://127.0.0.1:8787 '
+    '(CI runs it on every pull request)';
+
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   // flutter_test blocks real HTTP; this test is the one place that wants it.
@@ -197,5 +204,5 @@ void main() {
     await app.signOut();
 
     debugPrint(log.join('\n'));
-  }, skip: live.isEmpty ? 'set --dart-define=LIVE_API' : false);
+  }, skip: live.isEmpty ? liveSkipped : false);
 }

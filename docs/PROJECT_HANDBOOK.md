@@ -823,6 +823,8 @@ flutter test
 node --experimental-sqlite ../worker/test/dev_server.mjs &
 flutter test test/live_backend_test.dart --dart-define=LIVE_API=http://127.0.0.1:8787
 ```
+- A plain `flutter test` **skips** `live_backend_test.dart` (no Worker): its output says "LIVE BACKEND TEST SKIPPED"
+  (QA-06). Green without the two lines above proves nothing about the client against the Worker; CI runs them.
 - Flutter SDK 3.47.8 can be downloaded in the cloud container (storage.googleapis.com + pub.dev reachable),
   but **there is no Android SDK**: APKs are built only by the workflow. github.com downloads may be blocked
   from the container (use proxy.golang.org for Go sources such as Xray or Rebecca).
