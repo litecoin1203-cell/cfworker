@@ -15,10 +15,9 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
+        // Pleat's own id. Never change it: Android would treat the APK as another app, installed users would get no
+        // update, and the hev JNI package (compile-hevtun.sh PKGNAME=app/pleat/pleat) would no longer match.
         applicationId = "app.pleat.pleat"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
         targetSdk = flutter.targetSdkVersion
         // Uses the version code from pubspec.yaml. When using split APKs, 1000 * ABI_VERSION
@@ -82,4 +81,8 @@ flutter {
 
 dependencies {
     implementation(fileTree(mapOf("dir" to "libs", "include" to listOf("*.aar", "*.jar"))))
+    // JVM unit tests of the code that needs no phone (src/test/kotlin; QA-01). The real org.json, because
+    // android.jar's copy only throws in unit tests.
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

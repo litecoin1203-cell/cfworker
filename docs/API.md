@@ -54,7 +54,7 @@ account per Telegram id.
 
 | Method + path | Limit | Handler | Purpose |
 |---|---|---|---|
-| `GET /app-config` | account or IP (`RL_PUB`) | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`), `trial_needs_telegram` (the free trial needs a verified Telegram) |
+| `GET /app-config` | account or IP (`RL_PUB`) | `account.appConfig` | announcement, support URL, extra API bases (`app_api_bases`), bridges (`app_bridges`), `trial_needs_telegram` (the free trial needs a verified Telegram); payment methods that are set up and switched on (`card_enabled`, `wallet_enabled`, `crypto_enabled`, `coins`, PAY-08) |
 | `GET /plans` | account or IP (`RL_PUB`) | `account.plans` | active plans |
 | `GET /ip` | account or IP (`RL_PUB`) | `account.myIp` | caller's IP/country (no login) |
 | `POST /auth/register` | IP (shared) + hourly budget | `auth.register` | email sign-up → tokens; `429 busy` when the hour's sign-up budget is spent |
@@ -75,7 +75,7 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | Method + path | Handler | Purpose |
 |---|---|---|
 | `GET /me` | `account.me` | account + subscription (`status, days_left, used_bytes, data_limit_bytes, used_percent, …`). Live panel reading waits ≤ 1.5 s, else stored numbers. |
-| `GET /me/ip` | `index.js` | the request's IP, country, city (through the tunnel = the exit). `?k=<serverKey>` teaches the Worker that exit's real country (`panels.learnExitCountry`, settings `server_exit_cc`; never IR; 2 reports in a row to change) and feeds a location-mismatch health check unless `&h=0`. |
+| `GET /me/ip` | `index.js` | the request's IP, country, city (through the tunnel = the exit). `?k=<serverKey>` teaches the Worker that exit's real country (`panels.learnExitFromUser`, settings `server_exit_cc`; never IR; counted only from a user with a running plan for one of their own servers, one vote per user, a change needs 2 different users) and feeds a location-mismatch health check unless `&h=0`. |
 | `GET /me/packages` | `account.packages` | package history (`sub_periods`) |
 | `POST /me/email` | `auth.setEmail` | backup Gmail |
 | `POST /me/avatar` | `auth.setAvatar` | pick one of 14 Folk avatars (empty pick refused since PR #66) |
@@ -92,12 +92,12 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | `GET /devices`, `DELETE /devices/:id` | `account` | the user's phones |
 | `GET /wallet` | `orders.wallet` | balance + ledger |
 | `GET /referral` | `orders.referral` | invite code and earnings |
-| `GET /orders`, `POST /orders` | `orders` | list / create (wallet, card, coin, gateway). ≤ 3 open orders per method (`429 too_many_open_orders`). |
+| `GET /orders`, `POST /orders` | `orders` | list / create (wallet, card, coin, gateway). ≤ 3 open orders per method (`429 too_many_open_orders`). A method switched off or not set up: `400 method_unavailable`, nothing stored. |
 | `GET /orders/:id` | `orders.getOrder` | one order. A crypto order is looked up on the explorer at most 5 times a minute per order (`RL_LOGIN` `chain:`); past that the stored state is returned. |
 | `POST /orders/:id/receipt` | `orders.uploadReceipt` | card receipt photo (`upload_id` dedupes offline retries) |
 | `POST /orders/:id/cancel` | `orders.cancelOrder` | cancel an open order |
 | `POST /orders/:id/paid` | `orders.markCoinPaid` | "I paid" for a crypto order |
-| `GET /app/apk` | `appupdate.apkDownload` | proxies the announced APK from the private `pleat-latest` release (resumable) |
+| `GET /app/apk` | `appupdate.apkDownload` | proxies the announced APK from the `pleat-latest` release (public, like the repo; resumable) |
 | `POST /auth/change-password` | `auth.changePassword` | 5/min per user (`RL_LOGIN`; it checks the current password) |
 | `POST /auth/logout-all` | `auth.logoutAll` | bumps `token_version` |
 

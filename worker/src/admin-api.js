@@ -395,7 +395,9 @@ export async function referral(env) {
 export async function payments(env, admin) {
   const s = await getSettings(env);
   const owner = admin.role === 'owner';
-  const { COINS, walletKey, memoKey } = await import('./coins.js');
+  const { COINS, walletKey, memoKey, validAddress } = await import('./coins.js');
+  const { cryptoEnabled } = await import('./nowpayments.js');
+  const { switchOn, coinsOff } = await import('./db.js');
   const card = String(s.card_number || '');
   const { usdRateInfo } = await import('./usdrate.js');
   let ri = null;
@@ -406,9 +408,12 @@ export async function payments(env, admin) {
     senders: owner ? String(s.sms_senders || '').split(',').filter(Boolean) : [],
     sender_count: String(s.sms_senders || '').split(',').filter(Boolean).length,
     sms_ready: !!s.sms_key,
+    // PAY-08: each method's switch (what users are offered), and whether it is set up at all
+    methods: { wallet: switchOn(s, 'pay_wallet_on'), card: switchOn(s, 'pay_card_on'), coin: switchOn(s, 'pay_coin_on'), crypto: switchOn(s, 'pay_crypto_on') },
+    ready: { card: !!card, coin: COINS.some((c) => validAddress(c.id, s[walletKey(c)])), crypto: cryptoEnabled(env) && parseInt(s.usdt_rate_toman, 10) > 0, crypto_key: cryptoEnabled(env) },
     coins: COINS.map((c) => {
       const addr = String(s[walletKey(c)] || '').trim();
-      return { id: c.id, symbol: c.symbol, name: c.name, network: c.network, memo_label: c.memo || null, on: !!addr,
+      return { id: c.id, symbol: c.symbol, name: c.name, network: c.network, memo_label: c.memo || null, on: !!addr, off: coinsOff(s).includes(c.id),
         address: owner ? addr : '', memo: owner && c.memo ? String(s[memoKey(c)] || '') : '' };
     }),
     settings: { usd_rate_toman: parseInt(s.usd_rate_toman || '0', 10) || 0, coin_minutes: parseInt(s.coin_minutes || '30', 10), min_topup_toman: parseInt(s.min_topup_toman || '0', 10),
@@ -462,7 +467,7 @@ async function panelTestOf(env, id) {
   return readJson((await first(env, 'SELECT value FROM settings WHERE key = ?', `panel_test_${id}`))?.value, null);
 }
 export async function panels(env) {
-  const rows = await all(env, `SELECT p.*, (SELECT COUNT(*) FROM panel_accounts a WHERE a.panel_id = p.id AND a.desired = 'active') accounts,
+  const rows = await all(env, `SELECT p.*, (SELECT COUNT(*) FROM panel_accounts a WHERE a.panel_id = p.id AND a.desired = 'active' AND a.applied != 'pending') accounts,
     (SELECT value FROM settings WHERE key = 'panel_err_' || p.id) err FROM panels p ORDER BY p.id`);
   return json({ panels: rows.map((p) => ({ id: p.id, label: p.label, kind: p.kind, state: p.state, pct: p.rollout_percent, health: p.health,
     version: p.version || null, accounts: p.accounts, create_error: readJson(p.err, null) && readJson(p.err, null).msg ? String(readJson(p.err, null).msg).slice(0, 160) : null })) });
@@ -474,7 +479,7 @@ export async function panel(env, id) {
   if (!p) throw err(404, 'not_found', 'Panel not found.');
   const { panelProgress, createError } = await import('./sync.js');
   const [accounts, test, progress, ce, cred] = await Promise.all([
-    first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active'", p.id),
+    first(env, "SELECT COUNT(*) c FROM panel_accounts WHERE panel_id = ? AND desired = 'active' AND applied != 'pending'", p.id),
     panelTestOf(env, p.id),
     ['active', 'rollout'].includes(p.state) ? panelProgress(env, p) : Promise.resolve(null),
     createError(env, p.id),

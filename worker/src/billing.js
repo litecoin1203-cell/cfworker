@@ -74,7 +74,9 @@ export async function provision(env, user, plan, opts = {}) {
           user.id, sub.pg_username, sub.sub_url || '', now);
         pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1', user.id);
       }
-      const remote = pa ? await pg.getUser(pa.remote_username) : null;
+      // a pending row (PNL-02: an earlier create that never reached D1) is finished by ensureAccount, which only takes
+      // over an account carrying this user's note
+      const remote = pa && pa.applied !== 'pending' ? await pg.getUser(pa.remote_username) : null;
       if (remote) {
         const status = String(remote.status || '');
         let used = parseInt(remote.used_traffic || 0, 10) || 0;
@@ -94,7 +96,9 @@ export async function provision(env, user, plan, opts = {}) {
         results.push({ panel, name: pa.remote_username, subPath: pa.sub_path, used: 0 });
       }
     } catch (e) {
-      if (!(e instanceof PasarGuardError)) throw e;
+      // PNL-01: whatever went wrong on one panel fails only that panel (left dirty for the sync job); the others keep
+      // their change and the batch below records it, so the panels never run ahead of D1
+      if (!(e instanceof PasarGuardError)) logError('panel provision failed', e, { panel: panel.id, user: user.id });
       firstError = firstError || e;
       failed.push(panel.id);
       // try again from the sync job: the account (if any) must end up active with the new expiry and limit

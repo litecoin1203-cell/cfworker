@@ -1,12 +1,13 @@
 // Public config, plans, profile, the VPN subscription (from the control plane), the unified server list, devices and the free trial.
-import { first, all, run, getSettings, getSettingInt } from './db.js';
-import { json, err, nowSec, deadline } from './util.js';
+import { first, all, run, getSettings, getSettingInt, switchOn } from './db.js';
+import { json, err, nowSec, deadline, logError } from './util.js';
 import { PasarGuard, PasarGuardError } from './pasarguard.js';
 import { provision } from './billing.js';
 import { collectLinks } from './panels.js';
+import { linkRemark } from './netstats.js';
 import { countryFromRemark } from './countries.js';
 import { refreshUser, usedBytes, ensureMissingFor } from './sync.js';
-import { cryptoEnabled } from './nowpayments.js';
+import { gatewayReady } from './nowpayments.js';
 import { enabledCoins, coinOut } from './coins.js';
 import { notifyAdmin, untrusted } from './telegram.js';
 import { profileOut } from './auth.js';
@@ -16,13 +17,15 @@ export async function appConfig(env) {
   return json({
     support_url: s.support_url,
     announcement: s.announcement,
-    card_enabled: !!s.card_number,
+    // PAY-08: each method only when it is set up and its switch is on (createOrder refuses the others)
+    card_enabled: !!s.card_number && switchOn(s, 'pay_card_on'),
     card_auto: !!s.card_number && s.card_auto !== 'off' && !!String(s.sms_senders || '').trim(),
-    crypto_enabled: cryptoEnabled(env) && parseInt(s.usdt_rate_toman, 10) > 0,
+    wallet_enabled: switchOn(s, 'pay_wallet_on'), // Pleat (<= 1.2.50) does not read it yet: the server refusal covers it
+    crypto_enabled: gatewayReady(env, s),
     coins: await (async () => {
       const { autoCoins, autoMode } = await import('./chainwatch.js');
       const mode = await autoMode(env);
-      return (await enabledCoins(env)).map((c) => ({ ...coinOut(c), auto: mode !== 'off' && autoCoins().includes(c.id) }));
+      return (await enabledCoins(env, s)).map((c) => ({ ...coinOut(c), auto: mode !== 'off' && autoCoins().includes(c.id) }));
     })(),
     min_topup_toman: parseInt(s.min_topup_toman, 10) || 0,
     referral_percent: parseInt(s.referral_percent, 10) || 0,
@@ -183,17 +186,7 @@ export function myIp(env, request) {
 // ---------------- VPN ----------------
 function parseLink(index, link) {
   const scheme = link.split('://', 1)[0].toLowerCase();
-  let name = '';
-  if (scheme === 'vmess') {
-    try {
-      let raw = link.split('://')[1];
-      raw += '='.repeat((4 - (raw.length % 4)) % 4);
-      name = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/'))).ps || '';
-    } catch (e) { name = ''; }
-  } else {
-    const frag = link.split('#')[1] || '';
-    try { name = decodeURIComponent(frag); } catch (e) { name = frag; }
-  }
+  const name = linkRemark(link);
   const cc = countryFromRemark(name);
   const clean = name.replace(/[\u{1F1E6}-\u{1F1FF}]{2}/u, '').replace(/^[\s\-|·]+|[\s\-|·]+$/g, '');
   return { index, name: clean || `Server ${index + 1}`, country_code: cc, protocol: scheme, link };
@@ -278,7 +271,8 @@ export async function removeDevice(env, user, devId) {
   if (!dev || dev.user_id !== user.id) throw err(404, 'not_found', 'این دستگاه پیدا نشد.');
   const sub = await first(env, 'SELECT * FROM subscriptions WHERE user_id = ?', user.id);
   if (sub && env.PASARGUARD_URL) {
-    try { await new PasarGuard(env).deleteHwid(sub.pg_username, dev.device_id); } catch (e) {}
+    // the device row goes anyway (the user asked for the slot); a panel that still counts the device is on record
+    try { await new PasarGuard(env).deleteHwid(sub.pg_username, dev.device_id); } catch (e) { logError('remove device: panel HWID delete failed', e); }
   }
   await run(env, 'DELETE FROM devices WHERE id = ?', devId);
   return new Response(null, { status: 204 });

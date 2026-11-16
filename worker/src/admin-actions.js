@@ -7,6 +7,7 @@
 // money = a one-time "are you sure?" (bot_confirm, 2 minutes); destructive = the same, with what it affects.
 import { first, all, run, insert, getSettings, setSetting, SETTING_DEFAULTS } from './db.js';
 import { hashPassword, nowSec } from './util.js';
+import { vmessJson } from './netstats.js';
 
 export const UNDO_SECONDS = 600;
 const fa = (n) => Number(n || 0).toLocaleString('en-US');
@@ -94,6 +95,13 @@ export const ACTIONS = {
           const c = coinById(key.slice(7));
           return fail(`❌ این آدرس برای ${c ? c.symbol + ' (' + c.network + ')' : key} درست به نظر نمی‌رسد. دوباره از ولتت کپی کن.\nبرای خاموش کردن این ارز: /set ${key}`);
         }
+      }
+      if (/^pay_(wallet|card|coin|crypto)_on$/.test(key) && !['0', '1'].includes(val)) return fail('❌ این کلید فقط 1 (روشن) یا 0 (خاموش) می‌گیرد.');
+      if (key === 'pay_coins_off') { // PAY-08: coins switched off one by one
+        const { coinById } = await import('./coins.js');
+        const ids = val.toLowerCase().split(/[\s,]+/).filter(Boolean);
+        if (ids.some((x) => !coinById(x))) return fail('❌ در لیست ارزهای خاموش، ارز ناشناخته هست. فقط شناسه‌ی ارزها مثل xlm,trx.');
+        val = [...new Set(ids)].join(',');
       }
       if (key === 'support_url' && val && !/^(https:\/\/|tg:\/\/)[^\s<>"']{3,300}$/i.test(val)) return fail('❌ لینک پشتیبانی باید با https:// یا tg:// شروع شود، مثلاً https://t.me/your_support');
       if (key === 'trial_data_gb' && !/^\d{1,4}$/.test(val || '0')) return fail('❌ حجم تست را به گیگ و فقط عدد بنویس (0 = مثل پلن).');
@@ -830,9 +838,7 @@ export function maskBridge(link) {
   let host = '';
   try {
     if (scheme === 'vmess') {
-      let raw = s.slice(8).split('#')[0];
-      raw += '='.repeat((4 - (raw.length % 4)) % 4);
-      host = String(JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/'))).add || '');
+      host = String((vmessJson(s) || {}).add || '');
     } else {
       const rest = s.replace(/^[a-z0-9+.-]+:\/\//i, '').split('#')[0].split('?')[0].split('/')[0];
       host = rest.slice(rest.lastIndexOf('@') + 1).replace(/^\[/, '').replace(/\](:\d*)?$/, '').replace(/:\d*$/, '');

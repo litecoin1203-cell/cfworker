@@ -63,6 +63,15 @@ class MainActivity : FlutterActivity() {
     private var pendingOpen: String? = null
     private var tunnelChannel: MethodChannel? = null
 
+    /** This activity's network-switch hook, cleared when it goes (the service then checks itself). */
+    private var netHook: (() -> Unit)? = null
+
+    override fun onDestroy() {
+        if (PleatVpnService.onNetChange === netHook) PleatVpnService.onNetChange = null
+        netHook = null
+        super.onDestroy()
+    }
+
     private var pendingConfig: String? = null
     private var pendingResult: MethodChannel.Result? = null
 
@@ -112,6 +121,10 @@ class MainActivity : FlutterActivity() {
         }
         val channel = MethodChannel(engine.dartExecutor.binaryMessenger, "pleat/tunnel")
         tunnelChannel = channel
+        // A network switch while the tunnel runs: the app checks the exit (NET-06).
+        val onNet = { main.post { channel.invokeMethod("netChanged", null) }; Unit }
+        netHook = onNet
+        PleatVpnService.onNetChange = onNet
         channel
             .setMethodCallHandler { call, result ->
                 when (call.method) {
@@ -360,6 +373,33 @@ class MainActivity : FlutterActivity() {
                     "alertClear" -> {
                         Alert.clear(this)
                         result.success(null)
+                    }
+                    // AND-02: optimised, Android (and some makers' own savers) may stop Pleat in the background.
+                    "batteryExempt" -> {
+                        val power = getSystemService(android.os.PowerManager::class.java)
+                        result.success(power?.isIgnoringBatteryOptimizations(packageName))
+                    }
+                    // The optimisation list (no extra permission needed), or Pleat's App info
+                    // page, where Xiaomi, Oppo, Huawei and others keep autostart and their own saver.
+                    "batterySettings", "appSettings" -> {
+                        val intent = if (call.method == "batterySettings") {
+                            Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+                        } else {
+                            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName"))
+                        }
+                        val ok = try {
+                            startActivity(intent)
+                            true
+                        } catch (e: Exception) {
+                            // a phone without that page: App info instead
+                            try {
+                                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.parse("package:$packageName")))
+                                true
+                            } catch (e2: Exception) {
+                                false
+                            }
+                        }
+                        result.success(ok)
                     }
                     "systemSettings" -> {
                         startActivity(Intent(Settings.ACTION_VPN_SETTINGS))

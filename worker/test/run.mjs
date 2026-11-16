@@ -42,6 +42,8 @@ const env = {
   TG_START_PER_HOUR: '100000',
 };
 env.DB.onQuery = () => { const s = invocation.getStore(); if (s && ++s.q === QUERY_CAP + 1) overCap.push(s); };
+// a panel account's note is "Pleat #<user id>" (PNL-07: nothing personal on a panel)
+const pleatNote = (email) => { const u = env.DB.get('SELECT id FROM users WHERE email = ?', email); return u ? `Pleat #${u.id}` : '(no such user)'; };
 const _pending = [];
 const ctx = { waitUntil: (p) => { _pending.push(Promise.resolve(p)); } };
 async function drain() { const ps = _pending.splice(0); await Promise.all(ps); }
@@ -415,13 +417,39 @@ section('device limit + freeing a slot frees panel HWID');
   ok(fakes.pg.deletedHwids.length >= 1, 'panel HWID freed on device removal');
 }
 
+section('ARC-08: a failure on a side path is logged (worker_errors), not swallowed');
+{
+  const seen = [];
+  const realErr = console.error;
+  console.error = (line) => { try { seen.push(JSON.parse(line).message); } catch (e) { seen.push(String(line)); } };
+  try {
+    // 1. freeing a device on the panel fails: the device is still removed, and the failure is on record
+    const tok = await signup('arc08@example.com', { device: 'arc08-a' });
+    const plan = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
+    await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant arc08@example.com ${plan.id}` } });
+    await call('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'arc08-a' } });
+    const devs = (await call('GET', '/api/v1/devices', { token: tok })).data;
+    fakes.pg.down = true;
+    let del;
+    try { del = await call('DELETE', `/api/v1/devices/${devs[0].id}`, { token: tok }); } finally { fakes.pg.down = false; }
+    ok(del.status === 204 && seen.some((m) => /device/i.test(m) && /panel/i.test(m)), 'ARC-08: a failed panel HWID delete still removes the device and is logged: ' + del.status + ' ' + JSON.stringify(seen));
+    // 2. learning the exit's country from /me/ip?k= fails: the answer is unchanged, and the failure is on record
+    seen.length = 0;
+    const saved = globalThis.__cgExitVote;
+    globalThis.__cgExitVote = new (class extends Map { get() { throw new Error('vote store broken'); } })();
+    let r;
+    try { r = await call('GET', '/api/v1/me/ip?k=abcdef1234', { token: tok, cf: { country: 'DE' } }); await drain(); } finally { globalThis.__cgExitVote = saved; }
+    ok(r.status === 200 && r.data.cc === 'DE' && seen.some((m) => /exit country/i.test(m)), 'ARC-08: a failed exit-country vote is logged and /me/ip still answers: ' + JSON.stringify(seen));
+  } finally { console.error = realErr; }
+}
+
 section('used_percent on /me comes from the server');
 {
   // the limit is the control plane's; the usage is read from the panel (it only ever grows)
   const tok = await signup('pct@example.com', { device: 'pct-phone' });
   const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
   await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant pct@example.com ${monthly.id}` } });
-  const u = Object.values(fakes.pg.users).find((x) => (x.note || '').includes('pct@example.com'));
+  const u = Object.values(fakes.pg.users).find((x) => x.note === pleatNote('pct@example.com'));
   ok(!!u, 'panel user for pct@example.com');
   const uid = (await env.DB.prepare("SELECT id FROM users WHERE email = 'pct@example.com'").first()).id;
   await env.DB.prepare('UPDATE subscriptions SET data_limit_bytes = 1000 WHERE user_id = ?').bind(uid).run();
@@ -437,7 +465,7 @@ section('used_percent on /me comes from the server');
   ok(s.used_percent === 100, 'capped at 100');
   const tok2 = await signup('pct2@example.com', { device: 'pct2-phone' });
   await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant pct2@example.com ${monthly.id}` } });
-  const u2 = Object.values(fakes.pg.users).find((x) => (x.note || '').includes('pct2@example.com'));
+  const u2 = Object.values(fakes.pg.users).find((x) => x.note === pleatNote('pct2@example.com'));
   u2.used_traffic = 5000;
   s = (await call('GET', '/api/v1/me', { token: tok2 })).data.subscription;
   ok(s.used_percent === null && s.unlimited_data === true && s.used_bytes === 5000, 'unlimited data has no percent');
@@ -611,8 +639,8 @@ section('telegram button menu');
 
 section('panel address normalisation + sub decoding');
 {
-  const b = panelBases('https://p.rain.rest/hub/#/login');
-  ok(b[0] === 'https://p.rain.rest' && b[1] === 'https://p.rain.rest/hub', 'hub/#/login -> origin first ' + JSON.stringify(b));
+  const b = panelBases('https://panel.example.invalid/hub/#/login');
+  ok(b[0] === 'https://panel.example.invalid' && b[1] === 'https://panel.example.invalid/hub', 'hub/#/login -> origin first ' + JSON.stringify(b));
   ok(panelBases('p.example.com:8000/dashboard/')[0] === 'https://p.example.com:8000', 'bare host + dashboard path');
   ok(panelBases('https://x.com/')[1] === undefined, 'plain origin has one base');
   const lines = decodeSub(btoa('vless://a@b:1#x\nvmess://abc\n'));
@@ -627,7 +655,7 @@ section('reseller without full group access: falls back to simple list');
   const annual = (await call('GET', '/api/v1/plans')).data.find((p) => p.trial_days > 0);
   const t = await call('POST', '/api/v1/trial', { token: tok, json: { plan_id: annual.id }, headers: { 'x-device-id': 'rs-phone' } });
   ok(t.status === 200 && t.data.subscription.active, 'trial created via groups/simple ' + JSON.stringify(t.data));
-  const pgUser = Object.values(fakes.pg.users).find((u) => (u.note || '').includes('reseller@example.com'));
+  const pgUser = Object.values(fakes.pg.users).find((u) => u.note === pleatNote('reseller@example.com'));
   ok(pgUser && pgUser.group_ids.join(',') === '1,2', 'user got the reseller groups');
   ok(t.data.subscription.remaining_bytes === null && t.data.subscription.unlimited_data === true, 'unlimited data reported');
   fakes.pg.groupsSudoOnly = false;
@@ -1422,7 +1450,7 @@ env.PANEL_3_CRED = JSON.stringify({ url: P3, username: 'admin3', password: 'pass
 const admin = (text) => tgWebhook({ message: { chat: { id: 12345 }, text } });
 const lastText = () => fakes.tg.messages[fakes.tg.messages.length - 1].text;
 const syncRounds = async (n) => { for (let i = 0; i < n; i++) await runSync(env); };
-const panelUser = (pg, email) => Object.values(pg.users).find((x) => (x.note || '').endsWith('· ' + email));
+const panelUser = (pg, email) => Object.values(pg.users).find((x) => x.note === pleatNote(email));
 const userId = async (email) => (await env.DB.prepare('SELECT id FROM users WHERE email = ?').bind(email).first()).id;
 let tenGb;
 
@@ -1472,45 +1500,55 @@ section('acceptance: 2 + 4 + 5 GB on three panels = 11 GB; a 10 GB plan stops on
   ok(puts.join() === puts2.join(), 'stopping again changes nothing (idempotent): ' + puts + ' / ' + puts2);
 }
 
-section('panel accounts are named after the Telegram @username; taken names and users without one fall back');
+section('PNL-07: new panel accounts get an opaque name and a note with no personal data; existing names are kept');
 {
-  const { panelNames, panelNameBase } = await import('../src/sync.js');
-  ok(panelNameBase({ id: 5, tg_username: 'Ali__Gold_' }) === 'ali_gold', 'sanitized: lower case, no double or trailing underscore');
-  ok(panelNameBase({ id: 5, tg_id: 777, tg_username: null }) === 'tg777', 'no @username: tg<numeric id>');
-  ok(panelNameBase({ id: 5, email: 'a@b.c' }) === null, 'no Telegram: no Telegram name');
-  const long = panelNames({ id: 123456, tg_username: 'a'.repeat(32) });
-  ok(long.every((n) => n.length <= 32 && /^[a-z0-9_]+$/.test(n) && !/__/.test(n)) && long[1].endsWith('_123456'), 'every candidate fits all three panels: ' + long.join(','));
-  ok(/^cg_9_[0-9a-f]{4}$/.test(panelNames({ id: 9 })[0]), 'email-only users keep the old cg_<id>_<random> name');
+  const { panelNames } = await import('../src/sync.js');
+  const who = { id: 5, tg_id: 777001, tg_username: 'Ali__Gold_', email: 'ali.gold@example.com' };
+  const cands = panelNames(who);
+  ok(cands.length === 3 && new Set(cands).size === 3 && cands.every((x) => /^cg_[0-9a-f]{10,12}$/.test(x)), 'PNL-07: three opaque candidates cg_<random hex>: ' + cands.join(','));
+  ok(cands.every((x) => !/ali|gold|777001/i.test(x)), 'PNL-07: no @username or Telegram id in the name');
+  ok(panelNames({ id: 9 }).every((x) => /^cg_[0-9a-f]{10,12}$/.test(x)) && panelNames({ id: 9 }, 'pl')[0].startsWith('pl_'), 'PNL-07: the same shape without Telegram, with the configured prefix');
+  ok(panelNames(who).every((x) => x.length <= 32 && !/__/.test(x)), 'PNL-07: every candidate fits all three panel types');
 
   await signup('tgname@example.com', { device: 'tgn-phone' });
   const id1 = await userId('tgname@example.com');
   await env.DB.prepare('UPDATE users SET tg_id = 900001, tg_username = ? WHERE id = ?').bind('gold_ali', id1).run();
-  // someone made "gold_ali" on panel 2 by hand: that panel answers 409 and the next name is used
-  pg2.users['gold_ali'] = { id: 4242, username: 'gold_ali', status: 'active', expire: 0, data_limit: 0, used_traffic: 0, token: 'hand' };
+  // panel 2 says the first name is taken (409): the next candidate is used
+  const real2 = pg2.users;
+  let refused = null;
+  pg2.users = new Proxy(real2, { get(t, k) { if (!refused && typeof k === 'string' && /^cg_/.test(k) && !(k in t)) { refused = k; return { username: k }; } return t[k]; } });
   await admin(`/grant tgname@example.com ${tenGb.id}`);
+  pg2.users = real2;
   const rows = (await env.DB.prepare('SELECT panel_id, remote_username FROM panel_accounts WHERE user_id = ? ORDER BY panel_id').bind(id1).all()).results;
   ok(rows.length === 3, 'one account on each panel');
-  ok(rows[0].remote_username === 'gold_ali' && rows[2].remote_username === 'gold_ali', 'named after the @username: ' + rows.map((r) => r.remote_username));
-  ok(rows[1].remote_username === `gold_ali_${id1}` && pg2.users['gold_ali'].id === 4242, 'taken on panel 2 -> gold_ali_<id>, the hand-made account untouched');
-  ok(fakes.pg.users['gold_ali'].note.includes('tg 900001'), 'the panel note carries the numeric Telegram id');
-  // the user changes @username in Telegram: the panel name stays (it is fixed at creation)
-  await env.DB.prepare('UPDATE users SET tg_username = ? WHERE id = ?').bind('new_name', id1).run();
+  ok(refused && rows[1].remote_username !== refused && /^cg_[0-9a-f]{10,12}$/.test(rows[1].remote_username) && real2[rows[1].remote_username], 'PNL-07: a name the panel says is taken (409) moves on to the next opaque one');
+  ok(rows.every((r) => /^cg_[0-9a-f]{10,12}$/.test(r.remote_username) && !/gold|900001/.test(r.remote_username)), 'PNL-07: the panel names carry nothing about the user: ' + rows.map((r) => r.remote_username));
+  const n1 = fakes.pg.users[rows[0].remote_username].note;
+  ok(n1 === `Pleat #${id1}`, 'PNL-07: the panel note is only "Pleat #<user id>" (no Telegram id, username or email): ' + n1);
+  ok(!/900001|gold_ali|@example/.test(JSON.stringify(Object.values(pg2.users).filter((u) => rows.some((r) => r.remote_username === u.username)))), 'PNL-07: nothing personal on panel 2 either');
+  // an account made before this change keeps its old name: renewal and lookup go by the stored name
+  const old = rows[0].remote_username;
+  fakes.pg.users['gold_ali'] = { ...fakes.pg.users[old], username: 'gold_ali' };
+  delete fakes.pg.users[old];
+  await env.DB.prepare("UPDATE panel_accounts SET remote_username = 'gold_ali' WHERE user_id = ? AND panel_id = 1").bind(id1).run();
+  const created0 = Object.keys(fakes.pg.users).length;
   await admin(`/grant tgname@example.com ${tenGb.id}`);
   const again = (await env.DB.prepare('SELECT remote_username FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(id1).first()).remote_username;
-  ok(again === 'gold_ali', 'renewal keeps the same panel account after an @username change');
+  ok(again === 'gold_ali' && Object.keys(fakes.pg.users).length === created0, 'PNL-07: an existing account is renewed under its old name, never renamed or re-created');
+  const p2name = rows[1].remote_username;
 
   section('bot: per-panel usage, dates, last connection and online now');
   const now = Math.floor(Date.now() / 1000);
   fakes.pg.users['gold_ali'].used_traffic = 1 * GB;
   fakes.pg.users['gold_ali'].online_at = new Date((now - 30) * 1000).toISOString().replace('Z', '');
-  pg2.users[`gold_ali_${id1}`].used_traffic = 2 * GB;
-  pg2.users[`gold_ali_${id1}`].online_at = new Date((now - 3 * 3600) * 1000).toISOString();
+  pg2.users[p2name].used_traffic = 2 * GB;
+  pg2.users[p2name].online_at = new Date((now - 3 * 3600) * 1000).toISOString();
   await syncRounds(3);
   const stored = (await env.DB.prepare('SELECT MAX(online_at) m FROM usage_counters WHERE period_id = (SELECT period_id FROM subscriptions WHERE user_id = ?)').bind(id1).first()).m;
   ok(Math.abs(stored - (now - 30)) <= 1, 'the last connection is stored with the usage reading: ' + stored);
   const S = await import('../src/telegram-screens.js');
   const scr = await S.userPanels(env, id1);
-  ok(scr.text.includes('👤 gold_ali') && scr.text.includes(`👤 gold_ali_${id1}`), 'each panel account by name');
+  ok(scr.text.includes('👤 gold_ali') && scr.text.includes(`👤 ${p2name}`), 'each panel account by name');
   ok(scr.text.includes('🟢 الان آنلاین') && scr.text.includes('۳') === false && /3 ساعت پیش/.test(scr.text), 'online now on panel 1, 3 hours ago on panel 2');
   ok(scr.text.includes('جمع مصرف: 3.00') && scr.text.includes('ساخت: 2026-11-01'), 'total and creation date shown');
   ok(scr.kb.flat().some((x) => x.callback_data === `m:uac:${id1}`), 'refresh is a button');
@@ -1645,7 +1683,7 @@ section('bot: link an existing panel account to an app user, without creating on
 
   const pa = await env.DB.prepare('SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(uid).first();
   ok(pa && pa.remote_username === 'ali_v2' && pa.sub_path.includes('tok_ali_v2') && pa.desired === 'active', 'the app user now owns that panel account');
-  ok(!Object.values(fakes.pg.users).some((x) => (x.note || '').endsWith('· link1@example.com') && Object.keys(fakes.pg.users).indexOf(x.username) < panelCount) && Object.keys(fakes.pg.users).length === panelCount,
+  ok(!Object.values(fakes.pg.users).some((x) => x.note === pleatNote('link1@example.com') && Object.keys(fakes.pg.users).indexOf(x.username) < panelCount) && Object.keys(fakes.pg.users).length === panelCount,
     'no account was created on panel 1');
   ok(v2.status === 'active' && v2.token === 'tok_ali_v2' && v2.used_traffic === 5 * GB && v2.data_limit === 30 * GB, 'the panel account is unchanged (v2rayNG keeps working)');
   const me = (await call('GET', '/api/v1/me', { token: tok, headers: { 'x-app-version': '1.9.0 (Android 14)' } })).data;
@@ -2115,10 +2153,19 @@ section('the exit\'s real country is learned from /me/ip?k= and fills servers wh
   const { exitCountries, unify, countryOfLink } = await import('../src/panels.js');
   const { serverKey } = await import('../src/netstats.js');
   await env.DB.prepare("DELETE FROM settings WHERE key = 'server_exit_cc'").run();
-  const tok = await signup('exitcc@example.com', { device: 'ecd' });
   const link = 'vless://00000000-0000-4000-8000-000000000000@t1.example.org:2083?security=tls&type=ws#Tunnel%20%5B%20Stable%20%5D';
   const k = serverKey(link);
-  const ask = async (cc, key = k) => { await call('GET', '/api/v1/me/ip?k=' + key, { token: tok, cf: { country: cc } }); await Promise.all(_pending.splice(0)); };
+  // SEC-02: only users with a running plan vote, only for servers they have, and a vote counts once per user
+  const voters = [];
+  for (const em of ['exitcc@example.com', 'exitcc2@example.com']) {
+    const t = await signup(em, { device: 'ecd-' + em });
+    const id = await userId(em);
+    await env.DB.prepare("INSERT INTO subscriptions (user_id, pg_username, plan_id, expires_at, state, updated_at) VALUES (?, '', 1, ?, 'active', 0)").bind(id, Math.floor(Date.now() / 1000) + 86400).run();
+    await env.DB.prepare('INSERT INTO user_skeys (user_id, keys, at) VALUES (?, ?, 0)').bind(id, JSON.stringify({ [k]: 'x' })).run();
+    voters.push(t);
+  }
+  let who = 0;
+  const ask = async (cc, key = k) => { globalThis.__cgExitVote = null; await call('GET', '/api/v1/me/ip?k=' + key, { token: voters[who++ % 2], cf: { country: cc } }); await Promise.all(_pending.splice(0)); };
   ok(countryOfLink(link, {}) === '', 'no flag, no name, no host hint: unknown before');
   await ask('IR');
   ok(!(await exitCountries(env))[k], 'Iran is never learned (the request did not go through an exit)');
@@ -2126,10 +2173,11 @@ section('the exit\'s real country is learned from /me/ip?k= and fills servers wh
   ok((await exitCountries(env))[k]?.cc === 'DE', 'learned DE: ' + JSON.stringify((await exitCountries(env))[k]));
   const names = unify([link], {}, null, await exitCountries(env)).map((l) => decodeURIComponent(l.split('#')[1]));
   ok(names[0] === '🇩🇪 DE 1', 'the server is named by its learned country: ' + names[0]);
+  who = 0;
   await ask('NL');
   ok((await exitCountries(env))[k].cc === 'DE', 'one different answer does not move it');
   await ask('NL');
-  ok((await exitCountries(env))[k].cc === 'NL', 'two in a row do');
+  ok((await exitCountries(env))[k].cc === 'NL', 'two different users in a row do');
   await ask('FR', 'BAD KEY');
   ok(Object.keys(await exitCountries(env)).length === 1, 'a malformed key is ignored');
   const tr = 'vless://u@x.example.org:443#%F0%9F%87%B9%F0%9F%87%B7%20TR%201';
@@ -2315,7 +2363,7 @@ section('a new panel reaches existing users: at once when the app loads servers,
 
   // the app loads servers: the user's account on the new panel is made now and its configs are in this answer
   const r = await call('GET', '/api/v1/vpn/servers', { token: tokA });
-  ok(r.status === 200 && Object.values(np.users).some((u) => (u.note || '').endsWith('· na@example.com')), 'account made on the new panel at app load');
+  ok(r.status === 200 && Object.values(np.users).some((u) => u.note === pleatNote('na@example.com')), 'account made on the new panel at app load');
   ok(JSON.stringify(r.data).includes('nn.example.net'), 'new panel configs are in the same server list');
   const mid = await panelProgress(env, p);
   ok(mid.have === 1, 'progress moved: ' + JSON.stringify(mid));
@@ -2384,6 +2432,29 @@ section('panel test names the config types and flags ones the app cannot use');
   ok(k.counts['hysteria2'] === 1 && k.counts['wireguard'] === 1, 'hysteria2 and wireguard counted by name');
   await admin('/paneltest 1');
   ok(lastText().includes('نوع کانفیگ‌ها:') && lastText().includes('vless·reality·tcp') && !lastText().includes('پشتیبانی نمی‌کند'), 'paneltest shows the types: ' + lastText());
+}
+
+section('ARC-02: every share-link reader agrees, and vmess remarks are read as UTF-8 (golden shared with Pleat)');
+{
+  const { readFileSync } = await import('node:fs');
+  const NS = await import('../src/netstats.js');
+  const { countryOfLink, unify, linkKinds, isPlaceholder } = await import('../src/panels.js');
+  const { maskBridge } = await import('../src/admin-actions.js');
+  const golden = JSON.parse(readFileSync(new URL('../../flutter_vpn/test/links_golden.json', import.meta.url), 'utf8')).links;
+  for (const g of golden) {
+    const ep = NS.linkEndpoint(g.link);
+    ok(ep && ep.type === g.type && ep.host === g.host && ep.port === g.port && NS.serverKey(g.link) === g.key, `ARC-02 golden ${g.type} ${g.host}: endpoint and key ` + JSON.stringify(ep));
+    ok(typeof NS.linkRemark === 'function' && NS.linkRemark(g.link) === g.remark, `ARC-02 golden ${g.type} ${g.host}: remark ${JSON.stringify(g.remark)} read as ` + JSON.stringify(NS.linkRemark && NS.linkRemark(g.link)));
+    ok(countryOfLink(g.link, {}) === g.cc, `ARC-02 golden ${g.type} ${g.host}: country ${g.cc} (was "${countryOfLink(g.link, {})}")`);
+    ok(!isPlaceholder(g.link), `ARC-02 golden ${g.type} ${g.host}: not a placeholder`);
+  }
+  const vm2 = golden[1].link; // urlsafe, no padding, a "#..." after it, Persian remark and path
+  const renamed = unify([vm2])[0];
+  const j = NS.vmessJson(renamed);
+  ok(j && j.ps === '🇩🇪 DE 1' && j.path === '/مسیر' && j.add === '203.0.113.10', 'ARC-02: renaming a vmess link keeps its other non-ASCII fields intact: ' + JSON.stringify(j));
+  ok(linkKinds([vm2]).counts['vmess·tcp'] === 1, 'ARC-02: linkKinds reads a vmess link with a #fragment: ' + JSON.stringify(linkKinds([vm2]).counts));
+  ok(maskBridge(vm2) === 'vmess://20•••.10', 'ARC-02: maskBridge reads the same vmess link: ' + maskBridge(vm2));
+  ok(NS.vmessJson('vmess://not-base64!') === null && NS.vmessJson('vless://x@y:1') === null && NS.vmessJson('vmess://' + btoa('[1]')) === null, 'ARC-02: vmessJson is null for anything that is not a vmess JSON object');
 }
 
 section('sign up and log in with Telegram (6-digit code from the bot)');
@@ -5002,6 +5073,12 @@ section('Pleat health reports: priorities, one row per problem, caps, scrubbing,
   const named = (await menu.renderScreen(env, `he:${crash.fp}`)).text;
   ok(named.includes('🇩🇪 DE1: سرور رد کرد') && named.includes('🇳🇱 NL2: بی‌جواب') && named.includes('kunknown1: جواب داد') && named.includes('امتحان‌شده: 🇩🇪 DE1'),
     'a none-answered report names each server and why it was left out: ' + named);
+  // Pleat 1.2.52+: each try carries the core's own failure, and exits left out for failing for nearly everyone are counted
+  await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?')
+    .bind(JSON.stringify(H.cleanDetail({ route: 'auto', tried: [{ k: kDE, c: 'config' }, { k: kNL, c: 'timeout' }], skipped: 2 })), crash.id).run();
+  const tries = (await menu.renderScreen(env, `he:${crash.fp}`)).text;
+  ok(tries.includes('امتحان‌شده: 🇩🇪 DE1: تنظیم ناشناخته | 🇳🇱 NL2: بی‌جواب') && tries.includes('کنار گذاشته (برای بیشتر کاربران این اپراتور وصل نمی‌شود): 2'),
+    'a none-answered report shows why each try failed and how many exits were left out: ' + tries);
   ok(H.crashGuess({ abort: 'fdsan: attempted to close file descriptor 87' }).includes('fdsan') && H.crashGuess({ lib: 'libhev-socks5-tunnel.so' }).includes('hev')
     && H.crashGuess({ lib: 'libflutter.so' }).includes('Flutter'), 'the guess follows the abort message and the library');
   // scrub on its own
@@ -5028,6 +5105,26 @@ section('developer docs name every migration and every API route');
   const named = (p) => new RegExp('[` ]' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '`').test(apiDoc);
   const noApi = [...authed, ...admin].filter((p) => !named(p));
   ok(authed.length > 20 && admin.length > 30 && !noApi.length, 'docs/API.md names every app and admin route; missing: ' + noApi.join(', '));
+
+  // ARC-01: the repo (and so the release pleat-latest and every Actions log) is public. A comment or doc that calls
+  // it private leads the next developer or agent to treat something as safe that is not.
+  const said = ['../src/appupdate.js', '../src/index.js', '../../docs/API.md', '../../docs/PROJECT_HANDBOOK.md',
+    '../../.github/workflows/flutter-vpn.yml', '../../.github/workflows/deploy-worker.yml', '../../AGENTS.md', '../../README.md']
+    .filter((f) => /\b(?:repo(?:sitory)? is private|private `?(?:repo|repository|release|pleat-latest))\b/i.test(readFileSync(rel(f), 'utf8')));
+  ok(!said.length, 'ARC-01: no comment or doc calls the public repo or its release private: ' + said.join(', '));
+  // ARC-07: the handbook's "Version on main" is what the next developer trusts; it must be pubspec's version
+  const pubVer = (readFileSync(rel('../../flutter_vpn/pubspec.yaml'), 'utf8').match(/^version: (\S+)/m) || [])[1];
+  const hbVer = (readFileSync(rel('../../docs/PROJECT_HANDBOOK.md'), 'utf8').match(/^Version on main: \*\*([^*]+)\*\*/m) || [])[1];
+  ok(pubVer && hbVer === pubVer, `ARC-07: handbook §10 "Version on main" (${hbVer}) is flutter_vpn/pubspec.yaml's version (${pubVer})`);
+  // ARC-07: panels.js once said hysteria2/wireguard are "unusable" right above the list that makes them usable
+  const pj = readFileSync(rel('../src/panels.js'), 'utf8');
+  const schemeNote = (pj.match(/((?:\/\/[^\n]*\n)+)export const APP_SCHEMES/) || ['', ''])[1];
+  const { APP_SCHEMES } = await import('../src/panels.js');
+  const notTaken = (schemeNote.split(/anything else/)[1] || '').replace(/\s*\/\/\s*/g, ' ');
+  ok(/hysteria2/.test(schemeNote) && !APP_SCHEMES.some((x) => new RegExp('\\b' + x + '\\b').test(notTaken)), 'ARC-07: the APP_SCHEMES comment matches the list: ' + schemeNote.trim());
+  // ARC-07: the README's Time Travel window is the Free plan's (7 days, docs/RESTORE.md), and backups are a button
+  const readme = readFileSync(rel('../../README.md'), 'utf8');
+  ok(!/۳۰ روز قبل/.test(readme) && !/دستی: `\/backup`/.test(readme), 'ARC-07: README gives D1 Time Travel as 7 days and the backup as a bot button');
 }
 
 section('admin bot: ☁️ Cloudflare monitoring (quota, errors, queries, deploys, alerts) and panel sync by hand');
@@ -5674,9 +5771,977 @@ section('payments audit PAY-01..PAY-04: stuck settle recovered, SMS deposit line
   ok(acksOf(n).includes('پرداخت نشده') && !acksOf(n).includes('پیام بعدی'), 'N2: ap: on an unpaid wallet order gives the real reason: ' + acksOf(n));
 }
 
+section('CI: release workflows run only from main, on pinned actions and checked downloads (OPS-02, SEC-04)');
+{
+  const { readFileSync } = await import('node:fs');
+  const wf = (n) => readFileSync(new URL(`../../.github/workflows/${n}`, import.meta.url), 'utf8');
+  // every job that holds a secret or publishes: the product's workflows (make-key.yml, the one-off signing key tool,
+  // is left as it is)
+  const live = ['flutter-vpn.yml', 'deploy-worker.yml', 'test-worker.yml'];
+  const unpinned = live.flatMap((n) => [...wf(n).matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)].map((m) => m[1])
+    .filter((u) => !/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(u)).map((u) => `${n}: ${u}`));
+  ok(!unpinned.length, 'SEC-04: every action is pinned to a full commit SHA; not pinned: ' + unpinned.join(', '));
+
+  // OPS-02: a deploy or an APK from a branch that was never merged is refused, with a message that says why
+  const dep = wf('deploy-worker.yml');
+  const depJob = dep.slice(dep.indexOf('\n  deploy:'));
+  ok(/\n {4}needs: main-only\n/.test(depJob) && /\n {4}if: github\.ref == 'refs\/heads\/main'\n/.test(depJob),
+    'OPS-02: the deploy job runs only after the main-only check, and only on main');
+  ok(/\n {2}main-only:\n[\s\S]*?if: github\.ref != 'refs\/heads\/main'[\s\S]*?::error::[^\n]*main[\s\S]*?exit 1/.test(dep.slice(0, dep.indexOf('\n  deploy:'))),
+    'OPS-02: deploying from another branch fails with an error that names main');
+  const fv = wf('flutter-vpn.yml');
+  const steps = fv.slice(fv.indexOf('    steps:\n'));
+  const firstStep = steps.split('\n      - ')[1] || '';
+  ok(/github\.event_name == 'workflow_dispatch' && github\.ref != 'refs\/heads\/main'/.test(firstStep) && /::error::[^\n]*main/.test(firstStep) && /exit 1/.test(firstStep),
+    'OPS-02: the APK run refuses any branch but main before anything else runs: ' + firstStep.split('\n')[0]);
+
+  // SEC-04: what goes into the APK (or checks it) is a fixed version with a SHA-256 kept in this repo
+  const envOf = (k) => ((fv.match(new RegExp(`^  ${k}: (\\S+)`, 'm')) || [])[1] || '').replace(/^'(.*)'$/, '$1');
+  const sums = ['XRAY_LIB_SHA256', 'XRAY_ZIP_SHA256', 'GEOIP_SHA256', 'GEOSITE_SHA256'];
+  ok(sums.every((k) => /^[0-9a-f]{64}$/.test(envOf(k) || '')), 'SEC-04: the core, the desktop core and both geo files have a pinned SHA-256: ' + sums.map((k) => `${k}=${envOf(k)}`).join(' '));
+  ok(/^\d{12}$/.test(envOf('GEO_TAG') || '') && /^v\d+\.\d+\.\d+$/.test(envOf('XRAY_CORE_TAG') || ''), 'SEC-04: the geo files and the desktop core come from a fixed release');
+  ok(!/releases\/latest|xray-core:latest|@release\b/.test(fv), 'SEC-04: nothing is taken from a "latest" release or a moving branch');
+  ok(sums.every((k) => fv.split('$' + k).length > 1), 'SEC-04: every pinned SHA-256 is checked in a step');
+  ok(/ghcr\.io\/xtls\/xray-core:[^\s@]+@sha256:[0-9a-f]{64}/.test(fv), 'SEC-04: the core image fallback is pinned by digest');
+  const wrapper = readFileSync(new URL('../../flutter_vpn/android/gradle/wrapper/gradle-wrapper.properties', import.meta.url), 'utf8');
+  ok(/^distributionSha256Sum=[0-9a-f]{64}$/m.test(wrapper) && /distributionSha256Sum/.test(fv), 'SEC-04: Gradle itself is checked against its SHA-256');
+  const tw = wf('test-worker.yml');
+  ok(/paths: \[[^\]]*'\.github\/workflows\/\*\*'/.test(tw), 'these checks run on every pull request that changes a workflow');
+}
+
+section('CI: the APK run runs the Kotlin unit tests before it publishes (QA-01)');
+{
+  const { readFileSync, readdirSync } = await import('node:fs');
+  const fv = readFileSync(new URL('../../.github/workflows/flutter-vpn.yml', import.meta.url), 'utf8');
+  const gradle = readFileSync(new URL('../../flutter_vpn/android/app/build.gradle.kts', import.meta.url), 'utf8');
+  let tests = [];
+  try { tests = readdirSync(new URL('../../flutter_vpn/android/app/src/test/kotlin/app/pleat/pleat/', import.meta.url)).filter((f) => f.endsWith('Test.kt')); } catch (e) {}
+  ok(tests.length >= 2 && /testImplementation\("junit:junit:[\d.]+"\)/.test(gradle), 'QA-01: the app module has JVM unit tests and JUnit: ' + tests.join(', '));
+  const run = fv.indexOf('testReleaseUnitTest');
+  ok(run > 0 && run > fv.indexOf('name: Build APK') && run < fv.indexOf('name: Publish APKs'), 'QA-01: the manual run runs them after the build and before anything is published');
+  // AGP 9 only makes unit-test tasks for the tested build type (debug) unless this is turned off, so
+  // testReleaseUnitTest would not exist and the APK run would stop after the build
+  const props = readFileSync(new URL('../../flutter_vpn/android/gradle.properties', import.meta.url), 'utf8');
+  ok(/^android\.onlyEnableUnitTestForTheTestedBuildType=false$/m.test(props), 'QA-01: gradle.properties lets AGP 9 make testReleaseUnitTest');
+}
+
+section('OPS-06: the daily Telegram backup restores into a new database');
+{
+  const { backupJson } = await import('../src/telegram.js');
+  const { signJwt } = await import('../src/util.js');
+  const { restoreSql, BACKUP_TABLES, NO_PASSWORD } = await import('../scripts/restore-backup.mjs');
+  const backup = JSON.parse(await backupJson(env));
+  const { sql, counts } = restoreSql(backup);
+  // a new database as Deploy makes it (every migration), then the file as `wrangler d1 execute --file` runs it
+  const fresh = makeDB(new URL('../migrations/0001_init.sql', import.meta.url).pathname);
+  let applied = true;
+  try { fresh.exec(sql); } catch (e) { applied = false; console.log('    ' + e.message); }
+  ok(applied, 'OPS-06: the restore SQL runs on a freshly migrated database');
+  const q = async (s) => (await fresh.prepare(s).all()).results;
+  const differ = [];
+  for (const t of BACKUP_TABLES) {
+    const got = await q(`SELECT * FROM ${t}`);
+    const want = backup.tables[t];
+    if (got.length !== want.length || counts[t] !== want.length) { differ.push(`${t}: ${got.length} rows, backup ${want.length}`); continue; }
+    // every column the backup has comes back with the same value (rows in rowid order on both sides)
+    const key = (r) => JSON.stringify(Object.keys(want[0] || {}).map((c) => r[c]));
+    const a = want.map(key).sort(), b2 = got.map(key).sort();
+    if (a.some((x, i) => x !== b2[i])) differ.push(`${t}: values differ`);
+  }
+  ok(!differ.length && backup.tables.users.length > 50 && backup.tables.orders.length > 20,
+    `OPS-06: every backed-up table comes back row for row (${backup.tables.users.length} users, ${backup.tables.orders.length} orders): ${differ.join('; ')}`);
+  const pw = await q('SELECT DISTINCT password_hash h FROM users');
+  ok(pw.length === 1 && pw[0].h === NO_PASSWORD, 'OPS-06: restored accounts get a password hash nothing matches');
+
+  // the Worker runs on the restored database: a session token still opens the account with its money and plan;
+  // the old password is refused cleanly (401, not an error) until the owner sets a new one
+  const env3 = { ...env, DB: fresh };
+  const ali = backup.tables.users.find((u) => u.email === 'ali@example.com');
+  const tok = await signJwt({ sub: String(ali.id), ver: ali.token_version || 0, typ: 'access' }, env.SECRET_KEY, 600);
+  const meR = await worker.fetch(new Request('https://api.test/api/v1/me', { headers: { authorization: 'Bearer ' + tok } }), env3, ctx);
+  const me3 = await meR.json();
+  ok(meR.status === 200 && me3.email === 'ali@example.com' && me3.wallet_balance === ali.wallet_balance, 'OPS-06: the restored account opens with its wallet: ' + meR.status);
+  const login = await worker.fetch(new Request('https://api.test/api/v1/auth/login', { method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'ali@example.com', password: 'password123' }) }), env3, ctx);
+  ok(login.status === 401, 'OPS-06: the old password is refused cleanly after a restore: ' + login.status);
+
+  // text with quotes, new lines and Persian survives; junk is refused
+  const odd = restoreSql({ created_at: 'x', tables: { users: [], settings: [{ key: "it's", value: "a'b\nپشتیبان;--" }] } });
+  const one = makeDB(new URL('../migrations/0001_init.sql', import.meta.url).pathname);
+  one.exec(odd.sql);
+  const s1 = await one.prepare("SELECT value FROM settings WHERE key = 'it''s'").first();
+  ok(s1 && s1.value === "a'b\nپشتیبان;--" && (await one.prepare('SELECT COUNT(*) c FROM settings').first()).c === 1, 'OPS-06: quotes, new lines and Persian text come back exactly');
+  const refused = (b) => { try { restoreSql(b); return false; } catch (e) { return true; } };
+  ok(refused('{}') && refused({ tables: { users: [], sessions: [] } }) && refused({ tables: { users: [{ 'id) VALUES (1); DROP TABLE users; --': 1 }] } }),
+    'OPS-06: a file that is not a backup, an unknown table or a strange column name is refused');
+
+  // the command line the runbook gives
+  const { execFileSync } = await import('node:child_process');
+  const { writeFileSync, mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const dir = mkdtempSync(tmpdir() + '/cg-restore-');
+  writeFileSync(dir + '/b.json', JSON.stringify(backup));
+  const out = execFileSync(process.execPath, [new URL('../scripts/restore-backup.mjs', import.meta.url).pathname, dir + '/b.json'], { stdio: ['ignore', 'pipe', 'ignore'] }).toString();
+  ok(out === sql, 'OPS-06: node scripts/restore-backup.mjs <file> prints the same SQL');
+}
+
+section('payments audit PAY-08: one on/off switch per payment method, enforced when an order is made');
+{
+  const { createHmac } = await import('node:crypto');
+  const sign = (fields) => {
+    const check = Object.keys(fields).sort().map((k) => `${k}=${fields[k]}`).join('\n');
+    const secret = createHmac('sha256', 'WebAppData').update(env.TELEGRAM_BOT_TOKEN).digest();
+    return new URLSearchParams({ ...fields, hash: createHmac('sha256', secret).update(check).digest('hex') }).toString();
+  };
+  const A = (method, path, token, json) => call(method, '/api/v1/admin' + path, { token, json });
+  const T = (await A('POST', '/auth', null, { init_data: sign({ user: JSON.stringify({ id: 12345, first_name: 'Ali' }), auth_date: String(Math.floor(Date.now() / 1000)) }) })).data.access_token;
+  const S = await import('../src/telegram-screens.js');
+  let tapN = 0;
+  const tap = (data) => tgWebhook({ callback_query: { id: 'p8-' + (++tapN), data, message: { chat: { id: 12345 }, message_id: 995, text: 'menu' } } });
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const setv = async (k) => ((await row('SELECT value v FROM settings WHERE key = ?', k)) || {}).v;
+  const cfg = async () => (await call('GET', '/api/v1/app-config')).data;
+  const orderCount = async () => (await row('SELECT COUNT(*) c FROM orders')).c;
+  const monthly = (await call('GET', '/api/v1/plans')).data.find((p) => p.price_toman === 189000);
+  const XLM = 'G' + 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'.repeat(2).slice(0, 55);
+  const TRX = 'T' + '123456789ABCDEFGHJKLMNPQRSTUVWXYZ'.slice(0, 33);
+  await botSet('card_number', '6037991234567893'); await botSet('wallet_xlm', XLM); await botSet('wallet_xlm_memo', ''); await botSet('wallet_trx', TRX);
+  await botSet('usd_rate_toman', '100000'); await botSet('usdt_rate_toman', '70000');
+  let u = 0;
+  const fresh = async () => { const e = `p8-${++u}@example.com`; const t = await signup(e, { device: 'p8-' + u }); return { t, id: (await row('SELECT id FROM users WHERE email = ?', e)).id }; };
+  const buy = (t, json) => call('POST', '/api/v1/orders', { token: t, json: { plan_id: monthly.id, ...json } });
+
+  // defaults: every method that is set up stays on after the deploy (no surprise outage)
+  let c = await cfg();
+  ok(c.card_enabled === true && c.wallet_enabled === true && c.crypto_enabled === true && c.coins.some((x) => x.id === 'xlm') && c.coins.some((x) => x.id === 'trx'),
+    'PAY-08: with no switch touched, wallet, card, coins and the gateway are all offered: ' + JSON.stringify({ card: c.card_enabled, wallet: c.wallet_enabled, crypto: c.crypto_enabled, coins: (c.coins || []).map((x) => x.id) }));
+
+  // the bot's payment screen has one switch per method
+  let pay = await S.payments(env);
+  for (const k of ['pay_wallet_on', 'pay_card_on', 'pay_coin_on', 'pay_crypto_on']) ok(flat(pay.kb).includes(`m:ss:${k}:0`), `PAY-08: the bot payment screen has an off switch for ${k}`);
+  ok(flat(pay.kb).includes('m:pcn:xlm:0') && flat(pay.kb).includes('m:pcn:trx:0') && !flat(pay.kb).includes('m:pcn:sol:0'), 'PAY-08: one switch per coin that has a wallet address');
+
+  // card off: not offered, refused by the server, no order row left behind
+  await tap('m:ss:pay_card_on:0');
+  ok((await setv('pay_card_on')) === '0', 'PAY-08: the bot switch turns card-to-card off');
+  ok((await cfg()).card_enabled === false, 'PAY-08: card off -> app-config does not offer card');
+  let a = await fresh();
+  let n0 = await orderCount();
+  let r = await buy(a.t, { method: 'card' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && await orderCount() === n0, 'PAY-08: card off -> a card order is refused with method_unavailable and nothing is stored: ' + r.status + JSON.stringify(r.data));
+  r = await call('POST', '/api/v1/orders', { token: a.t, json: { topup_toman: 100000, method: 'card' } });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: card off -> a card top-up is refused too');
+  await tap('m:ss:pay_card_on:1');
+  ok((await cfg()).card_enabled === true && (await buy(a.t, { method: 'card' })).status === 201, 'PAY-08: card back on -> offered and accepted again');
+
+  // wallet off: a purchase from the balance and "wallet + the rest" are refused; paying the whole price by card works
+  const rich = await fresh();
+  await env.DB.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').bind(500000, rich.id).run();
+  await tap('m:ss:pay_wallet_on:0');
+  ok((await cfg()).wallet_enabled === false, 'PAY-08: wallet off -> app-config says so');
+  n0 = await orderCount();
+  r = await buy(rich.t, { method: 'wallet' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && await orderCount() === n0, 'PAY-08: wallet off -> buying from the balance is refused: ' + r.status + JSON.stringify(r.data));
+  r = await buy(rich.t, { method: 'card', use_wallet: true });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: wallet off -> "use the wallet" on a card order is refused');
+  const half = await fresh();
+  await env.DB.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').bind(50000, half.id).run();
+  r = await buy(half.t, { method: 'card', use_wallet: true });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: wallet off -> "wallet and pay the rest" is refused');
+  ok((await row('SELECT wallet_balance b FROM users WHERE id = ?', rich.id)).b === 500000, 'PAY-08: the refused wallet purchase took no money');
+  r = await buy(half.t, { method: 'card' });
+  ok(r.status === 201 && r.data.method === 'card', 'PAY-08: wallet off -> the whole price by card still works');
+  await env.DB.prepare("INSERT INTO coupons (code, percent, max_uses, created_at) VALUES ('PAY08FREE', 100, 0, ?)").bind(Math.floor(Date.now() / 1000)).run();
+  r = await buy((await fresh()).t, { method: 'wallet', coupon_code: 'PAY08FREE' });
+  ok(r.status === 201 && r.data.status === 'paid', 'PAY-08: wallet off -> a free order (100% coupon) is not a payment and still goes through: ' + r.status + JSON.stringify(r.data));
+  await tap('m:ss:pay_card_on:0');
+  r = await buy((await fresh()).t, { method: 'card', coupon_code: 'PAY08FREE' });
+  ok(r.status === 201 && r.data.status === 'paid', 'PAY-08: card off -> a free order sent as card still goes through: ' + r.status + JSON.stringify(r.data));
+  await tap('m:ss:pay_card_on:1');
+  await tap('m:ss:pay_wallet_on:1');
+  r = await buy(rich.t, { method: 'wallet' });
+  ok(r.status === 201 && r.data.status === 'paid', 'PAY-08: wallet back on -> a wallet purchase works again: ' + r.status);
+
+  // one coin off (address kept), then all coins off
+  await tap('m:pcn:xlm:0');
+  c = await cfg();
+  ok(!c.coins.some((x) => x.id === 'xlm') && c.coins.some((x) => x.id === 'trx'), 'PAY-08: one coin off -> only that coin leaves the app list');
+  ok((await setv('wallet_xlm')) === XLM, 'PAY-08: switching a coin off keeps its wallet address');
+  a = await fresh();
+  n0 = await orderCount();
+  r = await buy(a.t, { method: 'coin', coin: 'xlm' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && await orderCount() === n0, 'PAY-08: a switched-off coin is refused before an order is stored: ' + r.status + JSON.stringify(r.data));
+  pay = await S.payments(env);
+  ok(flat(pay.kb).includes('m:pcn:xlm:1'), 'PAY-08: the bot shows the coin as off with an on switch');
+  await tap('m:ss:pay_coin_on:0');
+  ok((await cfg()).coins.length === 0, 'PAY-08: crypto off -> no coin is offered');
+  r = await buy(a.t, { method: 'coin', coin: 'trx' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: crypto off -> every coin is refused');
+  await tap('m:ss:pay_coin_on:1'); await tap('m:pcn:xlm:1');
+  ok((await cfg()).coins.some((x) => x.id === 'xlm') && (await setv('pay_coins_off')) === '', 'PAY-08: coin and crypto back on');
+
+  // the NOWPayments gateway: its switch, and never with no rate (it used to make a 0-dollar invoice)
+  await tap('m:ss:pay_crypto_on:0');
+  ok((await cfg()).crypto_enabled === false, 'PAY-08: gateway off -> not offered');
+  r = await buy(a.t, { method: 'crypto' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable', 'PAY-08: gateway off -> refused');
+  await tap('m:ss:pay_crypto_on:1');
+  await botSet('usdt_rate_toman', '0');
+  ok((await cfg()).crypto_enabled === false, 'PAY-08: gateway with no rate -> not offered');
+  const inv0 = fakes.np.invoices.length;
+  n0 = await orderCount();
+  r = await buy(a.t, { method: 'crypto' });
+  ok(r.status === 400 && r.data.detail.code === 'method_unavailable' && fakes.np.invoices.length === inv0 && await orderCount() === n0,
+    'PAY-08: gateway with no rate -> refused, no invoice made: ' + r.status + JSON.stringify(r.data));
+  await botSet('usdt_rate_toman', '70000');
+
+  // the Mini App: sees every switch and sets them through setting.set; wrong values are refused
+  const mp = await A('GET', '/payments', T);
+  ok(mp.status === 200 && mp.data.methods && mp.data.methods.wallet === true && mp.data.methods.card === true && mp.data.methods.coin === true && mp.data.methods.crypto === true,
+    'PAY-08: the Mini App payment screen gets the four switches: ' + JSON.stringify(mp.data.methods));
+  ok(mp.data.ready && mp.data.ready.card === true && mp.data.ready.crypto === true, 'PAY-08: ... and whether each method is set up');
+  ok(mp.data.coins.find((x) => x.id === 'xlm').off === false, 'PAY-08: each coin says whether it is switched off');
+  r = await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_card_on', val: '0' } });
+  ok(r.status === 200 && r.data.ok && (await cfg()).card_enabled === false, 'PAY-08: the Mini App turns card off');
+  r = await A('POST', '/undo', T, { audit_id: r.data.audit_id });
+  ok(r.status === 200 && (await cfg()).card_enabled === true, 'PAY-08: and undo turns it back on');
+  ok((await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_card_on', val: 'maybe' } })).status === 422, 'PAY-08: a switch takes only 1 or 0');
+  ok((await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_coins_off', val: 'xlm,nope' } })).status === 422, 'PAY-08: the coin list takes only known coins');
+  r = await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_coins_off', val: 'TRX, xlm' } });
+  ok(r.status === 200 && (await setv('pay_coins_off')) === 'trx,xlm' && !(await cfg()).coins.some((x) => ['trx', 'xlm'].includes(x.id)) && (await cfg()).coins.length > 0, 'PAY-08: the Mini App switches coins off one by one');
+  await A('POST', '/action', T, { name: 'setting.set', args: { key: 'pay_coins_off', val: '' } });
+  c = await cfg();
+  ok(['trx', 'xlm'].every((id) => c.coins.some((x) => x.id === id)), 'PAY-08: and on again');
+}
+
+section('payments audit PAY-07: a bank SMS the parser cannot read reaches the admin; empty sender list is explained');
+{
+  const row = (sql, ...a) => env.DB.prepare(sql).bind(...a).first();
+  const S = await import('../src/telegram-screens.js');
+  const flat = (kb) => (kb || []).flat().map((x) => x.callback_data).filter(Boolean);
+  await tgWebhook({ message: { chat: { id: 12345 }, text: '/sms' } });
+  const key = (await row("SELECT value v FROM settings WHERE key = 'sms_key'")).v;
+  env.DB.exec("DELETE FROM settings WHERE key = 'sms_unknown_notice'");
+  const sms = (text, from = '+989100') => call('POST', '/sms/' + key, { json: { from, text } });
+  const notices = (n) => fakes.tg.messages.slice(n).filter((m) => /نتوانستم بخوانم/.test(m.text || ''));
+  // a bank format with no deposit word: it used to be dropped without a word to anyone
+  let n = fakes.tg.messages.length;
+  const odd = 'بانک نمونه\nتراکنش موفق\n1,890,330\n1405/08/09-11:02';
+  let r = await sms(odd);
+  ok(r.data.result === 'not_deposit', 'PAY-07: the parser still does not take it as a deposit (nothing is confirmed by itself)');
+  let got = notices(n);
+  ok(got.length === 1 && got[0].text.includes('1,890,330') && got[0].text.includes('تراکنش موفق'), 'PAY-07: the admin gets a Persian notice with the SMS text: ' + JSON.stringify(got.map((m) => m.text)));
+  ok(got.length === 1 && flat(got[0].reply_markup && got[0].reply_markup.inline_keyboard).includes('m:sms:all') && flat(got[0].reply_markup.inline_keyboard).includes('m:or:pend:card'),
+    'PAY-07: ... with buttons to the SMS list and the unpaid card orders');
+  // a withdrawal, a one-time code and a text with no amount stay quiet
+  n = fakes.tg.messages.length;
+  await sms('بانک نمونه\nبرداشت: 500,000\nمانده: 1,000,000');
+  await sms('کد تایید شما: 482913');
+  await sms('به بانک نمونه خوش آمدید');
+  ok(notices(n).length === 0, 'PAY-07: withdrawals, one-time codes and texts without an amount do not notify');
+  // a burst of unreadable SMS: at most 5 notices an hour
+  n = fakes.tg.messages.length;
+  for (let i = 0; i < 8; i++) await sms(`بانک نمونه\nتراکنش موفق\n${(2000000 + i * 1110).toLocaleString('en-US')}`);
+  got = notices(n);
+  ok(got.length === 4, 'PAY-07: notices are capped at 5 an hour (1 + 4 here): ' + got.length);
+  ok(got.length && /یک ساعت/.test(got[got.length - 1].text), 'PAY-07: the last notice before the cap says the rest stay in the SMS list');
+  ok((await row("SELECT COUNT(*) c FROM sms_log WHERE result = 'not_deposit' AND body LIKE '%تراکنش موفق%'")).c === 9, 'PAY-07: every one is still logged');
+  // a new hour: notices again
+  const st = JSON.parse((await row("SELECT value v FROM settings WHERE key = 'sms_unknown_notice'")).v);
+  await env.DB.prepare("UPDATE settings SET value = ? WHERE key = 'sms_unknown_notice'").bind(JSON.stringify({ ...st, t: st.t - 3601 })).run();
+  n = fakes.tg.messages.length;
+  await sms('بانک نمونه\nتراکنش موفق\n3,333,330');
+  ok(notices(n).length === 1, 'PAY-07: an hour later the admin is told again');
+
+  // card auto-confirm on with no trusted bank sender: the payment screen says what to tap
+  await botSet('card_number', '6037991234567893'); await botSet('card_auto', 'auto');
+  const keep = (await row("SELECT value v FROM settings WHERE key = 'sms_senders'") || {}).v || '';
+  await env.DB.prepare("UPDATE settings SET value = '' WHERE key = 'sms_senders'").run();
+  let pay = await S.payments(env);
+  ok(/هیچ فرستنده‌ی بانکی مورد اعتماد نیست/.test(pay.text) && pay.text.includes('این فرستنده بانک من است'), 'PAY-07: auto on + no trusted sender -> the payment screen explains the one tap that fixes it');
+  await env.DB.prepare("UPDATE settings SET value = '09100' WHERE key = 'sms_senders'").run();
+  pay = await S.payments(env);
+  ok(!/هیچ فرستنده‌ی بانکی مورد اعتماد نیست/.test(pay.text), 'PAY-07: with a trusted sender the hint is gone');
+  await env.DB.prepare("UPDATE settings SET value = ? WHERE key = 'sms_senders'").bind(keep).run();
+}
+
+// ================= Wave 2 audit fixes (PNL-01, PNL-02, CF-02, SEC-02): each on a fresh database =================
+// world(tag, n): a fresh database with n PasarGuard panels (1 = the env panel, the others active), its own env
+async function world(tag, n = 2, kinds = []) {
+  const bases = Array.from({ length: n }, (_, i) => `http://${tag}-p${i + 1}.test`);
+  const pgs = bases.map((b, i) => fakes.addPanel(b, `${tag}${i + 1}.example.net`, kinds[i] || 'pasarguard'));
+  const e = { ...env, DB: makeDB(new URL('../migrations/0001_init.sql', import.meta.url).pathname), PASARGUARD_URL: bases[0] };
+  e.DB.onQuery = env.DB.onQuery;
+  for (let i = 1; i < n; i++) {
+    e[`W_${tag}_${i + 1}`] = JSON.stringify({ url: bases[i], username: 'adm', password: 'pw' });
+    await e.DB.prepare("INSERT INTO panels (id, kind, label, cred_ref, state, rollout_percent, created_at) VALUES (?, ?, ?, ?, 'active', 100, 1)")
+      .bind(i + 1, kinds[i] || 'pasarguard', `p${i + 1}`, `W_${tag}_${i + 1}`).run();
+  }
+  const callW = async (method, path, { token, json: j, headers = {}, cf } = {}) => {
+    const h = { ...headers };
+    if (token) h.authorization = 'Bearer ' + token;
+    if (j !== undefined) h['content-type'] = 'application/json';
+    const req = new Request('https://api.test' + path, { method, headers: h, body: j === undefined ? undefined : JSON.stringify(asTelegram(j)) });
+    if (cf) Object.defineProperty(req, 'cf', { value: cf });
+    const res = await worker.fetch(req, e, ctx);
+    await drain();
+    let data = null;
+    try { data = await res.clone().json(); } catch (x) { /* not json */ }
+    return { status: res.status, data };
+  };
+  const bot = (text) => callW('POST', '/tg/hook', { headers: TG, json: { message: { chat: { id: 12345 }, text } } });
+  const signupW = async (email) => (await callW('POST', '/api/v1/auth/register', { json: { email, password: 'password123', device_id: 'd-' + email, device_model: 'Pixel' } })).data.access_token;
+  const q = async (sql, ...a) => (await e.DB.prepare(sql).bind(...a).all()).results;
+  await e.DB.prepare("INSERT INTO plans (name, duration_days, data_limit_gb, device_limit, price_toman, is_active) VALUES ('Ten', 30, 10, 2, 100000, 1)").run();
+  const plan = (await q("SELECT * FROM plans WHERE name = 'Ten'"))[0];
+  return { e, pgs, bases, callW, bot, signupW, q, plan };
+}
+
+// counts writes of the learned exit-country map (its key is a bound value, not in the SQL text)
+function countExitWrites(e) {
+  const prep = e.DB.prepare;
+  let n = 0;
+  e.DB.prepare = (sql) => {
+    const stmt = prep.call(e.DB, sql);
+    if (/INSERT INTO settings/.test(sql)) { const b = stmt.bind.bind(stmt); stmt.bind = (...a) => { if (a[0] === 'server_exit_cc') n++; return b(...a); }; }
+    return stmt;
+  };
+  return { get n() { return n; }, stop() { e.DB.prepare = prep; } };
+}
+
+section('PNL-01: a panel answering HTML with 200 fails only itself; the purchase goes through and the other panel matches D1');
+{
+  const W = await world('pnl1', 2);
+  const tok = await W.signupW('h1@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'h1@example.com'))[0].id;
+  await W.bot(`/grant h1@example.com ${W.plan.id}`);
+  ok((await W.q('SELECT COUNT(*) c FROM panel_accounts WHERE user_id = ?', uid))[0].c === 2, 'PNL-01: an account on both panels to start with');
+  await W.e.DB.prepare('UPDATE users SET wallet_balance = ? WHERE id = ?').bind(W.plan.price_toman * 3, uid).run();
+  W.pgs[1].htmlFor = /^GET \/api\/user\//;
+  const buy = await W.callW('POST', '/api/v1/orders', { token: tok, json: { plan_id: W.plan.id, method: 'wallet' } });
+  W.pgs[1].htmlFor = null;
+  ok(buy.status === 201 && buy.data && buy.data.status === 'paid', 'PNL-01: the wallet renewal is paid although panel 2 answers HTML: ' + buy.status + ' ' + JSON.stringify(buy.data));
+  const sub = (await W.q('SELECT expires_at FROM subscriptions WHERE user_id = ?', uid))[0];
+  const p1 = Object.values(W.pgs[0].users).find((u) => (u.note || '').includes(`#${uid} `) || (u.note || '').endsWith(`#${uid}`));
+  ok(p1 && p1.expire === sub.expires_at, 'PNL-01: panel 1 expiry equals the D1 expiry (no drift): ' + (p1 && p1.expire) + ' vs ' + sub.expires_at);
+  const pa2 = (await W.q('SELECT dirty, desired_expire FROM panel_accounts WHERE user_id = ? AND panel_id = 2', uid))[0];
+  ok(pa2.dirty === 1 && pa2.desired_expire === sub.expires_at, 'PNL-01: panel 2 is left for the sync job with the new expiry: ' + JSON.stringify(pa2));
+  // the adapter turns a non-JSON body into a PasarGuardError instead of a SyntaxError
+  const { PasarGuard, PasarGuardError } = await import('../src/pasarguard.js');
+  const { Marzban } = await import('../src/marzban.js');
+  W.pgs[1].htmlFor = /^(GET|PUT|POST) \/api\//;
+  const pgA = new PasarGuard(W.e, { url: W.bases[1], username: 'adm', password: 'pw' });
+  let e1 = null; try { await pgA.getUser('nobody'); } catch (x) { e1 = x; }
+  ok(e1 instanceof PasarGuardError && e1.status === 200 && /not JSON|bad_json/i.test(e1.message + e1.detail), 'PNL-01: getUser on HTML -> PasarGuardError(200, bad_json): ' + (e1 && e1.constructor.name + ' ' + e1.message));
+  let e2 = null; try { await pgA.listUsage(0, 10); } catch (x) { e2 = x; }
+  ok(e2 instanceof PasarGuardError, 'PNL-01: a usage page of HTML is an error, not an empty page: ' + (e2 && e2.constructor.name));
+  let e3 = null; try { await new Marzban(W.e, { url: W.bases[1], username: 'adm', password: 'pw' })._complete('x', {}); } catch (x) { e3 = x; }
+  ok(e3 instanceof PasarGuardError, 'PNL-01: Marzban _complete on HTML -> PasarGuardError: ' + (e3 && e3.constructor.name));
+  W.pgs[1].htmlFor = null;
+}
+
+
+section('SEC-02: a free account cannot rename servers for everyone through /me/ip?k=, nor flood the learned map out');
+{
+  const W = await world('sec2', 1);
+  const { exitCountries, countryOfLink } = await import('../src/panels.js');
+  const { serverKey } = await import('../src/netstats.js');
+  const link = 'vless://00000000-0000-4000-8000-000000000000@x.example.org:443?security=tls#%F0%9F%87%A9%F0%9F%87%AA%20DE%201';
+  const k = serverKey(link);
+  const now = Math.floor(Date.now() / 1000);
+  const mk = async (em, { sub = true, keys = [k] } = {}) => {
+    const t = await W.signupW(em);
+    const id = (await W.q('SELECT id FROM users WHERE email = ?', em))[0].id;
+    if (sub) await W.e.DB.prepare("INSERT INTO subscriptions (user_id, pg_username, plan_id, expires_at, state, updated_at) VALUES (?, '', ?, ?, 'active', 0)").bind(id, W.plan.id, now + 86400).run();
+    if (keys) await W.e.DB.prepare('INSERT INTO user_skeys (user_id, keys, at) VALUES (?, ?, 0)').bind(id, JSON.stringify(Object.fromEntries(keys.map((x) => [x, 'x'])))).run();
+    return t;
+  };
+  const ask = async (tok, cc, key = k) => { globalThis.__cgExitVote = null; await W.callW('GET', '/api/v1/me/ip?k=' + key, { token: tok, cf: { country: cc } }); };
+  const map = async () => exitCountries(W.e);
+  const honest = [await mk('s2a@example.com'), await mk('s2b@example.com'), await mk('s2c@example.com')];
+  for (const t of honest) await ask(t, 'DE');
+  ok((await map())[k]?.cc === 'DE' && (await map())[k].n >= 2, 'SEC-02: three subscribed users who have the server confirm DE: ' + JSON.stringify((await map())[k]));
+  // the audit's PoC: a free account (no plan) asks three times from a US address
+  const free = await mk('s2free@example.com', { sub: false });
+  for (let i = 0; i < 3; i++) await ask(free, 'US');
+  ok((await map())[k].cc === 'DE' && !(await map())[k].pending && countryOfLink(link, await map()) === 'DE', 'SEC-02: a free account\'s reports do not count: ' + JSON.stringify((await map())[k]));
+  // a paying user, but for a server that is not one of theirs
+  const other = await mk('s2other@example.com', { keys: ['abcdef123456'] });
+  for (let i = 0; i < 3; i++) await ask(other, 'US');
+  ok((await map())[k].cc === 'DE' && !(await map())[k].pending, 'SEC-02: a server the user does not have is not theirs to report');
+  // a paying user who has the server, three times: one user is one vote
+  const one = await mk('s2one@example.com');
+  for (let i = 0; i < 3; i++) await ask(one, 'US');
+  ok((await map())[k].cc === 'DE', 'SEC-02: one user asking again and again is one vote: ' + JSON.stringify((await map())[k]));
+  // a second, different user agreeing does move it (the feature still works)
+  await ask(await mk('s2two@example.com'), 'US');
+  ok((await map())[k].cc === 'US', 'SEC-02: two different users with the server do move it: ' + JSON.stringify((await map())[k]));
+  // flood: 801 made-up keys from an account cannot push the real key out
+  const fake = Array.from({ length: 801 }, (_, i) => 'f' + String(i).padStart(9, '0'));
+  const flooder = await mk('s2flood@example.com', { keys: [k] });
+  for (const x of fake.slice(0, 40)) await ask(flooder, 'NL', x);
+  ok((await map())[k] && Object.keys(await map()).every((x) => !x.startsWith('f')), 'SEC-02: keys that are not the user\'s servers are never added');
+  // and one user asking many times in a row writes D1 at most once a minute
+  const rapid = await mk('s2rapid@example.com', { keys: [k] });
+  globalThis.__cgExitVote = null;
+  const cw = countExitWrites(W.e);
+  for (let i = 0; i < 5; i++) { await W.callW('GET', '/api/v1/me/ip?k=' + k, { token: rapid, cf: { country: ['FR', 'IT', 'ES', 'PL', 'SE'][i] } }); }
+  cw.stop();
+  const writes = cw.n;
+  ok(writes === 1, 'SEC-02: rapid reports from one user are throttled: ' + writes + ' writes');
+}
+
+section('CF-02: bot work on slow panels finishes inside the 30 s waitUntil window and still reports to the admin');
+{
+  const W = await world('cf2', 3);
+  await W.signupW('cf2@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'cf2@example.com'))[0].id;
+  // simulated clock: each call to a slow panel takes 7 s, unless the caller's deadline is shorter (then it times out)
+  let skew = 0;
+  const realNow = Date.now, realTimeout = AbortSignal.timeout, realFetch = globalThis.fetch;
+  Date.now = () => realNow() + skew;
+  AbortSignal.timeout = (ms) => { const sg = realTimeout.call(AbortSignal, ms); sg.__ms = ms; return sg; };
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (W.bases.some((b) => url.startsWith(b + '/'))) {
+      const lim = init.signal && init.signal.__ms != null ? init.signal.__ms : Infinity;
+      if (lim < 7000) { skew += Math.max(0, lim); throw new DOMException('The operation timed out.', 'TimeoutError'); }
+      skew += 7000;
+    }
+    return realFetch(input, init);
+  };
+  const n = fakes.tg.messages.length;
+  let elapsed;
+  try {
+    const t0 = skew;
+    await W.bot(`/grant cf2@example.com ${W.plan.id}`);
+    elapsed = skew - t0;
+  } finally { Date.now = realNow; AbortSignal.timeout = realTimeout; globalThis.fetch = realFetch; }
+  ok(elapsed <= 30000, 'CF-02: the bot\'s panel work ends inside the waitUntil window: ' + elapsed + ' ms (simulated)');
+  const sub = (await W.q('SELECT state FROM subscriptions WHERE user_id = ?', uid))[0];
+  ok(sub && sub.state === 'active', 'CF-02: the plan is given on the panel(s) that answered in time');
+  const pas = await W.q('SELECT panel_id, dirty, applied FROM panel_accounts WHERE user_id = ? ORDER BY panel_id', uid);
+  ok(pas.some((r) => r.panel_id === 1 && r.dirty === 0), 'CF-02: panel 1 done: ' + JSON.stringify(pas));
+  ok(fakes.tg.messages.length > n, 'CF-02: the admin hears the result');
+}
+
+section('PNL-02: an account made on a panel whose D1 write never happened is adopted on the next try, never doubled');
+{
+  const W = await world('pnl2', 2);
+  const mine = (pg, id) => Object.values(pg.users).filter((u) => (u.note || '') === `Pleat #${id}`);
+  // the invocation "ends" right after panel 2 created the account: the next D1 statement fails
+  const realFetch = globalThis.fetch, prep = W.e.DB.prepare, prepB = W.e.DB.batch;
+  let die = false;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    const r = await realFetch(input, init);
+    if (url === W.bases[1] + '/api/user' && (init.method || '') === 'POST' && r.status === 201) die = true;
+    return r;
+  };
+  W.e.DB.prepare = (sql) => { if (die) { die = false; throw new Error('invocation ended'); } return prep.call(W.e.DB, sql); };
+  W.e.DB.batch = (stmts) => { if (die) { die = false; return Promise.reject(new Error('invocation ended')); } return prepB.call(W.e.DB, stmts); };
+  await W.signupW('pn2@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'pn2@example.com'))[0].id;
+  try { await W.bot(`/grant pn2@example.com ${W.plan.id}`); }
+  finally { globalThis.fetch = realFetch; W.e.DB.prepare = prep; W.e.DB.batch = prepB; }
+  ok(mine(W.pgs[1], uid).length === 1, 'PNL-02: the account exists on panel 2 after the cut');
+  // the next try (a renewal, the app opening, or the sync job) finds it instead of making a second one
+  await W.bot(`/grant pn2@example.com ${W.plan.id}`);
+  await runSync(W.e); await runSync(W.e);
+  const on2 = mine(W.pgs[1], uid);
+  const row = (await W.q('SELECT remote_username, applied, dirty, sub_path FROM panel_accounts WHERE user_id = ? AND panel_id = 2', uid))[0];
+  ok(on2.length === 1, 'PNL-02: still exactly one account on panel 2: ' + on2.map((u) => u.username));
+  ok(row && on2[0] && row.remote_username === on2[0].username && row.applied === 'active' && row.dirty === 0 && row.sub_path, 'PNL-02: D1 records that account: ' + JSON.stringify(row));
+  const sub = (await W.q('SELECT expires_at FROM subscriptions WHERE user_id = ?', uid))[0];
+  ok(on2[0] && on2[0].expire === sub.expires_at, 'PNL-02: the adopted account carries the current expiry: ' + (on2[0] && on2[0].expire) + ' vs ' + sub.expires_at);
+  ok(mine(W.pgs[0], uid).length === 1, 'PNL-02: panel 1 has one account too');
+
+  // a pending name that someone made by hand on the panel (no "Pleat #<id>" note) is never taken over
+  await W.signupW('pn2b@example.com');
+  const u2 = (await W.q('SELECT id FROM users WHERE email = ?', 'pn2b@example.com'))[0].id;
+  W.pgs[1].users['cg_handmade1'] = { id: 9901, username: 'cg_handmade1', status: 'active', expire: 0, data_limit: 0, used_traffic: 5, token: 'hm1', note: 'someone else' };
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, dirty, created_at) VALUES (?, 2, 'cg_handmade1', '', 'active', 'pending', 1, ?)").bind(u2, Math.floor(Date.now() / 1000)).run();
+  await W.bot(`/grant pn2b@example.com ${W.plan.id}`);
+  const r2 = (await W.q('SELECT remote_username, applied FROM panel_accounts WHERE user_id = ? AND panel_id = 2', u2))[0];
+  ok(W.pgs[1].users['cg_handmade1'].expire === 0 && W.pgs[1].users['cg_handmade1'].note === 'someone else', 'PNL-02: the hand-made account is left alone');
+  ok(r2.remote_username !== 'cg_handmade1' && r2.applied === 'active' && mine(W.pgs[1], u2).length === 1, 'PNL-02: the user gets an account of their own: ' + JSON.stringify(r2));
+
+  // the sync job settles intents nobody finished: an account that is the user's is adopted (and switched off when
+  // the plan is over); a name with no account is dropped
+  await W.signupW('pn2c@example.com');
+  const u3 = (await W.q('SELECT id FROM users WHERE email = ?', 'pn2c@example.com'))[0].id;
+  W.pgs[1].users['cg_orphan01'] = { id: 9902, username: 'cg_orphan01', status: 'active', expire: 0, data_limit: 0, used_traffic: 0, token: 'or1', note: `Pleat #${u3}` };
+  const old = Math.floor(Date.now() / 1000) - 7200;
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, dirty, created_at) VALUES (?, 2, 'cg_orphan01', '', 'stopped', 'pending', 1, ?)").bind(u3, old).run();
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, dirty, created_at) VALUES (?, 1, 'cg_never01', '', 'active', 'pending', 1, ?)").bind(u3, old).run();
+  await runSync(W.e); await runSync(W.e);
+  const r3 = await W.q('SELECT panel_id, remote_username, applied, dirty FROM panel_accounts WHERE user_id = ? ORDER BY panel_id', u3);
+  ok(r3.length === 1 && r3[0].panel_id === 2 && r3[0].applied === 'stopped' && r3[0].dirty === 0, 'PNL-02: the orphan is adopted and the never-made intent dropped: ' + JSON.stringify(r3));
+  ok(W.pgs[1].users['cg_orphan01'].status === 'disabled', 'PNL-02: an adopted orphan of a user without a plan is switched off on the panel');
+}
+
+// QA-02: the error and odd-input branches of the money and panel paths, each checked for what it must do
+// unit(handler): run fn with requests to https://unit.test answered by handler(method, path, body, init)
+async function withUnit(handler, fn) {
+  const realFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (url.startsWith('https://unit.test')) {
+      const path = url.slice('https://unit.test'.length);
+      const method = (init.method || 'GET').toUpperCase();
+      seen.push(`${method} ${path}`);
+      const out = await handler(method, path, init.body, init);
+      if (out instanceof Response) return out;
+      if (out && out.throw) throw out.throw;
+      const [status, body, headers] = out;
+      return new Response(status === 204 ? null : typeof body === 'string' ? body : JSON.stringify(body), { status, headers: headers || { 'content-type': 'application/json' } });
+    }
+    return realFetch(input, init);
+  };
+  try { return await fn(seen); } finally { globalThis.fetch = realFetch; }
+}
+const catchErr = async (p) => { try { await p; return null; } catch (e) { return e; } };
+
+section('QA-02: NOWPayments: gateway switch, dollar maths, invoice errors and IPN signatures');
+{
+  const np = await import('../src/nowpayments.js');
+  ok(!np.gatewayReady({}, { usdt_rate_toman: '100000' }), 'no API key: not offered');
+  ok(!np.gatewayReady({ NOWPAYMENTS_API_KEY: 'k' }, { usdt_rate_toman: '0' }), 'a 0 dollar rate: not offered (no 0-dollar invoice)');
+  ok(!np.gatewayReady({ NOWPAYMENTS_API_KEY: 'k' }, { usdt_rate_toman: '100000', pay_crypto_on: ' 0 ' }), 'switched off: not offered');
+  ok(np.gatewayReady({ NOWPAYMENTS_API_KEY: 'k' }, { usdt_rate_toman: '100000' }), 'key + rate + no switch setting: on by default');
+  ok(np.tomanToUsd(500000, 0) === 0 && np.tomanToUsd(1, 100000) === 1 && np.tomanToUsd(250001, 100000) === 3, 'toman -> dollars: 0 without a rate, at least 1, rounded up');
+  // invoice: the pay currency is passed on; a refusal is an error carrying the status, never a fake invoice
+  const before = fakes.np.invoices.length;
+  const inv = await np.createInvoice({ NOWPAYMENTS_API_KEY: 'k', NOWPAYMENTS_PAY_CURRENCY: 'usdttrc20' }, 77, 5, 'plan');
+  const sent = fakes.np.invoices[before];
+  ok(inv.id && sent.pay_currency === 'usdttrc20' && sent.ipn_callback_url === '/api/v1/payments/nowpayments/ipn', 'invoice: pay currency set, relative callback without PUBLIC_BASE_URL');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => (String(typeof input === 'string' ? input : input.url).includes('api.nowpayments.io') ? new Response('{"message":"Invalid api key"}', { status: 403 }) : realFetch(input, init));
+  const e403 = await catchErr(np.createInvoice({ NOWPAYMENTS_API_KEY: 'bad' }, 78, 5, 'plan'));
+  globalThis.fetch = realFetch;
+  ok(e403 && /NOWPayments error 403/.test(e403.message), 'invoice refused -> error with the status: ' + (e403 && e403.message));
+  // IPN: keys are sorted recursively (arrays too) before the HMAC
+  const payload = { payment_status: 'finished', order_id: '9', fee: { currency: 'usd', depositFee: 0 }, outcomes: [{ b: 2, a: 1 }] };
+  const canon = '{"fee":{"currency":"usd","depositFee":0},"order_id":"9","outcomes":[{"a":1,"b":2}],"payment_status":"finished"}';
+  const sig = await hmacSha512Hex('np-secret', canon);
+  const okP = await np.verifyIpn({ NOWPAYMENTS_IPN_SECRET: 'np-secret' }, JSON.stringify(payload), sig);
+  ok(okP.order_id === '9', 'IPN with a valid signature over sorted keys (nested object and array) is accepted');
+  ok(/bad json/.test((await catchErr(np.verifyIpn({ NOWPAYMENTS_IPN_SECRET: 'np-secret' }, '{not json', sig))).message), 'IPN that is not JSON -> bad json');
+  ok(/bad signature/.test((await catchErr(np.verifyIpn({ NOWPAYMENTS_IPN_SECRET: 'np-secret' }, JSON.stringify(payload), ''))).message), 'IPN without a signature -> refused');
+  ok(/bad signature/.test((await catchErr(np.verifyIpn({ NOWPAYMENTS_IPN_SECRET: 'np-secret' }, JSON.stringify({ ...payload, order_id: '10' }), sig))).message), 'IPN with a changed field -> refused');
+  ok(np.PAID_STATES.has('confirmed') && !np.PAID_STATES.has('partially_paid') && np.FAILED_STATES.has('refunded'), 'only finished/confirmed pay; partially_paid does not');
+}
+
+section('QA-02: bank SMS: forwarder formats, odd texts, every outcome of an SMS');
+{
+  const W = await world('qasms', 1);
+  const sms = await import('../src/sms.js');
+  const key = await sms.smsKey(W.e);
+  ok(key === await sms.smsKey(W.e) && /^[0-9a-f]{24}$/.test(key), 'the SMS key is made once and kept');
+  const hook = (body, k = key, ct = 'application/json') => sms.smsWebhook(W.e, new Request('https://api.test/sms', { method: 'POST', headers: { 'content-type': ct }, body }), k).then((r) => r.json());
+  ok((await catchErr(hook('{}', 'wrong'))).status === 404, 'a wrong key is a 404');
+  ok((await hook(JSON.stringify({ number: '0912', body: '' }))).result === 'empty', 'JSON with no text: nothing to do');
+  // every field name the forwarder apps use reaches the parser
+  const tries = [
+    JSON.stringify({ sender: 'b1', message: 'سلام' }), JSON.stringify({ number: 'b2', body: 'test 1' }), JSON.stringify({ address: 'b3', msg: 'test 2' }),
+    JSON.stringify({ phone: 'b4', content: 'test 3' }),
+  ];
+  for (const t of tries) ok((await hook(t)).result === 'not_deposit', 'forwarder JSON field names read: ' + t);
+  ok((await hook('sender=b5&message=' + encodeURIComponent('test 4'), key, 'application/x-www-form-urlencoded')).result === 'not_deposit', 'form-encoded sender/message read');
+  ok((await hook('just a plain text body 5', key, 'text/plain')).result === 'not_deposit', 'a plain text body is the SMS itself');
+  // the parser on odd lines
+  const p0 = sms.parseBankSms('واریز 0,000,000 ریال');
+  ok(p0.deposit && p0.amounts.length === 0, 'a zero amount is no amount');
+  const pAcct = sms.parseBankSms('واریز به حساب 1234567890123 مبلغ 1,250,000 ریال');
+  ok(pAcct.amounts.join() === '1250000', 'a long account number on the line is not an amount: ' + pAcct.amounts);
+  const pMinus = sms.parseBankSms('واریز\n-1,000,000\n+2,500,000');
+  ok(pMinus.amounts.join() === '2500000', 'a minus amount is money leaving: ' + pMinus.amounts);
+  const pPlus = sms.parseBankSms('حساب 123\n3,750,000+\nمانده 9,999,999');
+  ok(pPlus.deposit && pPlus.amounts.join() === '3750000', 'a trailing plus marks the deposit; the balance is not an amount: ' + JSON.stringify(pPlus));
+  const pToman = sms.parseBankSms('واریز 150,000 تومان');
+  ok(pToman.toman.join() === '150000', 'a line saying تومان is toman');
+  const pBoth = sms.parseBankSms('واریز 150,000 تومان ریال');
+  ok(pBoth.toman.length === 0, 'a line saying both تومان and ریال is never read as toman');
+  ok(!sms.maybeDeposit('برداشت 1,000,000') && !sms.maybeDeposit('رمز پویا 123456') && sms.maybeDeposit('new format 1,250,000') && !sms.maybeDeposit('hi 12'), 'maybeDeposit: withdrawals and one-time codes never, money-looking numbers yes');
+  ok(sms.normSender('+98 912-000 0000') === '09120000000' && sms.normSender('۰۰۹۸۹۱۲') === '0912', 'sender numbers made uniform');
+
+  // outcomes with orders
+  const now = Math.floor(Date.now() / 1000);
+  const tok = await W.signupW('qasms@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'qasms@example.com'))[0].id;
+  const order = async (toman, status = 'pending') => (await W.e.DB.prepare("INSERT INTO orders (user_id, kind, plan_id, amount_toman, method, status, created_at) VALUES (?, 'plan', ?, ?, 'card', ?, ?)").bind(uid, W.plan.id, toman, status, now).run()).meta.last_row_id;
+  const msgs = () => fakes.tg.messages.length;
+  let n = msgs();
+  ok((await sms.handleBankSms(W.e, { sender: 'bank', text: 'واریز به حساب شما' })).result === 'no_order' && msgs() > n, 'a deposit with no amount: the admin is told to look');
+  const o1 = await order(123457);
+  const o2 = await order(123457);
+  n = msgs();
+  ok((await sms.handleBankSms(W.e, { sender: 'bank', text: 'واریز 1,234,570 ریال' })).result === 'ambiguous', 'two orders with the amount: never by itself');
+  ok(JSON.stringify(fakes.tg.messages.slice(n)).includes(`ap:${o1}`) && JSON.stringify(fakes.tg.messages.slice(n)).includes(`ap:${o2}`), 'both get an approve button');
+  await W.e.DB.prepare("UPDATE orders SET status = 'cancelled' WHERE id IN (?, ?)").bind(o1, o2).run();
+  const o3 = await order(222223);
+  n = msgs();
+  const r3 = await sms.handleBankSms(W.e, { sender: 'bank', text: 'واریز 2,222,230 ریال\nواریز 5,000,000 ریال' });
+  ok(r3.result === 'ambiguous' && /چند مبلغ/.test(fakes.tg.messages[n].text), 'two deposit amounts in one SMS: the admin decides: ' + r3.result);
+  // no sender at all and auto off: review without a "trust this sender" button
+  await W.e.DB.prepare("INSERT INTO settings (key, value) VALUES ('card_auto', 'off') ON CONFLICT(key) DO UPDATE SET value = 'off'").run();
+  const o4 = await order(333334);
+  n = msgs();
+  const r4 = await sms.handleBankSms(W.e, { sender: '', text: 'واریز 3,333,340 ریال', trusted: true });
+  const kb4 = JSON.stringify(fakes.tg.messages[n].reply_markup);
+  ok(r4.result === 'review' && kb4.includes(`ap:${o4}`) && !kb4.includes('ts:'), 'auto off: review even from the bank, no trust button without a sender');
+  ok((await W.q('SELECT status FROM orders WHERE id = ?', o4))[0].status === 'review', 'the order waits for the admin');
+  // auto on, trusted sender, but delivery fails: settle_failed, the SMS is not marked paid
+  await W.e.DB.prepare("UPDATE settings SET value = 'auto' WHERE key = 'card_auto'").run();
+  const o5 = await order(444445);
+  W.pgs[0].down = true;
+  const r5 = await sms.handleBankSms(W.e, { sender: 'bank', text: 'واریز 4,444,450 ریال', trusted: true });
+  W.pgs[0].down = false;
+  ok(r5.result === 'settle_failed' && r5.orderId === o5 && r5.message, 'delivery failing after a matched SMS: settle_failed with the reason: ' + JSON.stringify(r5));
+  ok((await W.q("SELECT result FROM sms_log WHERE amount_rial = 4444450"))[0].result === 'settle_failed', 'the SMS log says settle_failed (it can be approved by hand)');
+  // unreadable SMS that may be money: at most 5 notices an hour, the 5th says so
+  n = msgs();
+  for (let i = 0; i < 7; i++) await sms.handleBankSms(W.e, { sender: 'b', text: `unknown format ${i} 1,${i}00,000` });
+  const notes = fakes.tg.messages.slice(n).filter((m) => /نتوانستم بخوانم/.test(m.text));
+  ok(notes.length === 5 && /تا یک ساعت دیگر/.test(notes[4].text), 'unreadable SMS notices stop at 5 an hour: ' + notes.length);
+  await W.e.DB.prepare("UPDATE settings SET value = 'not json' WHERE key = 'sms_unknown_notice'").run();
+  n = msgs();
+  await sms.handleBankSms(W.e, { sender: 'b', text: 'unknown format again 7,700,000' });
+  ok(fakes.tg.messages.slice(n).some((m) => /نتوانستم بخوانم/.test(m.text)), 'an unreadable counter starts over');
+  ok((await sms.handleBankSms(W.e, { sender: 'b', text: 'unknown format again 7,700,000', source: 'paste' })).result === 'duplicate', 'the same SMS again is a duplicate');
+  void tok;
+}
+
+section('QA-02: on-chain watchers drop everything that is not a confirmed native incoming transfer');
+{
+  const cw = await import('../src/chainwatch.js');
+  const A = 'GADDR';
+  ok(cw.toUnits('5', 6) === 5000000n && cw.toUnits('0.1234567', 6) === 123456n && cw.toUnits('.5', 2) === 50n, 'toUnits: whole, cut to precision, no integer part');
+  globalThis.__chain = { xlm: [], xrp: [], trx: [], ton: [], algo: [] };
+  const ch = globalThis.__chain;
+  // Stellar: only native payments to this address that succeeded
+  ch.xlm.push(
+    { type: 'payment', to: A, asset_type: 'native', amount: '1.5', transaction_hash: 'x1', created_at: '2026-11-01T00:00:00Z', transaction: { memo: 42 } },
+    { type: 'payment', to: A, asset_type: 'credit_alphanum4', amount: '9', transaction_hash: 'x2', created_at: '2026-11-01T00:00:00Z' },
+    { type: 'payment', to: 'OTHER', asset_type: 'native', amount: '9', transaction_hash: 'x3', created_at: '2026-11-01T00:00:00Z' },
+    { type: 'create_account', to: A, asset_type: 'native', amount: '9', transaction_hash: 'x4', created_at: '2026-11-01T00:00:00Z' },
+    { type: 'payment', to: A, asset_type: 'native', amount: '9', transaction_hash: 'x5', created_at: '2026-11-01T00:00:00Z', transaction_successful: false },
+  );
+  const xl = await cw.WATCHERS.xlm.incoming(A);
+  ok(xl.length === 1 && xl[0].txid === 'x1' && xl[0].memo === '42' && xl[0].units === 15000000n, 'XLM: tokens, other receivers, other types and failed ones dropped: ' + xl.map((t) => t.txid));
+  // XRP: validated tesSUCCESS Payment to us, delivered in drops (string), never an IOU object
+  ch.xrp.push(
+    { validated: true, tx: { TransactionType: 'Payment', Destination: A, hash: 'r1', DestinationTag: 7, date: 1 }, meta: { TransactionResult: 'tesSUCCESS', delivered_amount: '2000000' } },
+    { validated: false, tx: { TransactionType: 'Payment', Destination: A, hash: 'r2' }, meta: { TransactionResult: 'tesSUCCESS', delivered_amount: '1' } },
+    { validated: true, tx_json: { TransactionType: 'Payment', Destination: A, hash: 'r3' }, meta: { TransactionResult: 'tecPATH_DRY', delivered_amount: '1' } },
+    { validated: true, tx: { TransactionType: 'Payment', Destination: A, hash: 'r4' }, meta: { TransactionResult: 'tesSUCCESS', delivered_amount: { currency: 'USD', value: '5' } } },
+    { validated: true, hash: 'r5', tx_json: { TransactionType: 'Payment', Destination: A }, meta: { TransactionResult: 'tesSUCCESS', DeliveredAmount: '3' } },
+    { validated: true, tx: { TransactionType: 'OfferCreate', Destination: A, hash: 'r6' }, meta: {} },
+    { validated: true },
+  );
+  const xr = await cw.WATCHERS.xrp.incoming(A);
+  ok(xr.map((t) => t.txid).join() === 'r1,r5' && xr[0].memo === '7' && xr[1].memo === '' && xr[1].units === 3n, 'XRP: unvalidated, failed, IOU and non-payments dropped; DeliveredAmount spelling read: ' + xr.map((t) => t.txid));
+  // TRON: only successful TransferContract
+  ch.trx.push(
+    { txID: 't1', ret: [{ contractRet: 'SUCCESS' }], raw_data: { contract: [{ type: 'TransferContract', parameter: { value: { amount: 1000000 } } }] }, block_timestamp: 5000 },
+    { txID: 't2', ret: [{ contractRet: 'REVERT' }], raw_data: { contract: [{ type: 'TransferContract', parameter: { value: { amount: 1 } } }] } },
+    { txID: 't3', ret: [{ contractRet: 'SUCCESS' }], raw_data: { contract: [{ type: 'TriggerSmartContract', parameter: { value: {} } }] } },
+    { txID: 't4' }, { txID: 't5', ret: [], raw_data: {} },
+  );
+  const tr = await cw.WATCHERS.trx.incoming(A);
+  ok(tr.map((t) => t.txid).join() === 't1' && tr[0].time === 5, 'TRON: failed, token contracts and malformed rows dropped');
+  // TON: an incoming value from a source; bounced and empty ones dropped; the comment read from msg_data too
+  ch.ton.push(
+    { in_msg: { source: 'S1', value: '3000000000', message: 'memo1' }, transaction_id: { hash: btoa('\x01\x02') }, utime: 9 },
+    { in_msg: { source: 'S2', value: '1000', msg_data: { text: btoa('memo2') } }, transaction_id: { hash: 'not base64 ***' } },
+    { in_msg: { source: '', value: '5' } },
+    { in_msg: { source: 'S3', value: '0' } },
+    { in_msg: { source: 'S4', value: '7' }, out_msgs: [{ destination: 'S4', value: '7' }] },
+    { in_msg: { source: 'S5', value: '8', msg_data: { text: '%%%' } }, out_msgs: [{ destination: 'S5', value: '0' }] },
+    {},
+  );
+  const tn = await cw.WATCHERS.ton.incoming(A);
+  ok(tn.length === 3 && tn[0].txid === '0102' && tn[0].memo === 'memo1' && tn[1].memo === 'memo2' && tn[1].txid === 'not base64 ***' && tn[2].memo === '', 'TON: external, empty and bounced dropped; hash as hex; comment from msg_data: ' + JSON.stringify(tn.map((t) => [t.txid, t.memo])));
+  // Algorand: confirmed payments to us; note is base64
+  ch.algo.push(
+    { id: 'a1', 'confirmed-round': 10, 'payment-transaction': { receiver: A, amount: 500 }, note: btoa(' hi '), 'round-time': 3 },
+    { id: 'a2', 'payment-transaction': { receiver: A, amount: 1 } },
+    { id: 'a3', 'confirmed-round': 11, 'payment-transaction': { receiver: 'X', amount: 1 } },
+    { id: 'a4', 'confirmed-round': 12 },
+    { id: 'a5', 'confirmed-round': 13, 'payment-transaction': { receiver: A, amount: 2 } },
+  );
+  const al = await cw.WATCHERS.algo.incoming(A);
+  ok(al.map((t) => t.txid).join() === 'a1,a5' && al[0].memo === 'hi' && al[1].memo === '' && al[1].time === 0, 'Algorand: unconfirmed, others and non-payments dropped');
+  // a chain API that answers an error is an error (the order waits for the next minute), not "no payments"
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init) => (String(typeof input === 'string' ? input : input.url).startsWith('https://horizon.stellar.org/') ? new Response('down', { status: 503 }) : real(input, init));
+  const e503 = await catchErr(cw.WATCHERS.xlm.incoming(A));
+  globalThis.fetch = real;
+  ok(e503 && /HTTP 503/.test(e503.message), 'XLM API 503 -> error: ' + (e503 && e503.message));
+  globalThis.__chain = { xlm: [], xrp: [], trx: [], ton: [], algo: [] };
+  // mode and the quick check's early answers
+  const W = await world('qacw', 1);
+  ok(await cw.autoMode(W.e) === 'auto', 'mode: auto by default');
+  await W.e.DB.prepare("INSERT INTO settings (key, value) VALUES ('coin_auto', ' Bogus ')").run();
+  ok(await cw.autoMode(W.e) === 'auto', 'an unknown mode reads as auto');
+  await W.e.DB.prepare("UPDATE settings SET value = 'off' WHERE key = 'coin_auto'").run();
+  ok((await cw.scanAll(W.e)).length === 0, 'off: the cron scans nothing');
+  const ord = { id: 1, method: 'coin', coin: 'xlm', status: 'pending' };
+  ok(await cw.checkOrder(W.e, ord) === null, 'off: the quick check does nothing');
+  await W.e.DB.prepare("UPDATE settings SET value = 'detect' WHERE key = 'coin_auto'").run();
+  ok(await cw.checkOrder(W.e, { ...ord, status: 'review', txid: 'x' }) === null, 'detect: an order already matched waits for the admin');
+  ok(await cw.checkOrder(W.e, { ...ord, coin: 'btc' }) === null && await cw.checkOrder(W.e, { ...ord, method: 'card' }) === null && await cw.checkOrder(W.e, null) === null, 'not a watched coin order: nothing');
+  ok(await cw.checkOrder(W.e, { ...ord, id: 999999 }) === null, 'an order that is not open: nothing');
+  ok((await cw.scanAll(W.e)).length === 0, 'no open coin orders: nothing to scan');
+}
+
+section('QA-02: panel adapters: logins, refusals, fallbacks and odd answers');
+{
+  const { PasarGuard, PasarGuardError, parseExpire, panelBases, decodeSub } = await import('../src/pasarguard.js');
+  const { Marzban, Rebecca, detectKind } = await import('../src/marzban.js');
+  const C = { url: 'https://unit.test/hub/#/login', username: 'u', password: 'p' };
+  const fresh = (Cls = PasarGuard, c = C) => { globalThis.__cgPg = {}; return new Cls({}, c); };
+  ok(parseExpire(null) === null && parseExpire(0) === null && parseExpire('') === null && parseExpire(12.7) === 12 && parseExpire('1700000000') === 1700000000, 'parseExpire: never, numbers, digits');
+  ok(parseExpire('2026-01-01T00:00:00') === 1767225600 && parseExpire('2026-01-01T03:30:00+03:30') === 1767225600 && parseExpire('soon') === null, 'parseExpire: ISO is UTC unless it says otherwise; junk is null');
+  ok(panelBases('').length === 0 && panelBases('p.example.com/hub/#/login').join() === 'https://p.example.com,https://p.example.com/hub' && panelBases('https://[bad').length === 1, 'panelBases: empty, no scheme + sub-path, unparsable');
+  ok(decodeSub('').length === 0 && decodeSub('@@not base64@@').length === 0 && decodeSub(btoa('vless://a@b:1#x\nhello')).join() === 'vless://a@b:1#x', 'decodeSub: empty, junk, base64 lines');
+  // login: no password; a panel that says no; one without a token; then a sub-path that works
+  ok(/username\/password are not set/.test((await catchErr(fresh(PasarGuard, { url: 'https://unit.test' })._login())).message), 'no login in the secret: says so');
+  ok(/address is not set/.test((await catchErr(fresh(PasarGuard, { url: '' })._req('GET', '/x'))).message), 'no address: says so');
+  await withUnit((m, p) => (p === '/api/admin/token' ? [401, { detail: 'Incorrect username or password' }] : [500, 'x']), async () => {
+    const e = await catchErr(fresh()._login());
+    ok(e instanceof PasarGuardError && e.status === 401 && /Incorrect username/.test(e.message), 'login rejected: the panel\'s own reason: ' + (e && e.message));
+  });
+  await withUnit((m, p) => (p === '/api/admin/token' ? [200, { nope: 1 }] : p === '/hub/api/admin/token' ? [502, '<html>bad gateway</html>', { 'content-type': 'text/html' }] : [500, 'x']), async () => {
+    const e = await catchErr(fresh()._login());
+    ok(e instanceof PasarGuardError && /login failed \(502\)/.test(e.message), 'no token on the origin, 502 on the sub-path: the last failure is reported: ' + (e && e.message));
+  });
+  await withUnit((m, p) => (p === '/api/admin/token' ? { throw: new TypeError('connect refused') } : p === '/hub/api/admin/token' ? [200, { access_token: 'T' }] : p === '/hub/api/user/a' ? [200, { username: 'a' }] : [404, 'no']), async () => {
+    const pg = fresh();
+    ok((await pg.getUser('a')).username === 'a' && pg.base === 'https://unit.test/hub', 'an unreachable origin falls through to the pasted sub-path');
+  });
+  // API key: no login at all; 401 is not retried with a new token
+  await withUnit((m, p, b, init) => [new Headers(init.headers).get('x-api-key') === 'K' ? 401 : 200, { detail: 'expired key' }], async (seen) => {
+    const e = await catchErr(fresh(PasarGuard, { url: 'https://unit.test', api_key: ' K ' }).modifyUser('a', {}));
+    ok(e && e.status === 401 && seen.length === 1 && !seen.some((s) => s.includes('token')), 'API key: sent as x-api-key, a 401 is final: ' + seen.join());
+  });
+  // a stale token: 401 once -> logs in again and repeats the call
+  let logins = 0, firstCall = true;
+  await withUnit((m, p) => {
+    if (p === '/api/admin/token') { logins++; return [200, { access_token: 'T' + logins }]; }
+    if (p === '/api/user/b') { if (firstCall) { firstCall = false; return [401, 'expired']; } return [200, { username: 'b' }]; }
+    return [404, 'no'];
+  }, async () => {
+    const pg = fresh(PasarGuard, { url: 'https://unit.test', username: 'u', password: 'p' });
+    ok((await pg.getUser('b')).username === 'b' && logins === 2, 'an expired token: logged in again and repeated: ' + logins);
+  });
+  // creates: strict panel -> lean retry; Marzban without inbounds; Marzban/Rebecca note retry; Rebecca without service
+  const creates = [];
+  let noInbounds = true;
+  await withUnit((m, p, b) => {
+    if (p === '/api/admin/token') return [200, { access_token: 'T' }];
+    if (p === '/api/user' && m === 'POST') { const j = JSON.parse(b); creates.push(j); return 'note' in j || 'proxy_settings' in j ? [422, { detail: 'extra fields' }] : [200, { username: j.username, subscription_url: '/sub/z' }]; }
+    if (p === '/api/inbounds') return [200, noInbounds ? { vless: [], trojan: [] } : { vless: [{ tag: 'v' }], ss: [] }];
+    if (p === '/api/user/m1') return [200, { username: 'm1', subscription_url: '/sub/m1' }];
+    if (p.startsWith('/api/v2/services')) return [200, { services: [{ id: 1, name: 'broken', broken: true }, { id: 2, name: 'nohosts', has_hosts: false }] }];
+    return [404, 'no'];
+  }, async () => {
+    const lean = await fresh().createUser('p1', { expire: 5, dataLimit: 6, groupIds: [1], hwidLimit: 2, note: 'n' });
+    ok(lean.username === 'p1' && creates.length === 2 && !('note' in creates[1]) && !('hwid_limit' in creates[1]), 'PasarGuard: a strict panel gets the bare minimum on the second try');
+    const mz = fresh(Marzban);
+    ok(/no inbounds/.test((await catchErr(mz.createUser('m0', {}))).message), 'Marzban without inbounds: refused before creating');
+    noInbounds = false;
+    const m1 = await mz.createUser('m1', { note: 'n' });
+    ok(m1.subscription_url === '/sub/z' && !('note' in creates[creates.length - 1]) && 'vless' in creates[creates.length - 1].proxies && !('ss' in creates[creates.length - 1].proxies), 'Marzban: note dropped on retry; only protocols that have inbounds');
+    ok((await mz._complete('m1', { username: 'm1' })).subscription_url === '/sub/m1' && (await mz._complete('zz', { username: 'zz' })).username === 'zz', 'Marzban: an answer without a link is completed by reading the user (or kept)');
+    ok(mz.usesGroups === false && (await mz.listGroups()).length === 0 && (await mz.deleteHwid()) === false && (await mz.hostRules()) === null, 'Marzban: no groups, no device list, no tunnel marks');
+    const rb = fresh(Rebecca);
+    ok(/needs a service/.test((await catchErr(rb.createUser('r0', { groupIds: [] }))).message), 'Rebecca without a service: refused with how to fix it');
+    const r1 = await rb.createUser('r1', { groupIds: [2], note: 'n' });
+    ok(r1.username === 'r1' && creates[creates.length - 1].service_id === 2 && !('note' in creates[creates.length - 1]), 'Rebecca: note dropped on retry');
+    const g = await rb.listGroups();
+    ok(g.length === 1 && g[0].id === 2, 'Rebecca: with no service that has hosts, the unbroken ones are offered: ' + JSON.stringify(g));
+  });
+  await withUnit((m, p, b) => {
+    if (p === '/api/admin/token') return [200, { access_token: 'T' }];
+    if (p === '/api/user' && m === 'POST') return [400, { detail: 'service 9 not found' }];
+    return [404, 'no'];
+  }, async (seen) => {
+    const e = await catchErr(fresh(Rebecca).createUser('r2', { groupIds: [9] }));
+    ok(e && /service 9 not found/.test(e.message) && seen.filter((s) => s === 'POST /api/user').length === 1, 'Rebecca: a refusal about the service is not retried');
+  });
+  // groups: reseller fallback; a refusal that is not about rights is passed on
+  await withUnit((m, p) => (p === '/api/admin/token' ? [200, { access_token: 'T' }] : p === '/api/groups' ? [500, 'db down'] : [404, 'no']), async () => {
+    ok((await catchErr(fresh().listGroups())).status === 500, 'groups: a 500 is an error, not an empty list');
+  });
+  // detection: nothing recognisable -> null kind with what was seen
+  await withUnit((m, p) => (p === '/api/admin/token' ? [200, { access_token: 'T' }] : p === '/api/inbounds' ? [200, '[1]'] : p.startsWith('/api/groups/simple') ? [200, '<html>', { 'content-type': 'text/html' }] : [404, 'no']), async () => {
+    const d = await detectKind(fresh());
+    ok(d.kind === null && /\/api\/v2\/services 404/.test(d.detail) && /\/api\/inbounds 200/.test(d.detail), 'detectKind: nothing matched -> null with the statuses seen: ' + d.detail);
+  });
+  // version, hosts, HWID, subscription fallbacks
+  await withUnit((m, p) => {
+    if (p === '/api/admin/token') return [200, { access_token: 'T' }];
+    if (p === '/api/system') return [503, 'busy'];
+    if (p === '/api/user/h') return [200, { id: 5, username: 'h' }];
+    if (p === '/api/user/none') return [404, 'no'];
+    if (p.startsWith('/api/user/5/hwids/')) return [204, ''];
+    if (p === '/sub/t/links') return [500, 'no'];
+    if (p === '/sub/t') return [200, btoa('trojan://x@y:1#a')];
+    if (p === '/sub/bad') return [403, 'forbidden'];
+    if (p === '/sub/bad/links') return { throw: new TypeError('reset') };
+    return [404, 'no'];
+  }, async () => {
+    const pg = fresh(PasarGuard, { url: 'https://unit.test', username: 'u', password: 'p' });
+    ok(await pg.version() === null, 'version: a panel that does not say -> null');
+    ok(await pg.deleteHwid('h', 'dev 1') === true && await pg.deleteHwid('none', 'x') === false, 'HWID: freed on a known user, false on an unknown one');
+    ok((await pg.subscriptionLinks('/sub/t')).join() === 'trojan://x@y:1#a', 'links: /links fails -> the raw subscription is decoded');
+    const e = await catchErr(pg.subscriptionLinks('/sub/bad'));
+    ok(e instanceof PasarGuardError && e.status === 403, 'links: both fail -> error with the status');
+    ok(/no subscription url/.test((await catchErr(pg.subscriptionRaw(''))).message), 'raw subscription without a link: refused');
+    ok(pg.absoluteSubUrl('sub/x') === 'https://unit.test/sub/x' && pg.absoluteSubUrl('https://o.test/s') === 'https://o.test/s' && pg.absoluteSubUrl('') === '', 'sub links made absolute');
+    ok(pg.panelHosts().join() === 'unit.test', 'panel host names');
+  });
+}
+
+section('review of wave 2: a settled exit country is not rewritten; pending rows rotate, survive a race and adopt as stopped');
+{
+  // 1. a confirmed country with its voters full (or a legacy entry) is not rewritten by one more agreeing user
+  const W = await world('rev1', 2);
+  const { learnExitCountry } = await import('../src/panels.js');
+  let cw = countExitWrites(W.e);
+  for (const id of [1, 2, 3]) await learnExitCountry(W.e, 'abcdef1234', 'DE', id);
+  const w3 = cw.n;
+  await learnExitCountry(W.e, 'abcdef1234', 'DE', 4);
+  await learnExitCountry(W.e, 'abcdef1234', 'DE', 5);
+  cw.stop();
+  let writes = cw.n;
+  await W.e.DB.prepare("UPDATE settings SET value = ? WHERE key = 'server_exit_cc'").bind(JSON.stringify({ abcdef1234: { cc: 'DE', n: 3, v: [1, 2, 3] }, legacy99999: { cc: 'NL', n: 3 } })).run();
+  cw = countExitWrites(W.e);
+  await learnExitCountry(W.e, 'legacy99999', 'NL', 7);
+  cw.stop();
+  writes += cw.n;
+  ok(w3 === 3 && writes === 3, 'review 1: a settled country (3 voters, or a legacy entry) is not rewritten by another agreeing user: ' + writes + ' writes');
+
+  // 2. stale pending rows on a dead panel do not hold up the rest
+  const now = Math.floor(Date.now() / 1000), old = now - 7200;
+  const uids = [];
+  for (const em of ['rv2a@example.com', 'rv2b@example.com', 'rv2c@example.com']) { await W.signupW(em); uids.push((await W.q('SELECT id FROM users WHERE email = ?', em))[0].id); }
+  await W.e.DB.prepare("INSERT INTO panels (id, kind, label, cred_ref, state, rollout_percent, created_at) VALUES (9, 'pasarguard', 'dead', 'W_rev1_dead', 'disabled', 0, 1)").run();
+  W.e.W_rev1_dead = JSON.stringify({ url: 'http://rev1-dead.test', username: 'a', password: 'b' });
+  const dead = fakes.addPanel('http://rev1-dead.test', 'dead.example.net'); dead.down = true;
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, dirty, created_at) VALUES (?, 9, 'cg_dead1', '', 'active', 'pending', 1, ?), (?, 9, 'cg_dead2', '', 'active', 'pending', 1, ?), (?, 2, 'cg_gone1', '', 'active', 'pending', 1, ?)")
+    .bind(uids[0], old, uids[1], old, uids[2], old).run();
+  for (let i = 0; i < 3; i++) await runSync(W.e);
+  ok(!(await W.q("SELECT 1 FROM panel_accounts WHERE remote_username = 'cg_gone1'")).length, 'review 2: a stale intent behind two on a dead panel is still settled');
+  await W.e.DB.prepare('DELETE FROM panel_accounts WHERE panel_id = 9').run(); // the rest below on their own
+
+  // 4. an orphan of a user with no running plan (a refunded wallet buyer) is adopted switched off, never active
+  await W.signupW('rv4@example.com');
+  const u4 = (await W.q('SELECT id FROM users WHERE email = ?', 'rv4@example.com'))[0].id;
+  W.pgs[1].users['cg_refund01'] = { id: 9903, username: 'cg_refund01', status: 'active', expire: now + 30 * 86400, data_limit: 0, used_traffic: 0, token: 'rf1', note: `Pleat #${u4}` };
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, desired_expire, dirty, created_at) VALUES (?, 2, 'cg_refund01', '', 'active', 'pending', ?, 1, ?)").bind(u4, now + 30 * 86400, old).run();
+  await runSync(W.e); await runSync(W.e);
+  const r4 = (await W.q('SELECT desired, applied FROM panel_accounts WHERE user_id = ?', u4))[0];
+  ok(r4 && r4.desired === 'stopped' && W.pgs[1].users['cg_refund01'].status === 'disabled', 'review 4: adopted as stopped and switched off on the panel: ' + JSON.stringify(r4) + ' ' + W.pgs[1].users['cg_refund01'].status);
+
+  // 3. a purchase finishing a stale intent while the sync job settles it: the account keeps its D1 row
+  await W.signupW('rv3@example.com');
+  const u3 = (await W.q('SELECT id FROM users WHERE email = ?', 'rv3@example.com'))[0].id;
+  await W.e.DB.prepare("INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path, desired, applied, dirty, created_at) VALUES (?, 2, 'cg_race0001', '', 'active', 'pending', 1, ?)").bind(u3, old).run();
+  const realFetch = globalThis.fetch;
+  let raced = false;
+  globalThis.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : input.url;
+    if (!raced && url === W.bases[1] + '/api/user' && (init.method || '') === 'POST') { raced = true; await runSync(W.e); } // the sync job runs right before the create
+    return realFetch(input, init);
+  };
+  try { await W.bot(`/grant rv3@example.com ${W.plan.id}`); } finally { globalThis.fetch = realFetch; }
+  const on2 = Object.values(W.pgs[1].users).filter((u) => u.note === `Pleat #${u3}`);
+  const r3 = (await W.q('SELECT remote_username, applied FROM panel_accounts WHERE user_id = ? AND panel_id = 2', u3))[0];
+  ok(raced && on2.length === 1 && r3 && r3.remote_username === on2[0].username && r3.applied === 'active', 'review 3: the account made during the race has its row: ' + JSON.stringify(r3) + ' ' + on2.map((u) => u.username));
+  await runSync(W.e); await runSync(W.e);
+  ok(Object.values(W.pgs[1].users).filter((u) => u.note === `Pleat #${u3}`).length === 1, 'review 3: and no second account later');
+}
+
+section('MISC-06: an incident runbook exists and covers the single points of failure');
+{
+  const { readFileSync, existsSync } = await import('node:fs');
+  const f = new URL('../../docs/RUNBOOK.md', import.meta.url);
+  const rb = existsSync(f) ? readFileSync(f, 'utf8') : '';
+  const need = ['/health?deep=1', 'app_api_bases', 'JWT_SECRET', 'SECRET_KEY', 'TELEGRAM_CHAT_ID', 'APP_KEYSTORE', 'token_version', 'CF_ANALYTICS_TOKEN', 'RESTORE.md'];
+  ok(rb && need.every((w) => rb.includes(w)), 'MISC-06: docs/RUNBOOK.md names ' + need.filter((w) => !rb.includes(w)).join(', '));
+}
+
+section('ARC-06: the retired Cloud Gold app is gone from main, and nothing still points at it');
+{
+  const { existsSync, readFileSync, readdirSync } = await import('node:fs');
+  const at = (p) => new URL('../../' + p, import.meta.url);
+  const left = ['android', 'app-web', '.github/workflows/android.yml'].filter((p) => existsSync(at(p)));
+  ok(!left.length, 'ARC-06: android/, app-web/ and android.yml are deleted (git history keeps them): still there: ' + left.join(', '));
+  // what runs (workflows, Worker tests and scripts, the Mini App build) must not read the deleted folders
+  const files = [...readdirSync(at('.github/workflows/')).map((f) => '.github/workflows/' + f),
+    ...readdirSync(at('worker/test/')).map((f) => 'worker/test/' + f), ...readdirSync(at('worker/scripts/')).map((f) => 'worker/scripts/' + f),
+    'miniapp/build.mjs', 'flutter_vpn/docs/backend-map.md', 'flutter_vpn/lib/api/models.dart']
+    .filter((f) => f !== 'worker/test/run.mjs' && /\.(ya?ml|m?js|md|dart)$/.test(f));
+  const refs = files.filter((f) => /(?:^|[\s'"`(/.])app-web\/|\bandroid\.yml\b|CgVpn|\.\.\/\.\.\/android\//m.test(readFileSync(at(f), 'utf8')));
+  ok(!refs.length, 'ARC-06: no workflow, test, script or Pleat doc points at the retired app: ' + refs.join(', '));
+}
+
+section('CF-05: the Worker\'s error log survives the end of the request and a write that failed');
+{
+  // a fresh copy of the module, so the per-minute write budget other sections used up does not count here
+  const CFm = await import('../src/cfmon.js?cf05');
+  const tickF = () => new Promise((r) => setTimeout(r, 20));
+  await env.DB.prepare("DELETE FROM worker_errors WHERE message LIKE 'cf05%'").run();
+  // 1. the write is handed to ctx.waitUntil, so Cloudflare does not cancel it once the response is sent
+  const held = [];
+  CFm.recordError(env, 'cf05 kept alive', 'x', { waitUntil: (p) => held.push(p) });
+  await Promise.all(held);
+  ok(held.length === 1 && (await env.DB.prepare("SELECT COUNT(*) c FROM worker_errors WHERE message = 'cf05 kept alive'").first()).c === 1,
+    'CF-05: the error write is held open with ctx.waitUntil and lands: ' + held.length);
+  // 2. the write itself fails (the request is past its 50 queries, or D1 is out of writes): the error is kept in
+  //    the isolate and written by the next invocation, one row per invocation
+  const broken = { ...env, DB: { prepare: () => { throw new Error('Too many API requests by single worker invocation.'); } } };
+  const held2 = [];
+  CFm.recordError(broken, 'cf05 over the query cap', 'D1 refused', { waitUntil: (p) => held2.push(p) });
+  await Promise.all(held2); await tickF();
+  ok(!(await env.DB.prepare("SELECT 1 FROM worker_errors WHERE message = 'cf05 over the query cap'").first()), 'CF-05: nothing could be written by the failing invocation');
+  const held3 = [];
+  CFm.flushErrors(env, { waitUntil: (p) => held3.push(p) });
+  await Promise.all(held3);
+  const row = await env.DB.prepare("SELECT count FROM worker_errors WHERE message = 'cf05 over the query cap'").first();
+  ok(row && row.count === 1, 'CF-05: the next invocation writes the error the failed one could not: ' + JSON.stringify(row));
+  const held4 = [];
+  CFm.flushErrors(env, { waitUntil: (p) => held4.push(p) });
+  ok(!held4.length, 'CF-05: with nothing kept, the next invocation spends no query on it');
+  // 3. every request and cron run flushes (index.js), and the deploy warns when the Cloudflare alerts have no token
+  const { readFileSync } = await import('node:fs');
+  const idx = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
+  ok((idx.match(/flushErrors\(env, ctx\)/g) || []).length >= 2 && (idx.match(/recordError\(env, m, e, ctx\)/g) || []).length >= 2,
+    'CF-05: fetch and scheduled both hand ctx to the error log and flush what an earlier invocation kept');
+  const dep = readFileSync(new URL('../../.github/workflows/deploy-worker.yml', import.meta.url), 'utf8');
+  ok(/CF_ANALYTICS_TOKEN[\s\S]*::warning::[^\n]*CF_ANALYTICS_TOKEN/.test(dep), 'CF-05: Deploy says so when CF_ANALYTICS_TOKEN (the only alert that sees the Free-plan caps) is missing');
+  await env.DB.prepare("DELETE FROM worker_errors WHERE message LIKE 'cf05%'").run();
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
+
+section('ARC-07: the docs give the real size of this suite');
+{
+  const { readFileSync } = await import('node:fs');
+  const claims = ['../../AGENTS.md', '../../docs/PROJECT_HANDBOOK.md'].map((f) => {
+    const m = readFileSync(new URL(f, import.meta.url), 'utf8').match(/~([\d,]+) checks/);
+    return [f, m ? Number(m[1].replace(/,/g, '')) : 0];
+  });
+  const total = pass + fail + 1;
+  const off = claims.filter(([, n]) => !(n > total * 0.85 && n < total * 1.15));
+  ok(!off.length, `ARC-07: "~N checks" in AGENTS.md and the handbook is within 15% of the real ${total}: ` + off.map(([f, n]) => `${f}=${n}`).join(', '));
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -90,6 +90,27 @@ void main() {
     expect(src, contains('xray-core/@v/$xray.zip'));
   });
 
+  test('LEG-05: Protect\'s Google checks credit RegionRestrictionCheck, '
+      'whose endpoints and match strings they share', () async {
+    registerThirdPartyLicenses();
+    final l = await _registered();
+    final credit = l['RegionRestrictionCheck (method of the Google checks)'];
+    expect(credit, isNotNull);
+    expect(credit, contains('github.com/lmc999/RegionRestrictionCheck'));
+    expect(credit, contains('AGPL-3.0'));
+    // the strings the credit names are the ones Probe.kt really matches
+    final probe = File('android/app/src/main/kotlin/app/pleat/pleat/Probe.kt')
+        .readAsStringSync();
+    for (final s in [
+      'INNERTUBE_CONTEXT_GL',
+      '45631641,null,true',
+      'unusual traffic from|is blocked|unaddressed abuse',
+    ]) {
+      expect(probe, contains(s), reason: s);
+      expect(credit, contains(s), reason: s);
+    }
+  });
+
   test('the licence assets are declared, so they reach the APK', () {
     final pubspec = File('pubspec.yaml').readAsStringSync();
     expect(pubspec, contains('    - assets/licenses/'));

@@ -44,7 +44,7 @@ const st = (env, sql, ...args) => env.DB.prepare(sql).bind(...args);
 const LEDGER_SQL = `SELECT a.id, a.user_id, a.panel_id, a.remote_username, s.id AS sub_id, s.period_id, s.baselined,
     s.data_limit_bytes AS s_limit, s.used_bytes AS s_used,
     c.period_id AS c_period, c.last_remote_bytes, c.baseline_pending, c.stale, c.last_seen_at AS c_seen, c.online_at AS c_online
-  FROM panel_accounts a JOIN subscriptions s ON s.user_id = a.user_id AND s.period_id IS NOT NULL
+  FROM panel_accounts a JOIN subscriptions s ON s.user_id = a.user_id AND s.period_id IS NOT NULL AND a.applied != 'pending'
   LEFT JOIN usage_counters c ON c.period_id = s.period_id AND c.panel_id = a.panel_id`;
 
 // The writes for readings of accounts (rows from LEDGER_SQL). readingOf(row) = {used, expire, data_limit}, null
@@ -175,7 +175,7 @@ export async function evaluate(env, userId) {
 // ---------------- enforcement ----------------
 const panelOf = (a) => ({ id: a.panel_id, kind: a.kind, state: a.panel_state, cred_ref: a.cred_ref, options_json: a.options_json, label: a.panel_label });
 const PENDING_SQL = `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json, p.label AS panel_label
-  FROM panel_accounts a JOIN panels p ON p.id = a.panel_id`;
+  FROM panel_accounts a JOIN panels p ON p.id = a.panel_id AND a.applied != 'pending'`; // PNL-02: a pending row is settled by ensureAccount / settlePending
 
 // One adapter per panel for a whole invocation: opening a panel's login costs a D1 read, so it is done once.
 function adapterCache(env, timeoutMs = 0) {
@@ -255,59 +255,85 @@ export async function refreshUser(env, userId) {
 // ---------------- accounts on panels ----------------
 // Create (or re-activate) this user's account on one panel with the logical subscription's expiry and remaining
 // data. Returns the account row; throws PasarGuardError when the panel refuses.
+//
+// PNL-02: the panel is changed before D1 is written, and an invocation can end in between (the 50th query, the 30 s
+// waitUntil cut, a D1 error). So the row is written FIRST, as an intent: applied = 'pending', the name about to be
+// created, dirty = 1, no link. A pending row serves nothing, is read by nobody and is never pushed (LEDGER_SQL,
+// PENDING_SQL, accountsOf skip it). The next try uses the same name; when the panel says it is taken (409) and the
+// account there carries this user's note ("Pleat #<id>"), it is the one made before and is adopted (set to the
+// wanted expiry and limit) instead of a second account being made. A pending row nobody finishes is settled by the
+// sync job (settlePending): adopted when the account exists and is this user's, deleted otherwise.
 export async function ensureAccount(env, user, panel, { expire, limit, hwid } = {}) {
   const pg = await adapterFor(env, panel);
   const pa = await first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
   const now = nowSec();
-  if (pa && (await pg.getUser(pa.remote_username))) return pa;
+  if (pa && pa.applied !== 'pending' && (await pg.getUser(pa.remote_username))) return pa;
   const groups = await groupIdsFor(env, panel, pg);
-  const made = await createRemote(env, pg, user, { expire, limit, hwid, groups, name: pa ? pa.remote_username : null });
-  if (pa) {
-    await run(env, `UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = 'active',
-      desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ?, dirty = 0, attempts = 0, applied_at = ? WHERE id = ?`,
-      made.username, made.id, made.subPath, limit || 0, limit || 0, expire || null, expire || null, now, pa.id);
-  } else {
-    await insertAccount(env, user.id, panel.id, made, { expire, limit, now }).run();
-  }
+  let rowId = pa ? pa.id : null;
+  let recorded = pa ? pa.remote_username : null;
+  const intent = async (name) => {
+    if (name === recorded) return;
+    if (rowId) {
+      // a later name (the earlier one was taken); a name another row holds is left as it was
+      try { await run(env, "UPDATE panel_accounts SET remote_username = ? WHERE id = ? AND applied = 'pending'", name, rowId); recorded = name; } catch (e) { /* kept */ }
+      return;
+    }
+    const r = await pendingRow(env, user.id, panel.id, name, { expire, limit, now }).run();
+    if (r.meta.changes) { rowId = r.meta.last_row_id; recorded = name; }
+  };
+  const made = await createRemote(env, pg, user, { expire, limit, hwid, groups, name: pa ? pa.remote_username : null, intent });
+  const done = rowId && (await run(env, `UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = 'active',
+      desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ?, dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ?`,
+  made.username, made.id, made.subPath, limit || 0, limit || 0, expire || null, expire || null, now, rowId)).meta.changes;
+  // no row to finish (none was written, or the sync job dropped a stale intent meanwhile): the account gets a new one
+  if (!done) await insertAccount(env, user.id, panel.id, made, { expire, limit, now }).run();
   return first(env, 'SELECT * FROM panel_accounts WHERE user_id = ? AND panel_id = ?', user.id, panel.id);
 }
 
-// The account's name on the panel follows the user's Telegram @username (what the admin sees in the panel), so
-// it is readable there; the numeric Telegram id / user id in the database stays the identity. The name is
-// fixed at creation: a later @username change does not rename it (Marzban's subscription token depends on it).
-// Rules of all three panels: 3-32 characters of [a-zA-Z0-9_@.-] (Marzban, Rebecca), no two specials in a row
-// (PasarGuard). Telegram usernames are [a-z0-9_]{5,32}, so a sanitized one fits as it is.
-export function panelNameBase(user) {
-  const tg = String(user.tg_username || '').toLowerCase().replace(/[^a-z0-9_]/g, '').replace(/_+/g, '_').replace(/^_+|_+$/g, '').slice(0, 32).replace(/_+$/, '');
-  if (tg.length >= 3) return tg;
-  if (user.tg_id) return `tg${user.tg_id}`.slice(0, 32);
-  return null;
-}
-const fit = (base, suffix) => `${base.slice(0, 32 - suffix.length).replace(/_+$/, '')}${suffix}`;
-// The names tried in order: the @username, then with the user id, then with a random tail. Without Telegram
-// the old cg_<id>_<random> name is used.
+// the intent row written before an account is created on a panel (see ensureAccount)
+const pendingRow = (env, userId, panelId, name, { expire, limit, now }) => st(env, `INSERT INTO panel_accounts (user_id, panel_id, remote_username, sub_path,
+    desired, applied, desired_limit_bytes, applied_limit_bytes, desired_expire, dirty, attempts, created_at)
+    VALUES (?, ?, ?, '', 'active', 'pending', ?, 0, ?, 1, 0, ?) ON CONFLICT DO NOTHING`, userId, panelId, name, limit || 0, expire || null, now);
+
+// "Pleat #<id>" (and the older "Pleat · #<id> · ..."): the account on the panel was made by this Worker for this user
+export const ownedBy = (remote, userId) => !!remote && new RegExp(`(^|[^0-9])#${Number(userId)}([^0-9]|$)`).test(String(remote.note || ''));
+
+// PNL-07: panels can be third-party (reseller access: the panel's owner sees every account), so a new account's name
+// and note carry nothing about the person: the name is <prefix>_<random hex> and the note only "Pleat #<user id>"
+// (the bot maps an account back to its user through panel_accounts). Until 2026-11 names followed the Telegram
+// @username (PR #49) and notes held the Telegram id and email; those accounts keep their names (Marzban's
+// subscription token depends on the name, and every lookup goes by the stored remote_username). Rules of all three
+// panels: 3-32 characters of [a-zA-Z0-9_@.-], no two specials in a row (PasarGuard).
 export function panelNames(user, prefix = 'cg') {
-  const base = panelNameBase(user);
-  if (!base) return [`${prefix}_${user.id}_${randomHex(2)}`.slice(0, 32), `${prefix}_${user.id}_${randomHex(2)}`.slice(0, 32), `${prefix}_${user.id}_${randomHex(3)}`.slice(0, 32)];
-  return [base, fit(base, `_${user.id}`), fit(base, `_${randomHex(2)}`)];
+  return [`${prefix}_${randomHex(5)}`, `${prefix}_${randomHex(5)}`, `${prefix}_${randomHex(6)}`].map((n) => n.slice(0, 32));
 }
 
+const prefixOf = (env) => String(env.PASARGUARD_USERNAME_PREFIX || 'cg').toLowerCase().replace(/[^a-z0-9_]/g, '').replace(/_+$/, '') || 'cg';
+
 // Make the account on the panel; a name the panel says is taken (409) moves on to the next one. {username, id, subPath}
-async function createRemote(env, pg, user, { expire, limit, hwid, groups, name }) {
-  const prefix = String(env.PASARGUARD_USERNAME_PREFIX || 'cg').toLowerCase().replace(/[^a-z0-9_]/g, '') || 'cg';
-  if (user.tg_id === undefined) {
-    const row = await first(env, 'SELECT tg_id, tg_username FROM users WHERE id = ?', user.id);
-    user = { ...user, tg_id: row ? row.tg_id : null, tg_username: row ? row.tg_username : null };
-  }
-  const names = panelNames(user, prefix);
+// intent(name) runs before each try (PNL-02: the name is recorded before the panel is asked). A taken name whose
+// account carries this user's note was made by an earlier try that never reached D1: it is adopted, not doubled.
+async function createRemote(env, pg, user, { expire, limit, hwid, groups, name, intent }) {
+  const names = panelNames(user, prefixOf(env));
   if (name) names.unshift(name);
   let created = null, username = '';
   for (let attempt = 0; attempt < names.length && !created; attempt++) {
     username = names[attempt];
+    if (intent) await intent(username);
     try {
       created = await pg.createUser(username, { expire, dataLimit: limit, groupIds: groups, hwidLimit: hwid || null, note: noteFor(user) });
     } catch (e) {
-      if (e instanceof PasarGuardError && e.status === 409 && attempt < names.length - 1) continue; // name taken, try the next
+      if (e instanceof PasarGuardError && e.status === 409) {
+        const there = await pg.getUser(username).catch(() => null);
+        if (ownedBy(there, user.id)) {
+          const fields = { status: 'active', expire: expire || 0, data_limit: limit || 0, data_limit_reset_strategy: 'no_reset' };
+          if (hwid) fields.hwid_limit = hwid;
+          const out = await pg.modifyUser(username, fields);
+          created = out && out.subscription_url ? out : there;
+          break;
+        }
+        if (attempt < names.length - 1) continue; // name taken by someone else, try the next
+      }
       throw e;
     }
   }
@@ -315,13 +341,19 @@ async function createRemote(env, pg, user, { expire, limit, hwid, groups, name }
   if (!subPath) throw new PasarGuardError('panel created the user but returned no subscription link', 0);
   return { username, id: created.id ?? null, subPath };
 }
-const noteFor = (user) => ['Pleat', `#${user.id}`, user.tg_id ? `tg ${user.tg_id}` : '', user.email && !/@telegram\./.test(user.email) ? user.email : ''].filter(Boolean).join(' · ');
+const noteFor = (user) => `Pleat #${user.id}`; // PNL-07: no Telegram id, @username or email on a panel
 
-// The new account's row. Another path (the app opening at the same moment) may have made one first: then that
-// one stays, and this statement changes nothing instead of failing the batch it is in.
+// The new account's row; it finishes this user's pending intent row on that panel (PNL-02). Another path (the app
+// opening at the same moment) may have made a real one first: then that one stays, and this statement changes
+// nothing instead of failing the batch it is in.
 const insertAccount = (env, userId, panelId, made, { expire, limit, now }) => st(env, `INSERT INTO panel_accounts (user_id, panel_id, remote_username, remote_id, sub_path, desired, applied,
     desired_limit_bytes, applied_limit_bytes, desired_expire, applied_expire, applied_at, created_at)
-    VALUES (?, ?, ?, ?, ?, 'active', 'active', ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING`,
+    VALUES (?, ?, ?, ?, ?, 'active', 'active', ?, ?, ?, ?, ?, ?)
+    ON CONFLICT (user_id, panel_id) DO UPDATE SET remote_username = excluded.remote_username, remote_id = excluded.remote_id, sub_path = excluded.sub_path,
+      desired = 'active', applied = 'active', desired_limit_bytes = excluded.desired_limit_bytes, applied_limit_bytes = excluded.applied_limit_bytes,
+      desired_expire = excluded.desired_expire, applied_expire = excluded.applied_expire, dirty = 0, attempts = 0, last_error = NULL, applied_at = excluded.applied_at
+      WHERE panel_accounts.applied = 'pending'
+    ON CONFLICT DO NOTHING`,
 userId, panelId, made.username, made.id, made.subPath, limit || 0, limit || 0, expire || null, expire || null, now, now);
 
 // An account that already exists on a panel (made there by hand and used with v2rayNG) becomes this user's
@@ -404,8 +436,8 @@ export async function linkAccount(env, user, panel, remote, { planId = null } = 
   await env.DB.batch(stmts);
 
   let replaced = null, disabled = false;
-  if (old && old.remote_username !== remote.username) {
-    replaced = old.remote_username;
+  if (old && old.remote_username !== remote.username && (old.applied !== 'pending' || ownedBy(await pg.getUser(old.remote_username).catch(() => null), user.id))) {
+    replaced = old.remote_username; // a pending intent's name is switched off only when that account is this user's (PNL-02)
     try { await pg.setStatus(replaced, 'disabled'); disabled = true; } catch (e) { /* the admin is told to switch it off by hand */ }
   }
   await evaluate(env, user.id); // stops at once if the account is already out of time or data
@@ -450,8 +482,8 @@ async function mergeAccount(env, user, panel, remote, { planId }) {
   }
   await env.DB.batch(stmts);
   let replaced = null, disabled = false;
-  if (old && old.remote_username !== remote.username) {
-    replaced = old.remote_username;
+  if (old && old.remote_username !== remote.username && (old.applied !== 'pending' || ownedBy(await pg.getUser(old.remote_username).catch(() => null), user.id))) {
+    replaced = old.remote_username; // a pending intent's name is switched off only when that account is this user's (PNL-02)
     try { await pg.setStatus(replaced, 'disabled'); disabled = true; } catch (e) { /* the admin is told to switch it off by hand */ }
   }
   // evaluate() only rewrites limits that drifted, so make every account's limit be recomputed now
@@ -570,20 +602,35 @@ async function createMissing(env, allPanels, adapter, max = CREATE_PER_RUN) {
   let made = 0;
   for (const panel of panels) {
     if (made >= max) break;
-    const rows = await all(env, `SELECT s.*, u.email, u.tg_id, u.tg_username FROM subscriptions s JOIN users u ON u.id = s.user_id
-      WHERE s.state = 'active' AND u.is_active = 1 AND s.period_id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM panel_accounts a WHERE a.user_id = s.user_id AND a.panel_id = ?)
-      ORDER BY s.user_id LIMIT 50`, panel.id);
+    // a user whose only row here is a pending intent (PNL-02) is still missing: it is tried again under that name
+    const rows = await all(env, `SELECT s.*, u.email, u.tg_id, u.tg_username,
+        (SELECT a.remote_username FROM panel_accounts a WHERE a.user_id = s.user_id AND a.panel_id = ? AND a.applied = 'pending') AS pending_name
+      FROM subscriptions s JOIN users u ON u.id = s.user_id
+      WHERE s.state = 'active' AND u.is_active = 1 AND s.period_id IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM panel_accounts a WHERE a.user_id = s.user_id AND a.panel_id = ? AND a.applied != 'pending')
+      ORDER BY s.user_id LIMIT 50`, panel.id, panel.id);
     const want = rows.filter((s) => pickPanels(allPanels, s.user_id).some((p) => p.id === panel.id)).slice(0, max - made);
     if (!want.length) continue;
     const now = nowSec();
     const stmts = [];
     let failed = null, inserted = 0;
+    const leftOf = (s) => (s.data_limit_bytes > 0 ? Math.max(1, s.data_limit_bytes - s.used_bytes) : 0);
+    // PNL-02: the intents of this round in one batch, before any of them is created on the panel
+    const fresh = want.filter((s) => !s.pending_name);
+    if (fresh.length) {
+      for (const s of fresh) s.pending_name = panelNames(s, prefixOf(env))[0];
+      await batch(env, fresh.map((s) => pendingRow(env, s.user_id, panel.id, s.pending_name, { expire: s.expires_at, limit: leftOf(s), now })));
+    }
     try {
       const pg = await adapter(panel);
       const groups = await groupIdsFor(env, panel, pg);
       for (const s of want) {
-        const limit = s.data_limit_bytes > 0 ? Math.max(1, s.data_limit_bytes - s.used_bytes) : 0;
-        const acct = await createRemote(env, pg, { id: s.user_id, email: s.email, tg_id: s.tg_id, tg_username: s.tg_username }, { expire: s.expires_at, limit, groups });
+        const limit = leftOf(s);
+        const intent = async (name) => {
+          if (name === s.pending_name) return;
+          try { await run(env, "UPDATE panel_accounts SET remote_username = ? WHERE user_id = ? AND panel_id = ? AND applied = 'pending'", name, s.user_id, panel.id); s.pending_name = name; } catch (e) { /* kept */ }
+        };
+        const acct = await createRemote(env, pg, { id: s.user_id, email: s.email, tg_id: s.tg_id, tg_username: s.tg_username }, { expire: s.expires_at, limit, groups, name: s.pending_name, intent });
         stmts.push(insertAccount(env, s.user_id, panel.id, acct, { expire: s.expires_at, limit, now }));
         inserted++;
       }
@@ -606,7 +653,7 @@ export async function ensureMissingFor(env, userId) {
   const s = await first(env, `SELECT s.*, u.email, u.tg_id, u.tg_username FROM subscriptions s JOIN users u ON u.id = s.user_id
     WHERE s.user_id = ? AND s.state = 'active' AND s.period_id IS NOT NULL`, userId);
   if (!s || (s.expires_at && s.expires_at <= nowSec())) return false;
-  const have = new Set((await all(env, 'SELECT panel_id FROM panel_accounts WHERE user_id = ?', userId)).map((r) => r.panel_id));
+  const have = new Set((await all(env, "SELECT panel_id FROM panel_accounts WHERE user_id = ? AND applied != 'pending'", userId)).map((r) => r.panel_id));
   for (const panel of await panelsFor(env, userId)) {
     if (have.has(panel.id) || panel.fail_streak >= 3) continue;
     const e = await createError(env, panel.id);
@@ -616,13 +663,49 @@ export async function ensureMissingFor(env, userId) {
   return false;
 }
 
+// PNL-02: intent rows nobody finished (the invocation ended between the panel and D1, and the user is not retried
+// by createMissing: plan over, panel no longer theirs). After PENDING_STALE seconds each is looked up on its panel:
+// an account with this user's note is adopted as a real row (dirty, so the push gives it the wanted state: switched
+// off when the plan is over); no account, or someone else's, and the row is deleted (a later create starts afresh).
+// A few per run; pending rows are dirty = 1, so this read uses the small dirty index.
+const PENDING_STALE = 1800;
+async function settlePending(env, adapter, max = 2) {
+  const rows = await all(env, `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json FROM panel_accounts a JOIN panels p ON p.id = a.panel_id
+    WHERE a.dirty = 1 AND a.applied = 'pending' AND a.created_at < ? ORDER BY a.attempts, a.id LIMIT ?`, nowSec() - PENDING_STALE, max);
+  const stmts = [];
+  for (const pa of rows) {
+    try {
+      const pg = await adapter(panelOf(pa));
+      const u = await pg.getUser(pa.remote_username);
+      if (ownedBy(u, pa.user_id)) {
+        // kept running only for a user whose plan is running now; otherwise (a refunded purchase, a plan that ended)
+        // it is taken over switched off
+        stmts.push(st(env, `UPDATE panel_accounts SET remote_id = ?, sub_path = ?, applied = ?, applied_limit_bytes = -1, applied_expire = ?, dirty = 1, attempts = 0,
+          last_error = NULL, applied_at = ?, desired = CASE WHEN EXISTS (SELECT 1 FROM subscriptions s WHERE s.user_id = panel_accounts.user_id AND s.state = 'active'
+            AND (s.expires_at IS NULL OR s.expires_at > ?)) THEN desired ELSE 'stopped' END
+          WHERE id = ? AND applied = 'pending'`, u.id ?? null, pg.absoluteSubUrl(u.subscription_url || ''),
+        String(u.status || 'active') === 'active' ? 'active' : 'stopped', parseExpire(u.expire), nowSec(), nowSec(), pa.id));
+      } else {
+        // only the intent as it was read: one a purchase is finishing right now has moved on (and re-inserts if not)
+        stmts.push(st(env, "DELETE FROM panel_accounts WHERE id = ? AND applied = 'pending' AND remote_username = ? AND attempts = ?", pa.id, pa.remote_username, pa.attempts));
+      }
+    } catch (e) {
+      // panel not answering: tried again later, after the others (a dead panel must not hold up the rest)
+      stmts.push(st(env, "UPDATE panel_accounts SET attempts = attempts + 1, last_error = ? WHERE id = ? AND applied = 'pending'",
+        e instanceof PasarGuardError ? `panel_${e.status || 'net'}` : 'error', pa.id));
+    }
+  }
+  await batch(env, stmts);
+  return stmts.length;
+}
+
 // For the bot: how many of the users this panel should serve already have their account on it.
 export async function panelProgress(env, panel) {
   const subs = await all(env, `SELECT user_id FROM subscriptions WHERE state = 'active' AND period_id IS NOT NULL`);
   const { bucketOf } = await import('./panels.js');
   const want = panel.state === 'active' ? subs : panel.state === 'rollout' ? subs.filter((r) => bucketOf(r.user_id, panel.id) < panel.rollout_percent) : [];
   if (!want.length) return { want: 0, have: 0 };
-  const has = new Set((await all(env, "SELECT user_id FROM panel_accounts WHERE panel_id = ? AND desired = 'active'", panel.id)).map((r) => r.user_id));
+  const has = new Set((await all(env, "SELECT user_id FROM panel_accounts WHERE panel_id = ? AND desired = 'active' AND applied != 'pending'", panel.id)).map((r) => r.user_id));
   return { want: want.length, have: want.filter((r) => has.has(r.user_id)).length };
 }
 
@@ -644,6 +727,7 @@ export async function runSync(env, { spent = 0 } = {}) {
     out.expired = due.length;
   });
   let tried = 0;
+  await part('pending', async () => { out.settled = await settlePending(env, adapter); });
   await part('push', async () => { const push = await pushPending(env, { adapter, limit: Math.max(2, Math.min(PUSH_PER_RUN, budget - 8)) }); out.pushed = push.done; tried = push.tried; });
   await part('create', async () => {
     // Looking for missing accounts reads every running subscription once per panel (D1 bills rows read; the Free

@@ -7,14 +7,15 @@
 > - [AGENTS.md](AGENTS.md) — قوانین کوتاه برای ایجنت‌های هوش مصنوعی
 >
 > **Licences.** The repository has no top-level licence file yet: until the owner chooses one, the Worker,
-> the Mini App and Pleat are all rights reserved. Exceptions: `android/` is a fork of v2rayNG 2.2.6 and is
-> licensed under the **GPL-3.0** (`android/LICENSE`); `app-web/` was distributed inside that GPL-3.0 app (CloudGold
-> v1.7.1, copied in by `android/sync-web.sh`), so its source stays published here with it. Both are retired. Pleat
+> the Mini App and Pleat are all rights reserved. Exception: the retired Cloud Gold app, deleted from main and kept
+> in git history at commit `5890bdc`: its `android/` is a fork of v2rayNG 2.2.6 and is licensed under the
+> **GPL-3.0** (`android/LICENSE` there); its `app-web/` was distributed inside that GPL-3.0 app (CloudGold v1.7.1,
+> copied in by `android/sync-web.sh`), so its source stays published in this public history under the same terms. Pleat
 > (`flutter_vpn/`) contains no v2rayNG code; the third-party engines it bundles (Xray-core MPL-2.0,
 > AndroidLibXrayLite LGPL-3.0, hev-socks5-tunnel MIT, geo data GPL-3.0) are listed with their full licence
 > texts and source links in the app (Profile › Open-source licences, from `flutter_vpn/assets/licenses/`).
 >
-> **توجه:** بقیه‌ی این README راهنمای نصب اولیه است و بخش‌هایی از آن قدیمی است (اپ قدیمی Cloud Gold، «۵۳ تست»). اپ فعلی **Pleat** در `flutter_vpn/` است، Mini App در `miniapp/`، و تست‌های Worker حدود ۱۴۵۰ مورد است. هر جا این README با مستندات بالا فرق داشت، مستندات درست است.
+> **توجه:** بقیه‌ی این README راهنمای نصب اولیه است و بخش‌هایی از آن قدیمی است (اپ قدیمی Cloud Gold، «۵۳ تست»). اپ فعلی **Pleat** در `flutter_vpn/` است، Mini App در `miniapp/`، و تست‌های Worker حدود ۱۸۵۰ مورد است. هر جا این README با مستندات بالا فرق داشت، مستندات درست است.
 
 کل فروشگاه روی **Cloudflare** اجرا می‌شود و **هیچ VPS‌ای لازم ندارد**. فقط هزینه‌ی یک دامنه در سال.
 
@@ -25,13 +26,14 @@
 
 ```
 cfworker/
-├── worker/     سرور Cloudflare (کد + دیتابیس + ربات تلگرام) — ۵۳ تست خودکار دارد
-├── app-web/    ظاهر اپ
-├── android/    سورس v2rayNG 2.2.6 + پل Cloud Gold
+├── worker/      سرور Cloudflare (کد + دیتابیس + ربات تلگرام)
+├── flutter_vpn/ اپ Pleat (Flutter + Kotlin)
+├── miniapp/     Mini App تلگرام
 └── .github/workflows/
       ├── deploy-worker.yml   بالا بردن سرور روی Cloudflare
-      ├── make-key.yml        ساخت کلید امضا (یک بار)
-      └── android.yml         ساخت APK
+      ├── flutter-vpn.yml     تست و ساخت APK اپ Pleat
+      ├── test-worker.yml     تست‌های سرور و Mini App
+      └── make-key.yml        ساخت کلید امضا (یک بار)
 ```
 
 > نسخه‌ی ساده‌تر (فقط اپ، بدون سرور و بدون فروشگاه) هم قبلاً برایت ساخته شد. این نسخه فروشگاه کامل دارد ولی راه‌اندازی‌اش چند قدم بیشتر است.
@@ -144,7 +146,7 @@ cfworker/
 - **کد تخفیف:** `/coupon YALDA 20 100 7` (۲۰٪، ۱۰۰ بار، ۷ روز). `/coupons` و `/delcoupon`.
 - **کیف پول + پرداخت مابقی:** اگر موجودی کم باشد، کاربر فقط مابقی را کارت‌به‌کارت می‌کند و بعد از تأیید، پلن خودکار فعال می‌شود.
 - **ویرایش پلن‌ها از ربات:** `/plans`، `/plan 1 price 199000`، `/newplan`.
-- **پشتیبان خودکار:** هر شب ساعت ۰۰:۰۰ فایل پشتیبان و گزارش فروش در تلگرام. دستی: `/backup`. هش رمزها در این فایل نیست؛ برای بازگرداندن کامل دیتابیس از Time Travel خود D1 استفاده کن (`wrangler d1 time-travel restore cloudgold --timestamp=...`، تا ۳۰ روز قبل).
+- **پشتیبان خودکار:** هر شب ساعت ۰۰:۰۰ فایل پشتیبان و گزارش فروش در تلگرام. دستی: در ربات دکمه‌ی «🛡 سیستم › 💾 پشتیبان» (یا Mini App › System › Backup). هش رمزها در این فایل نیست؛ برای بازگرداندن کامل دیتابیس از Time Travel خود D1 استفاده کن (`wrangler d1 time-travel restore cloudgold --timestamp=...`، در پلن رایگان تا ۷ روز قبل؛ جزئیات در `docs/RESTORE.md`).
 - `/set trial_data_gb 2` = حجم تست رایگان (۰ = مثل پلن).
 
 ---

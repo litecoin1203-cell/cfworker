@@ -23,6 +23,13 @@ export function parseExpire(v) {
 }
 
 const TIMEOUT_MS = 15000;
+// CF-02: the admin bot answers Telegram at once and works in ctx.waitUntil, which Cloudflare ends 30 s after the
+// response. Work started there carries env.__panelDeadline (index.js): each panel call then waits at most
+// BOT_CALL_MS and never past that deadline, so a slow panel fails as a panel error (left to the sync job) and the
+// bot still has time to write D1 and tell the admin, instead of being cut off mid-way.
+export const BOT_BUDGET_MS = 22000;
+const BOT_CALL_MS = 8000;
+const MIN_CALL_MS = 300;
 const TOKEN_TTL_MS = 25 * 60 * 1000;
 const CORE_UA = 'v2rayNG/2.2.6';
 
@@ -59,6 +66,17 @@ async function timedFetch(url, init = {}, ms) {
   return fetch(url, opts);
 }
 
+// PNL-01: a 2xx answer whose body is not JSON (a CDN challenge, a maintenance page, a panel behind the wrong reverse
+// proxy) is this panel's failure, a PasarGuardError, never a SyntaxError that would fail a whole multi-panel purchase.
+// An empty body is an empty object (some versions answer a PUT or DELETE with nothing).
+async function readJson(r, what) {
+  const text = await r.text().catch(() => '');
+  if (!text.trim()) return {};
+  try { return JSON.parse(text); } catch (e) {
+    throw new PasarGuardError(`${what} -> ${r.status}: the panel answered with a page that is not JSON (bad_json)`, r.status, 'bad_json');
+  }
+}
+
 export class PasarGuard {
   // what other code may ask of any adapter: its kind, whether new users need a group (a "service" on Rebecca),
   // and the subscription sub-path that always answers plain share links
@@ -79,6 +97,17 @@ export class PasarGuard {
     const hit = cache[this.cacheKey];
     this.base = (hit && hit.base) || this.bases[0] || '';
     this._token = hit && hit.token && hit.exp > Date.now() ? hit.token : null;
+    this.deadline = env && env.__panelDeadline ? env.__panelDeadline : 0;
+  }
+
+  // how long the next call may wait (see BOT_BUDGET_MS)
+  _ms() {
+    let ms = this.timeoutMs || TIMEOUT_MS;
+    if (this.deadline) {
+      ms = Math.min(ms, BOT_CALL_MS, this.deadline - Date.now());
+      if (ms < MIN_CALL_MS) throw new PasarGuardError('no time left for this panel in this bot action (it answers slowly); the sync job retries', 0);
+    }
+    return ms;
   }
 
   _remember() {
@@ -93,8 +122,9 @@ export class PasarGuard {
     for (const base of order) {
       const body = new URLSearchParams({ username: this.username, password: this.password, grant_type: 'password' });
       let r;
+      const ms = this._ms();
       try {
-        r = await timedFetch(`${base}/api/admin/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body }, this.timeoutMs);
+        r = await timedFetch(`${base}/api/admin/token`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' }, body }, ms);
       } catch (e) {
         last = new PasarGuardError(`cannot reach panel (${e.name === 'TimeoutError' ? 'timeout' : e.message})`, 0);
         continue;
@@ -128,11 +158,12 @@ export class PasarGuard {
     if (!this.base) throw new PasarGuardError('panel address is not set (PASARGUARD_URL)', 0);
     let resp;
     try {
+      const headers = await this._headers();
       resp = await timedFetch(`${this.base}${path}`, {
         method,
-        headers: await this._headers(),
+        headers,
         body: body === undefined ? undefined : JSON.stringify(body),
-      }, this.timeoutMs);
+      }, this._ms());
     } catch (e) {
       if (e instanceof PasarGuardError) throw e;
       throw new PasarGuardError(`cannot reach panel (${e.name === 'TimeoutError' ? 'timeout' : e.message})`, 0);
@@ -151,7 +182,7 @@ export class PasarGuard {
       throw new PasarGuardError(`panel ${method} ${path} -> ${r.status}: ${text}`, r.status, text);
     }
     if (r.status === 204) return {};
-    return r.json().catch(() => ({}));
+    return readJson(r, `panel ${method} ${path}`);
   }
 
   async getUser(username) {
@@ -161,7 +192,7 @@ export class PasarGuard {
       const text = short(await r.text().catch(() => ''));
       throw new PasarGuardError(`get user ${username} -> ${r.status}: ${text}`, r.status, text);
     }
-    return r.json();
+    return readJson(r, `get user ${username}`);
   }
 
   // expire: unix seconds or 0; dataLimit: bytes (0 = unlimited)
@@ -293,7 +324,7 @@ export class PasarGuard {
     const headers = { 'user-agent': CORE_UA, accept: '*/*' };
     for (const [k, v] of Object.entries(fwd)) if (v) headers[k] = v;
     let r;
-    try { r = await timedFetch(url, { headers }, this.timeoutMs); } catch (e) { throw new PasarGuardError(`cannot reach subscription (${e.name === 'TimeoutError' ? 'timeout' : e.message})`, 0); }
+    try { r = await timedFetch(url, { headers }, this._ms()); } catch (e) { throw new PasarGuardError(`cannot reach subscription (${e.name === 'TimeoutError' ? 'timeout' : e.message})`, 0); }
     const text = await r.text().catch(() => '');
     return { status: r.status, text, userinfo: r.headers.get('subscription-userinfo') || '' };
   }
@@ -301,7 +332,7 @@ export class PasarGuard {
   // Share links (vless://, vmess://...) for the user, one per line.
   async subscriptionLinks(subUrl) {
     try {
-      const r = await timedFetch(this.linksUrl(subUrl), { headers: { 'user-agent': CORE_UA } }, this.timeoutMs);
+      const r = await timedFetch(this.linksUrl(subUrl), { headers: { 'user-agent': CORE_UA } }, this._ms());
       if (r.ok) {
         const lines = decodeSub(await r.text());
         if (lines.length) return lines;

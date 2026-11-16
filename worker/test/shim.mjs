@@ -40,6 +40,8 @@ export function makeDB(schemaPath, { upto } = {}) {
   const out = {
     onQuery: null,
     prepare: (sql) => new Stmt(db, sql, out),
+    // tests only: one row at once, not counted (finding a panel user by its "Pleat #<id>" note)
+    get: (sql, ...args) => fixRow(db.prepare(sql).get(...args)),
     // like D1: the whole batch is one transaction, run without anything else in between, rolled back on error
     async batch(stmts) {
       if (out.onQuery) out.onQuery('batch');
@@ -92,7 +94,7 @@ export function installFakes({ panelBase }) {
   }
   function outUser(u) {
     return { id: u.id, username: u.username, status: u.status, expire: u.expire, data_limit: u.data_limit,
-      used_traffic: u.used_traffic || 0, subscription_url: `/sub/${u.token}/`, online_at: u.online_at ?? null, created_at: u.created_at ?? '2026-11-01T10:00:00' };
+      used_traffic: u.used_traffic || 0, note: u.note ?? null, subscription_url: `/sub/${u.token}/`, online_at: u.online_at ?? null, created_at: u.created_at ?? '2026-11-01T10:00:00' };
   }
 
   globalThis.fetch = async (input, init = {}) => {
@@ -107,6 +109,8 @@ export function installFakes({ panelBase }) {
       // a panel that accepts the connection and never answers: only the caller's deadline ends the wait
       if (pg.hang) return new Promise((_, rej) => { const sg = init.signal; if (sg) sg.addEventListener('abort', () => rej(sg.reason || new Error('aborted'))); });
       const path = url.slice(base.length);
+      // a panel behind a CDN challenge or maintenance page: 200 with HTML instead of JSON (htmlFor = path pattern)
+      if (pg.htmlFor && pg.htmlFor.test(method + ' ' + path)) return new Response('<html><body>Just a moment...</body></html>', { status: 200, headers: { 'content-type': 'text/html' } });
       if (path.startsWith('/api/users?')) {
         const q = new URL(url).searchParams;
         const all = Object.values(pg.users);

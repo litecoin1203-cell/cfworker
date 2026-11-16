@@ -2,10 +2,10 @@
 // which panels a user is on, and what the app sees, is decided here. Nothing that leaves this file for the app
 // carries a panel's name, address, id or count: configs are renamed and merged into one list.
 import { first, all, run, insert } from './db.js';
-import { nowSec, err, seal, openSealed } from './util.js';
+import { nowSec, err, seal, openSealed, throttled } from './util.js';
 import { PasarGuard, PasarGuardError, decodeSub } from './pasarguard.js';
 import { Marzban, Rebecca, detectKind } from './marzban.js';
-import { serverKey, linkEndpoint } from './netstats.js';
+import { serverKey, linkEndpoint, vmessJson, linkRemark } from './netstats.js';
 import { flagToCc, countryFromRemark, countryFromHost } from './countries.js';
 
 export { flagToCc };
@@ -158,7 +158,7 @@ export const userPathMs = (a) => ((a.fail_streak || 0) >= 3 || (slowSeen().get(a
 
 export async function accountsOf(env, userId) {
   return all(env, `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json, p.fail_streak FROM panel_accounts a
-    JOIN panels p ON p.id = a.panel_id WHERE a.user_id = ? ORDER BY a.panel_id`, userId);
+    JOIN panels p ON p.id = a.panel_id WHERE a.user_id = ? AND a.applied != 'pending' ORDER BY a.panel_id`, userId); // PNL-02: not yet made
 }
 
 const panelOfAccount = (a) => ({ id: a.panel_id, kind: a.kind, state: a.panel_state, cred_ref: a.cred_ref, options_json: a.options_json });
@@ -172,24 +172,13 @@ export async function recordHealth(env, panelId, okNow) {
 // ---------------- unified list ----------------
 const ccToFlag = (cc) => (/^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65)) : '');
 
-function remarkOf(link) {
-  const scheme = link.split('://', 1)[0].toLowerCase();
-  if (scheme === 'vmess') {
-    try {
-      let raw = link.split('://')[1];
-      raw += '='.repeat((4 - (raw.length % 4)) % 4);
-      return JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/'))).ps || '';
-    } catch (e) { return ''; }
-  }
-  const frag = link.split('#')[1] || '';
-  try { return decodeURIComponent(frag); } catch (e) { return frag; }
-}
+const remarkOf = linkRemark;
 
 // The country of one config: its panel remark first (flag, name or code), then a host label like "de1.".
 // Before this, only a flag emoji counted, so a remark such as "Germany Tunnel" or "آلمان" showed as an unknown country.
 // exits = {serverKey: cc} learned from Pleat (exitCountries): where the exit really comes out, by its IP.
 // A remark can be wrong: a config named "TR" may leave through a server in Germany (seen 2026-11-11: TR 1 and
-// TR 7 came out at Hetzner / dataforest in DE). Once the exit's country is confirmed (two reports in a row, none
+// TR 7 came out at Hetzner / dataforest in DE). Once the exit's country is confirmed (two different users, none
 // pending against it), it wins over the remark, because that is where the user really appears.
 export const EXIT_CONFIRMED = 2;
 export function countryOfLink(link, exits = null) {
@@ -205,24 +194,36 @@ export function countryOfLink(link, exits = null) {
 // While connected, Pleat asks /me/ip?k=<serverKey> through the tunnel; Cloudflare places that request at the
 // exit's public IP, so its country is where that server really comes out, whatever its panel remark says.
 // Kept in settings server_exit_cc as {key: {cc, n}}. A different country replaces a known one only after it is
-// seen twice in a row, so one odd request (a phone off the tunnel) cannot rename a server. Iran is never taken:
+// seen by two different users with a running plan who have that server (SEC-02), so one odd request (a phone off
+// the tunnel) or one account cannot rename a server. Iran is never taken:
 // the app only asks through the tunnel, so IR means the request did not go through an exit.
 const EXIT_CC_KEY = 'server_exit_cc';
 export async function exitCountries(env) {
   try { const j = JSON.parse((await first(env, 'SELECT value FROM settings WHERE key = ?', EXIT_CC_KEY))?.value || '{}'); return j && typeof j === 'object' ? j : {}; }
   catch (e) { return {}; }
 }
-export async function learnExitCountry(env, key, cc) {
+// voter = the user id reporting (SEC-02): a country is confirmed or replaced by EXIT_CONFIRMED different users, so
+// one account, however often it asks, is one vote. Entry: {cc, n, v: [users who saw cc], pending, pv: [users who saw
+// pending]}; n = how many different users confirmed cc (at most 3). Entries from before carry no v and keep their n.
+export async function learnExitCountry(env, key, cc, voter) {
   if (!/^[a-z0-9]{6,16}$/.test(String(key || '')) || !/^[A-Z]{2}$/.test(String(cc || '')) || cc === 'IR' || cc === 'XX' || cc === 'T1') return false;
+  if (voter == null) return false;
   const map = await exitCountries(env);
   const old = map[key];
+  const add = (list, id) => (list.includes(id) ? list : [...list, id].slice(-3));
   let next;
-  if (!old || !old.cc) next = { cc, n: 1 };
+  if (!old || !old.cc) next = { cc, n: 1, v: [voter] };
   else if (old.cc === cc) {
-    if (!old.pending && (old.n || 0) >= 3) return false; // nothing new: no write
-    next = { cc, n: Math.min(3, (old.n || 0) + 1) };
-  } else if (old.pending === cc) next = { cc, n: 1 };
-  else next = { cc: old.cc, n: old.n || 1, pending: cc };
+    const v = Array.isArray(old.v) ? old.v : [];
+    if (!old.pending && (v.includes(voter) || (old.n || 0) >= 3)) return false; // nothing new (settled, or a vote already counted): no write
+    const nv = add(v, voter);
+    next = { cc, n: Math.min(3, Math.max(old.n || 0, nv.length)), v: nv };
+  } else if (old.pending === cc) {
+    const pv = add(Array.isArray(old.pv) ? old.pv : [], voter);
+    if (pv.length >= EXIT_CONFIRMED) next = { cc, n: pv.length, v: pv };
+    else if (pv.length === (old.pv || []).length) return false; // the same user again
+    else next = { ...old, pv };
+  } else next = { cc: old.cc, n: old.n || 1, v: Array.isArray(old.v) ? old.v : [], pending: cc, pv: [voter] };
   map[key] = next;
   const keys = Object.keys(map);
   if (keys.length > 800) for (const k of keys.slice(0, keys.length - 800)) delete map[k];
@@ -230,22 +231,33 @@ export async function learnExitCountry(env, key, cc) {
   return true;
 }
 
+// SEC-02: /me/ip?k= counts only from a user with a running plan, for a server that is one of theirs (the keys
+// /vpn/servers gave them), at most one report a minute per user (memory of this isolate, no D1 write). A free
+// account could otherwise rename any server for everyone, and made-up keys could push the real ones out.
+export async function learnExitFromUser(env, user, key, cc) {
+  if (throttled('__cgExitVote', user.id, 60000)) return false;
+  const row = await first(env, `SELECT k.keys FROM subscriptions s JOIN user_skeys k ON k.user_id = s.user_id
+    WHERE s.user_id = ? AND s.state = 'active' AND (s.expires_at IS NULL OR s.expires_at > ?)`, user.id, nowSec());
+  if (!row) return false;
+  let own;
+  try { own = JSON.parse(row.keys || '{}') || {}; } catch (e) { return false; }
+  if (!Object.prototype.hasOwnProperty.call(own, key)) return false;
+  return learnExitCountry(env, key, cc, user.id);
+}
+
 function withRemark(link, name) {
   const scheme = link.split('://', 1)[0].toLowerCase();
   if (scheme === 'vmess') {
-    try {
-      let raw = link.split('://')[1];
-      raw += '='.repeat((4 - (raw.length % 4)) % 4);
-      const j = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')));
-      j.ps = name;
-      return 'vmess://' + btoa(unescape(encodeURIComponent(JSON.stringify(j))));
-    } catch (e) { return link; }
+    const j = vmessJson(link);
+    if (!j) return link;
+    j.ps = name;
+    return 'vmess://' + btoa(unescape(encodeURIComponent(JSON.stringify(j))));
   }
   return link.split('#')[0] + '#' + encodeURIComponent(name);
 }
 
 // What kinds of configs a panel serves, for the admin ("vless·reality·tcp ×6"). Pleat's core takes vless,
-// vmess, trojan and shadowsocks; anything else (hysteria2, wireguard, tuic...) is counted as unusable.
+// vmess, trojan, shadowsocks, hysteria2 (hy2) and wireguard (wg); anything else (tuic, ...) is counted as unusable.
 export const APP_SCHEMES = ['vless', 'vmess', 'trojan', 'ss', 'hysteria2', 'hy2', 'wireguard', 'wg'];
 export function linkKinds(links) {
   const counts = {};
@@ -254,12 +266,8 @@ export function linkKinds(links) {
     const scheme = link.split('://', 1)[0].toLowerCase();
     let net = '', sec = '';
     if (scheme === 'vmess') {
-      try {
-        let raw = link.split('://')[1];
-        raw += '='.repeat((4 - (raw.length % 4)) % 4);
-        const j = JSON.parse(atob(raw.replace(/-/g, '+').replace(/_/g, '/')));
-        net = j.net || 'tcp'; sec = j.tls || 'none';
-      } catch (e) { /* counted as plain vmess */ }
+      const j = vmessJson(link); // unreadable: counted as plain vmess
+      if (j) { net = j.net || 'tcp'; sec = j.tls || 'none'; }
     } else if (!['ss', 'hysteria2', 'hy2', 'wireguard', 'wg'].includes(scheme)) {
       const q = new URLSearchParams((link.split('?')[1] || '').split('#')[0]);
       net = q.get('type') || 'tcp'; sec = q.get('security') || 'none';
@@ -279,9 +287,8 @@ export function isPlaceholder(link) {
   let host = '', port = '';
   try {
     if (/^vmess:\/\//i.test(link)) {
-      let raw = link.slice(8).split('#')[0].trim().replace(/-/g, '+').replace(/_/g, '/');
-      raw += '='.repeat((4 - (raw.length % 4)) % 4);
-      const j = JSON.parse(atob(raw));
+      const j = vmessJson(link);
+      if (!j) return false;
       host = String(j.add || ''); port = String(j.port || '');
     } else {
       const rest = link.replace(/^[a-z0-9+.-]+:\/\//i, '').split('#')[0].split('?')[0].split('/')[0];
