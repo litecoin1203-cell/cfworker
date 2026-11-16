@@ -207,3 +207,36 @@ bool looksIranian(String package) {
   final p = package.toLowerCase();
   return p.startsWith('ir.') || p.endsWith('.ir') || p.contains('.ir.');
 }
+
+/// What to tell the person about Android's "Block connections without VPN"
+/// (lockdown) and the apps sent past the VPN (AND-05). Android lets no app
+/// outside the VPN online while lockdown is on, so those apps get no
+/// internet at all; Pleat cannot change that setting, only say so.
+///
+/// [lockdown] is what Android reported (it tells only the running service,
+/// Android 10 and newer); null = not known. [apps] = how many apps are
+/// picked. [picking] = the app picker itself, which also warns before an
+/// app is picked and gives a hint while the setting is unknown. Null =
+/// nothing to say.
+String? lockdownBypassNote({
+  required bool? lockdown,
+  required int apps,
+  bool picking = false,
+}) {
+  if (lockdown == true) {
+    if (apps > 0) {
+      return 'Android’s “Block connections without VPN” is on, so these apps '
+          'get no internet at all. Turn it off in Protect > Kill switch, or '
+          'remove them.';
+    }
+    return picking
+        ? 'Android’s “Block connections without VPN” is on, so any app you '
+              'pick here would get no internet at all.'
+        : null;
+  }
+  if (lockdown == null && picking) {
+    return 'If Android’s “Block connections without VPN” is on, apps picked '
+        'here get no internet at all.';
+  }
+  return null;
+}

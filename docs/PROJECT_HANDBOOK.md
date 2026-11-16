@@ -708,7 +708,10 @@ does not reach users by itself.
   Hysteria2 / QUIC = Speed, the rest Classic. Under it (`route_extras.dart`, order of precedence in
   `route_rules.dart`): **Stay in one country** (stable IP; asks in a popup before leaving the country; an accepted
   switch lasts 1 h), **Split route** (Iranian sites, own sites, chosen apps bypass; warns about Android's "Block
-  connections without VPN"), **Your networks** (remembers the goal per network). Smart connect lives here too.
+  connections without VPN", AND-05: lockdown lets no app outside the VPN online, so picked apps get no internet at
+  all. The Route card and the app picker say so once Android has reported lockdown on (`lockdownBypassNote` in
+  `route_rules.dart`); while it is unknown (Android 9, or Pleat not connected yet) the picker gives a hint; the
+  privacy check marks "Apps skipping the VPN" as a warning and opens the picker), **Your networks** (remembers the goal per network). Smart connect lives here too.
   An exit picked by hand in Locations wins over everything.
 - **Stats** (phone-local, no server writes, `stats_log.dart`): Data pace, Hardest hours (failed connects by
   weekday/hour on this network), What works here (this phone vs all Pleat users on the operator).
@@ -983,6 +986,10 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
   the engines' licence texts, Go module list and source offer (LEG-01..03), README licence note (LEG-04), and the
   no-plan Connect failure / Now tile offer the trial or Plans (UX-01).
 
+**2026-11-16 — Release audit leftovers (branch `claude/w3-leftovers`, no version bump).**
+- AND-05: Pleat says in the app picker and the privacy check (not only on the Route card) that Android's "Block
+  connections without VPN" leaves Split route apps with no internet.
+
 ---
 
 ## 14. PR index
@@ -1155,6 +1162,7 @@ Grouped by area. "Proven" means reproduced or measured.
 | NET-02 a short network loss ended in failover → `_stopTunnel` → apps out bare | no-network misses not counted (bounded ~2 min); a live session that lost every exit keeps the tun held, shown on the card/widget, retried with back-off, and tried at once when Android names a network again (checked every 3 s while held) — audit fix |
 | NET-04 (audit) "`setMetered(false)` makes the VPN unmetered on mobile data" | **false positive**: for apps targeting Android 10+ a VPN is metered by default (even on Wi-Fi); `setMetered(false)` is what makes it inherit meteredness from the underlying network (`setUnderlyingNetworks`). Kept; guarded by `test/native_source_test.dart` — do not remove |
 | NET-06 a Wi-Fi <-> mobile switch was only handed to Android; core connections stayed on the old network up to 300 s | the service tells the app on a real switch (`netChanged`); the app asks the exit after 2 s and, if it misses, starts the same exit again in place (tun kept; failure fails over or holds). App closed: the service does the same itself (`kick`, nothing closed on failure). `onLost` of a network not in use no longer clears the underlying network. Dart proven by `test/net_switch_test.dart`; Kotlin uncompiled here, phone test pending; hev `tcp-read-write-timeout` left at 300 s — audit fix |
+| AND-05 Android lockdown ("Block connections without VPN") plus Split route apps: those apps have no internet, and only the Route card said so (once Android reported lockdown) | the same plain-English note in the app picker (a hint while lockdown is unknown), the privacy check warns and opens the picker (`test/lockdown_split_test.dart`). Android only tells the running service (10+), Pleat cannot change the setting; phone behaviour unproven — audit fix |
 | AND-02 with the app closed nothing watched the session, and no word on battery optimisation / autostart | Protect card "Keep Pleat running" while optimised (`battery_tip_test.dart`); the service checks the exit itself after a network switch when the app is gone. Kotlin uncompiled; OEM behaviour only provable on phones — audit fix (partial: failover and plan check still need the app) |
 | A dead line showed as "wrong password / wrong code" | `ApiError.offline` → neutral connection card — #54 |
 | Native crash (SIGABRT) reports carried only the signal | tombstone + Go stderr + tunnel state in the report — #77, #79, #80 (root cause still open, §19) |

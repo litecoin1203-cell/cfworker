@@ -6,6 +6,7 @@ import '../design/widgets.dart';
 import '../state/app_state.dart';
 import '../state/protect.dart';
 import 'protect.dart';
+import 'route_extras.dart';
 
 /// Protect > Privacy check, every test: what sites and Google see, DNS,
 /// what could slip around the tunnel, and what the phone itself tells
@@ -146,6 +147,11 @@ class _Row extends StatelessWidget {
     final VoidCallback? fix = switch (row.title) {
       'Kill switch' when row.verdict == Mark.warn =>
         app.tunnel.openSystemSettings,
+      // AND-05: the kill switch cuts those apps off; the list is one tap away
+      'Apps skipping the VPN' when row.verdict == Mark.warn =>
+        () => Navigator.of(
+          context,
+        ).push(MaterialPageRoute<void>(builder: (_) => AppsScreen(app: app))),
       'Location' when row.verdict == Mark.note =>
         app.tunnel.openLocationSettings,
       _ => null,
