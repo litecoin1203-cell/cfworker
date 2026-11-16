@@ -1336,6 +1336,9 @@ DE server fails and why is known only from the next report.
   day/night direction A. Before sending UI, screenshot each screen next to the matching Pleat screen.
 - The bot's refusals are Persian; `miniapp/src/admin/errors.js` translates them, and `englishSummary` in `fmt.js` the
   admin log. `miniapp/test/admin.test.js` fails when a new bot refusal, action or setting has no English text.
+  `miniapp/test/api.test.js` (QA-05) drives the network layer with a fake `fetch`: the admin token's sign-in and single
+  retry on 401, the `confirm` flag of money actions, undo, and English for every failure. The JSX screens still have
+  no tests (a DOM test setup would be a new dev dependency).
 
 ### Engineering audit (complete, 2026-11-11)
 All 15 phases (discovery → architecture → code → security → VPN → DB → API → performance → UX → mobile →
