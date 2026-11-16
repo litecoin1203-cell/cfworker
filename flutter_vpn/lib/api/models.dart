@@ -463,11 +463,47 @@ class AppUpdate {
               size: _int((e.value as Map)['size']),
               sha256: _str((e.value as Map)['sha256']),
             ),
-      };
+      },
+      notes = ReleaseNote.list(j['notes']);
   final String version, tag;
   final int build;
   final bool force;
   final Map<String, ({int size, String sha256})> files;
+
+  /// What's new in this build, as the store wrote it (may be empty).
+  final List<ReleaseNote> notes;
+}
+
+/// One What's new line: what kind of change, in a few English words.
+class ReleaseNote {
+  const ReleaseNote(this.kind, this.text);
+  final NoteKind kind;
+  final String text;
+
+  /// The lines of a JSON list, leaving out anything malformed; at most 8.
+  static List<ReleaseNote> list(Object? raw) => [
+    if (raw is List)
+      for (final n in raw.whereType<Map>())
+        if (_str(n['text']).trim().isNotEmpty)
+          ReleaseNote(NoteKind.parse(_str(n['kind'])), _str(n['text']).trim()),
+  ].take(8).toList();
+}
+
+enum NoteKind {
+  added('NEW'),
+  better('BETTER'),
+  fixed('FIXED');
+
+  const NoteKind(this.label);
+
+  /// The chip's word.
+  final String label;
+
+  static NoteKind parse(String s) => switch (s) {
+    'better' => better,
+    'fixed' => fixed,
+    _ => added,
+  };
 }
 
 /// A coin the store takes directly. Only the English fields are kept.

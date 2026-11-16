@@ -1038,6 +1038,30 @@ Object.assign(ACTIONS, {
       return true;
     },
   },
+  // Pleat's What's new lines (appupdate.js): for the newest build before it is announced, else for the announced one
+  'app.notes': {
+    risk: 'reversible', target: 'setting',
+    async apply(env, { notes, text }) {
+      const { setNotes, parseNotes } = await import('./appupdate.js');
+      // the Mini App sends the typed text (one line per item); the bot parses it first and sends the list
+      if (typeof text === 'string') {
+        const p = parseNotes(text);
+        if (p.error) return fail({ latin: '❌ متن باید انگلیسی باشد.', long: '❌ هر خط حداکثر ۱۶۰ حرف.', many: '❌ حداکثر ۸ خط.' }[p.error]);
+        notes = p.notes;
+      }
+      const r = await setNotes(env, Array.isArray(notes) ? notes : []);
+      if (r.error) return fail('❌ ' + r.error);
+      const n = r.notes.length;
+      const msg = (n ? `📝 ${n} خط تغییرات برای نسخه‌ی ${r.rel.version} ذخیره شد.` : `🚫 نسخه‌ی ${r.rel.version} بدون متن تغییرات اعلام می‌شود.`)
+        + (r.kind === 'announced' ? ' اپ‌ها متن تازه را از همین حالا می‌بینند.' : ' موقع اعلام همین به کاربرها نشان داده می‌شود.');
+      return { targetId: r.key, summary: `${r.rel.version}: ${n} خط`, undo: { key: r.key, value: r.before || '' }, text: msg };
+    },
+    async undo(env, u) {
+      if (u.key !== 'app_release' && u.key !== 'app_notes_draft') return false;
+      await setSetting(env, u.key, u.value || '');
+      return true;
+    },
+  },
   // removes the stats of one server (kind 's', id = skey) or one operator (kind 'a', id = asn), in one batch
   'net.reset': {
     risk: 'destructive', target: 'net',

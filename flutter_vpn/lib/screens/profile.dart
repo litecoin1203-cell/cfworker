@@ -24,6 +24,7 @@ import 'plan_usage.dart';
 import 'store_kit.dart';
 import 'wallet.dart';
 import 'states.dart';
+import 'whats_new.dart';
 
 /// Profile, opened from the avatar or the name on Home. From the top: who
 /// the person is (Telegram first, required; Gmail second, optional), the
@@ -422,6 +423,19 @@ class _VersionFooterState extends State<_VersionFooter> {
           ),
         ),
         const SizedBox(height: 8),
+        // Every version's What's new lines (ships inside the app).
+        Pressable(
+          onTap: () => openWhatsNew(context),
+          label: 'What’s new',
+          radius: PRadius.pill,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+            child: Text(
+              'WHAT’S NEW',
+              style: PType.button(color: PColors.accentInk),
+            ),
+          ),
+        ),
         // The engines' licences and where their source is (LGPL / MPL).
         Pressable(
           onTap: () => _openLicenses(context, v),
