@@ -41,7 +41,7 @@ pick up a new secret at once.
 | `TELEGRAM_BOT_TOKEN` | BotFather › /revoke, set the new one | the next cron run re-registers the webhook |
 | `TELEGRAM_WEBHOOK_SECRET` | set a new value (8+ chars, `A-Za-z0-9_-`) | the next cron run re-registers the webhook with it |
 | `JWT_SECRET` | set a new value (or add it the first time) | **every user is signed out once**; passwords keep working |
-| `SECRET_KEY` | **do not rotate** casually | it peppers every password hash and encrypts sealed panel logins: changing it breaks all passwords and stored panel logins |
+| `SECRET_KEY` | **do not rotate** casually; if it **leaked**: set `JWT_SECRET` first (if unset), rotate `SECRET_KEY`, re-enter every panel login in the bot, and ask users to reset their passwords | it peppers every password hash and encrypts sealed panel logins: changing it breaks all passwords and stored panel logins. When `JWT_SECRET` is unset, sign-in tokens and Telegram login codes are also signed with it, so rotating it then also signs everyone out. With only 5,000 PBKDF2 rounds, a leaked key plus a copy of the database makes the password hashes cheap to crack, which is why a leak means password resets |
 | panel logins (`W_*` / `PASARGUARD_*`) | change on the panel, then bot › panels › login | none |
 | SMS key | bot › payments › SMS setup | the phone's forwarder needs the new key |
 | `CLOUDFLARE_API_TOKEN` (GitHub) | Cloudflare › API tokens › roll; update the GitHub secret | none |
