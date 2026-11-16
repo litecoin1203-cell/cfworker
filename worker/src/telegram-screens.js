@@ -811,12 +811,16 @@ export async function appUpdate(env) {
   const fresh = latest && (!cur || latest.tag !== cur.tag);
   if (fresh && cur && latest.build <= cur.build) lines.push('', `⚠️ شماره‌ی بیلد جدید (${latest.build}) از اعلام‌شده (${cur.build}) بالاتر نیست؛ اپ‌هایی که بیلد ${cur.build} را دارند آن را آپدیت نمی‌بینند.`);
   if (cur && latest && !fresh) lines.push('', '✅ آخرین بیلد همان اعلام‌شده است.');
+  // What's new: the lines of the build that is about to be announced, else of the announced one
+  const nt = await u.notesTarget(env, latest);
+  if (nt) lines.push('', `📝 تغییرات ${nt.rel.version} (کاربرها در صفحه‌ی آپدیت می‌بینند):`, u.notesFa(nt.notes));
   lines.push('', 'بعد از اعلام، اپ‌هایی که نسخه‌ی قدیمی‌تر دارند علامت و نوتیف آپدیت می‌بینند و فایل مخصوص گوشی خودشان را از داخل اپ دانلود و نصب می‌کنند.',
     'اجباری = صفحه‌ی آپدیت تا آپدیت نکنند بسته نمی‌شود.');
   return {
     text: lines.join('\n'),
     kb: [
-      ...(fresh ? [[b(`📢 اعلام نسخه‌ی ${latest.version} به کاربرها`, 'm:upa')]] : []),
+      ...(fresh ? [[b(`📢 اعلام نسخه‌ی ${latest.version} به کاربرها${nt && nt.notes.length ? ' با همین تغییرات' : ''}`, 'm:upa')]] : []),
+      ...(nt ? [[b('✏️ نوشتن متن تغییرات', 'm:w:appnotes'), ...(nt.notes.length ? [b('🚫 بدون متن', 'm:apn')] : [])]] : []),
       ...(cur ? [[b(cur.force ? '✅ اجباری نباشد' : '⚠️ آپدیت اجباری شود', 'm:upf'), b('🛑 برداشتن اعلام', 'm:upx')]] : []),
       [b('🔄 تازه کن', 'm:upd')],
       nav('app'),

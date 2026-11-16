@@ -390,6 +390,10 @@ jobs:
           full=$(grep -E '^version:' pubspec.yaml | awk '{print $2}')
           ver=${full%%+*}; build=${full##*+}
           notes="Pleat $full, built from ${GITHUB_SHA::7} on $(date -u +%Y-%m-%d). Install pleat.apk (or the file for your phone type)."
+          # What's new: this version's lines from the file the app bundles too. The Worker reads the "- KIND: text"
+          # lines from these release notes and offers them in the bot, where the admin can change them before announcing.
+          wn=$(jq -r --arg v "$ver" '.[] | select(.version == $v) | .notes[] | "- \(.kind | ascii_upcase): \(.text)"' assets/whats_new/whats_new.json)
+          if [ -n "$wn" ]; then notes="$notes"$'\n\n'"What's new in $ver:"$'\n'"$wn"; fi
           if gh release view pleat-latest >/dev/null 2>&1; then
             gh release edit pleat-latest --title "Pleat $full (latest build)" --notes "$notes" --prerelease
           else

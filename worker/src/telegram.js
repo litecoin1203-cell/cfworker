@@ -864,6 +864,18 @@ async function onMessage(env, msg, opts = {}) {
     lines.push(miss.length ? `⚠️ بی‌قیمت: ${miss.join('، ')} (سفارش با این ارزها فعلاً ساخته نمی‌شود)` : '✅ همه‌ی ارزها قیمت دارند');
     return say(lines.join('\n'));
   }
+  // the answer to "📝 write the What's new lines" (m:w:appnotes): one item per line
+  if (cmd === '/appnotes') {
+    const { parseNotes } = await import('./appupdate.js');
+    const p = parseNotes(text.replace(/^\/appnotes(@\w+)?\s*/i, ''));
+    if (p.error || !p.notes.length) {
+      const menu = await import('./telegram-menu.js');
+      await menu.setWait(env, '/appnotes', 'upd', false, chatId);
+      return say(`❌ ${{ latin: 'متن باید انگلیسی باشد (اپ فقط انگلیسی است).', long: 'هر خط حداکثر ۱۶۰ حرف.', many: 'حداکثر ۸ خط.' }[p.error] || 'متنی پیدا نشد.'} دوباره بفرست:`);
+    }
+    const r = await runAction(env, chatId, 'app.notes', { notes: p.notes });
+    return r.ok ? sayDone(r) : say(r.error);
+  }
   if (cmd === '/set') {
     const rest = text.replace(/^\/set(@\w+)?\s*/i, '');
     const i = rest.indexOf(' ');

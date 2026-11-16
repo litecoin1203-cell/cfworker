@@ -24,6 +24,54 @@ const UA = 'cloudgold-worker';
 const repoOf = (env) => (/^[\w.-]+\/[\w.-]+$/.test(env.PLEAT_REPO || '') ? env.PLEAT_REPO : 'litecoin1203-cell/cfworker');
 const ghHeaders = (env, accept) => ({ authorization: 'Bearer ' + env.PLEAT_DL_TOKEN, accept, 'user-agent': UA, 'x-github-api-version': '2022-11-28' });
 
+// ---- What's new: a few short lines per build, shown in Pleat's update sheet ----
+// The lines come from flutter_vpn/assets/whats_new/whats_new.json (the same file the app bundles for its own
+// "What's new" page): the APK workflow copies the entry of the built version into the release's notes as
+// "- NEW: ...", "- BETTER: ...", "- FIXED: ...". The admin can replace them in the bot before or after announcing.
+// Pleat's UI is English only, so a line in another script is refused.
+export const NOTE_KINDS = ['new', 'better', 'fixed'];
+export const NOTE_FA = { new: '✨ جدید', better: '⚡ بهتر', fixed: '🛠 رفع مشکل' };
+const NOTE_MAX = 8, NOTE_LEN = 160;
+const NOTE_LINE = /^\s*(?:[-*•]\s*)?(new|better|fixed|fix)\s*[:·\-–]\s*(.+)$/i;
+const NON_LATIN = /[\u0590-\u08FF\uFB1D-\uFDFF\uFE70-\uFEFF]/;
+
+// what a stored or announced list may hold: known kinds, plain short text, at most NOTE_MAX lines
+export function cleanNotes(list) {
+  if (!Array.isArray(list)) return [];
+  const out = [];
+  for (const n of list) {
+    if (!n || typeof n !== 'object') continue;
+    const kind = NOTE_KINDS.includes(n.kind) ? n.kind : 'new';
+    const text = String(n.text || '').replace(/[\u0000-\u001f\u007f<>]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, NOTE_LEN);
+    if (text && !NON_LATIN.test(text)) out.push({ kind, text });
+    if (out.length >= NOTE_MAX) break;
+  }
+  return out;
+}
+
+// The admin's message (one item per line, "NEW: ..." / "BETTER: ..." / "FIXED: ..." or a plain line = new).
+// strict: the release body, where only tagged "- KIND: text" lines count (the rest is the build note).
+export function parseNotes(text, strict = false) {
+  const notes = [];
+  for (const raw of String(text || '').split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line) continue;
+    const m = NOTE_LINE.exec(line);
+    if (!m && strict) continue;
+    const kind = m ? (m[1].toLowerCase() === 'fix' ? 'fixed' : m[1].toLowerCase()) : 'new';
+    const body = (m ? m[2] : line.replace(/^[-*•]\s*/, '')).trim();
+    if (!body) continue;
+    if (NON_LATIN.test(body)) return { error: 'latin' };
+    if (body.length > NOTE_LEN) return { error: 'long' };
+    notes.push({ kind, text: body });
+  }
+  if (notes.length > NOTE_MAX) return { error: 'many' };
+  return { notes: cleanNotes(notes) };
+}
+
+// the notes as the bot shows them to the admin
+export const notesFa = (notes) => (notes && notes.length ? notes.map((n) => `${NOTE_FA[n.kind] || '•'} · ${n.text}`).join('\n') : '(بدون متن تغییرات)');
+
 // A build as read from the release or as announced, with only the fields that are what they claim.
 export function cleanRelease(m) {
   if (!m || typeof m !== 'object') return null;
@@ -47,6 +95,7 @@ export function cleanRelease(m) {
     built_at: parseInt(m.built_at, 10) || 0,
     force: m.force === true,
     at: parseInt(m.at, 10) || 0,
+    notes: cleanNotes(m.notes),
   };
 }
 
@@ -67,7 +116,10 @@ export function releaseFromGitHub(r) {
   const top = Object.values(builds).sort((x, y) => y.build - x.build)[0];
   if (!top) return null;
   const commit = (/built from ([0-9a-f]{7,40})/.exec(String(r.body || '')) || [])[1] || '';
-  return cleanRelease({ ...top, commit, built_at: top.at > 0 ? Math.floor(top.at / 1000) : 0 });
+  // the What's new lines belong to the version the notes were written for (the newest build's)
+  const said = /Pleat (\d+\.\d+\.\d+)\+/.exec(String(r.body || ''));
+  const notes = !said || said[1] === top.version ? (parseNotes(r.body, true).notes || []) : [];
+  return cleanRelease({ ...top, commit, notes, built_at: top.at > 0 ? Math.floor(top.at / 1000) : 0 });
 }
 
 // the newest build on the release; null without the token, before the first split build, or when GitHub is down
@@ -92,7 +144,7 @@ export function updateOut(rel) {
   if (!rel) return null;
   const abis = {};
   for (const [k, a] of Object.entries(rel.abis)) abis[k] = { size: a.size, sha256: a.sha256 };
-  return { version: rel.version, build: rel.build, tag: rel.tag, force: rel.force, abis };
+  return { version: rel.version, build: rel.build, tag: rel.tag, force: rel.force, abis, notes: rel.notes || [] };
 }
 
 // GET /app/apk?tag=&abi= : the announced APK for one phone type, passed through from the release.
@@ -134,7 +186,8 @@ export async function setRelease(env, op) {
     if (!latest) return { error: 'روی ریلیز pleat-latest بیلدی با فایل جدا برای هر گوشی پیدا نشد. اول workflow «Pleat Flutter app» را اجرا کن.' };
     if (cur && cur.tag === latest.tag) return { error: 'همین بیلد الان اعلام شده.' };
     if (cur && latest.build < cur.build) return { error: `این بیلد (${latest.build}) از اعلام‌شده (${cur.build}) قدیمی‌تر است.` };
-    next = { ...latest, force: false, at: nowSec() };
+    const draft = await notesDraft(env);
+    next = { ...latest, notes: draft && draft.tag === latest.tag ? draft.notes : latest.notes, force: false, at: nowSec() };
   } else if (op === 'force') {
     if (!cur) return { error: 'هنوز نسخه‌ای اعلام نشده.' };
     next = { ...cur, force: !cur.force };
@@ -148,6 +201,42 @@ export async function setRelease(env, op) {
 
 export const saveRelease = (env, rel) => setSetting(env, 'app_release', rel ? JSON.stringify(rel) : '');
 
+// The admin's own What's new lines for a build not announced yet ({tag, notes}); announce uses them.
+export async function notesDraft(env) {
+  try {
+    const d = JSON.parse((await getSetting(env, 'app_notes_draft')) || 'null');
+    return d && typeof d.tag === 'string' ? { tag: d.tag, notes: cleanNotes(d.notes) } : null;
+  } catch (e) { return null; }
+}
+
+// Which build the What's new lines are for: the newest build when it is not announced yet, else the announced
+// one (its lines change in the apps at once). latest: the newest build when the caller already read it.
+export async function notesTarget(env, latest) {
+  const cur = await announced(env);
+  if (latest === undefined) latest = await latestBuild(env);
+  if (latest && (!cur || latest.tag !== cur.tag) && (!cur || latest.build > cur.build)) {
+    const d = await notesDraft(env);
+    return { kind: 'draft', rel: latest, notes: d && d.tag === latest.tag ? d.notes : latest.notes };
+  }
+  if (cur) return { kind: 'announced', rel: cur, notes: cur.notes };
+  return null;
+}
+
+// The bot's "write other lines" / "no lines" (admin-actions.js 'app.notes'). Returns what to undo.
+export async function setNotes(env, notes) {
+  const t = await notesTarget(env);
+  if (!t) return { error: 'هنوز بیلدی برای نوشتن تغییرات نیست.' };
+  const clean = cleanNotes(notes);
+  if (t.kind === 'draft') {
+    const before = await getSetting(env, 'app_notes_draft');
+    await setSetting(env, 'app_notes_draft', JSON.stringify({ tag: t.rel.tag, notes: clean }));
+    return { key: 'app_notes_draft', before, rel: t.rel, notes: clean, kind: t.kind };
+  }
+  const before = await getSetting(env, 'app_release');
+  await saveRelease(env, { ...t.rel, notes: clean });
+  return { key: 'app_release', before, rel: t.rel, notes: clean, kind: t.kind };
+}
+
 // every 10 minutes (from the 2-minute cron): tell the admin once about each new build on the release
 export async function checkNewBuild(env, notify) {
   if (!env.PLEAT_DL_TOKEN) return false;
@@ -158,7 +247,8 @@ export async function checkNewBuild(env, notify) {
   const cur = await announced(env);
   if (cur && cur.tag === latest.tag) return false;
   await notify([`📲 نسخه‌ی جدید Pleat ساخته شد: ${latest.version} (بیلد ${latest.build})`,
-    `حجم: ${sizes(latest)}`, '', 'هنوز به کاربرها اعلام نشده. برای اعلام، دکمه‌ی زیر را بزن.'].join('\n'),
+    `حجم: ${sizes(latest)}`, '', '📝 تغییرات این نسخه (کاربرها همین را می‌بینند):', notesFa(latest.notes), '',
+    'هنوز به کاربرها اعلام نشده. برای اعلام یا عوض کردن متن، دکمه‌ی زیر را بزن.'].join('\n'),
   { inline_keyboard: [[{ text: '📲 نسخه‌ی اپ', callback_data: 'm:upd' }]] });
   return true;
 }

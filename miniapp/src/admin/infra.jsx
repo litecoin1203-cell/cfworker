@@ -294,6 +294,8 @@ function ListEditor({ title, items, k, after, owner, add, hint, test }) {
   );
 }
 
+const NOTE_LABEL = { new: 'NEW', better: 'BETTER', fixed: 'FIXED' };
+
 export function AppSettings({ nav }) {
   const st = useLoad(() => admin.app(), []);
   const owner = nav.role === 'owner';
@@ -304,6 +306,14 @@ export function AppSettings({ nav }) {
       fields: [{ key: 'v', label: k === 'd' ? 'Address' : 'Config link', required: true, type: k === 'd' ? 'url' : 'text', max: 2000,
         placeholder: k === 'd' ? 'https://api.example.com' : 'vless://…', hint: k === 'd' ? 'https and a domain only, no path.' : 'vless, vmess, trojan, ss, hysteria2 or wireguard. Never shown in full again.' }] });
     if (v) act('app.list', { k, op: 'add', value: v.v.trim() }, { done: 'Added', after });
+  };
+  // What's new lines: one per line, "NEW: …" / "BETTER: …" / "FIXED: …", English only (Pleat is English)
+  const writeNotes = async (cur) => {
+    const v = await openForm({ title: `What's new in ${cur.version}`, submit: 'Save',
+      lead: 'One change per line, at most 8. Start a line with NEW:, BETTER: or FIXED:. English only.',
+      fields: [{ key: 'v', label: 'Lines', type: 'textarea', required: true, max: 1400,
+        value: cur.lines.map((n) => `${NOTE_LABEL[n.kind] || 'NEW'}: ${n.text}`).join('\n'), placeholder: 'NEW: Locations shows the fastest country for you.' }] });
+    if (v) act('app.notes', { text: v.v }, { done: 'Lines saved', after });
   };
   const testDomains = async () => {
     try {
@@ -346,6 +356,18 @@ export function AppSettings({ nav }) {
                 {!rel.token ? <p class="alert-t" style={{ fontSize: '14px', marginBottom: '10px' }}>The download token (PLEAT_DL_TOKEN) is not on the server yet. Add it in GitHub › Settings › Secrets, then run Deploy.</p> : null}
                 <KV k="Newest build">{rel.latest ? `${rel.latest.version} (build ${rel.latest.build}) · ${day(rel.latest.at)}` : 'Not found'}</KV>
                 <KV k="Told to users">{rel.announced ? `${rel.announced.version} (build ${rel.announced.build})${rel.announced.force ? ' · required' : ''}` : 'Nothing'}</KV>
+                {rel.notes ? (
+                  <div style={{ marginTop: '10px' }}>
+                    <p class="note" style={{ margin: '0 0 6px' }}>What's new in {rel.notes.version} (users see it on the update screen)</p>
+                    {rel.notes.lines.length ? rel.notes.lines.map((n, i) => <p key={i} style={{ margin: '0 0 4px', fontSize: '14px' }}><Tag>{NOTE_LABEL[n.kind] || 'NEW'}</Tag> {n.text}</p>) : <p class="note">No lines</p>}
+                    {owner ? (
+                      <div class="btns" style={{ marginTop: '8px' }}>
+                        <Button kind="soft" onClick={() => writeNotes(rel.notes)}>Write lines</Button>
+                        {rel.notes.lines.length ? <Button kind="ghost" onClick={() => act('app.notes', { notes: [] }, { done: 'No lines', after })}>No lines</Button> : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
                 {owner ? (
                   <div class="stack" style={{ marginTop: '12px' }}>
                     {rel.fresh ? <Button onClick={() => act('app.release', { op: 'announce' }, { confirm: `Tell every user about ${rel.latest.version}?`, done: `${rel.latest.version} announced`, after })}>Announce {rel.latest.version}</Button> : null}

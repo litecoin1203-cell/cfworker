@@ -22,6 +22,7 @@ import 'route_rules.dart';
 import 'stats_log.dart';
 import 'tunnel.dart';
 import 'updater.dart';
+import 'whats_new.dart';
 import 'xray_config.dart';
 
 enum Phase { idle, checking, handshaking, protected, dropped }
@@ -120,6 +121,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(updater.load().then((_) => _offerUpdate()));
     this.tunnel.onNetChange = networkChanged;
     unawaited(readBattery());
+    unawaited(_loadWhatsNew());
     WidgetsBinding.instance.addObserver(this);
   }
 
@@ -145,6 +147,44 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   void hideBatteryTip() {
     unawaited(_prefs.setBool('battery_tip_hidden', true));
+    notifyListeners();
+  }
+
+  // ---- What's new ----------------------------------------------------------
+
+  /// Every version's What's new, from the file inside the app.
+  WhatsNewBook _whatsNew = WhatsNewBook.empty;
+
+  /// The same, with the store's own lines for the announced version.
+  WhatsNewBook get whatsNew => _whatsNew.withAnnounced(config.update);
+
+  Future<void> _loadWhatsNew() async {
+    // a new install has nothing "new" to be told; an older Pleat that is
+    // updated into this one (onboarded, nothing recorded) does
+    if (_prefs.getString(WhatsNewSeen.key) == null) {
+      unawaited(
+        _prefs.setString(WhatsNewSeen.key, onboarded ? '' : WhatsNewSeen.fresh),
+      );
+    }
+    _whatsNew = await WhatsNewBook.load();
+    notifyListeners();
+  }
+
+  /// Home's one-time "You're on the new Pleat" card.
+  bool get showWhatsNew {
+    final v = updater.version;
+    final seen = _prefs.getString(WhatsNewSeen.key);
+    if (seen == WhatsNewSeen.fresh && v.isNotEmpty) {
+      unawaited(_prefs.setString(WhatsNewSeen.key, v));
+      return false;
+    }
+    return showWhatsNewCard(version: v, seen: seen, book: whatsNew);
+  }
+
+  /// The card was opened or closed: it doesn't come back for this version.
+  void seenWhatsNew() {
+    if (updater.version.isEmpty) return;
+    unawaited(_prefs.setString(WhatsNewSeen.key, updater.version));
     notifyListeners();
   }
 

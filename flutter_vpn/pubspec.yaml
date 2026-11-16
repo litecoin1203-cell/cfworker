@@ -66,6 +66,9 @@ flutter:
     - assets/brand/
     # third-party licences for the licence page (lib/licenses.dart)
     - assets/licenses/
+    # every version's What's new lines (lib/state/whats_new.dart); the APK workflow copies the built version's
+    # lines into the release notes, where the Worker reads them for the update sheet
+    - assets/whats_new/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

@@ -25,7 +25,8 @@ Read **[`docs/PROJECT_HANDBOOK.md`](docs/PROJECT_HANDBOOK.md)** before changing 
 6. **Evidence before "fixed"**: say what is proven (run / test / log) and what is a guess. VPN routing and the
    Android tunnel can only be proven on the owner's phone.
 7. Pleat: colours only from `PColors`; bump `version` **and** the `+build` in `flutter_vpn/pubspec.yaml` for every
-   release. Routing rules for phone traffic must carry `inboundTag: ['socks']`.
+   release, and add its user-facing English lines to `flutter_vpn/assets/whats_new/whats_new.json` (a test checks).
+   Routing rules for phone traffic must carry `inboundTag: ['socks']`.
 8. Work on a branch, open a PR; merging deploys nothing. Deploy (`Deploy Cloud Gold server`) and the APK
    (`Pleat Flutter app`, manual run) are manual workflows.
 9. **Keep the docs current in the same PR**: new route → `docs/API.md`, new migration → `docs/DATABASE.md` (both
