@@ -6657,6 +6657,15 @@ section('review of wave 2: a settled exit country is not rewritten; pending rows
   ok(Object.values(W.pgs[1].users).filter((u) => u.note === `Pleat #${u3}`).length === 1, 'review 3: and no second account later');
 }
 
+section('MISC-06: an incident runbook exists and covers the single points of failure');
+{
+  const { readFileSync, existsSync } = await import('node:fs');
+  const f = new URL('../../docs/RUNBOOK.md', import.meta.url);
+  const rb = existsSync(f) ? readFileSync(f, 'utf8') : '';
+  const need = ['/health?deep=1', 'app_api_bases', 'JWT_SECRET', 'SECRET_KEY', 'TELEGRAM_CHAT_ID', 'APP_KEYSTORE', 'token_version', 'CF_ANALYTICS_TOKEN', 'RESTORE.md'];
+  ok(rb && need.every((w) => rb.includes(w)), 'MISC-06: docs/RUNBOOK.md names ' + need.filter((w) => !rb.includes(w)).join(', '));
+}
+
 section('ARC-06: the retired Cloud Gold app is gone from main, and nothing still points at it');
 {
   const { existsSync, readFileSync, readdirSync } = await import('node:fs');

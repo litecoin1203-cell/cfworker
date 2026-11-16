@@ -189,7 +189,8 @@ cfworker/
 ├── miniapp/                     TELEGRAM MINI APP (Preact 10 + esbuild, pinned + lockfile): src/ (user side),
 │                                src/admin/ (admin panel), test/; `npm run build` → worker/public/
 ├── design-system/               the old app's "Vault & Hallmark" design docs (historical)
-├── docs/                        PROJECT_HANDBOOK.md (this file), API.md, DATABASE.md, RESTORE.md (restore/rollback)
+├── docs/                        PROJECT_HANDBOOK.md (this file), API.md, DATABASE.md, RESTORE.md (restore/rollback),
+│                                RUNBOOK.md (incidents: filtered domain, panel down, leaked secret or key, lost Telegram)
 ├── AGENTS.md, CLAUDE.md         short rule card for AI coding agents
 ├── README.md                    original Persian setup guide (partly outdated: old app); links to docs/
 └── .github/workflows/
