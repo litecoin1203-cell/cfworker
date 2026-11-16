@@ -74,7 +74,7 @@ export default {
           try { const { scanAll } = await import('./chainwatch.js'); spent = (await scanAll(env)).spent || 0; } catch (e) { spent = 8; logError('chain scan failed', e); }
           try { const { runSync } = await import('./sync.js'); await runSync(env, { spent }); } catch (e) { logError('panel sync failed', e); }
         }
-        try { const { ensureWebhook } = await import('./telegram.js'); await ensureWebhook(env); } catch (e) { logError('webhook check failed', e); }
+        try { const { ensureWebhook } = await import('./telegram.js'); await ensureWebhook(env, { check: new Date().getUTCMinutes() % 10 === 4 }); } catch (e) { logError('webhook check failed', e); }
         // which configs come from a panel's "Tunnel" group (the app marks them), read every 15 minutes
         if (new Date().getUTCMinutes() % 15 === 7) {
           try { const { refreshHostRules } = await import('./panels.js'); await refreshHostRules(env); } catch (e) { logError('host rules refresh failed', e); }

@@ -260,8 +260,11 @@ async function editStatus(env, cq, text, markup) {
 
 // ---------------- webhook registration ----------------
 // The Worker points the bot at itself (no secret in the deploy workflow). Runs every minute but only calls
-// Telegram when the address or the secret changed since the last successful registration.
-export async function ensureWebhook(env) {
+// Telegram when the address or the secret changed since the last successful registration, and every 10 minutes
+// (opts.check) asks Telegram where the bot's updates go: when they no longer come here (another program set its
+// own webhook or deleted it), or Telegram's last tries were refused by this Worker (a secret mismatch), it
+// registers again. Without this a bot pointed elsewhere stayed silent until the next deploy changed the address.
+export async function ensureWebhook(env, opts = {}) {
   const base = String(env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
   const secret = env.TELEGRAM_WEBHOOK_SECRET;
   if (!env.TELEGRAM_BOT_TOKEN || !secret || !base) return false;
@@ -270,7 +273,7 @@ export async function ensureWebhook(env) {
   // "v3": also points every user's menu button at the Mini App
   const want = await hmacHex(secret, base + '|' + env.TELEGRAM_BOT_TOKEN.slice(-6) + '|v3');
   const have = (await first(env, "SELECT value FROM settings WHERE key = 'tg_webhook_sig'"))?.value;
-  if (have === want) return false;
+  if (have === want && !(opts.check && (await webhookLost(env, base + '/tg')))) return false;
   const r = await tg(env, 'setWebhook', { url: base + '/tg', secret_token: secret, allowed_updates: ['message', 'callback_query'] });
   if (!r || !r.ok) return false;
   if (env.TELEGRAM_CHAT_ID) {
@@ -284,6 +287,18 @@ export async function ensureWebhook(env) {
   await tg(env, 'setChatMenuButton', { menu_button: { type: 'web_app', text: 'Pleat', web_app: { url: base + MINI_PATH } } });
   await setSetting(env, 'tg_webhook_sig', want);
   return true;
+}
+
+// Telegram's own view of the webhook: lost when it points somewhere else (or nowhere), or when its last error in
+// the past 15 minutes is this Worker refusing the update (401/403/404: the secret Telegram sends is not ours).
+// No answer from Telegram is not "lost" (nothing to fix from here).
+export async function webhookLost(env, url) {
+  const r = await tg(env, 'getWebhookInfo', {});
+  if (!r || !r.ok || !r.result) return false;
+  const w = r.result;
+  if (w.url !== url) return true;
+  const recent = w.last_error_date && nowSec() - w.last_error_date < 900;
+  return !!(recent && w.pending_update_count > 0 && /\b(401|403|404)\b/.test(String(w.last_error_message || '')));
 }
 
 // ---------------- admin log and "are you sure?" ----------------

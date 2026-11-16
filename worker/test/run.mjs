@@ -1842,6 +1842,21 @@ section('webhook is registered by the Worker, with no secret in the path');
   ok(cmds && cmds.body.scope.chat_id === '12345' && cmds.body.commands.some((c) => c.command === 'menu'), 'menu command shown to the admin chat only');
   await worker.scheduled({ cron: '* * * * *' }, env, ctx); await drain();
   ok(fakes.tg.calls.filter((c) => c.method === 'setWebhook').length === before + 1, 'not repeated while nothing changed');
+  // the 10-minute check: Telegram says the updates go elsewhere, or this Worker refused them -> registered again
+  const { ensureWebhook } = await import('../src/telegram.js');
+  const n0 = fakes.tg.calls.filter((c) => c.method === 'setWebhook').length;
+  fakes.tg.webhookInfo = { url: 'https://api.test/tg', pending_update_count: 0 };
+  ok((await ensureWebhook(env, { check: true })) === false && fakes.tg.calls.filter((c) => c.method === 'setWebhook').length === n0, 'check: pointed here and no error -> nothing re-registered');
+  fakes.tg.webhookInfo = { url: 'https://elsewhere.example/hook', pending_update_count: 3 };
+  ok((await ensureWebhook(env)) === false, 'without the check, a lost webhook is not looked for (no extra subrequest every minute)');
+  ok((await ensureWebhook(env, { check: true })) === true && fakes.tg.calls.filter((c) => c.method === 'setWebhook').pop().body.url === 'https://api.test/tg', 'check: pointed elsewhere -> registered here again');
+  fakes.tg.webhookInfo = { url: '', pending_update_count: 9 };
+  ok((await ensureWebhook(env, { check: true })) === true, 'check: webhook deleted -> registered again');
+  fakes.tg.webhookInfo = { url: 'https://api.test/tg', pending_update_count: 4, last_error_date: Math.floor(Date.now() / 1000) - 60, last_error_message: 'Wrong response from the webhook: 404 Not Found' };
+  ok((await ensureWebhook(env, { check: true })) === true, 'check: Telegram\'s recent tries refused with 404 (secret mismatch) -> registered again with our secret');
+  fakes.tg.webhookInfo = { url: 'https://api.test/tg', pending_update_count: 4, last_error_date: Math.floor(Date.now() / 1000) - 60, last_error_message: 'Wrong response from the webhook: 500 Internal Server Error' };
+  ok((await ensureWebhook(env, { check: true })) === false, 'check: a 500 is not fixed by registering again, so it is left alone');
+  fakes.tg.webhookInfo = null;
   ok((await call('POST', '/tg', { json: { message: { chat: { id: 12345 }, text: '/help' } }, headers: TG })).status === 200, '/tg with the header works');
   ok((await call('POST', '/tg', { json: { message: { chat: { id: 12345 }, text: '/help' } } })).status === 404, '/tg without the header is closed');
 }
