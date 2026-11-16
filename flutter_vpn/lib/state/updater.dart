@@ -160,6 +160,21 @@ class Updater {
   bool _stop = false;
   String? _apk;
 
+  /// Completed by [stop]: aborts the running download at once, wherever
+  /// it is (picking a way, connecting, or waiting on a silent line).
+  Completer<void>? _cancel;
+
+  /// Each download run gets a number; a stopped run no longer owns the
+  /// step, so it can't overwrite what a new run (or Stop) set.
+  int _run = 0;
+
+  /// The run in flight; a new one waits for it to let go of the file.
+  Future<void>? _active;
+
+  /// What the last download tried, way by way (see ApiClient.downloadTrail),
+  /// for the failure report.
+  String get trail => api.downloadTrail;
+
   /// The build the notification is about, once it has been shown.
   AppUpdate? _noted;
   String _noteKey = '';
@@ -182,8 +197,14 @@ class Updater {
   String? _tag;
   DateTime _shown = DateTime(0);
 
-  /// How many times a cut download is picked up again before giving up.
+  /// How many times in a row a cut download is picked up again without
+  /// bringing a single new byte before giving up. A try that brought bytes
+  /// starts the count over, so a line that cuts every few MB still gets
+  /// there.
   static const _retries = 8;
+
+  /// The pause before a cut download is picked up again.
+  Duration retryPause = const Duration(seconds: 3);
 
   Future<void> load() async {
     try {
@@ -291,8 +312,18 @@ class Updater {
     error = null;
     total = f.size;
     step = UpdateStep.downloading;
+    final run = ++_run;
+    final cancel = _cancel = Completer<void>();
+    final prev = _active;
+    final mine = Completer<void>();
+    _active = mine.future;
     _changed();
+    bool gone() => run != _run || _stop;
+    final stopped = ApiError(0, 'stopped', 'Download stopped.');
     try {
+      // a run that was just stopped first lets go of the file
+      if (prev != null) await prev;
+      if (gone()) throw stopped;
       final dir = await _ch.invokeMethod<String>('dir');
       if (dir == null) throw const FileSystemException('no dir');
       final name =
@@ -315,32 +346,41 @@ class Updater {
         _b0 = received;
         _changed();
         for (var tries = 0; ; tries++) {
+          if (gone()) throw stopped;
+          final before = part.existsSync() ? part.lengthSync() : 0;
+          ApiError? cut;
           try {
             await api.download(
               '/app/apk?tag=${Uri.encodeQueryComponent(u.tag)}&abi=$abi',
               part,
               onProgress: (b) {
+                if (run != _run) return;
                 received = b;
                 _changed(now: false);
               },
-              stop: () => _stop,
+              stop: gone,
+              cancel: cancel.future,
             );
             if (part.lengthSync() >= f.size) break;
             // The line closed early: go on from here.
           } on ApiError catch (e) {
             if (e.code == 'stopped' || e.status >= 400) rethrow;
-            if (tries + 1 >= _retries) rethrow;
+            cut = e;
           }
+          // bytes came in: the line works, only cuts; count again from 0
+          if ((part.existsSync() ? part.lengthSync() : 0) > before) tries = -1;
           if (tries + 1 >= _retries) {
-            throw ApiError(
-              0,
-              'offline',
-              'The download keeps dropping. Tap Update to go on from here.',
-            );
+            throw cut ??
+                ApiError(
+                  0,
+                  'offline',
+                  'The download keeps dropping. Tap Update to go on from here.',
+                );
           }
-          if (_stop) throw ApiError(0, 'stopped', 'Download stopped.');
-          await Future<void>.delayed(const Duration(seconds: 3));
+          if (gone()) throw stopped;
+          await Future.any([Future<void>.delayed(retryPause), cancel.future]);
         }
+        if (gone()) throw stopped;
         part.renameSync(apk.path);
       }
       received = total;
@@ -360,27 +400,35 @@ class Updater {
       _changed();
       await install();
     } on ApiError catch (e) {
-      if (e.code == 'stopped') {
+      if (run != _run) {
+        // Stop already put the card back; a newer run owns it now.
+      } else if (e.code == 'stopped') {
         step = UpdateStep.idle;
+        _changed();
       } else {
         if (e.code == 'update_gone') onGone?.call();
-        step = UpdateStep.failed;
-        error = e.message;
+        _fail(e.message);
       }
-      _changed();
     } on FileSystemException {
-      step = UpdateStep.failed;
-      error = 'There isn’t room for the update. Free some space and try again.';
-      _changed();
+      if (run == _run) {
+        _fail(
+          'There isn’t room for the update. Free some space and try again.',
+        );
+      }
     } on PlatformException {
-      step = UpdateStep.failed;
-      error = 'The update couldn’t be checked. Try again.';
-      _changed();
+      if (run == _run) _fail('The update couldn’t be checked. Try again.');
     } on MissingPluginException {
-      step = UpdateStep.failed;
-      error = 'Updates work in the Android app only.';
-      _changed();
+      if (run == _run) _fail('Updates work in the Android app only.');
+    } finally {
+      if (identical(_cancel, cancel)) _cancel = null;
+      mine.complete();
     }
+  }
+
+  void _fail(String why) {
+    step = UpdateStep.failed;
+    error = why;
+    _changed();
   }
 
   /// Opens Android's installer on the checked file, or asks for "Install
@@ -442,7 +490,19 @@ class Updater {
     }
   }
 
-  void stop() => _stop = true;
+  /// Stops the download at once: the card and the notification go back to
+  /// "Go on" now, not when the line next sends a byte, and the connection is
+  /// dropped. What came in so far stays on the phone for the next try.
+  void stop() {
+    if (step != UpdateStep.downloading) return;
+    _stop = true;
+    _run++;
+    final c = _cancel;
+    if (c != null && !c.isCompleted) c.complete();
+    _t0 = null;
+    step = UpdateStep.idle;
+    _changed();
+  }
 
   /// The system notification about [u], the first time it is announced;
   /// from then on it follows the download.

@@ -561,7 +561,7 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.53+56** (`flutter_vpn/pubspec.yaml`; a Worker test fails when this line and pubspec differ, so
+Version on main: **1.2.54+57** (`flutter_vpn/pubspec.yaml`; a Worker test fails when this line and pubspec differ, so
 update it in the same PR as every version bump). 1.2.53 is the smart-connect fix ("only exits that answered here").
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
 **Every release also adds its What's new entry** to `flutter_vpn/assets/whats_new/whats_new.json` (short English
@@ -692,6 +692,14 @@ does not reach users by itself.
   (pref `whatsNewSeen`; a new install never sees it); Profile footer › WHAT'S NEW opens every version on a timeline
   (`lib/state/whats_new.dart`, `lib/screens/whats_new.dart`). The store's lines win over the bundled ones for the
   announced version.
+- Stop and filtered lines (2026-11-16): Stop (card, sheet or shade) puts the card back to "Go on" at once and aborts
+  the running request wherever it is (picking a way, connecting, or a silent line); a stopped run can't take the card
+  back. Inside one `ApiClient.download` call a way that breaks on the file is not asked again: the next round takes
+  the next Worker address, then (tunnel down) the bridge, because some lines answer `/health` but cut or block the
+  large file. TLS cuts no longer end the download at once. A try that brought bytes resets the 8-try count. Idle limit
+  30 s. `update_fail` reports carry `ways` (e.g. `o0 reset 12.3; o1 tls 0`: o open line / t tunnel / b bridge, the
+  address by its place in the list, how it ended, MB brought) and `tunnel`. Proven by tests only (local server);
+  the Pars Online cause is still unproven.
 
 ### Sign-in and profile (PRs #53, #54, #66, #70)
 - One sheet with **Sign in / Create account** tabs; login = email or Telegram @username + password. Quick tiles:
@@ -1095,6 +1103,7 @@ the bot (show / rewrite / none before announcing) and Pleat (update sheet list, 
 | 90 | 11-13 | Native crash: offsets inside the core (pc, lr, Go frame chain), signal sender, stderr matched per process (1.2.50) |
 | — | 11-15 | Smart connect offers only exits that answered here, skips ones failing for everyone, `no_exit` says why each try failed (1.2.53) |
 | — | 11-16 | What's new per update: lines in the update sheet, a one-time Home card, a history page; bot shows / edits them before announcing |
+| — | 11-16 | In-app update: Stop works at once; a broken way is skipped for the next address / the bridge; failure report names each way tried |
 
 ---
 
@@ -1240,6 +1249,8 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 
 - **What's new phone test** (needs a version bump with the PR): update sheet shows the lines, Home card appears once
   after installing and goes away after SEE WHAT'S NEW or ✕, Profile › WHAT'S NEW timeline in Day and Night.
+- **In-app update on Pars Online without VPN (2026-11-16)**: cause unproven. The next `📲 به‌روزرسانی ناموفق`
+  report's `ways` line says whether the line cut the file, the TLS handshake, or never answered.
 
 - **Pleat 1.2.48 (PR #88) phone test**: Activity hub (ring, PACKAGES sheet, RENEW, Keep history off/on, Clear
   history), Profile Plans shelf (BUY opens checkout, stopped plan shows RENEW). **1.2.49 (PR #89)**: Locations

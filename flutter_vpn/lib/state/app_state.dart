@@ -406,7 +406,14 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
               : err.contains('installer')
               ? 'install'
               : 'download',
-          d: {'err': err, 'to': config.update?.version ?? ''},
+          d: {
+            'err': err,
+            'to': config.update?.version ?? '',
+            // way by way: o/t/b = open line, tunnel, bridge; address by
+            // its place in the list; how it ended; MB it brought
+            'ways': updater.trail,
+            'tunnel': phase == Phase.protected,
+          },
         );
       }
     } else {
