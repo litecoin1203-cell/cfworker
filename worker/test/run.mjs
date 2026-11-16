@@ -2553,6 +2553,9 @@ section('sign up and log in with Telegram (6-digit code from the bot)');
   ok((await call('POST', '/api/v1/auth/tg/verify', { json: { nonce: s4.nonce, code: '123456' } })).status === 400, 'expired code refused');
 
   // bot: a stranger opening the bot directly is told how to sign in; the admin's own sign-in link works too
+  const nStr = fakes.tg.calls.length;
+  await tgWebhook({ message: { chat: { id: 4242, type: 'private' }, from: tgUser(4242, 'stranger'), text: '/start' } });
+  ok(fakes.tg.calls.slice(nStr).some((c) => c.method === 'sendPhoto' && String(c.body.chat_id) === '4242' && /Get the app/.test(c.body.caption)), 'a stranger\'s first /start gets the welcome card');
   await tgWebhook({ message: { chat: { id: 4242, type: 'private' }, from: tgUser(4242, 'stranger'), text: '/start' } });
   ok(lastText().includes('Continue with Telegram'), 'stranger /start explains sign-in');
   const s7 = await start();
@@ -3663,6 +3666,109 @@ section('Pleat in-app update: build on the private release, announce in the bot,
     delete bytes[21];
     ok((await call('GET', `/api/v1/app/apk?tag=${u.tag}&abi=arm64-v8a`, { token: userTok })).status === 410, 'a file gone from the release gets 410');
     bytes[21] = keep;
+
+    // ---- the bot's welcome for new people (welcome.js, design D) and its "Fast link" ----
+    seen.length = 0;
+    r = await call('GET', '/dl/pleat.apk');
+    got = new Uint8Array(await r.res.arrayBuffer());
+    ok(r.status === 200 && got.length === 120 && got.every((x, i) => x === bytes[21][i]), 'Fast link: /dl/pleat.apk passes the announced arm64 APK through without an account');
+    ok(/attachment; filename="Pleat-1\.2\.19\.apk"/.test(r.res.headers.get('content-disposition') || '') && seen[1].auth === null, 'it is saved as Pleat-<version>.apk and the token never reaches the file address');
+    r = await call('GET', '/dl/pleat.apk?abi=x86_64');
+    ok(r.status === 200 && (await r.res.arrayBuffer()).byteLength === 130, 'another phone type can be asked for');
+    ok((await call('GET', '/dl/pleat.apk?abi=mips')).status === 404, 'an unknown phone type gets 404');
+
+    const w = await import('../src/welcome.js');
+    const menu = await import('../src/telegram-menu.js');
+    const stranger = (id, text, first_name = 'Sara') => tgWebhook({ message: { chat: { id, type: 'private' }, from: { id, first_name }, text } });
+    const tapAs = (id, data) => tgWebhook({ callback_query: { id: 'pw-' + (++tapN), data, from: { id }, message: { chat: { id, type: 'private' }, message_id: 5, text: 'x' } } });
+    const to = (n, id, method) => since(n).filter((c) => c.method === method && String(c.body.chat_id) === String(id));
+    const btns = (c) => ((c && c.body.reply_markup && c.body.reply_markup.inline_keyboard) || []).flat();
+
+    n = fakes.tg.calls.length;
+    await stranger(700001, '/start', 'Sara <b>&');
+    let card = to(n, 700001, 'sendPhoto')[0];
+    ok(card && card.body.photo === 'https://api.test/welcome.jpg' && card.body.parse_mode === 'HTML', 'a new person gets the banner card');
+    ok(card && /Welcome, Sara &lt;b&gt;&amp; 👋/.test(card.body.caption) && /<blockquote>⚡ One tap/.test(card.body.caption) && /v1\.2\.19 · Android · 1 MB/.test(card.body.caption), 'the card greets by (escaped) first name, lists the features, version and size');
+    let b = btns(card);
+    ok(b.length === 3 && !b.some((x) => x.callback_data === 'pw:apk'), 'no "In Telegram" button before the owner sent the file');
+    ok(b.some((x) => x.url === 'https://api.test/dl/pleat.apk') && b.some((x) => x.url === 'https://github.com/litecoin1203-cell/cfworker/releases/download/pleat-latest/pleat-1.2.19-22-arm64-v8a.apk') && b.some((x) => x.callback_data === 'pw:help'), 'Fast link, GitHub (the announced file) and How to install');
+    ok(!/[؀-ۿ]/.test(card.body.caption + JSON.stringify(b)), 'the card is English only');
+    ok((await env.DB.prepare('SELECT welcomed_at w, had_account h FROM bot_users WHERE tg_id = 700001').first())?.w > 0, 'the welcome is remembered');
+    n = fakes.tg.calls.length;
+    await stranger(700001, '/start');
+    const again = to(n, 700001, 'sendMessage')[0];
+    ok(!to(n, 700001, 'sendPhoto').length && again && /Open Pleat/.test(again.body.text) && btns(again).some((x) => x.callback_data === 'pw:app'), 'the second /start gets the short message with "Get the app", not the card again');
+    n = fakes.tg.calls.length;
+    await tapAs(700001, 'pw:app');
+    ok(to(n, 700001, 'sendPhoto').length === 1, '"Get the app" brings the card back');
+    n = fakes.tg.calls.length;
+    await tapAs(700001, 'pw:help');
+    ok(/How to install Pleat/.test(to(n, 700001, 'sendMessage')[0]?.body.text || '') && /Install anyway/.test(to(n, 700001, 'sendMessage')[0]?.body.text || ''), 'How to install explains the steps and the Play Protect warning');
+    n = fakes.tg.calls.length;
+    await tapAs(700001, 'pw:apk');
+    ok(!to(n, 700001, 'sendDocument').length && /not here yet/.test(acks(n)), 'In Telegram without a file says to use the links');
+
+    // someone who already uses Pleat with this Telegram account, or came from the app's sign-in link: no card
+    await env.DB.prepare('UPDATE users SET tg_id = 700002 WHERE email = ?').bind('updater@example.com').run();
+    n = fakes.tg.calls.length;
+    await stranger(700002, '/start');
+    ok(!to(n, 700002, 'sendPhoto').length && to(n, 700002, 'sendMessage').length === 1, 'an existing Pleat user does not get the new-user card');
+    await env.DB.prepare('UPDATE users SET tg_id = NULL WHERE email = ?').bind('updater@example.com').run();
+    ok((await w.firstVisit(env, { id: 700003 }, { hasApp: true })) === false, 'a sign-in link marks the person as having the app');
+    n = fakes.tg.calls.length;
+    await stranger(700003, '/start');
+    ok(!to(n, 700003, 'sendPhoto').length, 'so their later /start gets no card');
+    ok((await w.firstVisit(env, { id: 700004, is_bot: true })) === false, 'bots are never welcomed');
+
+    // the owner sends the APK once; the bot keeps its file_id
+    const doc = (d) => tgWebhook({ message: { chat: { id: 12345 }, message_id: 9000 + (++tapN), document: d } });
+    n = fakes.tg.calls.length;
+    await doc({ file_id: 'BQ-early', file_name: 'pleat.apk', file_size: 52000000 });
+    ok(/اول دکمه/.test(lastScreen(n)?.body.text || '') && flat(lastScreen(n).body.reply_markup.inline_keyboard).includes('m:apkf') && !(await env.DB.prepare("SELECT 1 x FROM settings WHERE key = 'app_tg_file'").first()), 'an APK sent without the button is not kept; the bot shows the button');
+    n = fakes.tg.calls.length;
+    await tap('m:upd');
+    scr = lastScreen(n);
+    ok(/فایل تلگرامی/.test(scr?.body.text || '') && flat(scr.body.reply_markup.inline_keyboard).includes('m:apkf') && flat(scr.body.reply_markup.inline_keyboard).includes('pw:app'), 'the update screen shows the Telegram file and its buttons');
+    ok(flat(scr.body.reply_markup.inline_keyboard).every((d) => menu.routeOf(d)), 'every button on it has a route');
+    await tap('m:apkf');
+    n = fakes.tg.calls.length;
+    await tgWebhook({ message: { chat: { id: 12345 }, text: 'hello' } });
+    ok(/منتظر فایل APK/.test(lastScreen(n)?.body.text || ''), 'text instead of the file is answered, not ignored');
+    await tap('m:apkf');
+    n = fakes.tg.calls.length;
+    await doc({ file_id: 'BQ-pdf', file_name: 'guide.pdf', file_size: 52000000 });
+    ok(/APK نیست/.test(lastScreen(n)?.body.text || ''), 'a file that is not an APK is refused');
+    await tap('m:apkf');
+    n = fakes.tg.calls.length;
+    await doc({ file_id: 'BQ-test', file_unique_id: 'U1', file_name: 'pleat.apk', file_size: 52000000 });
+    ok(/✅ فایل تلگرامی ذخیره شد: 1\.2\.19/.test(lastScreen(n)?.body.text || '') && /یکی نیست/.test(lastScreen(n)?.body.text || ''), 'the file is kept as the announced version, with a warning when its size differs');
+    ok(!/(^|\n)\s*\//.test(lastScreen(n)?.body.text || ''), 'and asks for no typed command');
+    ok((await env.DB.prepare("SELECT COUNT(*) c FROM admin_audit WHERE action = 'app.tg_file'").first()).c === 1, 'it is in the audit log');
+    n = fakes.tg.calls.length;
+    await stranger(700005, '/start', 'Kai');
+    card = to(n, 700005, 'sendPhoto')[0];
+    b = btns(card);
+    ok(b.length === 4 && b[0].callback_data === 'pw:apk' && b[0].text === '📥 In Telegram' && b[1].text === '⚡ Fast link' && b[2].text === 'GitHub' && b[3].callback_data === 'pw:help', 'now the card has the 2×2 grid of design D');
+    n = fakes.tg.calls.length;
+    await tapAs(700005, 'pw:apk');
+    const sentDoc = to(n, 700005, 'sendDocument')[0];
+    ok(sentDoc && sentDoc.body.document === 'BQ-test' && /Continue with Telegram/.test(sentDoc.body.caption), 'In Telegram sends the kept file by its file_id with the next step');
+    // a file of another version is kept but not offered while another one is announced
+    await tap('m:apkf');
+    n = fakes.tg.calls.length;
+    await doc({ file_id: 'BQ-old', file_name: 'pleat-1.2.18-21-arm64-v8a.apk', file_size: 52000000 });
+    ok(/1\.2\.18/.test(lastScreen(n)?.body.text || '') && /نشان داده نمی‌شود/.test(lastScreen(n)?.body.text || ''), 'a file of another version comes with a warning');
+    n = fakes.tg.calls.length;
+    await tapAs(700005, 'pw:app');
+    ok(!btns(to(n, 700005, 'sendPhoto')[0]).some((x) => x.callback_data === 'pw:apk'), 'and is not offered to users');
+    // the banner cannot load: the same card as text
+    const realTgFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => (String(typeof input === 'string' ? input : input.url).endsWith('/sendPhoto') ? Response.json({ ok: false, description: 'wrong file' }, { status: 400 }) : realTgFetch(input, init));
+    n = fakes.tg.calls.length;
+    await tapAs(700005, 'pw:app');
+    globalThis.fetch = realTgFetch;
+    ok(/<b>Welcome 👋<\/b>[\s\S]*<blockquote>/.test(to(n, 700005, 'sendMessage')[0]?.body.text || ''), 'when the banner fails the card is sent as text');
+    await env.DB.prepare("DELETE FROM settings WHERE key = 'app_tg_file'").run();
 
     await tap('m:upx');
     ok((await cfg()) === null, 'withdrawing stops the offer');

@@ -104,6 +104,20 @@ export async function apkDownload(env, request) {
   // an app that asks for a build that is no longer announced gets 410 and reads app-config again
   if (!rel || q.get('tag') !== rel.tag) throw err(410, 'update_gone', 'این نسخه دیگر در دسترس نیست.');
   if (!a) throw err(404, 'not_found', 'پیدا نشد.');
+  return streamAsset(env, a, request, null);
+}
+
+// GET /dl/pleat.apk[?abi=] : the announced APK for people who have no account yet (the bot's welcome "Fast link"),
+// for networks where GitHub is filtered. arm64 unless another phone type is asked for. Saved as Pleat-<version>.apk.
+export async function publicApk(env, request) {
+  const abi = new URL(request.url).searchParams.get('abi') || 'arm64-v8a';
+  const rel = await announced(env);
+  const a = rel && rel.abis[abi];
+  if (!a) throw err(404, 'not_found', 'Not found.');
+  return streamAsset(env, a, request, `Pleat-${rel.version}${abi === 'arm64-v8a' ? '' : '-' + abi}.apk`);
+}
+
+async function streamAsset(env, a, request, saveAs) {
   if (!env.PLEAT_DL_TOKEN) throw err(503, 'update_unavailable', 'فایل آپدیت در دسترس نیست.');
   const range = /^bytes=\d{1,10}-$/.test(request.headers.get('range') || '') ? request.headers.get('range') : '';
   // the asset answers with a redirect to a signed address that must not get the token, so it is followed by hand
@@ -119,8 +133,15 @@ export async function apkDownload(env, request) {
   if (res.status === 404) throw err(410, 'update_gone', 'این نسخه دیگر در دسترس نیست.');
   if (res.status !== 200 && res.status !== 206) throw err(503, 'update_unavailable', 'فایل آپدیت در دسترس نیست.');
   const h = { 'content-type': 'application/vnd.android.package-archive', 'cache-control': 'private, no-store', 'accept-ranges': 'bytes' };
+  if (saveAs) h['content-disposition'] = `attachment; filename="${saveAs}"`;
   for (const k of ['content-length', 'content-range']) { const v = res.headers.get(k); if (v) h[k] = v; }
   return new Response(res.body, { status: res.status, headers: h });
+}
+
+// The file on GitHub: the announced arm64 build when there is one, else the newest pleat.apk.
+export function githubApkUrl(env, rel) {
+  const base = `https://github.com/${repoOf(env)}/releases/download/${RELEASE_TAG}/`;
+  return base + (rel && rel.abis['arm64-v8a'] ? `pleat-${rel.version}-${rel.build}-arm64-v8a.apk` : 'pleat.apk');
 }
 
 // The announce / force / withdraw buttons (admin-actions.js 'app.release').

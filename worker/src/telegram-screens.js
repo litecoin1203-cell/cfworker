@@ -811,6 +811,9 @@ export async function appUpdate(env) {
   const fresh = latest && (!cur || latest.tag !== cur.tag);
   if (fresh && cur && latest.build <= cur.build) lines.push('', `⚠️ شماره‌ی بیلد جدید (${latest.build}) از اعلام‌شده (${cur.build}) بالاتر نیست؛ اپ‌هایی که بیلد ${cur.build} را دارند آن را آپدیت نمی‌بینند.`);
   if (cur && latest && !fresh) lines.push('', '✅ آخرین بیلد همان اعلام‌شده است.');
+  const settings = await getSettings(env);
+  const w = await import('./welcome.js');
+  lines.push('', ...w.ownerLines(settings));
   lines.push('', 'بعد از اعلام، اپ‌هایی که نسخه‌ی قدیمی‌تر دارند علامت و نوتیف آپدیت می‌بینند و فایل مخصوص گوشی خودشان را از داخل اپ دانلود و نصب می‌کنند.',
     'اجباری = صفحه‌ی آپدیت تا آپدیت نکنند بسته نمی‌شود.');
   return {
@@ -818,6 +821,7 @@ export async function appUpdate(env) {
     kb: [
       ...(fresh ? [[b(`📢 اعلام نسخه‌ی ${latest.version} به کاربرها`, 'm:upa')]] : []),
       ...(cur ? [[b(cur.force ? '✅ اجباری نباشد' : '⚠️ آپدیت اجباری شود', 'm:upf'), b('🛑 برداشتن اعلام', 'm:upx')]] : []),
+      [b('📎 فایل تلگرامی اپ', 'm:apkf'), b('👀 پیام خوش‌آمد', 'pw:app')],
       [b('🔄 تازه کن', 'm:upd')],
       nav('app'),
     ],

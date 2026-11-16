@@ -287,6 +287,7 @@ async function formAnswer(env, adminId, s, value, msgId) {
 
 // a typed answer for a form (telegram.js already took the session)
 export async function formText(env, chatId, s, text, msg) {
+  if (s.flow === 'apkfile') return tg(env, 'sendMessage', { chat_id: chatId, text: 'منتظر فایل APK بودم، نه متن. دوباره دکمه‌ی «📎 فایل تلگرامی اپ» را بزن و فایل را بفرست.', reply_markup: { inline_keyboard: [[b('📎 فایل تلگرامی اپ', 'm:apkf')]] } });
   if (!FORMS[s.flow]) return;
   const scr = await formAnswer(env, chatId, s, text, msg && msg.message_id);
   if (scr) return tg(env, 'sendMessage', { chat_id: chatId, text: scr.text, reply_markup: { inline_keyboard: scr.kb } });
@@ -364,7 +365,7 @@ const SCREENS = {
 };
 // action routes and how risky they are (see the top of this file)
 const ACTION_RISK = {
-  x: 'command', w: 'ask', f: 'form', fa: 'form', fok: 'form', cancel: 'read', ord: 'read',
+  x: 'command', w: 'ask', apkf: 'ask', f: 'form', fa: 'form', fok: 'form', cancel: 'read', ord: 'read',
   ug: 'read', ugp: 'money', pt: 'reversible', cd: 'destructive', sv: 'reversible', undo: 'reversible',
   // one user (stage 2)
   ud: 'reversible', ugb: 'reversible', upz: 'reversible', upn: 'reversible', ulo: 'reversible', ublk: 'reversible', uav: 'reversible',
@@ -446,8 +447,8 @@ export const ROUTES = Object.fromEntries([
   ...Object.keys(SCREENS).map((k) => [k, { kind: 'screen' }]),
   ...Object.entries(ACTION_RISK).map(([k, risk]) => [k, { kind: 'action', risk }]),
 ]);
-// buttons that are not menu routes: receipts (ap/rj/rp), confirmations (cf/cx/lp), bank sender (ts)
-const OTHER = /^(ap|rj|rp):\d+$|^(cf|cx):[0-9a-f]{18}$|^lp:[0-9a-f]{18}:\d+$|^ts:/;
+// buttons that are not menu routes: receipts (ap/rj/rp), confirmations (cf/cx/lp), bank sender (ts), the welcome card (pw, welcome.js)
+const OTHER = /^(ap|rj|rp):\d+$|^(cf|cx):[0-9a-f]{18}$|^lp:[0-9a-f]{18}:\d+$|^ts:|^pw:(app|apk|help)$/;
 
 // What a button's data leads to, or null when nothing would answer it.
 export function routeOf(data) {
@@ -592,6 +593,16 @@ export async function onMenu(env, cq) {
     const [cmd, back, prompt, secret] = q;
     await setWait(env, cmd, back, secret, chatId);
     await show(env, cq, { text: prompt + '\n\n(تا ۱۰ دقیقه منتظر جوابت هستم)', kb: [[b('❌ انصراف', `m:cancel:${back}`)]] });
+    return ack('');
+  }
+  // the APK for the new-user welcome: the next file the owner sends is kept (telegram.js onMessage -> welcome.js)
+  if (route === 'apkf') {
+    await setSession(env, chatId, { flow: 'apkfile', back: 'upd' });
+    await show(env, cq, { text: [S.crumb('📱 اپ Pleat', '📲 نسخه‌ی اپ', '📎 فایل تلگرامی'), '',
+      'فایل APK نسخه‌ی اعلام‌شده را همین‌جا بفرست (مثلاً pleat.apk از ریلیز گیت‌هاب، یا فوروارد از هر چتی).', '',
+      'ربات نمی‌تواند فایل بالای ۵۰ مگ را خودش آپلود کند، ولی فایلی را که تو یک بار بفرستی می‌تواند بدون محدودیت حجم برای هر کاربری بفرستد.',
+      'کاربر جدید آن را با دکمه‌ی «📥 In Telegram» در پیام خوش‌آمد می‌گیرد.', '', '(تا ۱۰ دقیقه منتظر فایل هستم)'].join('\n'),
+    kb: [[b('❌ انصراف', 'm:cancel:upd')]] });
     return ack('');
   }
   if (route === 'f') return startForm(env, cq, args[0], ack, args[1]);

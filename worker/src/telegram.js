@@ -191,6 +191,8 @@ export async function handleWebhook(env, update) {
 
 async function onCallback(env, cq) {
   const chatId = cq.message?.chat?.id;
+  // the welcome card's buttons (welcome.js) are for everyone, not only admins
+  if (/^pw:(app|apk|help)$/.test(String(cq.data || ''))) { const w = await import('./welcome.js'); return w.onTap(env, cq); }
   // every tap is checked again here: who is tapping, and whether their role may press this button at all
   const role = await adminRole(env, cq.message?.chat, cq.from);
   const menu = await import('./telegram-menu.js');
@@ -528,16 +530,21 @@ async function onMessage(env, msg, opts = {}) {
     if (msg.chat?.type !== 'private') return;
     const { tgIssueCode } = await import('./auth.js');
     const r = await tgIssueCode(env, startArg.slice(1), msg.from);
+    // they came from the app, so they never get the new-user welcome later
+    if (!admin) await (await import('./welcome.js')).firstVisit(env, msg.from, { hasApp: true });
     return tg(env, 'sendMessage', { chat_id: chatId, text: r.text, ...(r.html ? { parse_mode: 'HTML' } : {}) });
   }
   // people who open the bot themselves (not from the app) get the Mini App button and how app sign-in works;
   // /id still shows the chat id
   if (cmd === '/start' && !admin && env.TELEGRAM_CHAT_ID) {
     if (msg.chat?.type !== 'private') return;
+    const w = await import('./welcome.js');
+    // someone new (not yet a Pleat user): the welcome card with the ways to get the app (welcome.js), once
+    if (await w.firstVisit(env, msg.from)) return w.sendWelcome(env, chatId, msg.from);
     const base = String(env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
     return tg(env, 'sendMessage', { chat_id: chatId,
       text: 'Hi! Tap "Open Pleat" to see your plan and data left (turn your VPN on first).\n\nUsing the Pleat app? Tap "Continue with Telegram" there and this bot will send you a 6-digit code.',
-      ...(/^https:\/\//.test(base) ? { reply_markup: { inline_keyboard: [[{ text: 'Open Pleat', web_app: { url: base + MINI_PATH } }]] } } : {}) });
+      reply_markup: { inline_keyboard: [...(/^https:\/\//.test(base) ? [[{ text: 'Open Pleat', web_app: { url: base + MINI_PATH } }]] : []), [{ text: '📲 Get the app', callback_data: 'pw:app' }]] } });
   }
   if (cmd === '/id' || (cmd === '/start' && !admin)) {
     if (msg.chat?.type !== 'private') return say('ربات مدیریت فقط در چت خصوصی کار می‌کند. /id را در چت خصوصی با ربات بفرست.');
@@ -557,6 +564,18 @@ async function onMessage(env, msg, opts = {}) {
   // answer, no pasted bank SMS (each of those is an owner's job)
   if (role !== 'owner') return say('همه‌ی کارها با دکمه است؛ دکمه‌ی «🏠 منو» را بزن.');
 
+  // a file: the APK the owner was asked for (📲 › 📎 فایل تلگرامی), kept for the new-user welcome (welcome.js)
+  if (msg.document && !opts.kb) {
+    const menu = await import('./telegram-menu.js');
+    const w = await menu.takeSession(env, chatId);
+    const back = { reply_markup: { inline_keyboard: [[{ text: '📲 نسخه‌ی اپ', callback_data: 'm:upd' }, { text: '🏠 منوی اصلی', callback_data: 'm:home' }]] } };
+    if (w && w.flow === 'apkfile') return say(await (await import('./welcome.js')).saveTgFile(env, chatId, msg.document), back);
+    if (w) await menu.setSession(env, chatId, w); // another question is still open: it stays
+    if (/\.apk$/i.test(String(msg.document.file_name || ''))) {
+      return say('این فایل ذخیره نشد. برای اینکه کاربرهای جدید اپ را داخل تلگرام بگیرند، اول دکمه‌ی زیر را بزن و بعد فایل را بفرست.',
+        { reply_markup: { inline_keyboard: [[{ text: '📎 فایل تلگرامی اپ', callback_data: 'm:apkf' }]] } });
+    }
+  }
   // the menu asked a question ("write the email", "new price"...): this message is the answer
   if (text && !opts.kb) {
     const menu = await import('./telegram-menu.js');

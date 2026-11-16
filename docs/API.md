@@ -20,7 +20,7 @@ location and only roughly counted: they slow one client's burst, they are not a 
   `/auth/tg/webapp/register`, `POST /mini/probe`, `/trial`, `/me/telegram/start`;
 - **fail open** (the request goes through), where closing would stop people connecting or paying and saves nothing:
   `/auth/refresh` (a signature check), `POST /orders`, `/orders/:id/receipt`, `/orders/:id/paid`, `/me/health`,
-  `/net/report`, `/net/google`, `/net/rank`, `/app/apk`, the bot's Telegram code (per-link caps in D1), and all
+  `/net/report`, `/net/google`, `/net/rank`, `/app/apk`, `/dl/pleat.apk`, the bot's Telegram code (per-link caps in D1), and all
   public reads (`/plans`, `/app-config`, `/ip`, deep `/health`, `GET /mini/probe`).
 `RL_PUB` on `/plans`, `/app-config`, `/ip` counts per account when the call carries a valid access token (checked by
 signature only, no D1), else per IP, so phones sharing one VPN exit do not share one limit.
@@ -44,11 +44,13 @@ account per Telegram id.
 | Method + path | Auth | Handler | Purpose |
 |---|---|---|---|
 | `GET /health` | none | `index.js` | `{ok:true}`, never limited (no D1; Pleat races it to pick an address); `?deep=1` also checks D1 and the cron's last run (limited per IP, `RL_PUB`) |
+| `GET /dl/pleat.apk[?abi=]` | none (`RL_IP` per IP, fail open) | `appupdate.publicApk` | the announced APK (arm64 unless `abi`) for people with no account yet, the bot welcome's "Fast link"; saved as `Pleat-<version>.apk`; 404 until a version is announced |
 | `GET /mini/probe` | none (`RL_PUB` per IP) | `account.miniProbePage` | Mini App stage-0 probe page (strict CSP) |
 | `GET /pay/done` | none | `index.js` | return page after a gateway payment (old app deep link) |
 | `POST /sms` | `X-SMS-Key` header = settings `sms_key` | `sms.js` | bank SMS forwarded from the admin's phone → auto-confirm card orders |
 | `POST /tg[/<secret>]` | `TELEGRAM_WEBHOOK_SECRET` in path + `X-Telegram-Bot-Api-Secret-Token`; admin role per update | `telegram.js` → `telegram-menu.js` | the admin Telegram bot webhook |
 | `GET /app/*` | static | `worker/public/` (built from `miniapp/`) | Telegram Mini App (user + admin) |
+| `GET /welcome.jpg` | static | `worker/public/` (from `miniapp/src/welcome.jpg`) | banner of the bot's welcome card |
 
 ## Public `/api/v1` (no login)
 

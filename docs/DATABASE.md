@@ -51,6 +51,7 @@ workflow). 33 tables, 1 trigger. All times are **unix seconds** unless a column 
 | 0021_expiry_index | index `subscriptions(state, expires_at)` — the per-minute expiry check was a full scan — PR #62 |
 | 0022_health | `health_events` (Pleat's automatic health reports) — PR #73 |
 | 0023_worker_errors | `worker_errors` (the Worker's own error log for the bot's ☁️ Cloudflare section) — PR #84 |
+| 0024_bot_users | `bot_users` (who has opened the bot, so a new person gets the welcome card once) |
 
 ## Tables
 
@@ -121,6 +122,11 @@ Server key = FNV-1a of `type|host|port` (`netstats.serverKey`, same in Pleat). I
 through `cfmon.recordError`: scrubbed (no host, IP, email, key), written at most once a minute per kind and 12 times a
 minute per isolate; a repeat only raises `count`. Kept 14 days (daily cron). Shown in the bot › ☁️ › 🐞.
 
+### Bot users (0024)
+`bot_users`: one row per Telegram account that started the bot or opened an app sign-in link, written once
+(`INSERT … ON CONFLICT DO NOTHING RETURNING`, `welcome.js` `firstVisit`). `had_account` = 1 when that Telegram id was
+already a Pleat user or came from the app; only rows with 0 get the welcome card (`welcomed_at`). Telegram id only.
+
 ### `settings` (key / value)
 Almost all runtime configuration. Defaults in `worker/src/db.js` `SETTING_DEFAULTS`; edited from the bot or the Mini App.
 
@@ -129,7 +135,8 @@ Almost all runtime configuration. Defaults in `worker/src/db.js` `SETTING_DEFAUL
   `min_topup_toman`. Switches per method (PAY-08, 1 = offered, 0 = off, default 1): `pay_wallet_on`, `pay_card_on`,
   `pay_coin_on`, `pay_crypto_on`; `pay_coins_off` (coin ids switched off one by one, comma separated, default empty).
 - App: `announcement`, `support_url`, `app_api_bases` (extra Worker domains), `app_bridges` (bridge links),
-  `trial_data_gb`, `trial_needs_telegram`, `app_release` (in-app update announcement).
+  `trial_data_gb`, `trial_needs_telegram`, `app_release` (in-app update announcement), `app_tg_file` (JSON: the Telegram `file_id`, name, size and version of
+  the APK the owner sent the bot, offered to new people while it is the announced version).
 - Monitoring: `cf_alerts` (1/0, hourly Cloudflare alerts), `cf_alert_state` (what was already told today), `sync_manual_at` (last "sync now" tap).
 - Panels: `panel_cred_<id>` (AES-GCM sealed login, never in backups), `panel_err_<id>` (refused creates),
   `panel_hosts_<id>` (Tunnel-group host rules, refreshed every 15 min), `tunnel_probe_<id>` (the `cgtunnel_…` probe

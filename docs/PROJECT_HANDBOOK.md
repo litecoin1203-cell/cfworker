@@ -537,6 +537,14 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   and a tap ran the wrong action (#55). When adding a button, grep the menu for the route string first.
 - Every bot screen also exists in the **Mini App admin panel** (§19 › Telegram Mini App), sharing
   `admin-actions.js`.
+- **Welcome for new people** (`worker/src/welcome.js`, design D picked 2026-11-16): the first `/start` from someone
+  who is not a Pleat user (`bot_users`, migration 0024) gets a banner card (English) with three feature lines, the
+  version and size, and four buttons: 📥 In Telegram (the APK as a Telegram file), ⚡ Fast link (`/dl/pleat.apk`,
+  our own address for networks where GitHub is filtered), GitHub, ❓ How to install. Later `/start`s get the short
+  Open Pleat message with "📲 Get the app". The APK (~52 MB) is over the 50 MB a bot may upload, so the owner sends it
+  to the bot once per version (📱 اپ Pleat › 📲 نسخه‌ی اپ › 📎 فایل تلگرامی اپ); the bot keeps its `file_id`
+  (`app_tg_file`) and resends it at any size, but only while it is the announced version. «👀 پیام خوش‌آمد» shows
+  the card to the owner. Card buttons use the `pw:` prefix and work for anyone (checked before the admin role).
 - Legacy text commands still work (hidden) via `runAdminCommand`.
 - Known: default plan names come back Persian (the Worker translates them); rename plans in the bot.
 - **☁️ Cloudflare monitoring** (`worker/src/cfmon.js`, home button "☁️ مانیتورینگ کلودفلر"): today's share of the
@@ -978,6 +986,10 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 - PR #89 (1.2.49) Locations country list: Fastest-for-you bar, filter chips, regions, health pips, Not answering.
 - PR #90 (1.2.50) native crash: the code offsets inside the core, the signal's sender, stderr per process.
 
+**2026-11-16 — Welcome for new bot users.**
+- The bot greets a new person once with a banner card and the ways to get Pleat: the APK inside Telegram (a file the
+  owner sends once per version), our own download link `/dl/pleat.apk`, GitHub, and install help (migration 0024).
+
 **2026-11-15 — "No server connected" with servers that answered.**
 - Pleat 1.2.53: smart connect offers only exits that answered here after a failure, never retries a failed exit in
   the same connect, never offers one that fails for nearly everyone on the operator; `no_exit` says why each try
@@ -1087,6 +1099,7 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 | 90 | 11-13 | Native crash: offsets inside the core (pc, lr, Go frame chain), signal sender, stderr matched per process (1.2.50) |
 | — | 11-15 | Smart connect offers only exits that answered here, skips ones failing for everyone, `no_exit` says why each try failed (1.2.53) |
 | — | 11-16 | In-app update: Stop works at once; a broken way is skipped for the next address / the bridge; failure report names each way tried |
+| — | 11-16 | Bot welcome card for new people (design D): APK in Telegram by `file_id`, `/dl/pleat.apk`, GitHub, install help; `bot_users` (0024) |
 
 ---
 
@@ -1236,6 +1249,11 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 - **Pleat 1.2.48 (PR #88) phone test**: Activity hub (ring, PACKAGES sheet, RENEW, Keep history off/on, Clear
   history), Profile Plans shelf (BUY opens checkout, stopped plan shows RENEW). **1.2.49 (PR #89)**: Locations
   country list (Fastest bar, chips, regions, pips, Not answering).
+
+- **Bot welcome (2026-11-16)**: after Deploy, send the announced APK to the bot once (📲 › 📎 فایل تلگرامی اپ), and
+  again after each new announcement; until then new people get only the links. Unproven until a real `/start`:
+  that Telegram loads the banner from `PUBLIC_BASE_URL/welcome.jpg` (falls back to a text card) and that the Fast
+  link opens on Iranian networks without VPN.
 
 ### Waiting on Ali (no code pending, as of 2026-11-12)
 - **Licence of the repo's own code** (audit LEG-04): there is no top-level `LICENSE`, so the Worker, Mini App and
