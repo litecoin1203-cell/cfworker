@@ -97,7 +97,7 @@ Mini App tokens (`src: mini`) are refused on `/vpn*` and `/devices*` with `403 u
 | `POST /orders/:id/receipt` | `orders.uploadReceipt` | card receipt photo (`upload_id` dedupes offline retries) |
 | `POST /orders/:id/cancel` | `orders.cancelOrder` | cancel an open order |
 | `POST /orders/:id/paid` | `orders.markCoinPaid` | "I paid" for a crypto order |
-| `GET /app/apk` | `appupdate.apkDownload` | proxies the announced APK from the private `pleat-latest` release (resumable) |
+| `GET /app/apk` | `appupdate.apkDownload` | proxies the announced APK from the `pleat-latest` release (public, like the repo; resumable) |
 | `POST /auth/change-password` | `auth.changePassword` | 5/min per user (`RL_LOGIN`; it checks the current password) |
 | `POST /auth/logout-all` | `auth.logoutAll` | bumps `token_version` |
 

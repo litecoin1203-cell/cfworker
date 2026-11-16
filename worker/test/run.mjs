@@ -417,6 +417,32 @@ section('device limit + freeing a slot frees panel HWID');
   ok(fakes.pg.deletedHwids.length >= 1, 'panel HWID freed on device removal');
 }
 
+section('ARC-08: a failure on a side path is logged (worker_errors), not swallowed');
+{
+  const seen = [];
+  const realErr = console.error;
+  console.error = (line) => { try { seen.push(JSON.parse(line).message); } catch (e) { seen.push(String(line)); } };
+  try {
+    // 1. freeing a device on the panel fails: the device is still removed, and the failure is on record
+    const tok = await signup('arc08@example.com', { device: 'arc08-a' });
+    const plan = (await call('GET', '/api/v1/plans')).data.find((p) => p.name === 'یک ماهه');
+    await tgWebhook({ message: { chat: { id: 12345 }, text: `/grant arc08@example.com ${plan.id}` } });
+    await call('GET', '/api/v1/vpn', { token: tok, headers: { 'x-device-id': 'arc08-a' } });
+    const devs = (await call('GET', '/api/v1/devices', { token: tok })).data;
+    fakes.pg.down = true;
+    let del;
+    try { del = await call('DELETE', `/api/v1/devices/${devs[0].id}`, { token: tok }); } finally { fakes.pg.down = false; }
+    ok(del.status === 204 && seen.some((m) => /device/i.test(m) && /panel/i.test(m)), 'ARC-08: a failed panel HWID delete still removes the device and is logged: ' + del.status + ' ' + JSON.stringify(seen));
+    // 2. learning the exit's country from /me/ip?k= fails: the answer is unchanged, and the failure is on record
+    seen.length = 0;
+    const saved = globalThis.__cgExitVote;
+    globalThis.__cgExitVote = new (class extends Map { get() { throw new Error('vote store broken'); } })();
+    let r;
+    try { r = await call('GET', '/api/v1/me/ip?k=abcdef1234', { token: tok, cf: { country: 'DE' } }); await drain(); } finally { globalThis.__cgExitVote = saved; }
+    ok(r.status === 200 && r.data.cc === 'DE' && seen.some((m) => /exit country/i.test(m)), 'ARC-08: a failed exit-country vote is logged and /me/ip still answers: ' + JSON.stringify(seen));
+  } finally { console.error = realErr; }
+}
+
 section('used_percent on /me comes from the server');
 {
   // the limit is the control plane's; the usage is read from the panel (it only ever grows)
@@ -2406,6 +2432,29 @@ section('panel test names the config types and flags ones the app cannot use');
   ok(k.counts['hysteria2'] === 1 && k.counts['wireguard'] === 1, 'hysteria2 and wireguard counted by name');
   await admin('/paneltest 1');
   ok(lastText().includes('نوع کانفیگ‌ها:') && lastText().includes('vless·reality·tcp') && !lastText().includes('پشتیبانی نمی‌کند'), 'paneltest shows the types: ' + lastText());
+}
+
+section('ARC-02: every share-link reader agrees, and vmess remarks are read as UTF-8 (golden shared with Pleat)');
+{
+  const { readFileSync } = await import('node:fs');
+  const NS = await import('../src/netstats.js');
+  const { countryOfLink, unify, linkKinds, isPlaceholder } = await import('../src/panels.js');
+  const { maskBridge } = await import('../src/admin-actions.js');
+  const golden = JSON.parse(readFileSync(new URL('../../flutter_vpn/test/links_golden.json', import.meta.url), 'utf8')).links;
+  for (const g of golden) {
+    const ep = NS.linkEndpoint(g.link);
+    ok(ep && ep.type === g.type && ep.host === g.host && ep.port === g.port && NS.serverKey(g.link) === g.key, `ARC-02 golden ${g.type} ${g.host}: endpoint and key ` + JSON.stringify(ep));
+    ok(typeof NS.linkRemark === 'function' && NS.linkRemark(g.link) === g.remark, `ARC-02 golden ${g.type} ${g.host}: remark ${JSON.stringify(g.remark)} read as ` + JSON.stringify(NS.linkRemark && NS.linkRemark(g.link)));
+    ok(countryOfLink(g.link, {}) === g.cc, `ARC-02 golden ${g.type} ${g.host}: country ${g.cc} (was "${countryOfLink(g.link, {})}")`);
+    ok(!isPlaceholder(g.link), `ARC-02 golden ${g.type} ${g.host}: not a placeholder`);
+  }
+  const vm2 = golden[1].link; // urlsafe, no padding, a "#..." after it, Persian remark and path
+  const renamed = unify([vm2])[0];
+  const j = NS.vmessJson(renamed);
+  ok(j && j.ps === '🇩🇪 DE 1' && j.path === '/مسیر' && j.add === '203.0.113.10', 'ARC-02: renaming a vmess link keeps its other non-ASCII fields intact: ' + JSON.stringify(j));
+  ok(linkKinds([vm2]).counts['vmess·tcp'] === 1, 'ARC-02: linkKinds reads a vmess link with a #fragment: ' + JSON.stringify(linkKinds([vm2]).counts));
+  ok(maskBridge(vm2) === 'vmess://20•••.10', 'ARC-02: maskBridge reads the same vmess link: ' + maskBridge(vm2));
+  ok(NS.vmessJson('vmess://not-base64!') === null && NS.vmessJson('vless://x@y:1') === null && NS.vmessJson('vmess://' + btoa('[1]')) === null, 'ARC-02: vmessJson is null for anything that is not a vmess JSON object');
 }
 
 section('sign up and log in with Telegram (6-digit code from the bot)');
@@ -5053,6 +5102,26 @@ section('developer docs name every migration and every API route');
   const named = (p) => new RegExp('[` ]' + p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '`').test(apiDoc);
   const noApi = [...authed, ...admin].filter((p) => !named(p));
   ok(authed.length > 20 && admin.length > 30 && !noApi.length, 'docs/API.md names every app and admin route; missing: ' + noApi.join(', '));
+
+  // ARC-01: the repo (and so the release pleat-latest and every Actions log) is public. A comment or doc that calls
+  // it private leads the next developer or agent to treat something as safe that is not.
+  const said = ['../src/appupdate.js', '../src/index.js', '../../docs/API.md', '../../docs/PROJECT_HANDBOOK.md',
+    '../../.github/workflows/flutter-vpn.yml', '../../.github/workflows/deploy-worker.yml', '../../AGENTS.md', '../../README.md']
+    .filter((f) => /\b(?:repo(?:sitory)? is private|private `?(?:repo|repository|release|pleat-latest))\b/i.test(readFileSync(rel(f), 'utf8')));
+  ok(!said.length, 'ARC-01: no comment or doc calls the public repo or its release private: ' + said.join(', '));
+  // ARC-07: the handbook's "Version on main" is what the next developer trusts; it must be pubspec's version
+  const pubVer = (readFileSync(rel('../../flutter_vpn/pubspec.yaml'), 'utf8').match(/^version: (\S+)/m) || [])[1];
+  const hbVer = (readFileSync(rel('../../docs/PROJECT_HANDBOOK.md'), 'utf8').match(/^Version on main: \*\*([^*]+)\*\*/m) || [])[1];
+  ok(pubVer && hbVer === pubVer, `ARC-07: handbook §10 "Version on main" (${hbVer}) is flutter_vpn/pubspec.yaml's version (${pubVer})`);
+  // ARC-07: panels.js once said hysteria2/wireguard are "unusable" right above the list that makes them usable
+  const pj = readFileSync(rel('../src/panels.js'), 'utf8');
+  const schemeNote = (pj.match(/((?:\/\/[^\n]*\n)+)export const APP_SCHEMES/) || ['', ''])[1];
+  const { APP_SCHEMES } = await import('../src/panels.js');
+  const notTaken = (schemeNote.split(/anything else/)[1] || '').replace(/\s*\/\/\s*/g, ' ');
+  ok(/hysteria2/.test(schemeNote) && !APP_SCHEMES.some((x) => new RegExp('\\b' + x + '\\b').test(notTaken)), 'ARC-07: the APP_SCHEMES comment matches the list: ' + schemeNote.trim());
+  // ARC-07: the README's Time Travel window is the Free plan's (7 days, docs/RESTORE.md), and backups are a button
+  const readme = readFileSync(rel('../../README.md'), 'utf8');
+  ok(!/۳۰ روز قبل/.test(readme) && !/دستی: `\/backup`/.test(readme), 'ARC-07: README gives D1 Time Travel as 7 days and the backup as a bot button');
 }
 
 section('admin bot: ☁️ Cloudflare monitoring (quota, errors, queries, deploys, alerts) and panel sync by hand');
@@ -5703,8 +5772,8 @@ section('CI: release workflows run only from main, on pinned actions and checked
 {
   const { readFileSync } = await import('node:fs');
   const wf = (n) => readFileSync(new URL(`../../.github/workflows/${n}`, import.meta.url), 'utf8');
-  // every job that holds a secret or publishes: the product's workflows (android.yml is the retired app, make-key.yml
-  // the one-off signing key tool, both left as they are)
+  // every job that holds a secret or publishes: the product's workflows (make-key.yml, the one-off signing key tool,
+  // is left as it is)
   const live = ['flutter-vpn.yml', 'deploy-worker.yml', 'test-worker.yml'];
   const unpinned = live.flatMap((n) => [...wf(n).matchAll(/^\s*(?:-\s*)?uses:\s*(\S+)/gm)].map((m) => m[1])
     .filter((u) => !/^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/.test(u)).map((u) => `${n}: ${u}`));
@@ -6644,9 +6713,82 @@ section('review of wave 2: a settled exit country is not rewritten; pending rows
   ok(Object.values(W.pgs[1].users).filter((u) => u.note === `Pleat #${u3}`).length === 1, 'review 3: and no second account later');
 }
 
+section('MISC-06: an incident runbook exists and covers the single points of failure');
+{
+  const { readFileSync, existsSync } = await import('node:fs');
+  const f = new URL('../../docs/RUNBOOK.md', import.meta.url);
+  const rb = existsSync(f) ? readFileSync(f, 'utf8') : '';
+  const need = ['/health?deep=1', 'app_api_bases', 'JWT_SECRET', 'SECRET_KEY', 'TELEGRAM_CHAT_ID', 'APP_KEYSTORE', 'token_version', 'CF_ANALYTICS_TOKEN', 'RESTORE.md'];
+  ok(rb && need.every((w) => rb.includes(w)), 'MISC-06: docs/RUNBOOK.md names ' + need.filter((w) => !rb.includes(w)).join(', '));
+}
+
+section('ARC-06: the retired Cloud Gold app is gone from main, and nothing still points at it');
+{
+  const { existsSync, readFileSync, readdirSync } = await import('node:fs');
+  const at = (p) => new URL('../../' + p, import.meta.url);
+  const left = ['android', 'app-web', '.github/workflows/android.yml'].filter((p) => existsSync(at(p)));
+  ok(!left.length, 'ARC-06: android/, app-web/ and android.yml are deleted (git history keeps them): still there: ' + left.join(', '));
+  // what runs (workflows, Worker tests and scripts, the Mini App build) must not read the deleted folders
+  const files = [...readdirSync(at('.github/workflows/')).map((f) => '.github/workflows/' + f),
+    ...readdirSync(at('worker/test/')).map((f) => 'worker/test/' + f), ...readdirSync(at('worker/scripts/')).map((f) => 'worker/scripts/' + f),
+    'miniapp/build.mjs', 'flutter_vpn/docs/backend-map.md', 'flutter_vpn/lib/api/models.dart']
+    .filter((f) => f !== 'worker/test/run.mjs' && /\.(ya?ml|m?js|md|dart)$/.test(f));
+  const refs = files.filter((f) => /(?:^|[\s'"`(/.])app-web\/|\bandroid\.yml\b|CgVpn|\.\.\/\.\.\/android\//m.test(readFileSync(at(f), 'utf8')));
+  ok(!refs.length, 'ARC-06: no workflow, test, script or Pleat doc points at the retired app: ' + refs.join(', '));
+}
+
+section('CF-05: the Worker\'s error log survives the end of the request and a write that failed');
+{
+  // a fresh copy of the module, so the per-minute write budget other sections used up does not count here
+  const CFm = await import('../src/cfmon.js?cf05');
+  const tickF = () => new Promise((r) => setTimeout(r, 20));
+  await env.DB.prepare("DELETE FROM worker_errors WHERE message LIKE 'cf05%'").run();
+  // 1. the write is handed to ctx.waitUntil, so Cloudflare does not cancel it once the response is sent
+  const held = [];
+  CFm.recordError(env, 'cf05 kept alive', 'x', { waitUntil: (p) => held.push(p) });
+  await Promise.all(held);
+  ok(held.length === 1 && (await env.DB.prepare("SELECT COUNT(*) c FROM worker_errors WHERE message = 'cf05 kept alive'").first()).c === 1,
+    'CF-05: the error write is held open with ctx.waitUntil and lands: ' + held.length);
+  // 2. the write itself fails (the request is past its 50 queries, or D1 is out of writes): the error is kept in
+  //    the isolate and written by the next invocation, one row per invocation
+  const broken = { ...env, DB: { prepare: () => { throw new Error('Too many API requests by single worker invocation.'); } } };
+  const held2 = [];
+  CFm.recordError(broken, 'cf05 over the query cap', 'D1 refused', { waitUntil: (p) => held2.push(p) });
+  await Promise.all(held2); await tickF();
+  ok(!(await env.DB.prepare("SELECT 1 FROM worker_errors WHERE message = 'cf05 over the query cap'").first()), 'CF-05: nothing could be written by the failing invocation');
+  const held3 = [];
+  CFm.flushErrors(env, { waitUntil: (p) => held3.push(p) });
+  await Promise.all(held3);
+  const row = await env.DB.prepare("SELECT count FROM worker_errors WHERE message = 'cf05 over the query cap'").first();
+  ok(row && row.count === 1, 'CF-05: the next invocation writes the error the failed one could not: ' + JSON.stringify(row));
+  const held4 = [];
+  CFm.flushErrors(env, { waitUntil: (p) => held4.push(p) });
+  ok(!held4.length, 'CF-05: with nothing kept, the next invocation spends no query on it');
+  // 3. every request and cron run flushes (index.js), and the deploy warns when the Cloudflare alerts have no token
+  const { readFileSync } = await import('node:fs');
+  const idx = readFileSync(new URL('../src/index.js', import.meta.url), 'utf8');
+  ok((idx.match(/flushErrors\(env, ctx\)/g) || []).length >= 2 && (idx.match(/recordError\(env, m, e, ctx\)/g) || []).length >= 2,
+    'CF-05: fetch and scheduled both hand ctx to the error log and flush what an earlier invocation kept');
+  const dep = readFileSync(new URL('../../.github/workflows/deploy-worker.yml', import.meta.url), 'utf8');
+  ok(/CF_ANALYTICS_TOKEN[\s\S]*::warning::[^\n]*CF_ANALYTICS_TOKEN/.test(dep), 'CF-05: Deploy says so when CF_ANALYTICS_TOKEN (the only alert that sees the Free-plan caps) is missing');
+  await env.DB.prepare("DELETE FROM worker_errors WHERE message LIKE 'cf05%'").run();
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
+
+section('ARC-07: the docs give the real size of this suite');
+{
+  const { readFileSync } = await import('node:fs');
+  const claims = ['../../AGENTS.md', '../../docs/PROJECT_HANDBOOK.md'].map((f) => {
+    const m = readFileSync(new URL(f, import.meta.url), 'utf8').match(/~([\d,]+) checks/);
+    return [f, m ? Number(m[1].replace(/,/g, '')) : 0];
+  });
+  const total = pass + fail + 1;
+  const off = claims.filter(([, n]) => !(n > total * 0.85 && n < total * 1.15));
+  ok(!off.length, `ARC-07: "~N checks" in AGENTS.md and the handbook is within 15% of the real ${total}: ` + off.map(([f, n]) => `${f}=${n}`).join(', '));
+}
 
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

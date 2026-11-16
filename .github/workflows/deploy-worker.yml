@@ -66,6 +66,11 @@ jobs:
           done
           if [ -n "$miss" ]; then echo "::error::Add these Workers Secrets in the Cloudflare dashboard:$miss"; exit 1; fi
           echo "Worker secrets present."
+          # CF-05: the Worker's own error log cannot record the Free-plan failures (a request past 50 D1 queries, D1 out
+          # of writes for the day): only the hourly alert from Cloudflare's analytics sees those, and it needs this token.
+          if ! printf '%s\n' "$have" | grep -qx CF_ANALYTICS_TOKEN; then
+            echo "::warning::Workers Secret CF_ANALYTICS_TOKEN is not set, so no alert reaches the bot when the Free-plan limits are hit (bot: ☁️ › token setup)."
+          fi
 
       - name: Create / find the D1 database
         run: |
@@ -96,8 +101,8 @@ jobs:
         # the account id is not a secret; the bot's ☁️ section uses it to read Cloudflare's analytics (cfmon.js)
         run: $WRANGLER deploy --var CF_ACCOUNT_ID:$CLOUDFLARE_ACCOUNT_ID
 
-      # Pleat's in-app update reads the private release pleat-latest with a read-only token (fine-grained, this repo
-      # only, Contents: Read). It lives in the GitHub secret PLEAT_DL_TOKEN and is copied to the Worker here.
+      # Pleat's in-app update reads the release pleat-latest (public, like the repo) with a read-only token (fine-grained,
+      # this repo only, Contents: Read): it lifts GitHub's per-IP rate limit for the Worker's shared addresses. It lives in the GitHub secret PLEAT_DL_TOKEN and is copied to the Worker here.
       - name: Give the Worker the update download token
         env:
           PLEAT_DL_TOKEN: ${{ secrets.PLEAT_DL_TOKEN }}

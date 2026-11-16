@@ -1,0 +1,13 @@
+Protect's Google view of an exit (Profile > Protect: the Google country,
+whether Gemini opens, and Google Search's "unusual traffic" wall) follows the
+method of RegionRestrictionCheck by lmc999, licensed under the GNU Affero
+General Public License v3.0 (AGPL-3.0):
+https://github.com/lmc999/RegionRestrictionCheck
+
+Pleat asks the same public pages that project asks (youtube.com/premium,
+gemini.google.com, google.com/search) and looks for the same short markers in
+the answers: the "INNERTUBE_CONTEXT_GL" field, the Gemini availability marker
+"45631641,null,true", and the phrases
+"unusual traffic from|is blocked|unaddressed abuse". The code that does this
+(Probe.kt) is written for Pleat in Kotlin; no part of that project's script is
+included in the app.
