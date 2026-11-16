@@ -297,6 +297,7 @@ export async function webhookLost(env, url) {
   const r = await tg(env, 'getWebhookInfo', {});
   if (!r || !r.ok || !r.result) return false;
   const w = r.result;
+  if (typeof w.url !== 'string') return false; // not an answer we can read
   if (w.url !== url) return true;
   const recent = w.last_error_date && nowSec() - w.last_error_date < 900;
   return !!(recent && w.pending_update_count > 0 && /\b(401|403|404)\b/.test(String(w.last_error_message || '')));
