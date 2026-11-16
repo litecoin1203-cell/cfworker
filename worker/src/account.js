@@ -249,7 +249,15 @@ async function unifiedLinks(env, user, fwd) {
   // a panel added since this user's last visit: their account there is made now, so its configs come at once
   try { await ensureMissingFor(env, user.id); } catch (e) { /* the cron job makes it later */ }
   const r = await collectLinks(env, user.id, fwd);
-  if (!r.accounts) throw err(404, 'no_servers', 'برای اشتراک شما هنوز سروری تعریف نشده است.');
+  if (!r.accounts) {
+    // PNL-11: no serving account because the plan is over, not because none was set up. English messages: the app
+    // shows a message it has no copy for when it is not Persian.
+    const sub = await first(env, 'SELECT state, stop_reason, expires_at FROM subscriptions WHERE user_id = ?', user.id);
+    const over = sub && (sub.state === 'stopped' || (sub.expires_at && sub.expires_at <= nowSec()));
+    if (over && sub.stop_reason === 'quota') throw err(402, 'plan_limited', 'Your plan’s data is used up. Renew your plan to connect again.');
+    if (over) throw err(402, 'plan_expired', 'Your plan has ended. Renew your plan to connect again.');
+    throw err(404, 'no_servers', 'برای اشتراک شما هنوز سروری تعریف نشده است.');
+  }
   if (r.deviceLimit && !r.links.length) throw err(403, 'device_limit', 'این اشتراک روی حداکثر تعداد گوشی استفاده شده است.');
   if (r.missing === r.accounts) throw err(410, 'sub_missing', 'اکانت شما روی سرور پیدا نشد. با پشتیبانی تماس بگیر.');
   if (!r.links.length) throw err(503, 'panel_unavailable', 'الان به سرورها دسترسی نداریم. چند دقیقه دیگر دوباره امتحان کن.');

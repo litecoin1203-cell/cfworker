@@ -6816,6 +6816,21 @@ section('PNL-08: a panel known to be down gets one short try per cron run, not 1
   ok(r2.done === 3, 'PNL-08: once the panel is back the changes go through: ' + r2.done);
 }
 
+section('PNL-11: an expired or used-up plan gets 402 with its reason on the server list, not "no servers yet"');
+{
+  const W = await world('pnl11', 1);
+  const tok = await W.signupW('p11@example.com');
+  const uid = (await W.q('SELECT id FROM users WHERE email = ?', 'p11@example.com'))[0].id;
+  await W.bot(`/grant p11@example.com ${W.plan.id}`);
+  await W.e.DB.prepare("UPDATE subscriptions SET state = 'stopped', stop_reason = 'expired', expires_at = ? WHERE user_id = ?").bind(Math.floor(Date.now() / 1000) - 60, uid).run();
+  await W.e.DB.prepare("UPDATE panel_accounts SET desired = 'stopped', applied = 'stopped' WHERE user_id = ?").bind(uid).run();
+  const a = await W.callW('GET', '/api/v1/vpn/servers', { token: tok });
+  ok(a.status === 402 && a.data.detail.code === 'plan_expired' && !/[\u0600-\u06FF]/.test(a.data.detail.message), 'PNL-11: expired -> 402 plan_expired (English): ' + a.status + ' ' + JSON.stringify(a.data));
+  await W.e.DB.prepare("UPDATE subscriptions SET stop_reason = 'quota', expires_at = ? WHERE user_id = ?").bind(Math.floor(Date.now() / 1000) + 86400, uid).run();
+  const b = await W.callW('GET', '/api/v1/vpn/servers', { token: tok });
+  ok(b.status === 402 && b.data.detail.code === 'plan_limited', 'PNL-11: data used up -> 402 plan_limited: ' + b.status + ' ' + JSON.stringify(b.data));
+}
+
 section('every request and cron run stays within the Free plan\'s 50 D1 queries');
 { const top = allInv.reduce((m, s) => (s.q > m.q ? s : m), { q: 0 }); console.log(`    most D1 queries in one invocation: ${top.q} (${top.label})`); }
 ok(!overCap.length, 'invocations over 50 D1 queries: ' + overCap.map((s) => `${s.label} = ${s.q}`).join(', '));
