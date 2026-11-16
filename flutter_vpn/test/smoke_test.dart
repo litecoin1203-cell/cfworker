@@ -67,6 +67,41 @@ void main() {
     }
   });
 
+  testWidgets('UX-08: Locations CONNECT buttons are at least 48 dp to tap', (
+    tester,
+  ) async {
+    final (app, _) = await _boot(tester, {'onboarded': true});
+    app.setTab(2);
+    await tester.pump(const Duration(milliseconds: 800));
+    final connects = find.byWidgetPredicate(
+      (w) => w is Pressable && (w.label ?? '').startsWith('Connect to'),
+    );
+    expect(connects, findsWidgets);
+    for (final e in connects.evaluate()) {
+      final size = e.size!;
+      expect(
+        size.height,
+        greaterThanOrEqualTo(48),
+        reason: '${(e.widget as Pressable).label} $size',
+      );
+      expect(size.width, greaterThanOrEqualTo(48), reason: '$size');
+    }
+    await tester.pump(const Duration(seconds: 1));
+  });
+
+  testWidgets('UX-08: Home and Locations lay out at twice the text size', (
+    tester,
+  ) async {
+    tester.platformDispatcher.textScaleFactorTestValue = 2.0;
+    addTearDown(tester.platformDispatcher.clearTextScaleFactorTestValue);
+    final (app, _) = await _boot(tester, {'onboarded': true});
+    expect(tester.takeException(), isNull);
+    app.setTab(2);
+    await tester.pump(const Duration(milliseconds: 800));
+    expect(tester.takeException(), isNull);
+    await tester.pump(const Duration(seconds: 1));
+  });
+
   testWidgets('first launch goes from splash to onboarding', (tester) async {
     await _boot(tester, {}, signedIn: false);
     expect(find.byType(OnboardingScreen), findsOneWidget);

@@ -24,6 +24,7 @@ class Pressable extends StatefulWidget {
     this.shadow = false,
     this.padding,
     this.selected,
+    this.minTap = 0,
   });
 
   final Widget child;
@@ -34,6 +35,10 @@ class Pressable extends StatefulWidget {
   final bool shadow;
   final EdgeInsetsGeometry? padding;
   final bool? selected;
+
+  /// The touch area is at least this tall and wide, the drawn shape
+  /// centred in it; for small pills (Android asks for 48 dp, UX-08).
+  final double minTap;
 
   @override
   State<Pressable> createState() => _PressableState();
@@ -61,28 +66,39 @@ class _PressableState extends State<Pressable> {
         onTapUp: (_) => _set(false),
         onTapCancel: () => _set(false),
         onTap: widget.onTap,
-        child: AnimatedScale(
-          scale: _down ? 0.985 : 1,
-          duration: reduced
-              ? Duration.zero
-              : (_down ? PMotion.press : const Duration(milliseconds: 280)),
-          curve: _down ? Curves.easeOut : Curves.easeOutBack,
-          child: AnimatedContainer(
-            duration: PMotion.press,
-            padding: widget.padding,
-            decoration: widget.color == null && !widget.shadow
-                ? null
-                : BoxDecoration(
-                    color: widget.color,
-                    borderRadius: BorderRadius.circular(widget.radius),
-                    boxShadow: widget.shadow
-                        ? PShadow.soft(pressed: _down)
-                        : null,
-                  ),
-            child: widget.child,
+        child: _minTap(
+          AnimatedScale(
+            scale: _down ? 0.985 : 1,
+            duration: reduced
+                ? Duration.zero
+                : (_down ? PMotion.press : const Duration(milliseconds: 280)),
+            curve: _down ? Curves.easeOut : Curves.easeOutBack,
+            child: AnimatedContainer(
+              duration: PMotion.press,
+              padding: widget.padding,
+              decoration: widget.color == null && !widget.shadow
+                  ? null
+                  : BoxDecoration(
+                      color: widget.color,
+                      borderRadius: BorderRadius.circular(widget.radius),
+                      boxShadow: widget.shadow
+                          ? PShadow.soft(pressed: _down)
+                          : null,
+                    ),
+              child: widget.child,
+            ),
           ),
         ),
       ),
+    );
+  }
+
+  Widget _minTap(Widget visual) {
+    final m = widget.minTap;
+    if (m <= 0) return visual;
+    return ConstrainedBox(
+      constraints: BoxConstraints(minHeight: m, minWidth: m),
+      child: Center(widthFactor: 1, heightFactor: 1, child: visual),
     );
   }
 }

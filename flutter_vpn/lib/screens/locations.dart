@@ -461,6 +461,7 @@ class _FastestBar extends StatelessWidget {
               selected: on,
               radius: PRadius.pill,
               color: on ? PColors.blue : PColors.onDeep,
+              minTap: 48,
               child: SizedBox(
                 height: 42,
                 child: Padding(
@@ -712,6 +713,7 @@ class _CountryRowState extends State<_CountryRow> {
                   selected: on != null,
                   radius: PRadius.pill,
                   color: on != null ? PColors.blue : PColors.field,
+                  minTap: 48,
                   child: SizedBox(
                     height: 40,
                     child: Padding(
@@ -1011,6 +1013,7 @@ class ExitRow extends StatelessWidget {
               selected: selected,
               radius: PRadius.pill,
               color: selected ? PColors.blue : PColors.field,
+              minTap: 48,
               child: SizedBox(
                 height: 40,
                 child: Padding(
