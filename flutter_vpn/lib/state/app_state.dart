@@ -1583,7 +1583,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
   /// Pick a Pleat character as the profile picture. The characters are the
   /// only picture (the Telegram photo is not used). Returns an error to
   /// show, or null.
-  Future<String?> setAvatar(String id) async {
+  Future<String?> setAvatar(String id, {bool pending = false}) async {
     try {
       final data = await api.post('/me/avatar', {'avatar': id});
       _pickedAvatar = data is Map ? (data['avatar'] as String? ?? '') : id;
@@ -1591,11 +1591,23 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       notifyListeners();
       return null;
     } on ApiError catch (e) {
-      if (!e.offline) return e.message;
-      // A filtered line must not hold the person at the gate: the choice is
-      // kept on the phone and sent with the next plan read (UX-06).
+      if (!e.offline) {
+        if (pending) {
+          // The server refused the pick kept from offline: drop it, so it
+          // isn't sent on every plan read; the gate asks again if needed.
+          _prefs.remove(_avatarPendingKey);
+          _pickedAvatar = null;
+          notifyListeners();
+        }
+        return e.message;
+      }
+      // A filtered line must not hold the person at the gate, nor lose a
+      // change made in Profile: the choice is kept on the phone, with the
+      // avatar the account had when it was made, and sent with the next
+      // plan read (UX-06).
+      final was = _pendingAvatar()?.was ?? avatarId;
       _pickedAvatar = id;
-      _prefs.setString(_avatarPendingKey, id);
+      _prefs.setString(_avatarPendingKey, jsonEncode({'id': id, 'was': was}));
       notifyListeners();
       return null;
     }
@@ -1603,16 +1615,32 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   static const _avatarPendingKey = 'avatar_pending';
 
-  /// Sends an avatar picked while the Worker could not be reached.
+  ({String id, String was})? _pendingAvatar() {
+    final raw = _prefs.getString(_avatarPendingKey);
+    if (raw == null) return null;
+    try {
+      final m = jsonDecode(raw) as Map;
+      return (id: '${m['id'] ?? ''}', was: '${m['was'] ?? ''}');
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Sends an avatar picked while the Worker could not be reached, unless
+  /// the account's avatar changed since (another phone): that one wins.
   void _sendPendingAvatar(Me value) {
-    final pending = _prefs.getString(_avatarPendingKey);
-    if (pending == null) return;
-    if (value.avatar.isNotEmpty) {
+    final p = _pendingAvatar();
+    if (p == null) {
       _prefs.remove(_avatarPendingKey);
       return;
     }
-    _pickedAvatar ??= pending;
-    unawaited(setAvatar(pending));
+    if (p.id.isEmpty || value.avatar == p.id || value.avatar != p.was) {
+      _prefs.remove(_avatarPendingKey);
+      _pickedAvatar = null;
+      return;
+    }
+    _pickedAvatar = p.id;
+    unawaited(setAvatar(p.id, pending: true));
   }
 
   Future<String?> setEmail(String email, String password) async {

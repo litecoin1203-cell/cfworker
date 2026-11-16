@@ -1269,6 +1269,56 @@ void main() {
     await tester.pump(const Duration(seconds: 3));
   });
 
+  testWidgets('UX-06: a pending avatar the server refuses is dropped and '
+      'the gate asks again', (tester) async {
+    final (app, api) = await _boot(tester, {'onboarded': true}, avatar: null);
+    api.avatarOffline = true;
+    expect(await app.setAvatar('kai'), isNull);
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(app.needsAvatar, isFalse);
+    api
+      ..avatarOffline = false
+      ..avatarRefused = true;
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 100));
+    final sent = api.calls.where((c) => c == 'POST /me/avatar').length;
+    expect(app.needsAvatar, isTrue);
+    expect(find.byType(AvatarGate), findsOneWidget);
+    // not sent again on every plan read
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(api.calls.where((c) => c == 'POST /me/avatar').length, sent);
+    await tester.pump(const Duration(seconds: 3));
+  });
+
+  testWidgets('UX-06: an avatar changed in Profile while offline is sent '
+      'later, unless the account changed it meanwhile', (tester) async {
+    final (app, api) = await _boot(tester, {'onboarded': true});
+    expect(app.avatarId, 'vesper');
+    api.avatarOffline = true;
+    expect(await app.setAvatar('kai'), isNull);
+    expect(app.avatarId, 'kai');
+    api.avatarOffline = false;
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(api.avatar, 'kai');
+    expect(app.avatarId, 'kai');
+
+    // picked offline, then another phone set a different one: that wins
+    api.avatarOffline = true;
+    expect(await app.setAvatar('luna'), isNull);
+    api
+      ..avatarOffline = false
+      ..avatar = 'vesper';
+    final before = api.calls.where((c) => c == 'POST /me/avatar').length;
+    await app.loadMe();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(api.calls.where((c) => c == 'POST /me/avatar').length, before);
+    expect(api.avatar, 'vesper');
+    expect(app.avatarId, 'vesper');
+    await tester.pump(const Duration(seconds: 3));
+  });
+
   testWidgets('UX-01: Connect with no plan offers the trial, which opens '
       'Plans; the Now tile does too', (tester) async {
     final (app, api) = await _boot(tester, {

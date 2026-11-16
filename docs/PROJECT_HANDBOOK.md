@@ -681,7 +681,9 @@ does not reach users by itself.
   own launch screen covers the start); the drawn splash (~2 s) plays only before onboarding or sign-in.
 - **AvatarGate** (1.2.30): a new account must pick one of the 14 Folk characters before the app opens (no skip).
   A pick that can't be saved because the Worker is unreachable is kept on the phone (`avatar_pending`) and sent
-  with the next `/me`, so a filtered line never holds the person at the gate (UX-06).
+  with the next `/me`, so a filtered line never holds the person at the gate (UX-06). The same holds for a change
+  in Profile. A kept pick is dropped if the server refuses it (the gate asks again) or if the account's avatar
+  changed meanwhile (another phone wins).
   The Telegram profile photo is not used anywhere.
 - App version is a signature at the end of Profile (Pleat mark, "Up to date · checked …", Check for updates).
   Long-press the version to send a test health report. Night mode toggle placement: **leave it as it is** (Ali
