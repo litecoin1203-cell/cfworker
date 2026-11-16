@@ -130,4 +130,6 @@ test('a "no server connected" report names each server and why', async () => {
   assert.equal(L.detailValue('why', why, {}, names), 'DE1: server refused | NL2: no answer | kx: answered | ky: not tested');
   assert.equal(L.detailValue('tried', ['kde1', 'kz'], {}, names), 'DE1, kz');
   assert.equal(L.detailValue('tried', ['kde1'], {}), 'kde1');
+  // 1.2.50+ sends { k }, 1.2.52+ also the try's own failure
+  assert.equal(L.detailValue('tried', [{ k: 'kde1', c: 'config' }, { k: 'kz' }], {}, names), 'DE1: unknown setting, kz');
 });

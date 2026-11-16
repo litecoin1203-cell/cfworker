@@ -5027,6 +5027,12 @@ section('Pleat health reports: priorities, one row per problem, caps, scrubbing,
   const named = (await menu.renderScreen(env, `he:${crash.fp}`)).text;
   ok(named.includes('🇩🇪 DE1: سرور رد کرد') && named.includes('🇳🇱 NL2: بی‌جواب') && named.includes('kunknown1: جواب داد') && named.includes('امتحان‌شده: 🇩🇪 DE1'),
     'a none-answered report names each server and why it was left out: ' + named);
+  // Pleat 1.2.52+: each try carries the core's own failure, and exits left out for failing for nearly everyone are counted
+  await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?')
+    .bind(JSON.stringify(H.cleanDetail({ route: 'auto', tried: [{ k: kDE, c: 'config' }, { k: kNL, c: 'timeout' }], skipped: 2 })), crash.id).run();
+  const tries = (await menu.renderScreen(env, `he:${crash.fp}`)).text;
+  ok(tries.includes('امتحان‌شده: 🇩🇪 DE1: تنظیم ناشناخته | 🇳🇱 NL2: بی‌جواب') && tries.includes('کنار گذاشته (برای بیشتر کاربران این اپراتور وصل نمی‌شود): 2'),
+    'a none-answered report shows why each try failed and how many exits were left out: ' + tries);
   ok(H.crashGuess({ abort: 'fdsan: attempted to close file descriptor 87' }).includes('fdsan') && H.crashGuess({ lib: 'libhev-socks5-tunnel.so' }).includes('hev')
     && H.crashGuess({ lib: 'libflutter.so' }).includes('Flutter'), 'the guess follows the abort message and the library');
   // scrub on its own
