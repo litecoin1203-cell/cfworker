@@ -473,16 +473,19 @@ export async function sendBackup(env, chatId, { daily = false } = {}) {
   const data = await backupJson(env);
   const day = new Date().toISOString().slice(0, 10);
   const users = (await first(env, 'SELECT COUNT(*) c FROM users')).c;
-  const note = daily ? '\nفقط آخرین پشتیبان روزانه در این چت می‌ماند؛ قبلی پاک شد.' : '\nاین فایل را جایی امن نگه دار.';
+  const caption = `💾 پشتیبان ${day} — ${users} کاربر\nاین فایل را جایی امن نگه دار.`;
   const chat = chatId || env.TELEGRAM_CHAT_ID;
-  const sent = await sendDocument(env, chat, `cloudgold-backup-${day}.json`, data, `💾 پشتیبان ${day} — ${users} کاربر${note}`);
+  const sent = await sendDocument(env, chat, `cloudgold-backup-${day}.json`, data, caption);
   const id = sent?.result?.message_id;
   if (daily && id) {
     const prev = await first(env, "SELECT value FROM settings WHERE key = 'backup_msg'");
     let old = null;
     try { old = prev ? JSON.parse(prev.value) : null; } catch (e) { old = null; }
-    if (old?.id && old.id !== id) await tg(env, 'deleteMessage', { chat_id: old.chat, message_id: old.id });
     await setSetting(env, 'backup_msg', JSON.stringify({ chat: String(chat), id }));
+    // the caption says so only when Telegram really deleted the one before (it can refuse, e.g. after 48 hours)
+    if (old?.id && old.id !== id && (await tg(env, 'deleteMessage', { chat_id: old.chat, message_id: old.id }))?.ok === true) {
+      await tg(env, 'editMessageCaption', { chat_id: chat, message_id: id, caption: caption + '\nپشتیبان قبلی از این چت پاک شد؛ فقط آخرین پشتیبان روزانه اینجا می‌ماند.' });
+    }
   }
   return sent;
 }

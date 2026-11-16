@@ -214,7 +214,8 @@ export function installFakes({ panelBase }) {
 
     if (url.includes('api.telegram.org')) {
       const method2 = url.split('/').pop();
-      tg.calls.push({ method: method2, body: body && typeof body === 'string' ? JSON.parse(body) : null });
+      tg.calls.push({ method: method2, body: body && typeof body === 'string' ? JSON.parse(body) : (body instanceof FormData ? { caption: body.get('caption') } : null) });
+      if (method2 === 'deleteMessage' && tg.deleteFails) return resJson({ ok: false, error_code: 400, description: 'Bad Request: message can\'t be deleted' }, 400);
       if (method2 === 'sendMessage') {
         const sm = JSON.parse(body), code = tg.failFor[String(sm.chat_id)];
         if (code) return resJson({ ok: false, error_code: code, description: code === 429 ? 'Too Many Requests: retry after 5' : 'Forbidden: bot was blocked by the user' }, code);

@@ -5829,6 +5829,21 @@ section('PRV-05: only the latest daily backup stays in the Telegram chat');
   const dels = fakes.tg.calls.slice(n0).filter((c) => c.method === 'deleteMessage');
   ok(docs() - d0 === 2 && firstId && dels.length === 1 && String(dels[0].body.message_id) === String(JSON.parse(firstId).id),
     'PRV-05: the next daily backup deletes the one before it: ' + JSON.stringify(dels.map((d) => d.body)) + ' ' + firstId);
+  // the caption says the previous one was deleted only when it was (review of PRV-05)
+  const DELETED = 'پشتیبان قبلی از این چت پاک شد';
+  const caps = (from) => fakes.tg.calls.slice(from).filter((c) => c.method === 'sendDocument' || c.method === 'editMessageCaption').map((c) => c.body?.caption || '');
+  ok(!caps(n0).some((c) => c.includes('قبلی پاک شد') && !c.includes(DELETED)) && caps(n0).some((c) => c.includes(DELETED)),
+    'PRV-05: after a real delete the caption says so: ' + JSON.stringify(caps(n0)));
+  await env.DB.prepare("DELETE FROM settings WHERE key = 'backup_msg'").run();
+  const nf = fakes.tg.calls.length;
+  await sendBackup(env, undefined, { daily: true });
+  ok(!caps(nf).some((c) => c.includes('پاک شد')), 'PRV-05: the first daily backup does not claim a deletion: ' + JSON.stringify(caps(nf)));
+  fakes.tg.deleteFails = true;
+  const nd = fakes.tg.calls.length;
+  await sendBackup(env, undefined, { daily: true });
+  fakes.tg.deleteFails = false;
+  ok(fakes.tg.calls.slice(nd).some((c) => c.method === 'deleteMessage') && !caps(nd).some((c) => c.includes('پاک شد')),
+    'PRV-05: a delete Telegram refused is not reported as done: ' + JSON.stringify(caps(nd)));
   // a backup the owner asks for by hand stays, and does not delete the daily one
   const n1 = fakes.tg.calls.length;
   await sendBackup(env, 12345);
