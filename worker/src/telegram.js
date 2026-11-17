@@ -374,7 +374,7 @@ async function onConfirm(env, cq, yes, role = null) {
   const payload = JSON.parse(row.payload_json || '{}');
   // every confirmed change goes through the actions layer (same checks, same admin log as everywhere else)
   const ACTION = { drain_panel: 'panel.drain', grant: 'user.grant', link: 'user.link', del_coupon: 'coupon.delete',
-    u_reset: 'user.reset_usage', u_end: 'user.end', u_tg: 'user.unlink_tg', u_del: 'user.delete', u_unlink: 'user.unlink_panel', u_wallet: 'user.wallet',
+    u_reset: 'user.reset_usage', u_end: 'user.end', u_tg: 'user.unlink_tg', u_del: 'user.delete', u_unlink: 'user.unlink_panel', u_wallet: 'user.wallet', u_remake: 'user.remake_panels',
     o_approve: 'order.approve', o_retry: 'order.approve', o_refund: 'order.refund', del_plan: 'plan.delete', net_reset: 'net.reset', bc_start: 'broadcast.start' };
   const ARGS = {
     drain_panel: () => ({ panelId: payload.panel_id }),
@@ -385,6 +385,7 @@ async function onConfirm(env, cq, yes, role = null) {
     u_end: () => ({ userId: payload.user_id }),
     u_tg: () => ({ userId: payload.user_id }),
     u_del: () => ({ userId: payload.user_id }),
+    u_remake: () => ({ userId: payload.user_id }),
     u_unlink: () => ({ userId: payload.user_id, panelId: payload.panel_id, off: planStr === '1' }),
     u_wallet: () => ({ userId: payload.userId, amount: payload.amount, note: payload.note }),
     o_approve: () => ({ orderId: payload.order_id }),

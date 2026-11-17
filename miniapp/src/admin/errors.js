@@ -39,6 +39,8 @@ const EXACT = {
   'این کاربر اشتراک ندارد. اول از «🎁 دادن پلن» برایش پلن بگذار.': 'This user has no subscription. Give a plan first.',
   'این کاربر تلگرام وصل‌شده ندارد.': 'This user has no Telegram linked.',
   'این کاربر روی این پنل اکانت وصل‌شده ندارد.': 'This user has no linked account on that panel.',
+  'این کاربر تلگرام ندارد؛ اسم تلگرامی برایش ساخته نمی‌شود.': 'This user has no Telegram, so there is no Telegram name to use.',
+  'این کاربر اکانت پنلی ندارد.': 'This user has no panel account.',
   'این اکانت همین الان عوض شد؛ صفحه را دوباره باز کن.': 'That account just changed. Open the page again.',
   'این کاربر حذف شده است.': 'This user is deleted.',
   'این کاربر قبلاً حذف شده است.': 'This user is already deleted.',

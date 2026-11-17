@@ -550,6 +550,81 @@ async function mergeAccount(env, user, panel, remote, { planId }) {
   return { replaced, disabled, merged: true };
 }
 
+// ---------------- remake a user's accounts under the Telegram name (owner's ask, 2026-11-17) ----------------
+// No panel can rename an account (Marzban / PasarGuard / Rebecca UserModify have no username), so an account with
+// an older name (random cg_<hex>, or a Telegram name that changed) is made again: a new account named per
+// panelNames with the old one's expiry, what is left of its data and its device limit; the link row and the usage
+// counter move to it in one batch (what the old account used since the last reading is counted first), then the old
+// account is deleted on the panel (switched off when the delete is refused). The app reads configs live through
+// sub_path, so its next server list has the new account's configs. Panels one after another; one panel failing
+// leaves that account as it was. Accounts already named after the Telegram base are skipped; a cgtunnel_ account is
+// never touched. -> {done: [{panel, from, to, deleted}], skipped: [{panel, name, why}], failed: [{panel, name, error}]}
+export async function remakeAccounts(env, userId) {
+  const user = await first(env, 'SELECT id, email, tg_id, tg_username, tg_name FROM users WHERE id = ?', userId);
+  const out = { done: [], skipped: [], failed: [] };
+  if (!user) return out;
+  const base = panelNameBase(user);
+  const rows = await all(env, `SELECT a.*, p.kind, p.state AS panel_state, p.cred_ref, p.options_json, p.label AS panel_label FROM panel_accounts a
+    JOIN panels p ON p.id = a.panel_id WHERE a.user_id = ? AND a.applied != 'pending' AND a.desired != 'removed' ORDER BY a.panel_id`, user.id);
+  const sub = await first(env, 'SELECT period_id FROM subscriptions WHERE user_id = ?', user.id);
+  for (const pa of rows) {
+    const name = pa.remote_username;
+    if (/^cgtunnel_/.test(name)) { out.skipped.push({ panel: pa.panel_id, name, why: 'tunnel' }); continue; }
+    if (pa.panel_state === 'disabled') { out.skipped.push({ panel: pa.panel_id, name, why: 'panel_off' }); continue; }
+    if (base && (name === base || new RegExp(`^${base}_[0-9a-f]+$`).test(name))) { out.skipped.push({ panel: pa.panel_id, name, why: 'named' }); continue; }
+    if (!base && name.startsWith(`${prefixOf(env)}_`)) { out.skipped.push({ panel: pa.panel_id, name, why: 'no_telegram' }); continue; }
+    try {
+      const pg = await adapterFor(env, panelOf(pa));
+      const old = await pg.getUser(name);
+      if (!old) { out.failed.push({ panel: pa.panel_id, name, error: 'not_found' }); continue; }
+      const used = Math.max(0, parseInt(old.used_traffic || 0, 10) || 0);
+      const lim = parseInt(old.data_limit || 0, 10) || 0;
+      const limit = lim > 0 ? Math.max(1, lim - used) : 0;
+      const expire = parseExpire(old.expire) || null;
+      const hwid = parseInt(old.hwid_limit || 0, 10) || null;
+      const on = String(old.status || 'active') === 'active';
+      const names = (await freeNames(env, pa.panel_id, [user], prefixOf(env))).get(user.id);
+      const groups = await groupIdsFor(env, panelOf(pa), pg);
+      const made = await createRemote(env, pg, user, { expire, limit, hwid, groups, names });
+      if (!on) { try { await pg.setStatus(made.username, 'disabled'); } catch (e) { /* the push below switches it off */ } }
+      const now = nowSec();
+      const stmts = [
+        // the new account already has the wanted numbers; one made for a switched-off account is pushed again
+        st(env, `UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, applied = ?, applied_limit_bytes = ?, desired_limit_bytes = ?,
+          applied_expire = ?, dirty = ?, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ? AND remote_username = ?`,
+        made.username, made.id, made.subPath, on ? 'active' : 'stopped', limit, limit, expire, on ? 0 : 1, now, pa.id, name),
+        st(env, "UPDATE subscriptions SET pg_username = ?, sub_url = '' WHERE user_id = ? AND ? = 1 AND pg_username = ?", made.username, user.id, pa.panel_id, name),
+      ];
+      // the old account's last bit of usage counts, and the new account's counter starts at 0
+      if (sub && sub.period_id) {
+        stmts.push(st(env, `UPDATE usage_counters SET accounted_bytes = accounted_bytes + CASE WHEN ?1 >= last_remote_bytes THEN ?1 - last_remote_bytes ELSE ?1 END,
+          last_remote_bytes = 0, baseline_pending = 0, stale = 0, last_seen_at = ?2 WHERE period_id = ?3 AND panel_id = ?4`, used, now, sub.period_id, pa.panel_id));
+      }
+      const res = await env.DB.batch(stmts);
+      if (!Number((res[0].meta && res[0].meta.changes) || 0)) {
+        // the row changed meanwhile (unlinked, linked again): the new account is not used, so it goes
+        try { await pg.deleteUser(made.username); } catch (e) { /* left on the panel; it carries this user's note */ }
+        out.failed.push({ panel: pa.panel_id, name, error: 'changed' });
+        continue;
+      }
+      let deleted = true;
+      try { await pg.deleteUser(name); } catch (e) {
+        deleted = false;
+        try { await pg.setStatus(name, 'disabled'); } catch (x) { /* reported: the admin can remove it by hand */ }
+      }
+      out.done.push({ panel: pa.panel_id, from: name, to: made.username, deleted });
+    } catch (e) {
+      out.failed.push({ panel: pa.panel_id, name, error: String(e && e.message ? e.message : e).slice(0, 120) });
+    }
+  }
+  if (out.done.length) {
+    // the per-panel caps are worked out again (own reading is 0 now) and pushed
+    await evaluate(env, user.id);
+    await pushPending(env, { userId: user.id });
+  }
+  return out;
+}
+
 function randomHex(n) {
   const b = crypto.getRandomValues(new Uint8Array(n));
   return [...b].map((x) => x.toString(16).padStart(2, '0')).join('');

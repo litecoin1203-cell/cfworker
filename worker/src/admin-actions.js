@@ -591,6 +591,28 @@ Object.assign(ACTIONS, {
       return { targetId: u.id, summary: `جداکردن ${pa.remote_username} از پنل #${pa.panel_id}${off ? ' + خاموش' : ''}`, text: lines.join('\n') };
     },
   },
+  // Every panel account of this user is made again under the Telegram name (no panel can rename): new account with
+  // the old one's expiry and left data, the app moves to it, the old one is deleted on the panel (sync.remakeAccounts).
+  'user.remake_panels': {
+    risk: 'destructive', target: 'user',
+    async apply(env, { userId }) {
+      const u = await userRow(env, userId);
+      if (!u) return fail('کاربر پیدا نشد.');
+      if (isDeleted(u)) return fail('این کاربر حذف شده است.');
+      const { remakeAccounts, panelNameBase } = await import('./sync.js');
+      if (!panelNameBase(u)) return fail('این کاربر تلگرام ندارد؛ اسم تلگرامی برایش ساخته نمی‌شود.');
+      const r = await remakeAccounts(env, u.id);
+      const WHY = { named: 'از قبل اسم تلگرامی دارد', tunnel: 'اکانت تانل؛ دست نخورد', panel_off: 'پنل خاموش است', no_telegram: 'بدون تلگرام' };
+      const lines = [
+        ...r.done.map((d) => `✅ پنل #${d.panel}: ${d.from} ← ${d.to}${d.deleted ? ' (قبلی پاک شد)' : ' · ⚠️ قبلی پاک نشد، خاموش شد؛ دستی پاکش کن'}`),
+        ...r.skipped.map((x) => `➖ پنل #${x.panel}: ${x.name} (${WHY[x.why] || x.why})`),
+        ...r.failed.map((x) => `⚠️ پنل #${x.panel}: ${x.name} ساخته نشد (${x.error === 'not_found' ? 'روی پنل پیدا نشد' : x.error === 'changed' ? 'همین الان عوض شد' : String(x.error).replace(/\//g, '∕')}); همان اکانت قبلی ماند.`),
+      ];
+      if (!lines.length) return fail('این کاربر اکانت پنلی ندارد.');
+      if (r.done.length) lines.push('', 'ℹ️ اپ Pleat دفعه‌ی بعد که لیست سرورها را بگیرد کانفیگ‌های تازه را دارد؛ اگر وصل است، یک بار قطع و وصل کند.');
+      return { targetId: u.id, summary: `ساخت دوباره با اسم تلگرامی: ${r.done.map((d) => `#${d.panel} ${d.from}→${d.to}`).join(', ') || 'هیچ'}`, text: lines.join('\n') };
+    },
+  },
   // the password reaches here already hashed (the form hashes it the moment it is typed)
   'user.create': {
     risk: 'reversible', target: 'user',

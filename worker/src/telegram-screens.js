@@ -237,7 +237,9 @@ export async function userPanels(env, id) {
     'سقف هر پنل = مصرف همان پنل + باقیمانده‌ی کل؛ وقتی جمع به حجم پلن برسد همه‌ی پنل‌ها با هم خاموش می‌شوند.'].join('\n');
   // one unlink button per account (its panel number and username), then link another
   const unlink = accounts.map((a) => [b(`✂️ جداکردن ${a.remote_username} از #${a.panel_id}`.slice(0, 60), `m:uux:${id}:${a.panel_id}`)]);
-  return { text, kb: [...unlink, [b('🔗 وصل اکانت پنل', `m:w:link:${id}`), b('🔄 دوباره بخوان', `m:uac:${id}`)], nav(`u:${id}`)] };
+  // every account made again under the Telegram name (only for a user with Telegram and an account to remake)
+  const remake = u.tg_id && accounts.length ? [[b('🔁 ساخت دوباره با اسم تلگرامی', `m:urp:${id}`)]] : [];
+  return { text, kb: [...unlink, ...remake, [b('🔗 وصل اکانت پنل', `m:w:link:${id}`), b('🔄 دوباره بخوان', `m:uac:${id}`)], nav(`u:${id}`)] };
 }
 
 const missing = (title) => ({ text: crumb('👤 کاربران', title) + '\n\nکاربر پیدا نشد.', kb: [nav('usr')] });

@@ -148,7 +148,7 @@ export function installFakes({ panelBase }) {
         const u = pg.users[name];
         if (method === 'GET') return u ? resJson(outUser(u)) : resText('not found', 404);
         if (method === 'PUT') { if (!u) return resText('not found', 404); pg.puts++; pg.putLog.push(name); pg.putBodies.push(JSON.parse(body)); Object.assign(u, JSON.parse(body)); return resJson(outUser(u)); }
-        if (method === 'DELETE') { delete pg.users[name]; return resText('', 204); }
+        if (method === 'DELETE') { if (pg.failDelete) return resText('{"detail":"refused"}', 403); delete pg.users[name]; pg.deleted = (pg.deleted || []).concat(name); return new Response(null, { status: 204 }); }
       }
       if ((mm = path.match(/^\/api\/user\/([^/]+)\/reset$/)) && method === 'POST') {
         const u = pg.users[decodeURIComponent(mm[1])]; u.used_traffic = 0; return resJson(outUser(u));

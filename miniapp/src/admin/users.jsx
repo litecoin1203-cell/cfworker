@@ -185,6 +185,12 @@ function PanelsLive({ id, u, owner, after }) {
           </List>
         ) : <p class="note">No account on any panel yet.</p>)}
       </Loading>
+      {owner && u && u.telegram ? (
+        <List>
+          <Row icon="refresh" title="Remake with Telegram name" sub="New account on each panel with the same end date and data left; the old one is deleted" danger
+            onClick={() => act('user.remake_panels', { userId: u.id }, { confirm: `Remake ${u.label}'s panel accounts under their Telegram name? Each panel gets a new account with the same end date and data left, Pleat moves to it, and the old account is deleted on the panel (an old v2rayNG link stops working; panel 1 forgets its devices). Accounts already named after Telegram are left alone. This cannot be undone.`, done: 'Accounts remade', after: done })} chevron />
+        </List>
+      ) : null}
       <p class="note" style={{ marginTop: '8px' }}>Each panel's cap = its own usage + what is left of the plan. When the total reaches the plan, every panel switches off together.{owner ? ' Tap an account to unlink it.' : ''}</p>
     </>
   );
