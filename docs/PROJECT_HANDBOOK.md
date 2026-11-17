@@ -485,14 +485,20 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   also overrules a remark that names another country (TR 1/TR 7 left via Hetzner/dataforest in DE): confirmed exit >
   remark > unconfirmed exit > host label. The bot's server list marks such servers with 📍.
 - PasarGuard may serve Xray JSON to a v2rayNG user agent; `collectLinks` falls back to `<sub>/links` (PR #9).
-- **Account names (PNL-07, replaces #49 for new accounts)**: panels can be third-party (panel 1 is reseller access; its
-  owner sees every account), so a **new** panel account is named `<prefix>_<10 random hex>` (`PASARGUARD_USERNAME_PREFIX`,
-  default `cg`; a taken name (409) moves on to the next random one) and its note is only `Pleat #<user id>`: no
-  @username, Telegram id or email on any panel. The bot maps an account to its user through `panel_accounts`.
-  Accounts made before (named after the @username per #49, notes with Telegram id / email) are **never renamed**
-  (Marzban's sub token depends on the name; every lookup and the link flow go by the stored `remote_username`);
-  their old notes stay on the panel unless edited there by hand. `usage_counters.online_at` keeps the panel's
-  last-connection time (no extra writes).
+- **Account names (owner's rule 2026-11-17; replaces PNL-07's random names for new accounts)**: Ali wants every
+  panel account findable by the person's Telegram. A **new** account on any panel is named after, in order: the
+  Telegram @username (lowercased); else the Telegram display name (`users.tg_name`), Persian/Arabic letters and
+  digits spelled in Latin, accents dropped, emoji / symbols / other scripts dropped, kept only with 3+ characters and a
+  letter (`علی رضایی` → `ali_rzaii`); else the numeric Telegram id. Without Telegram (email only) the name is
+  `<prefix>_<10 random hex>` (`PASARGUARD_USERNAME_PREFIX`, default `cg`). Only `[a-z0-9_]`, 3-32 characters, no
+  leading/trailing/double `_` (fits Marzban/Rebecca `USERNAME_REGEXP` and PasarGuard). A name another account row on
+  that panel already holds (one D1 read, `freeNames`) or the panel says is taken (409, not this user's note) moves on to
+  `<name>_<user id>`, then `<name>_<random hex>`. Same rule on all three paths: purchase (`ensureAccount`), app open
+  (`ensureMissingFor`) and the background rollout (`createMissing`). The note stays `Pleat #<user id>` (no Telegram id
+  or email, PNL-07). Panel 1 is reseller access, so its owner sees these names: Ali chose this knowingly.
+  Accounts made before are **never renamed** automatically (Marzban's sub token depends on the name; every lookup and
+  the link flow go by the stored `remote_username`); this includes the random `cg_<hex>` ones made between PR #96
+  and this change, and the `cgtunnel_` test user. `usage_counters.online_at` keeps the panel's last-connection time.
 - **Unlink (#55)**: bot › user › 🗂 پنل‌های کاربر › "✂️ جداکردن" removes the link row (optionally switching the
   account off) so the panel account can be linked to another user. Deleting a user switches every panel account
   off and frees all links.
@@ -1007,6 +1013,10 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 **2026-11-16 — What's new.** Each update says what changed: the bundled `whats_new.json` feeds the release notes,
 the bot (show / rewrite / none before announcing) and Pleat (update sheet list, one-time Home card, Profile history).
 
+**2026-11-17 — Panel account names follow Telegram again.** Since PNL-07 (#96) new accounts got random `cg_<hex>`
+names; Ali wants @username > Telegram display name (Persian spelled in Latin) > numeric Telegram id on every panel,
+for purchase, app open and background creation. Notes stay free of personal data. Old accounts keep their names.
+
 **2026-11-15 — "No server connected" with servers that answered.**
 - Pleat 1.2.53: smart connect offers only exits that answered here after a failure, never retries a failed exit in
   the same connect, never offers one that fails for nearly everyone on the operator; `no_exit` says why each try
@@ -1118,6 +1128,7 @@ the bot (show / rewrite / none before announcing) and Pleat (update sheet list, 
 | — | 11-16 | What's new per update: lines in the update sheet, a one-time Home card, a history page; bot shows / edits them before announcing |
 | — | 11-16 | In-app update: Stop works at once; a broken way is skipped for the next address / the bridge; failure report names each way tried |
 | — | 11-16 | Bot welcome card for new people (design D): APK in Telegram by `file_id`, `/dl/pleat.apk`, GitHub, install help; `bot_users` (0024) |
+| — | 11-17 | Panel account names follow Telegram: @username > display name (Latin) > numeric id, on purchase, app open and background creation |
 
 ---
 
@@ -1260,6 +1271,10 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 ---
 
 ## 19. Open items and known gaps
+
+- **Panel names from Telegram (2026-11-17)**: proven by Worker tests only (fake panels). After Deploy, a new user's
+  account on panel 1 and panel 2 should carry their @username; not yet seen on the real panels. Accounts made between
+  #96 and this change are named `cg_<hex>`; renaming them is not done (needs Ali's yes and a per-panel rename test).
 
 - **What's new phone test** (needs a version bump with the PR): update sheet shows the lines, Home card appears once
   after installing and goes away after SEE WHAT'S NEW or ✕, Profile › WHAT'S NEW timeline in Day and Night.

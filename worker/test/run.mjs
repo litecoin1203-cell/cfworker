@@ -1500,41 +1500,63 @@ section('acceptance: 2 + 4 + 5 GB on three panels = 11 GB; a 10 GB plan stops on
   ok(puts.join() === puts2.join(), 'stopping again changes nothing (idempotent): ' + puts + ' / ' + puts2);
 }
 
-section('PNL-07: new panel accounts get an opaque name and a note with no personal data; existing names are kept');
+section('panel account names follow Telegram: @username > display name > numeric id; never personal data in the note');
 {
-  const { panelNames } = await import('../src/sync.js');
-  const who = { id: 5, tg_id: 777001, tg_username: 'Ali__Gold_', email: 'ali.gold@example.com' };
+  const { panelNames, panelNameBase, latinName } = await import('../src/sync.js');
+  const who = { id: 5, tg_id: 777001, tg_username: 'Ali__Gold_', tg_name: 'Ali', email: 'ali.gold@example.com' };
   const cands = panelNames(who);
-  ok(cands.length === 3 && new Set(cands).size === 3 && cands.every((x) => /^cg_[0-9a-f]{10,12}$/.test(x)), 'PNL-07: three opaque candidates cg_<random hex>: ' + cands.join(','));
-  ok(cands.every((x) => !/ali|gold|777001/i.test(x)), 'PNL-07: no @username or Telegram id in the name');
-  ok(panelNames({ id: 9 }).every((x) => /^cg_[0-9a-f]{10,12}$/.test(x)) && panelNames({ id: 9 }, 'pl')[0].startsWith('pl_'), 'PNL-07: the same shape without Telegram, with the configured prefix');
-  ok(panelNames(who).every((x) => x.length <= 32 && !/__/.test(x)), 'PNL-07: every candidate fits all three panel types');
+  ok(cands[0] === 'ali_gold' && cands[1] === 'ali_gold_5' && /^ali_gold_[0-9a-f]{4}$/.test(cands[2]) && new Set(cands).size === cands.length, 'the @username first (lowercase, no doubled or edge "_"), then with the user id, then a random tail: ' + cands.join(','));
+  ok(panelNameBase({ id: 6, tg_id: 777002, tg_username: null, tg_name: 'Sara K.' }) === 'sara_k', 'no @username: the Telegram display name: ' + panelNameBase({ id: 6, tg_id: 777002, tg_name: 'Sara K.' }));
+  ok(panelNameBase({ id: 6, tg_id: 777002, tg_name: 'علی رضایی' }) === 'ali_rzaii', 'a Persian display name is spelled in Latin: ' + panelNameBase({ id: 6, tg_id: 777002, tg_name: 'علی رضایی' }));
+  ok(panelNameBase({ id: 6, tg_id: 777002, tg_name: 'مهدی‌ ۱۳۷۰ 🔥' }) === 'mhdi_1370', 'ZWNJ, Persian digits and emoji: ' + panelNameBase({ id: 6, tg_id: 777002, tg_name: 'مهدی‌ ۱۳۷۰ 🔥' }));
+  ok(panelNameBase({ id: 6, tg_id: 777002, tg_name: 'José Müller' }) === 'jose_muller', 'accents are dropped');
+  ok(panelNameBase({ id: 6, tg_id: 777002, tg_name: '🔥🔥✨' }) === '777002' && panelNameBase({ id: 6, tg_id: 777002, tg_name: '' }) === '777002'
+    && panelNameBase({ id: 6, tg_id: 777002, tg_name: '12 34' }) === '777002' && panelNameBase({ id: 6, tg_id: 777002, tg_name: 'Jo' }) === '777002',
+  'a display name with no usable text (emoji only, empty, digits only, under 3 letters) falls through to the numeric Telegram id');
+  ok(panelNameBase({ id: 6, tg_id: 777002, tg_name: 'Иван' }) === '777002', 'a script that cannot be spelled (Cyrillic) falls through to the id');
+  ok(latinName('a'.repeat(40) + ' b').length === 32 && panelNameBase({ id: 6, tg_id: 777002, tg_name: 'x'.repeat(31) + ' yz' }) === 'x'.repeat(31), 'at most 32 characters, no "_" left at the end');
+  ok(panelNames({ id: 9 }).every((x) => /^cg_[0-9a-f]{10,12}$/.test(x)) && panelNames({ id: 9 }, 'pl')[0].startsWith('pl_'), 'without Telegram (email only): <prefix>_<random hex>');
+  const all3 = [cands, panelNames({ id: 77, tg_id: 777002, tg_name: 'علی رضایی' }), panelNames({ id: 78, tg_id: 1234567890123 }), panelNames({ id: 79, tg_username: 'a'.repeat(32), tg_id: 1 })].flat();
+  // Marzban / Rebecca USERNAME_REGEXP and PasarGuard: 3-32 word characters, no two specials in a row
+  ok(all3.every((x) => /^(?=\w{3,32}\b)[a-zA-Z0-9-_@.]+(?:_[a-zA-Z0-9-_@.]+)*$/.test(x) && x.length <= 32 && !/__|^_|_$/.test(x)), 'every candidate fits all three panel types: ' + all3.join(','));
 
   await signup('tgname@example.com', { device: 'tgn-phone' });
   const id1 = await userId('tgname@example.com');
-  await env.DB.prepare('UPDATE users SET tg_id = 900001, tg_username = ? WHERE id = ?').bind('gold_ali', id1).run();
-  // panel 2 says the first name is taken (409): the next candidate is used
+  await env.DB.prepare('UPDATE users SET tg_id = 900001, tg_username = ?, tg_name = ? WHERE id = ?').bind('gold_ali', 'Ali', id1).run();
+  // panel 2 says the first name is taken by someone else's account (409): the next candidate is used
   const real2 = pg2.users;
   let refused = null;
-  pg2.users = new Proxy(real2, { get(t, k) { if (!refused && typeof k === 'string' && /^cg_/.test(k) && !(k in t)) { refused = k; return { username: k }; } return t[k]; } });
+  pg2.users = new Proxy(real2, { get(t, k) { if (!refused && k === 'gold_ali' && !(k in t)) { refused = k; return { username: k, note: 'someone else' }; } return t[k]; } });
   await admin(`/grant tgname@example.com ${tenGb.id}`);
   pg2.users = real2;
   const rows = (await env.DB.prepare('SELECT panel_id, remote_username FROM panel_accounts WHERE user_id = ? ORDER BY panel_id').bind(id1).all()).results;
   ok(rows.length === 3, 'one account on each panel');
-  ok(refused && rows[1].remote_username !== refused && /^cg_[0-9a-f]{10,12}$/.test(rows[1].remote_username) && real2[rows[1].remote_username], 'PNL-07: a name the panel says is taken (409) moves on to the next opaque one');
-  ok(rows.every((r) => /^cg_[0-9a-f]{10,12}$/.test(r.remote_username) && !/gold|900001/.test(r.remote_username)), 'PNL-07: the panel names carry nothing about the user: ' + rows.map((r) => r.remote_username));
+  ok(rows[0].remote_username === 'gold_ali' && rows[2].remote_username === 'gold_ali', 'the accounts are named after the Telegram @username: ' + rows.map((r) => r.remote_username));
+  ok(refused && rows[1].remote_username === `gold_ali_${id1}` && real2[rows[1].remote_username], 'a name the panel says is taken (409) moves on to <name>_<user id>: ' + rows[1].remote_username);
   const n1 = fakes.pg.users[rows[0].remote_username].note;
-  ok(n1 === `Pleat #${id1}`, 'PNL-07: the panel note is only "Pleat #<user id>" (no Telegram id, username or email): ' + n1);
-  ok(!/900001|gold_ali|@example/.test(JSON.stringify(Object.values(pg2.users).filter((u) => rows.some((r) => r.remote_username === u.username)))), 'PNL-07: nothing personal on panel 2 either');
+  ok(n1 === `Pleat #${id1}`, 'the panel note is only "Pleat #<user id>" (no Telegram id or email): ' + n1);
+  ok(!/900001|@example/.test(JSON.stringify(Object.values(pg2.users).filter((u) => rows.some((r) => r.remote_username === u.username)).map((u) => u.note))), 'no Telegram id or email in the panel-2 note either');
+
+  // another user with the same @username base on a panel where a row already holds it: the D1 check skips it
+  await signup('tgname2@example.com', { device: 'tgn2-phone' });
+  const id2 = await userId('tgname2@example.com');
+  await env.DB.prepare('UPDATE users SET tg_id = 900002, tg_username = NULL, tg_name = ? WHERE id = ?').bind('gold ali', id2).run();
+  await admin(`/grant tgname2@example.com ${tenGb.id}`);
+  const rows2 = (await env.DB.prepare('SELECT panel_id, remote_username FROM panel_accounts WHERE user_id = ? ORDER BY panel_id').bind(id2).all()).results;
+  ok(rows2.length === 3 && rows2[0].remote_username === `gold_ali_${id2}` && rows2[2].remote_username === `gold_ali_${id2}` && rows2[1].remote_username === 'gold_ali',
+    'a display name equal to a name another row holds gets <name>_<user id> there (no silently dropped row), the plain name where it is free: ' + rows2.map((r) => r.remote_username));
+
   // an account made before this change keeps its old name: renewal and lookup go by the stored name
-  const old = rows[0].remote_username;
-  fakes.pg.users['gold_ali'] = { ...fakes.pg.users[old], username: 'gold_ali' };
-  delete fakes.pg.users[old];
-  await env.DB.prepare("UPDATE panel_accounts SET remote_username = 'gold_ali' WHERE user_id = ? AND panel_id = 1").bind(id1).run();
+  fakes.pg.users['cg_0011223344'] = { ...fakes.pg.users['gold_ali'], username: 'cg_0011223344' };
+  delete fakes.pg.users['gold_ali'];
+  await env.DB.prepare("UPDATE panel_accounts SET remote_username = 'cg_0011223344' WHERE user_id = ? AND panel_id = 1").bind(id1).run();
   const created0 = Object.keys(fakes.pg.users).length;
   await admin(`/grant tgname@example.com ${tenGb.id}`);
   const again = (await env.DB.prepare('SELECT remote_username FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(id1).first()).remote_username;
-  ok(again === 'gold_ali' && Object.keys(fakes.pg.users).length === created0, 'PNL-07: an existing account is renewed under its old name, never renamed or re-created');
+  ok(again === 'cg_0011223344' && Object.keys(fakes.pg.users).length === created0, 'an existing account is renewed under its old name, never renamed or re-created');
+  fakes.pg.users['gold_ali'] = { ...fakes.pg.users['cg_0011223344'], username: 'gold_ali' };
+  delete fakes.pg.users['cg_0011223344'];
+  await env.DB.prepare("UPDATE panel_accounts SET remote_username = 'gold_ali' WHERE user_id = ? AND panel_id = 1").bind(id1).run();
   const p2name = rows[1].remote_username;
 
   section('bot: per-panel usage, dates, last connection and online now');
@@ -2378,6 +2400,9 @@ section('a new panel reaches existing users: at once when the app loads servers,
   await signup('nb@example.com', { device: 'nb-phone' });
   await admin(`/grant na@example.com ${tenGb.id}`);
   await admin(`/grant nb@example.com ${tenGb.id}`);
+  // the names on the new panel follow Telegram: na has an @username, nb only a Persian display name
+  await env.DB.prepare('UPDATE users SET tg_id = 910001, tg_username = ?, tg_name = ? WHERE email = ?').bind('na_user', 'Na', 'na@example.com').run();
+  await env.DB.prepare("UPDATE users SET tg_id = 910002, tg_username = NULL, tg_name = ? WHERE email = ?").bind('نیما 🌙', 'nb@example.com').run();
   await admin('/addpanel pasarguard تازه');
   const id = await lastId();
   await tgWebhook({ message: { chat: { id: 12345 }, message_id: 9100, text: `${N} admin9 pass9pass` } });
@@ -2400,6 +2425,7 @@ section('a new panel reaches existing users: at once when the app loads servers,
   const r = await call('GET', '/api/v1/vpn/servers', { token: tokA });
   ok(r.status === 200 && Object.values(np.users).some((u) => u.note === pleatNote('na@example.com')), 'account made on the new panel at app load');
   ok(JSON.stringify(r.data).includes('nn.example.net'), 'new panel configs are in the same server list');
+  ok(np.users['na_user'] && np.users['na_user'].note === pleatNote('na@example.com'), 'the account made at app load is named after the Telegram @username: ' + Object.keys(np.users));
   const mid = await panelProgress(env, p);
   ok(mid.have === 1, 'progress moved: ' + JSON.stringify(mid));
 
@@ -2407,6 +2433,7 @@ section('a new panel reaches existing users: at once when the app loads servers,
   await syncRounds(4);
   const after = await panelProgress(env, p);
   ok(after.have === after.want, 'background job finished the rest: ' + JSON.stringify(after));
+  ok(np.users['nima'] && np.users['nima'].note === pleatNote('nb@example.com'), 'the background job names an account without @username after the display name (Persian spelled in Latin, emoji dropped): ' + Object.keys(np.users));
 
   // a panel that refuses: admin told once, the app does not wait on it, the bot shows the error
   const np2 = fakes.addPanel('https://newq.test', 'nq.example.net', 'pasarguard');
