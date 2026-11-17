@@ -2756,7 +2756,7 @@ section('a server whose remark has no flag still gets its country');
 }
 
 const STAGE2_ACTIONS = ['user.add_days', 'user.add_gb', 'user.reset_usage', 'user.pause', 'user.end', 'user.plan_name', 'user.wallet', 'user.device_remove',
-  'user.logout_all', 'user.block', 'user.unlink_tg', 'user.unlink_panel', 'user.avatar_reset', 'user.email', 'user.delete', 'user.create'];
+  'user.logout_all', 'user.block', 'user.unlink_tg', 'user.unlink_panel', 'user.remake_panels', 'user.avatar_reset', 'user.email', 'user.delete', 'user.create'];
 const STAGE3_ACTIONS = ['order.approve', 'order.reject', 'order.cancel', 'order.refund', 'plan.move', 'plan.copy', 'plan.delete', 'plan.unarchive',
   'coupon.set', 'coupon.toggle'];
 const STAGE4_ACTIONS = ['panel.rename', 'panel.enable', 'server.hide', 'server.rename', 'app.list', 'net.reset', 'app.release', 'app.notes'];
@@ -3028,6 +3028,89 @@ section('unlink a panel account from an app user (bot + Mini App action)');
   ok(acts.ACTIONS['user.unlink_panel'].risk === 'destructive', 'unlink is destructive (Mini App asks, server refuses without confirm)');
   const none = await acts.runAction(env, 12345, 'user.unlink_panel', { userId: id2, panelId: 2 });
   ok(none.ok === false, 'unlinking an account the user does not have is refused');
+}
+
+section('remake a user\'s panel accounts under the Telegram name (bot button, asks first)');
+{
+  const A = { chat: { id: 12345 } };
+  let mid = 7600;
+  const tap = (data, text = 'menu') => tgWebhook({ callback_query: { id: 'rm-' + (mid++), data, message: { ...A, message_id: 961, text } } });
+  const since = (n) => fakes.tg.calls.slice(n);
+  const kbOf = (c) => ((c && c.body && c.body.reply_markup && c.body.reply_markup.inline_keyboard) || []).flat().map((x) => x.callback_data).filter(Boolean);
+  const ask = (n) => since(n).filter((c) => c.method === 'sendMessage' && /مطمئنی/.test(c.body.text)).pop();
+  const panelsOf = { 1: fakes.pg, 2: pg2, 3: pg3 };
+  const rowsOf = async (uid) => (await env.DB.prepare("SELECT panel_id, remote_username FROM panel_accounts WHERE user_id = ? AND applied != 'pending' ORDER BY panel_id").bind(uid).all()).results;
+  const remake = async (uid) => {
+    let n = fakes.tg.calls.length;
+    await tap(`m:urp:${uid}`);
+    const q = ask(n);
+    if (!q) return null;
+    n = fakes.tg.calls.length;
+    await tap(kbOf(q).find((d) => d.startsWith('cf:')), q.body.text);
+    return { q, out: since(n).filter((c) => c.method === 'editMessageText').map((c) => c.body.text).join('\n') };
+  };
+
+  // an account made while names were random (the user had no Telegram then)
+  const tok = await signup('rmk@example.com', { device: 'rmk-phone' });
+  await admin(`/grant rmk@example.com ${tenGb.id}`);
+  const id = await userId('rmk@example.com');
+  const before = await rowsOf(id);
+  ok(before.length >= 2 && before.every((r) => /^cg_[0-9a-f]{10,12}$/.test(r.remote_username)), 'starts with random names: ' + before.map((r) => r.remote_username));
+  const oldUsers = Object.fromEntries(before.map((r) => [r.panel_id, { ...panelsOf[r.panel_id].users[r.remote_username] }]));
+  // no Telegram yet: no button
+  let n = fakes.tg.calls.length;
+  await tap(`m:uac:${id}`);
+  ok(!kbOf(since(n).find((c) => c.method === 'editMessageText')).includes(`m:urp:${id}`), 'no remake button for a user without Telegram');
+  await env.DB.prepare('UPDATE users SET tg_id = 930001, tg_username = ?, tg_name = ? WHERE id = ?').bind('remake_me', 'Re Make', id).run();
+  // usage: 1 GB counted by the sync job, then 0.5 GB more the job has not read yet
+  const p1old = before[0].remote_username;
+  fakes.pg.users[p1old].used_traffic = 1 * GB;
+  await syncRounds(3);
+  fakes.pg.users[p1old].used_traffic = 1.5 * GB;
+  n = fakes.tg.calls.length;
+  await tap(`m:uac:${id}`);
+  ok(kbOf(since(n).find((c) => c.method === 'editMessageText')).includes(`m:urp:${id}`), 'the panels screen has the remake button');
+
+  const r = await remake(id);
+  ok(r && r.q.body.text.includes('برگشت ندارد') && r.q.body.text.includes('پاک می‌شود') && r.q.body.text.includes('حجم باقیمانده'), 'asks first and says what happens');
+  const after = await rowsOf(id);
+  ok(after.length === before.length && after.every((x) => x.remote_username === 'remake_me'), 'every account is now named after the @username: ' + after.map((x) => x.remote_username));
+  ok(before.every((x) => !panelsOf[x.panel_id].users[x.remote_username]) && before.every((x) => (panelsOf[x.panel_id].deleted || []).includes(x.remote_username)), 'the old accounts are deleted on the panels');
+  ok(after.every((x) => { const u = panelsOf[x.panel_id].users[x.remote_username]; return u && u.note === `Pleat #${id}` && u.status === 'active'; }), 'the new accounts carry the note and are on');
+  ok(after.every((x) => String(panelsOf[x.panel_id].users[x.remote_username].expire) === String(oldUsers[x.panel_id].expire)), 'same end date as before');
+  const nu1 = fakes.pg.users['remake_me'];
+  ok(nu1.data_limit > 0 && Math.abs(nu1.data_limit - (10 * GB - 1.5 * GB)) < 1024, 'panel 1 gets only what is left of the data (10 GB plan, 1.5 GB used): ' + nu1.data_limit);
+  ok(r.out.includes('remake_me') && r.out.includes('قبلی پاک شد'), 'the result names old and new: ' + r.out);
+  await syncRounds(2);
+  const sub = await env.DB.prepare('SELECT used_bytes FROM subscriptions WHERE user_id = ?').bind(id).first();
+  ok(Math.abs(sub.used_bytes - 1.5 * GB) < 1024, 'usage counted so far stays, incl. what the old account used after the last reading: ' + sub.used_bytes);
+  nu1.used_traffic = 0.25 * GB;
+  await syncRounds(3);
+  const sub2 = await env.DB.prepare('SELECT used_bytes FROM subscriptions WHERE user_id = ?').bind(id).first();
+  ok(Math.abs(sub2.used_bytes - 1.75 * GB) < 1024, 'the new account\'s usage adds on top: ' + sub2.used_bytes);
+  const srv = await call('GET', '/api/v1/vpn/servers', { token: tok });
+  const p1row = await env.DB.prepare('SELECT sub_path FROM panel_accounts WHERE user_id = ? AND panel_id = 1').bind(id).first();
+  ok(srv.status === 200 && srv.data.length > 0 && p1row.sub_path.includes(nu1.token), 'the app reads its servers through the new account\'s link: ' + srv.data.length);
+  ok(!!(await env.DB.prepare("SELECT 1 x FROM admin_audit WHERE action = 'user.remake_panels' AND target_id = ?").bind(String(id)).first()), 'in the admin log');
+
+  // a second run changes nothing: the accounts already carry the Telegram name
+  const made0 = Object.keys(fakes.pg.users).length;
+  const r2 = await remake(id);
+  ok(r2 && r2.out.includes('از قبل اسم تلگرامی دارد') && Object.keys(fakes.pg.users).length === made0, 'a second run skips accounts already named after Telegram');
+
+  // a panel refusing the delete: the old account is switched off instead and the admin is told
+  await signup('rmk2@example.com', { device: 'rmk2-phone' });
+  await admin(`/grant rmk2@example.com ${tenGb.id}`);
+  const id2 = await userId('rmk2@example.com');
+  const b2 = await rowsOf(id2);
+  await env.DB.prepare('UPDATE users SET tg_id = 930002, tg_username = NULL, tg_name = ? WHERE id = ?').bind('🔥', id2).run();
+  fakes.pg.failDelete = true;
+  const r3 = await remake(id2);
+  fakes.pg.failDelete = false;
+  const a2 = await rowsOf(id2);
+  ok(a2.every((x) => x.remote_username === '930002'), 'no username, no usable display name: the numeric Telegram id: ' + a2.map((x) => x.remote_username));
+  ok(fakes.pg.users[b2[0].remote_username] && fakes.pg.users[b2[0].remote_username].status === 'disabled' && r3.out.includes('خاموش شد'), 'a refused delete leaves the old account switched off and says so');
+  ok(!pg2.users[b2[1].remote_username], 'the other panel deleted its old one');
 }
 
 section('admin panel stage 2: users (card, subscription, wallet, devices, security, delete)');

@@ -369,7 +369,7 @@ const ACTION_RISK = {
   ug: 'read', ugp: 'money', pt: 'reversible', cd: 'destructive', sv: 'reversible', undo: 'reversible',
   // one user (stage 2)
   ud: 'reversible', ugb: 'reversible', upz: 'reversible', upn: 'reversible', ulo: 'reversible', ublk: 'reversible', uav: 'reversible',
-  udd: 'reversible', urs: 'money', uend: 'destructive', utg: 'destructive', udel: 'destructive', uux: 'destructive',
+  udd: 'reversible', urs: 'money', uend: 'destructive', utg: 'destructive', udel: 'destructive', uux: 'destructive', urp: 'destructive',
   // sales (stage 3)
   oap: 'money', orf: 'money', orr: 'money', orj: 'reversible', ocx: 'reversible', orc: 'read',
   pmv: 'reversible', pcp: 'reversible', pua: 'reversible', pdl: 'destructive',
@@ -437,6 +437,15 @@ async function userQuestion(env, route, id) {
   if (route === 'utg') {
     const tgOnly = /@telegram\.local$/.test(u.email);
     return ['u_tg', `تلگرام ${u.tg_username ? '@' + u.tg_username : u.tg_id} از حساب ${name} جدا شود؟${tgOnly ? '\n⚠️ این حساب ایمیل و رمز ندارد؛ بعد از جداکردن هیچ راهی برای ورود نمی‌ماند (مگر با «✏️ تغییر ایمیل» و «🔑 تغییر رمز»).' : ' بعد از آن فقط با ایمیل و رمز وارد می‌شود.'}`];
+  }
+  if (route === 'urp') {
+    const n = await first(env, "SELECT COUNT(*) n FROM panel_accounts WHERE user_id = ? AND applied != 'pending' AND desired != 'removed'", id);
+    return ['u_remake', [`اکانت‌های پنل ${name} با اسم تلگرامی دوباره ساخته شوند؟ (${fa(n ? n.n : 0)} اکانت)`,
+      '• روی هر پنل یک اکانت تازه با همان تاریخ انقضا و حجم باقیمانده ساخته می‌شود',
+      '• اپ Pleat از این به بعد با اکانت تازه کار می‌کند',
+      '• اکانت قبلی روی پنل پاک می‌شود؛ لینک اشتراک قبلی (مثلاً در v2rayNG) دیگر کار نمی‌کند',
+      '• روی پنل ۱ دستگاه‌های ثبت‌شده‌ی قبلی پاک می‌شوند',
+      '• اکانتی که از قبل اسم تلگرامی دارد دست نمی‌خورد. این کار برگشت ندارد.'].join('\n')];
   }
   if (route === 'udel') {
     return ['u_del', [`کاربر ${name} حذف شود؟ این کار برگشت ندارد:`, `• ${fa(u.pas)} اکانت پنلش روی پنل خاموش می‌شود (پاک نمی‌شود) و از این کاربر جدا می‌شود؛ بعداً می‌توانی آن‌ها را به کاربر دیگری وصل کنی`, '• از همه‌ی دستگاه‌ها خارج می‌شود و دیگر نمی‌تواند وارد شود',
@@ -711,7 +720,7 @@ export async function onMenu(env, cq) {
       '• بعدش می‌توانی همین اکانت را به کاربر دیگری وصل کنی'].join('\n'));
     return ack('');
   }
-  if (['urs', 'uend', 'utg', 'udel'].includes(route)) {
+  if (['urs', 'uend', 'utg', 'udel', 'urp'].includes(route)) {
     const q = await userQuestion(env, route, int(0));
     if (!q) return ack('کاربر پیدا نشد');
     await askConfirm(env, chatId, q[0], { user_id: int(0) }, q[1]);

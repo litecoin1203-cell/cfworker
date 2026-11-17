@@ -499,6 +499,17 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
   Accounts made before are **never renamed** automatically (Marzban's sub token depends on the name; every lookup and
   the link flow go by the stored `remote_username`); this includes the random `cg_<hex>` ones made between PR #96
   and this change, and the `cgtunnel_` test user. `usage_counters.online_at` keeps the panel's last-connection time.
+- **Remake under the Telegram name (2026-11-17, Ali's ask)**: no panel can rename an account (Marzban, PasarGuard and
+  Rebecca 1.8.1 `UserModify` have no username field; checked in their source). Bot › user › 🗂 پنل‌های کاربر ›
+  "🔁 ساخت دوباره با اسم تلگرامی" (Mini App: user › On each panel › Remake with Telegram name), asks first, action
+  `user.remake_panels` → `sync.remakeAccounts`: per panel, the old account is read; a new one is made under
+  `panelNames` with the old expiry, `data_limit − used_traffic`, the old HWID limit (off again if the old one was off);
+  one batch moves the `panel_accounts` row (name, id, `sub_path`, applied/desired limit) and the panel-1
+  `subscriptions.pg_username`, counts the old account's unread usage into `usage_counters` and restarts its reading at
+  0; then the old account is **deleted** on the panel (switched off if the delete is refused, and the bot says so).
+  Then `evaluate` + `pushPending`. Skipped: accounts already named `<base>` / `<base>_<n>`, `cgtunnel_` names, disabled
+  panels, users without Telegram. The app reads configs live through `sub_path`, so its next server list has the new
+  account; an old share link in v2rayNG stops working and panel 1 forgets its registered devices.
 - **Unlink (#55)**: bot › user › 🗂 پنل‌های کاربر › "✂️ جداکردن" removes the link row (optionally switching the
   account off) so the panel account can be linked to another user. Deleting a user switches every panel account
   off and frees all links.
@@ -1013,6 +1024,9 @@ Ali is on the **Free** plan (confirmed, no trial). Design every change around th
 **2026-11-16 — What's new.** Each update says what changed: the bundled `whats_new.json` feeds the release notes,
 the bot (show / rewrite / none before announcing) and Pleat (update sheet list, one-time Home card, Profile history).
 
+**2026-11-17 — Remake a user's panel accounts under the Telegram name.** Bot/Mini App button per user: new
+account per panel with the same end date and data left, the app moves to it, the old one is deleted on the panel.
+
 **2026-11-17 — Panel account names follow Telegram again.** Since PNL-07 (#96) new accounts got random `cg_<hex>`
 names; Ali wants @username > Telegram display name (Persian spelled in Latin) > numeric Telegram id on every panel,
 for purchase, app open and background creation. Notes stay free of personal data. Old accounts keep their names.
@@ -1128,7 +1142,8 @@ for purchase, app open and background creation. Notes stay free of personal data
 | — | 11-16 | What's new per update: lines in the update sheet, a one-time Home card, a history page; bot shows / edits them before announcing |
 | — | 11-16 | In-app update: Stop works at once; a broken way is skipped for the next address / the bridge; failure report names each way tried |
 | — | 11-16 | Bot welcome card for new people (design D): APK in Telegram by `file_id`, `/dl/pleat.apk`, GitHub, install help; `bot_users` (0024) |
-| — | 11-17 | Panel account names follow Telegram: @username > display name (Latin) > numeric id, on purchase, app open and background creation |
+| 115 | 11-17 | Panel account names follow Telegram: @username > display name (Latin) > numeric id, on purchase, app open and background creation |
+| — | 11-17 | Bot/Mini App "🔁 ساخت دوباره با اسم تلگرامی": remake a user's panel accounts under the Telegram name, old ones deleted |
 
 ---
 
@@ -1274,7 +1289,10 @@ Proven with the per-exit core log. Ali must fix these on the panels/nodes; do no
 
 - **Panel names from Telegram (2026-11-17)**: proven by Worker tests only (fake panels). After Deploy, a new user's
   account on panel 1 and panel 2 should carry their @username; not yet seen on the real panels. Accounts made between
-  #96 and this change are named `cg_<hex>`; renaming them is not done (needs Ali's yes and a per-panel rename test).
+  #96 and #115 are named `cg_<hex>`; the owner remakes them per user with the bot button (below).
+- **Remake button (2026-11-17)**: proven by Worker tests only (fake panels, incl. a refused delete). Unproven on the
+  real panels: that PasarGuard/Rebecca accept `DELETE /api/user/<name>` from this admin (panel 1 is reseller access),
+  and that Pleat picks up the new configs without a reconnect. Try it first on one test user.
 
 - **What's new phone test** (needs a version bump with the PR): update sheet shows the lines, Home card appears once
   after installing and goes away after SEE WHAT'S NEW or ✕, Profile › WHAT'S NEW timeline in Day and Night.
