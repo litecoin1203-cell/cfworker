@@ -281,7 +281,9 @@ export async function ensureAccount(env, user, panel, { expire, limit, hwid } = 
     const r = await pendingRow(env, user.id, panel.id, name, { expire, limit, now }).run();
     if (r.meta.changes) { rowId = r.meta.last_row_id; recorded = name; }
   };
-  const made = await createRemote(env, pg, user, { expire, limit, hwid, groups, name: pa ? pa.remote_username : null, intent });
+  user = await withTelegram(env, user);
+  const names = (await freeNames(env, panel.id, [user], prefixOf(env))).get(user.id);
+  const made = await createRemote(env, pg, user, { expire, limit, hwid, groups, name: pa ? pa.remote_username : null, names, intent });
   const done = rowId && (await run(env, `UPDATE panel_accounts SET remote_username = ?, remote_id = ?, sub_path = ?, desired = 'active', applied = 'active',
       desired_limit_bytes = ?, applied_limit_bytes = ?, desired_expire = ?, applied_expire = ?, dirty = 0, attempts = 0, last_error = NULL, applied_at = ? WHERE id = ?`,
   made.username, made.id, made.subPath, limit || 0, limit || 0, expire || null, expire || null, now, rowId)).meta.changes;
@@ -298,24 +300,79 @@ const pendingRow = (env, userId, panelId, name, { expire, limit, now }) => st(en
 // "Pleat #<id>" (and the older "Pleat · #<id> · ..."): the account on the panel was made by this Worker for this user
 export const ownedBy = (remote, userId) => !!remote && new RegExp(`(^|[^0-9])#${Number(userId)}([^0-9]|$)`).test(String(remote.note || ''));
 
-// PNL-07: panels can be third-party (reseller access: the panel's owner sees every account), so a new account's name
-// and note carry nothing about the person: the name is <prefix>_<random hex> and the note only "Pleat #<user id>"
-// (the bot maps an account back to its user through panel_accounts). Until 2026-11 names followed the Telegram
-// @username (PR #49) and notes held the Telegram id and email; those accounts keep their names (Marzban's
-// subscription token depends on the name, and every lookup goes by the stored remote_username). Rules of all three
-// panels: 3-32 characters of [a-zA-Z0-9_@.-], no two specials in a row (PasarGuard).
+// Account names (owner's rule, 2026-11-17; replaces PNL-07's random names): a new account is named after the person's
+// Telegram identity so the owner can find it on the panel: the @username, else the Telegram display name (Persian
+// letters spelled in Latin, emoji and other symbols dropped) when 3+ usable characters with a letter remain, else
+// the numeric Telegram id. Without Telegram (email only) it is <prefix>_<random hex>. The note stays "Pleat #<user
+// id>" (no Telegram id or email; the bot maps an account back to its user through panel_accounts). A name is fixed
+// at creation: a later Telegram change does not rename it (Marzban's subscription token depends on the name, and
+// every lookup goes by the stored remote_username). Rules of all three panels (Marzban/Rebecca USERNAME_REGEXP,
+// PasarGuard): 3-32 characters; only [a-z0-9_] are used here, never a leading/trailing or doubled "_".
+const FA_LATIN = {
+  'ا': 'a', 'آ': 'a', 'أ': 'a', 'إ': 'e', 'ٱ': 'a', 'ب': 'b', 'پ': 'p', 'ت': 't', 'ث': 's', 'ج': 'j', 'چ': 'ch', 'ح': 'h',
+  'خ': 'kh', 'د': 'd', 'ذ': 'z', 'ر': 'r', 'ز': 'z', 'ژ': 'zh', 'س': 's', 'ش': 'sh', 'ص': 's', 'ض': 'z', 'ط': 't', 'ظ': 'z',
+  'ع': 'a', 'غ': 'gh', 'ف': 'f', 'ق': 'gh', 'ک': 'k', 'ك': 'k', 'گ': 'g', 'ل': 'l', 'م': 'm', 'ن': 'n', 'و': 'v', 'ؤ': 'o',
+  'ه': 'h', 'ة': 'h', 'ۀ': 'h', 'ی': 'i', 'ي': 'i', 'ى': 'a', 'ئ': 'i', 'ء': '',
+};
+const NAME_MAX = 32;
+const tidy = (x) => String(x).replace(/[^a-z0-9]+/g, '_').replace(/_+/g, '_').replace(/^_+|_+$/g, '').slice(0, NAME_MAX).replace(/_+$/, '');
+// Latin letters and digits of a free-text name: accents dropped, Persian/Arabic letters and digits spelled in Latin,
+// zero-width joiners and tatweel removed, anything else (emoji, symbols, other scripts) becomes a separator.
+export function latinName(text) {
+  const s = String(text || '').normalize('NFKD').replace(/[\u0300-\u036f\u064b-\u065f\u0670\u200b-\u200f\u0640]/g, '')
+    .replace(/[\u06f0-\u06f9]/g, (d) => String(d.charCodeAt(0) - 0x06f0)).replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660));
+  return tidy([...s].map((ch) => (ch in FA_LATIN ? FA_LATIN[ch] : ch)).join('').toLowerCase());
+}
+// The readable base of a user's account names, or null (no Telegram): @username > display name > numeric id.
+export function panelNameBase(user) {
+  const un = tidy(String(user.tg_username || '').toLowerCase());
+  if (un.length >= 3) return un;
+  const dn = latinName(user.tg_name);
+  if (dn.length >= 3 && /[a-z]/.test(dn)) return dn;
+  if (user.tg_id) return String(user.tg_id).replace(/[^0-9]/g, '').slice(0, NAME_MAX) || null;
+  return null;
+}
+const fit = (base, suffix) => `${base.slice(0, NAME_MAX - suffix.length).replace(/_+$/, '')}${suffix}`;
+// The names tried in order: the base, then with the user id, then with a random tail (a name the panel or another
+// row already has moves on to the next). Without Telegram: three random <prefix>_<hex> names.
 export function panelNames(user, prefix = 'cg') {
-  return [`${prefix}_${randomHex(5)}`, `${prefix}_${randomHex(5)}`, `${prefix}_${randomHex(6)}`].map((n) => n.slice(0, 32));
+  const base = panelNameBase(user);
+  if (!base) return [`${prefix}_${randomHex(5)}`, `${prefix}_${randomHex(5)}`, `${prefix}_${randomHex(6)}`].map((n) => n.slice(0, NAME_MAX));
+  return [...new Set([base, fit(base, `_${user.id}`), fit(base, `_${randomHex(2)}`), fit(base, `_${randomHex(3)}`)])];
 }
 
 const prefixOf = (env) => String(env.PASARGUARD_USERNAME_PREFIX || 'cg').toLowerCase().replace(/[^a-z0-9_]/g, '').replace(/_+$/, '') || 'cg';
 
+// Candidate names for several users on one panel, without a name another account row on that panel already holds
+// (UNIQUE (panel_id, remote_username) would silently drop the new row) or one given to an earlier user of this
+// round. One D1 read for all of them. -> Map(user id -> names)
+async function freeNames(env, panelId, users, prefix) {
+  const cands = new Map(users.map((u) => [u.id, panelNames(u, prefix)]));
+  const all_ = [...new Set([...cands.values()].flat())];
+  const taken = new Set(all_.length ? (await all(env, 'SELECT remote_username FROM panel_accounts WHERE panel_id = ? AND remote_username IN (SELECT value FROM json_each(?))',
+    panelId, JSON.stringify(all_))).map((r) => r.remote_username) : []);
+  for (const [id, names] of cands) {
+    let left = names.filter((n) => !taken.has(n));
+    if (!left.length) left = [`${prefix}_${randomHex(5)}`, `${prefix}_${randomHex(6)}`];
+    for (const n of left) taken.add(n);
+    cands.set(id, left);
+  }
+  return cands;
+}
+
+// a user object from a query may lack the Telegram fields (older callers): read them once
+async function withTelegram(env, user) {
+  if (user.tg_id !== undefined && user.tg_name !== undefined) return user;
+  const row = await first(env, 'SELECT tg_id, tg_username, tg_name FROM users WHERE id = ?', user.id);
+  return { ...user, tg_id: row ? row.tg_id : null, tg_username: row ? row.tg_username : null, tg_name: row ? row.tg_name : null };
+}
+
 // Make the account on the panel; a name the panel says is taken (409) moves on to the next one. {username, id, subPath}
 // intent(name) runs before each try (PNL-02: the name is recorded before the panel is asked). A taken name whose
 // account carries this user's note was made by an earlier try that never reached D1: it is adopted, not doubled.
-async function createRemote(env, pg, user, { expire, limit, hwid, groups, name, intent }) {
-  const names = panelNames(user, prefixOf(env));
-  if (name) names.unshift(name);
+async function createRemote(env, pg, user, { expire, limit, hwid, groups, name, names: given, intent }) {
+  const base = given || panelNames(user, prefixOf(env));
+  const names = name ? [name, ...base.filter((n) => n !== name)] : [...base];
   let created = null, username = '';
   for (let attempt = 0; attempt < names.length && !created; attempt++) {
     username = names[attempt];
@@ -580,11 +637,14 @@ export async function createError(env, panelId) {
   catch (e) { return null; }
 }
 
+// the user of a subscriptions-join-users row, as the account-naming code wants it
+const whoOf = (s) => ({ id: s.user_id, email: s.email, tg_id: s.tg_id, tg_username: s.tg_username, tg_name: s.tg_name ?? null });
+
 // One missing account for this subscription on this panel, with what is left of the plan. true = made.
 async function createFor(env, s, panel) {
   const left = s.data_limit_bytes > 0 ? Math.max(1, s.data_limit_bytes - s.used_bytes) : 0;
   try {
-    await ensureAccount(env, { id: s.user_id, email: s.email, tg_id: s.tg_id, tg_username: s.tg_username }, panel, { expire: s.expires_at, limit: left });
+    await ensureAccount(env, whoOf(s), panel, { expire: s.expires_at, limit: left });
   } catch (e) {
     await recordHealth(env, panel.id, false);
     await noteCreateError(env, panel, e);
@@ -603,7 +663,7 @@ async function createMissing(env, allPanels, adapter, max = CREATE_PER_RUN) {
   for (const panel of panels) {
     if (made >= max) break;
     // a user whose only row here is a pending intent (PNL-02) is still missing: it is tried again under that name
-    const rows = await all(env, `SELECT s.*, u.email, u.tg_id, u.tg_username,
+    const rows = await all(env, `SELECT s.*, u.email, u.tg_id, u.tg_username, u.tg_name,
         (SELECT a.remote_username FROM panel_accounts a WHERE a.user_id = s.user_id AND a.panel_id = ? AND a.applied = 'pending') AS pending_name
       FROM subscriptions s JOIN users u ON u.id = s.user_id
       WHERE s.state = 'active' AND u.is_active = 1 AND s.period_id IS NOT NULL
@@ -618,7 +678,8 @@ async function createMissing(env, allPanels, adapter, max = CREATE_PER_RUN) {
     // PNL-02: the intents of this round in one batch, before any of them is created on the panel
     const fresh = want.filter((s) => !s.pending_name);
     if (fresh.length) {
-      for (const s of fresh) s.pending_name = panelNames(s, prefixOf(env))[0];
+      const names = await freeNames(env, panel.id, fresh.map(whoOf), prefixOf(env));
+      for (const s of fresh) { s.names = names.get(s.user_id); s.pending_name = s.names[0]; }
       await batch(env, fresh.map((s) => pendingRow(env, s.user_id, panel.id, s.pending_name, { expire: s.expires_at, limit: leftOf(s), now })));
     }
     try {
@@ -630,7 +691,7 @@ async function createMissing(env, allPanels, adapter, max = CREATE_PER_RUN) {
           if (name === s.pending_name) return;
           try { await run(env, "UPDATE panel_accounts SET remote_username = ? WHERE user_id = ? AND panel_id = ? AND applied = 'pending'", name, s.user_id, panel.id); s.pending_name = name; } catch (e) { /* kept */ }
         };
-        const acct = await createRemote(env, pg, { id: s.user_id, email: s.email, tg_id: s.tg_id, tg_username: s.tg_username }, { expire: s.expires_at, limit, groups, name: s.pending_name, intent });
+        const acct = await createRemote(env, pg, whoOf(s), { expire: s.expires_at, limit, groups, name: s.pending_name, names: s.names, intent });
         stmts.push(insertAccount(env, s.user_id, panel.id, acct, { expire: s.expires_at, limit, now }));
         inserted++;
       }
@@ -650,7 +711,7 @@ async function createMissing(env, allPanels, adapter, max = CREATE_PER_RUN) {
 // configs are in this very answer. At most one panel per request, and never a panel that is unhealthy or
 // refused a create in the last minutes (the app must not wait on a broken panel).
 export async function ensureMissingFor(env, userId) {
-  const s = await first(env, `SELECT s.*, u.email, u.tg_id, u.tg_username FROM subscriptions s JOIN users u ON u.id = s.user_id
+  const s = await first(env, `SELECT s.*, u.email, u.tg_id, u.tg_username, u.tg_name FROM subscriptions s JOIN users u ON u.id = s.user_id
     WHERE s.user_id = ? AND s.state = 'active' AND s.period_id IS NOT NULL`, userId);
   if (!s || (s.expires_at && s.expires_at <= nowSec())) return false;
   const have = new Set((await all(env, "SELECT panel_id FROM panel_accounts WHERE user_id = ? AND applied != 'pending'", userId)).map((r) => r.panel_id));
