@@ -50,7 +50,7 @@ const CAUSE_FA = {
   download: 'دانلود', verify: 'بررسی فایل', install: 'نصب',
 };
 // a route exit's state in a "none answered" report, beside CAUSE_FA's failure causes
-const WHY_FA = { ok: 'جواب داد', untested: 'تست نشده' };
+const WHY_FA = { ok: 'جواب داد', untested: 'تست نشده', silent: 'وصل بود، بعد جواب نداد' };
 const DETAIL_FA = {
   why: 'وضعیت هر سرور', age: 'ثانیه از آخرین تست', exits: 'سرورهای این مسیر', country: 'کشور',
   skipped: 'کنار گذاشته (برای بیشتر کاربران این اپراتور وصل نمی‌شود)',
@@ -60,7 +60,7 @@ const DETAIL_FA = {
   sessions: 'جلسه', ok: 'موفق', fail: 'ناموفق', minutes: 'دقیقه‌ی وصل', moved: 'شبکه عوض شد', status: 'کد', what: 'توضیح اندروید',
   // a native crash (Pleat 1.2.38+): what the crash itself said, and what the tunnel was doing
   sig: 'سیگنال', go: 'panic هسته (Go)', abort: 'پیام abort', cause: 'علت', thread: 'رشته (thread)', lib: 'کتابخانه', frames: 'فریم‌ها',
-  addr: 'نشانی‌ها در کتابخانه', logs: 'لاگ داخل tombstone',
+  addr: 'نشانی‌ها در کتابخانه', near: 'نشانی‌های دیگر روی پشته', logs: 'لاگ داخل tombstone',
   op: 'تانل در حال', up_s: 'ثانیه وصل بود', tomb: 'tombstone اندروید', stderr: 'stderr هسته', pss: 'حافظه‌ی اپ (MB)', earlier: 'کرش قبلی، دوباره خوانده شد',
 };
 // ApplicationExitInfo.REASON_* (Android 11+): why Android says the process ended
@@ -182,7 +182,7 @@ export function cleanDetail(d) {
     if (typeof v === 'number' && Number.isFinite(v)) out[k] = Math.round(v * 100) / 100;
     else if (typeof v === 'boolean') out[k] = v;
     else if (typeof v === 'string') {
-      const t = k === 'frames' || k === 'addr' ? scrubCode(v, 400) : scrub(v, k === 'trace' ? 400 : k === 'go' ? 300 : 160);
+      const t = k === 'frames' || k === 'addr' || k === 'near' ? scrubCode(v, 400) : scrub(v, k === 'trace' ? 400 : k === 'go' ? 300 : 160);
       if (t) out[k] = t;
     }
     else if (Array.isArray(v)) out[k] = v.slice(0, 6).map((x) => (x && typeof x === 'object' ? cleanFlat(x) : scrub(x, 32)));
@@ -588,8 +588,9 @@ export async function screenEvent(env, fp) {
   const item = (x) => {
     if (!x || typeof x !== 'object') return x;
     if (x.k) {
-      const rest = Object.entries(x).filter(([k]) => k !== 'k').map(([k, y]) => (k === 'c' ? CAUSE_FA[y] || WHY_FA[y] || y : `${k}=${y}`));
-      return [names[x.k] || x.k, ...rest].join(rest.length ? ': ' : '');
+      // c = cause in words, e = the core's own words (Pleat 1.2.55+), others as key=value
+      const rest = Object.entries(x).filter(([k]) => k !== 'k').map(([k, y]) => (k === 'c' ? CAUSE_FA[y] || WHY_FA[y] || y : k === 'e' ? `(${y})` : `${k}=${y}`));
+      return rest.length ? `${names[x.k] || x.k}: ${rest.join(' ')}` : names[x.k] || x.k;
     }
     return Object.entries(x).map(([k, y]) => `${k}=${y}`).join(' ');
   };

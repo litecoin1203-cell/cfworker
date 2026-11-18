@@ -132,4 +132,6 @@ test('a "no server connected" report names each server and why', async () => {
   assert.equal(L.detailValue('tried', ['kde1'], {}), 'kde1');
   // 1.2.50+ sends { k }, 1.2.52+ also the try's own failure
   assert.equal(L.detailValue('tried', [{ k: 'kde1', c: 'config' }, { k: 'kz' }], {}, names), 'DE1: unknown setting, kz');
+  assert.equal(L.detailValue('tried', [{ k: 'kde1', c: 'silent' }, { k: 'kz', c: 'path', e: 'invalid status: 403 Forbidden' }], {}, names),
+    'DE1: was up, then stopped answering, kz: path setting (invalid status: 403 Forbidden)');
 });

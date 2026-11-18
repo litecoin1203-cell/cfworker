@@ -270,7 +270,21 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
           ? (await tunnel.startError()) ?? e.failure
           : e.failure;
       final cause = diagnose(why).cause.name;
-      if (type == 'connect_fail') _triedWhy[e.id] = cause;
+      // for the "none answered" report: why this try ended, and the core's
+      // own words (their last part, which names the root cause)
+      if (type == 'connect_fail' || type == 'silent') {
+        _triedWhy[e.id] = type == 'silent' ? 'silent' : cause;
+        // "app/x: failed > infra/conf: The feature y has been removed" →
+        // "The feature y has been removed"; reports keep 32 characters
+        final root = (why ?? '')
+            .split(' > ')
+            .last
+            .trim()
+            .replaceFirst(RegExp(r'^[\w.-]+(/[\w.-]+)+: '), '');
+        if (type == 'connect_fail' && root.isNotEmpty) {
+          _triedErr[e.id] = root.length > 32 ? root.substring(0, 32) : root;
+        }
+      }
       health.record(
         type,
         k: e.id,
@@ -330,16 +344,18 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     // reason is read from the service just before.
     final noted = _failNoted;
     final why = _triedWhy;
+    final err = _triedErr;
     unawaited(() async {
       if (noted != null) await noted.catchError((_) {});
       health.record(
         'no_exit',
         c: routeMode.name,
         d: {
-          ...d,
+          // first: the Worker drops the last keys of a report that is too big
           'tried': [
-            for (final id in tried) {'k': id, 'c': ?why[id]},
+            for (final id in tried) {'k': id, 'c': ?why[id], 'e': ?err[id]},
           ],
+          ...d,
         },
       );
     }());
@@ -842,6 +858,9 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
 
   /// Why each exit in [_triedAll] failed (a [Cause] name), for the report.
   final Map<String, String> _triedWhy = {};
+
+  /// The core's own words for each failed try (its last part), for the report.
+  final Map<String, String> _triedErr = {};
   Future<void>? _failNoted;
   bool _resynced = false;
   int _misses = 0;
@@ -2689,12 +2708,29 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     // exits already tried may answer the test again: test until enough
     // others answered
     if (!_pingsFresh) await testAll(enough: 3 + _triedAll.length);
-    final ok =
+    List<Exit> ok() =>
         routePool
-            .where((e) => (e.measured ?? 0) > 0 && !_triedAll.contains(e.id))
+            .where((e) => _answeredNow(e) && !_triedAll.contains(e.id))
             .toList()
           ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
-    return ok.isEmpty ? null : ok.first;
+    var list = ok();
+    // the run was recent, but these exits' own results are older (a test
+    // that stopped early, or results kept from before): test them now
+    if (list.isEmpty && _triedAll.isNotEmpty) {
+      await testAll(enough: 3 + _triedAll.length);
+      list = ok();
+    }
+    return list.isEmpty ? null : list.first;
+  }
+
+  /// [e] answered a test on this network in the last 10 minutes. A result
+  /// kept from earlier (hours ago, before the exit or the network changed)
+  /// is no reason to try it.
+  bool _answeredNow(Exit e) {
+    final at = e.measuredAt;
+    return (e.measured ?? 0) > 0 &&
+        at != null &&
+        DateTime.now().difference(at) < const Duration(minutes: 10);
   }
 
   /// Real connect: re-checks the plan and registers this phone with
@@ -2725,6 +2761,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _tried.clear();
       _triedAll.clear();
       _triedWhy.clear();
+      _triedErr.clear();
       _failNoted = null;
       _resynced = false;
       _attemptAt = DateTime.now();
@@ -2938,7 +2975,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
             .where(
               (e) =>
                   e.id != target.id &&
-                  (e.measured ?? 0) > 0 &&
+                  _answeredNow(e) &&
                   !_triedAll.contains(e.id),
             )
             .toList()
@@ -2967,7 +3004,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
     if (_tried.length < 3 && _pingsFresh) {
       final next =
           routePool
-              .where((e) => !_triedAll.contains(e.id) && (e.measured ?? 0) > 0)
+              .where((e) => !_triedAll.contains(e.id) && _answeredNow(e))
               .toList()
             ..sort((a, b) => b.smartScore.compareTo(a.smartScore));
       if (next.isNotEmpty) {
@@ -3191,6 +3228,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
         _tried.clear();
         _triedAll.clear();
         _triedWhy.clear();
+        _triedErr.clear();
         _resynced = false;
         if (lockAsk != null) {
           lockAsk = null;
@@ -3289,6 +3327,7 @@ class AppState extends ChangeNotifier with WidgetsBindingObserver {
       _tried.clear();
       _triedAll.clear();
       _triedWhy.clear();
+      _triedErr.clear();
       final up = exitId;
       if (up != null) {
         _tried.add(up);

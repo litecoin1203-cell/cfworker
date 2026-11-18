@@ -195,7 +195,9 @@ object CrashNotes {
                     "${base(f.file)} $name"
                 }
             }
-            addresses(crashed, maps).takeIf { it.isNotEmpty() }?.let { out["addr"] = it }
+            val addr = addresses(crashed, maps)
+            if (addr.isNotEmpty()) out["addr"] = addr
+            near(crashed, maps, addr).takeIf { it.isNotEmpty() }?.let { out["near"] = it }
         }
         // whether this tombstone carried the process's log at all: without
         // one, "no Go line in it" says nothing
@@ -254,6 +256,40 @@ object CrashNotes {
             }
         }
         return out.take(8).joinToString(" < ")
+    }
+
+    /**
+     * Other words in the stack memory Android copied that point into the
+     * crashing library's code, as offsets, in stack order: where the frame
+     * pointer chain stops (the copy is only a few hundred bytes around each
+     * register), a caller's return address may still sit in a copy. Some are
+     * not return addresses (function pointers); offline, a return address is
+     * the one whose previous instruction calls the function below it.
+     */
+    private fun near(t: Thread, maps: List<Mapping>, addr: String): String {
+        val top = t.frames.firstOrNull() ?: return ""
+        if (top.pc == 0L) return ""
+        val home = maps.firstOrNull { top.pc >= it.begin && top.pc < it.end } ?: return ""
+        return codeWords(t.dumps.map { it.begin to it.mem }, home.begin, home.end, top.pc - top.relPc, addr)
+    }
+
+    /** Words in [dumps] within [begin, end), as "+0x" offsets (less [shift]), not already in [skip]; at most 12. */
+    internal fun codeWords(dumps: List<Pair<Long, ByteArray>>, begin: Long, end: Long, shift: Long, skip: String): String {
+        val seen = skip.split(" < ").map { it.substringAfter("+") }.toMutableSet()
+        val out = mutableListOf<String>()
+        for ((at, mem) in dumps.sortedBy { it.first }) {
+            var i = ((8 - (at % 8)) % 8).toInt() // aligned words only
+            while (i + 8 <= mem.size && out.size < 12) {
+                var v = 0L
+                for (b in 7 downTo 0) v = (v shl 8) or (mem[i + b].toLong() and 0xff)
+                if (v in begin until end) {
+                    val off = "0x" + java.lang.Long.toHexString(v - shift)
+                    if (seen.add(off)) out.add("+$off")
+                }
+                i += 8
+            }
+        }
+        return out.joinToString(" ")
     }
 
     private fun mappingOf(p: Pb): Mapping? {
