@@ -53,6 +53,26 @@ class CrashNotesTest {
     }
 
     @Test
+    fun codeWordsInTheStackCopyAsOffsets() {
+        val base = 0x7a00000000L
+        fun words(vararg v: Long): ByteArray {
+            val b = ByteArray(v.size * 8)
+            v.forEachIndexed { i, x -> for (k in 0 until 8) b[i * 8 + k] = (x ushr (8 * k)).toByte() }
+            return b
+        }
+        val dumps = listOf(
+            0x7ff0002000L to words(42L, base + 0x103c0a8, base + 0x10b30f8, 0x7fff0000L),
+            0x7ff0001000L to words(base + 0x2a00010, base + 0x1063a10),
+        )
+        // lower addresses first; skips what the chain already named; only the library's code
+        assertEquals(
+            "+0x2a00010 +0x103c0a8",
+            CrashNotes.codeWords(dumps, base + 0x1000000, base + 0x3000000, base, "libgojni.so+0x10b30f8 < +0x1063a10"),
+        )
+        assertEquals("", CrashNotes.codeWords(emptyList(), base, base + 1, base, ""))
+    }
+
+    @Test
     fun cutOrJunkInputNeverThrows() {
         val bytes = read("tombstone-fdsan.pb")
         val cut = CrashNotes.tombstone(bytes.copyOf(bytes.size / 3))

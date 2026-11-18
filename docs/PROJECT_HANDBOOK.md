@@ -588,7 +588,7 @@ Release-audit payment fixes (PAY-01..PAY-04, approved by Ali 2026-11-14):
 
 ## 10. Pleat, the Flutter app
 
-Version on main: **1.2.54+57** (`flutter_vpn/pubspec.yaml`; a Worker test fails when this line and pubspec differ, so
+Version on main: **1.2.55+58** (`flutter_vpn/pubspec.yaml`; a Worker test fails when this line and pubspec differ, so
 update it in the same PR as every version bump). 1.2.53 is the smart-connect fix ("only exits that answered here").
 **Every release must bump the build number** (the `+N`), or the in-app updater won't see it as newer.
 **Every release also adds its What's new entry** to `flutter_vpn/assets/whats_new/whats_new.json` (short English
@@ -661,6 +661,9 @@ Flutter 3.47.8, Java 17, NDK 29, minSdk 24. Core: `libv2ray.aar` from AndroidLib
    not a backup, not a widget spare — unless this phone reached it in its own last test; a tap on it still connects.
    Before 1.2.53 an untested exit could outrank one that answered (score = isp × 0.55 with no local result), the
    strong pick ignored a local failure, and the resync retry tried the same failed exits again (6 tries, 3 exits).
+   **1.2.55:** "answered here" means answered in the **last 10 minutes** (`_answeredNow`: `measuredAt` fresh). A
+   result kept from earlier (the network cache, a test that stopped early) is no reason to pick an exit; when the
+   only answers are old, the exits are tested again first.
 6. Iran split (now Home › Route › Split route): Iranian sites/IPs direct (geo files from Loyalsoldier, fetched in
    CI), plus the person's own sites and chosen Android apps (`addDisallowedApplication`). QUIC blocked.
 
@@ -1031,6 +1034,16 @@ account per panel with the same end date and data left, the app moves to it, the
 names; Ali wants @username > Telegram display name (Persian spelled in Latin) > numeric Telegram id on every panel,
 for purchase, app open and background creation. Notes stay free of personal data. Old accounts keep their names.
 
+**2026-11-18 — The native crash is a Go panic; "no server" tries name the core's words.**
+- The 1.2.50+ crash offsets map (offline, `.gopclntab` of the pinned `libv2ray.aar`, checksum matched) to
+  `runtime.raise < dieFromSignal < fatalpanic < gopanic < closechan` (call at `chan.go:425`): the Xray core panicked
+  with **"close of closed channel"**. Which Xray code closed it twice is not in the tombstone (the frame chain leaves
+  the copied stack). Pleat 1.2.55: the Go crash line (which names those functions) is kept per process (`go_pids`),
+  stderr's process lists hold 32 (was 8, so a crash read days later lost its process), and `near` lists other
+  library addresses found in the copied stack.
+- 1.2.55 smart connect: only answers from the last 10 minutes count; `no_exit` `tried` entries carry `silent` (a live
+  exit that went quiet) and `e` (the core's own words, last part, 32 chars); `tried` goes first in the report.
+
 **2026-11-15 — "No server connected" with servers that answered.**
 - Pleat 1.2.53: smart connect offers only exits that answered here after a failure, never retries a failed exit in
   the same connect, never offers one that fails for nearly everyone on the operator; `no_exit` says why each try
@@ -1144,6 +1157,7 @@ for purchase, app open and background creation. Notes stay free of personal data
 | — | 11-16 | Bot welcome card for new people (design D): APK in Telegram by `file_id`, `/dl/pleat.apk`, GitHub, install help; `bot_users` (0024) |
 | 115 | 11-17 | Panel account names follow Telegram: @username > display name (Latin) > numeric id, on purchase, app open and background creation |
 | — | 11-17 | Bot/Mini App "🔁 ساخت دوباره با اسم تلگرامی": remake a user's panel accounts under the Telegram name, old ones deleted |
+| — | 11-18 | Native crash = Go "close of closed channel" in the core; Go line kept per process, `near` stack addresses; smart connect uses only answers from the last 10 min; `tried` carries `silent` / the core's words (1.2.55) |
 
 ---
 
@@ -1355,6 +1369,15 @@ whether the stderr capture covered that process (before 1.2.50 it took any proce
 mean main: Go's threads inherit the name of the thread that loaded the core. 1.2.50 sends the offsets (`addr`)
 and the sender, which name the Go function.
 
+2026-11-17 (4 users, 1.2.39–1.2.51, Samsung A35 / S24 FE / Xiaomi, an "earlier" crash read again): `addr`
+`libgojni.so+0x10b30f8 < +0x108c07c < +0x10715a0 < +0x10aa6ac < +0x103c0a4` = `runtime.raise < dieFromSignal <
+fatalpanic < gopanic < closechan`; the call to gopanic in closechan is `chan.go:425` (go1.26.4), **"close of closed
+channel"**. Proven: the lib is the pinned one (SHA-256 matches), and the mapping uses its own symbol table. Not
+proven: which Xray component (the chain stops at closechan; the copied stack ends there). Next: the Go crash line
+(1.2.55 keeps it per process) or `near` addresses (offline: the return address whose previous instruction is
+`BL runtime.closechan`). Note: every core in Pleat (the tunnel and the exit tests) runs in the one app process, so a
+panic in a test core also ends the tunnel.
+
 ### Open investigation: "No server connected · DE" (2026-11-12)
 17 reports in 12 h from the same phone model (two accounts), route Auto + country DE, 5 DE exits, sometimes
 nothing in "tried". Proven from the code: "tried" was emptied by the resync retry (it cleared the list before trying
@@ -1372,6 +1395,12 @@ backup in 1.2.50, `allowInsecure` or a removed transport, would fail the whole s
 1.2.53 fixes the choice (§10 item 5) and each `tried` entry carries that try's own failure (`c`, from the core's
 start error), plus `skipped` = exits left out for failing for nearly everyone. DE 1 "path" = the server answered
 40x to the test: a path / host / XHTTP-mode mismatch on the server.
+
+2026-11-17 (1.2.54, 4 users): `tried` FI 5 (no cause) | FI 3: path | GB 5: path. FI 5 is the exit that was up and
+went quiet (1.2.53 recorded no cause for `silent`); FI 3 and GB 5 then failed the start check with a 40x. Careful:
+"path" also covers the start check's own request getting `invalid status: 403/404` from the test site through a
+working exit, not only a server path mismatch. A possible cause in 1.2.53: an exit's "answered" result could be
+hours old (kept in the network cache). 1.2.55 sends the core's words (`e`) to tell these apart.
 
 ### Telegram Mini App (user stage 1 + full admin panel built, PRs #50–#52)
 - Stage 0 result (Ali's phone, 2026-11-08): with only Telegram's proxy the Mini App did **not** open; it opens with a

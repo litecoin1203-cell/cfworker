@@ -160,7 +160,7 @@ object Health {
         val writer = prefs(app).getInt("se_pid", -1)
         try {
             if (file.length() == 0L && writer > 0) {
-                ring(app, "se_files", JSONObject().put("at", file.lastModified()).put("tail", "").put("pid", writer).put("size", 0))
+                ring(app, "se_files", JSONObject().put("at", file.lastModified()).put("tail", "").put("pid", writer).put("size", 0), SE_LOG)
             } else if (file.length() > 0) {
                 val text = file.inputStream().use { input ->
                     val buf = ByteArray(minOf(file.length(), STDERR_CAP).toInt())
@@ -177,11 +177,14 @@ object Health {
                         .putString("go_crash", blank(line).take(300))
                         .putLong("go_crash_at", file.lastModified())
                         .commit()
+                    // also by process: a crash Android hands over again later
+                    // (or after other crashes) still finds its own Go line
+                    ring(app, "go_pids", JSONObject().put("pid", writer).put("at", file.lastModified()).put("line", blank(line).take(300)), SE_LOG)
                 }
                 // what the last process left, for a crash that had no Go line:
                 // written as it died (something else) or quiet (not a Go panic)
                 val tail = text.lineSequence().map { it.trim() }.lastOrNull { it.isNotEmpty() }.orEmpty()
-                ring(app, "se_files", JSONObject().put("at", file.lastModified()).put("tail", blank(tail).take(120)).put("pid", writer).put("size", text.length))
+                ring(app, "se_files", JSONObject().put("at", file.lastModified()).put("tail", blank(tail).take(120)).put("pid", writer).put("size", text.length), SE_LOG)
             }
         } catch (e: Exception) {
             // nothing to learn from it
@@ -198,11 +201,11 @@ object Health {
                 Os.close(fd)
             }
             prefs(app).edit().putInt("se_pid", android.os.Process.myPid()).commit()
-            ring(app, "se_caps", JSONObject().put("at", System.currentTimeMillis()).put("cap", "ok").put("pid", android.os.Process.myPid()))
+            ring(app, "se_caps", JSONObject().put("at", System.currentTimeMillis()).put("cap", "ok").put("pid", android.os.Process.myPid()), SE_LOG)
         } catch (e: Exception) {
             // stderr stays where it was; only Go's crash line is missed
             prefs(app).edit().putInt("se_pid", -1).commit()
-            ring(app, "se_caps", JSONObject().put("at", System.currentTimeMillis()).put("cap", "fail ${e.javaClass.simpleName}").put("pid", android.os.Process.myPid()))
+            ring(app, "se_caps", JSONObject().put("at", System.currentTimeMillis()).put("cap", "fail ${e.javaClass.simpleName}").put("pid", android.os.Process.myPid()), SE_LOG)
         }
     }
 
@@ -211,12 +214,12 @@ object Health {
      * Pleat's process again more than once before the app reads the report.
      */
     @Synchronized
-    private fun ring(app: Context, key: String, one: JSONObject) {
+    private fun ring(app: Context, key: String, one: JSONObject, size: Int = STATE_LOG) {
         try {
             val p = prefs(app)
             val log = try { JSONArray(p.getString(key, "[]")) } catch (e: Exception) { JSONArray() }
             log.put(one)
-            while (log.length() > STATE_LOG) log.remove(0)
+            while (log.length() > size) log.remove(0)
             p.edit().putString(key, log.toString()).commit()
         } catch (e: Exception) {}
     }
@@ -269,6 +272,14 @@ object Health {
      * state is the last one noted before it.
      */
     private const val STATE_LOG = 8
+
+    /**
+     * Processes remembered for the core's stderr. Android restarts the VPN
+     * service's process often (always-on, the phone's cleaner), and a crash
+     * may be read days later (as an "earlier" one): with 8, its process had
+     * often already left the list ("not captured in that process").
+     */
+    private const val SE_LOG = 32
 
     private val KEY = Regex("^[a-z0-9]{6,16}$")
     private val PROTO = Regex("^[a-z0-9/ ,+-]{1,80}$")
@@ -533,7 +544,7 @@ object Health {
                     for ((k, v) in notes) {
                         d[k] = when (k) {
                             "frames" -> blankCode(v).take(400)
-                            "addr" -> blankCode(v).take(200)
+                            "addr", "near" -> blankCode(v).take(200)
                             "go" -> blank(v).take(300)
                             "thread", "lib" -> blankCode(v).take(40)
                             else -> blank(v).take(160)
@@ -547,8 +558,12 @@ object Health {
         val p = prefs(app)
         val go = p.getString("go_crash", null)
         val at = p.getLong("go_crash_at", 0L)
-        // the stderr file was last written as the process died
-        if (go != null && Math.abs(at - info.timestamp) < 120_000L) {
+        // that process's own Go crash text first, then (as before) the last
+        // one when the stderr file was last written as the process died
+        val own = goLineOf(entries(app, "go_pids"), info.pid, info.timestamp)
+        if (own != null) {
+            d["go"] = own
+        } else if (go != null && Math.abs(at - info.timestamp) < 120_000L) {
             d["go"] = go
         } else {
             // No Go line: say what stderr showed, so "not a Go panic" (Go
@@ -563,6 +578,11 @@ object Health {
      * any process was taken, so a process that never captured (started by
      * the widget, say) still read "quiet".
      */
+    /** Process [pid]'s Go crash line, when its stderr file was written as it died at [t]. */
+    fun goLineOf(gos: List<JSONObject>, pid: Int, t: Long): String? =
+        gos.lastOrNull { it.optInt("pid", -1) == pid && Math.abs(it.optLong("at") - t) < 120_000L }
+            ?.optString("line")?.takeIf { it.isNotEmpty() }
+
     fun stderrAt(caps: List<JSONObject>, files: List<JSONObject>, pid: Int, t: Long): String {
         val cap = caps.lastOrNull { it.optInt("pid", -1) == pid }?.optString("cap")
             ?: return "not captured in that process"

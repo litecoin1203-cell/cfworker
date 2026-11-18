@@ -376,7 +376,41 @@ void main() {
       final tried = ((none['d'] as Map)['tried'] as List).cast<Map>();
       expect(tried.map((t) => t['k']), tries.map((t) => t.id));
       expect(tried.map((t) => t['c']).toSet(), {'config'});
+      // the core's own words, their last part
+      expect(tried.map((t) => t['e']).toSet(), {
+        'The feature x has been removed',
+      });
+      expect(
+        (none['d'] as Map).keys.first,
+        'tried',
+        reason: 'kept first: the Worker cuts the last keys of a big report',
+      );
       expect(jsonEncode(none), isNot(contains('example.com')));
+      await app.disconnect();
+      for (var i = 0; i < 4; i++) {
+        await tester.pump(const Duration(seconds: 10));
+      }
+    });
+
+    testWidgets('an exit whose only answer is old is not picked, nor a '
+        'backup, until a new test says it answers', (tester) async {
+      final (app, api, tunnel) = await boot(tester);
+      api.rankReports = 4;
+      await app.loadServers();
+      await app.testAll();
+      // de1 (the fastest) answered, but its result is an hour old; now it is
+      // down and only nl1 answers
+      final de = app.exits.firstWhere(
+        (e) => e.server.link.contains('de1.example.com'),
+      );
+      de.measuredAt = DateTime.now().subtract(const Duration(hours: 1));
+      tunnel.pings = {'nl1.example.com': 240};
+      await app.connect();
+      final starts = [?tunnel.started];
+      expect(starts, isNotEmpty);
+      // the fastest by its old result is neither the pick nor a backup
+      expect(starts.first, contains('nl1.example.com'));
+      expect(starts.first, isNot(contains('de1.example.com')));
       await app.disconnect();
       for (var i = 0; i < 4; i++) {
         await tester.pump(const Duration(seconds: 10));

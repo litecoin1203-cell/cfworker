@@ -5358,6 +5358,12 @@ section('Pleat health reports: priorities, one row per problem, caps, scrubbing,
   const tries = (await menu.renderScreen(env, `he:${crash.fp}`)).text;
   ok(tries.includes('امتحان‌شده: 🇩🇪 DE1: تنظیم ناشناخته | 🇳🇱 NL2: بی‌جواب') && tries.includes('کنار گذاشته (برای بیشتر کاربران این اپراتور وصل نمی‌شود): 2'),
     'a none-answered report shows why each try failed and how many exits were left out: ' + tries);
+  // Pleat 1.2.55+: a live exit that went quiet, and the core's own words for a failed try
+  await env.DB.prepare('UPDATE health_events SET detail = ? WHERE id = ?')
+    .bind(JSON.stringify(H.cleanDetail({ tried: [{ k: kDE, c: 'silent' }, { k: kNL, c: 'path', e: 'invalid status: 403 Forbidden' }] })), crash.id).run();
+  const words = (await menu.renderScreen(env, `he:${crash.fp}`)).text;
+  ok(words.includes('🇩🇪 DE1: وصل بود، بعد جواب نداد | 🇳🇱 NL2: تنظیم مسیر (invalid status: 403 Forbidden)'), 'a try shows the core\'s own words: ' + words);
+  ok(H.cleanDetail({ near: '+0x2a00010 +0x103c0a8' }).near === '+0x2a00010 +0x103c0a8', 'stack offsets are kept as code');
   ok(H.crashGuess({ abort: 'fdsan: attempted to close file descriptor 87' }).includes('fdsan') && H.crashGuess({ lib: 'libhev-socks5-tunnel.so' }).includes('hev')
     && H.crashGuess({ lib: 'libflutter.so' }).includes('Flutter'), 'the guess follows the abort message and the library');
   // scrub on its own

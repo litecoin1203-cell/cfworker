@@ -69,6 +69,19 @@ class HealthTest {
     }
 
     @Test
+    fun goLineIsMatchedByProcess() {
+        fun j(vararg kv: Pair<String, Any>) = JSONObject().apply { kv.forEach { (k, v) -> put(k, v) } }
+        val t = 1_000_000L
+        val gos = listOf(
+            j("pid" to 1, "at" to t - 1_000, "line" to "panic: close of closed channel @ a·b"),
+            j("pid" to 2, "at" to t + 9_000_000, "line" to "panic: other"),
+        )
+        assertEquals("panic: close of closed channel @ a·b", Health.goLineOf(gos, 1, t))
+        assertNull("another process's line is never taken", Health.goLineOf(gos, 3, t))
+        assertNull("written long before the crash", Health.goLineOf(gos, 2, t))
+    }
+
+    @Test
     fun updateSha256() {
         val f = File.createTempFile("pleat", ".apk")
         try {
